@@ -57,43 +57,37 @@ impl<R: Read> Decoder<R> {
                 SectionId::Custom => {}
                 SectionId::Type => {
                     module.type_section =
-                        Some(self.decode_type_section().context("decode type section")?);
+                        self.decode_type_section().context("decode type section")?;
                 }
                 SectionId::Import => {
-                    module.import_section = Some(
-                        self.decode_import_section()
-                            .context("decode import section")?,
-                    );
+                    module.import_section = self
+                        .decode_import_section()
+                        .context("decode import section")?;
                 }
                 SectionId::Function => {
-                    module.function_section = Some(
-                        self.decode_function_section()
-                            .context("decode function section")?,
-                    );
+                    module.function_section = self
+                        .decode_function_section()
+                        .context("decode function section")?;
                 }
                 SectionId::Table => {
-                    module.table_section = Some(
-                        self.decode_table_section()
-                            .context("decode table section")?,
-                    );
+                    module.table_section = self
+                        .decode_table_section()
+                        .context("decode table section")?;
                 }
                 SectionId::Memory => {
-                    module.memory_section = Some(
-                        self.decode_memory_section()
-                            .context("decode memory section")?,
-                    );
+                    module.memory_section = self
+                        .decode_memory_section()
+                        .context("decode memory section")?;
                 }
                 SectionId::Global => {
-                    module.global_section = Some(
-                        self.decode_global_section()
-                            .context("decode global section")?,
-                    );
+                    module.global_section = self
+                        .decode_global_section()
+                        .context("decode global section")?;
                 }
                 SectionId::Export => {
-                    module.export_section = Some(
-                        self.decode_export_section()
-                            .context("decode export section")?,
-                    );
+                    module.export_section = self
+                        .decode_export_section()
+                        .context("decode export section")?;
                 }
                 SectionId::Start => {
                     module.start_section = self
@@ -101,18 +95,17 @@ impl<R: Read> Decoder<R> {
                         .context("decode start section")?;
                 }
                 SectionId::Element => {
-                    module.element_section = Some(
-                        self.decode_element_section()
-                            .context("decode element section")?,
-                    );
+                    module.element_section = self
+                        .decode_element_section()
+                        .context("decode element section")?;
                 }
                 SectionId::Code => {
                     module.code_section =
-                        Some(self.decode_code_section().context("decode code section")?);
+                        self.decode_code_section().context("decode code section")?
                 }
                 SectionId::Data => {
                     module.data_section =
-                        Some(self.decode_data_section().context("decode data section")?);
+                        self.decode_data_section().context("decode data section")?
                 }
                 SectionId::DataCount => {
                     module.data_count_section = Some(
