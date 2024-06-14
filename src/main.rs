@@ -1,9 +1,20 @@
-use wasm_parser::decoder::Decoder;
+use std::fs;
+
+use compiler::xtensa_esp32;
+use wasm_parser::{decoder::Decoder, parser::Parser};
 
 fn main() {
-    let wasm = include_bytes!("../test.wasm");
+    let wasm = fs::read("examples/add_two.wasm").unwrap();
 
     let mut decoder = Decoder::new(&wasm[..]);
     let module = decoder.decode().unwrap();
-    dbg!(module);
+
+    let mut parser = Parser::new(module);
+    let module = parser.parse();
+
+    dbg!(&module);
+
+    let mut compiler = xtensa_esp32::XtensaEsp32::new();
+    let result = compiler.compile(module);
+    println!("{}", result);
 }

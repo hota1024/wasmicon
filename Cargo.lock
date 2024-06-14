@@ -31,6 +31,9 @@ dependencies = [
 [[package]]
 name = "compiler"
 version = "0.1.0"
+dependencies = [
+ "wasm_parser",
+]
 
 [[package]]
 name = "derive_arbitrary"
@@ -210,5 +213,6 @@ dependencies = [
 name = "wasmicon"
 version = "0.1.0"
 dependencies = [
+ "compiler",
  "wasm_parser",
 ]
