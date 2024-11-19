@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 wasm_parser = { path = "../wasm_parser" }
+# inkwell = { version = "0.4.0", features = ["llvm18-0"] }

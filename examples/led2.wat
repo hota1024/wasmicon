@@ -15,26 +15,24 @@
   i32.const 1072971808
   i32.const 1072971808
   call $module/register32_read
-  i32.const -17
+  i32.const -33
   i32.and
   call $module/register32_write
   i32.const 1072971808
   i32.const 1072971808
   call $module/register32_read
-  i32.const 16
+  i32.const 32
   i32.or
   call $module/register32_write
   i32.const 1072971780
   i32.const 1072971780
   call $module/register32_read
-  i32.const -17
+  i32.const -33
   i32.and
   call $module/register32_write
   i32.const 1072971780
   i32.const 1072971780
   call $module/register32_read
-  i32.const 16
-  i32.or
   call $module/register32_write
  )
 )

@@ -1,4 +1,7 @@
-use crate::decoder::{instructions::Instruction, types::ValueType};
+use crate::decoder::{
+    instructions::Instruction,
+    types::{Global, Import, ValueType},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDecl {
@@ -20,4 +23,6 @@ pub struct Function {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     pub functions: Vec<Function>,
+    pub imports: Vec<Import>,
+    pub globals: Vec<Global>,
 }

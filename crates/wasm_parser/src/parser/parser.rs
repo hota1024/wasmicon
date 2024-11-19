@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::decoder::{self, types::ExportDesc};
 
 use super::module::{Function, Module};
@@ -14,22 +16,26 @@ impl Parser {
     pub fn parse(&mut self) -> Module {
         Module {
             functions: self.parse_functions(),
+            imports: self.module_binary.import_section.clone(),
+            globals: self.module_binary.global_section.clone(),
         }
     }
 
     fn parse_functions(&mut self) -> Vec<Function> {
         let mut funcs = vec![];
         let mut func_idx: usize = 0;
+        // let mut import_map = HashMap::new::<>();
 
         for import in &self.module_binary.import_section {
-            if let decoder::types::ImportDesc::Func(type_idx) = import.desc {
+            if let decoder::types::ImportDesc::Func(_) = import.desc {
                 func_idx += 1;
             }
         }
 
+        let mut code_index = 0;
         for func_sig_idx in &self.module_binary.function_section {
             let func_type = &self.module_binary.type_section[*func_sig_idx as usize];
-            let func_body = &self.module_binary.code_section[func_idx as usize];
+            let func_body = &self.module_binary.code_section[code_index as usize];
             let mut params_locals = func_type.params.clone();
             params_locals.append(&mut func_body.locals.clone());
             let export_name = self
@@ -52,6 +58,7 @@ impl Parser {
             funcs.push(func);
 
             func_idx += 1;
+            code_index += 1;
         }
 
         funcs

@@ -71,7 +71,14 @@ impl AsmWriter {
         self
     }
 
-    pub fn write_to_string(&self) -> String {
+    pub fn unimplemented<T: ToString>(&mut self, opcode: T) -> &mut Self {
+        self.comment(format!(
+            "############# UNIMPLEMENTED: {} #############",
+            opcode.to_string()
+        ))
+    }
+
+    pub fn write_to_string(&self, enable_comment: bool) -> String {
         let mut s = String::new();
 
         let mut p = self.items.iter().peekable();
@@ -83,10 +90,10 @@ impl AsmWriter {
             };
 
             match item {
-                Item::Comment(comment) => {
+                Item::Comment(comment) if enable_comment => {
                     s.push_str(&format!("\t# {}", comment));
                 }
-                Item::InlineComment(comment) => {
+                Item::InlineComment(comment) if enable_comment => {
                     s.push_str(&format!("\t# {}", comment));
                 }
                 Item::Label { name } => {
@@ -100,9 +107,12 @@ impl AsmWriter {
                         .join(", ");
                     s.push_str(&format!("\t{}\t{}", opcode, operands_str));
                 }
+                _ => {
+                    continue;
+                }
             }
 
-            if !matches!(p.peek(), Some(Item::InlineComment(_))) {
+            if !enable_comment || !matches!(p.peek(), Some(Item::InlineComment(_))) {
                 s.push('\n');
             }
         }
