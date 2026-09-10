@@ -40,7 +40,8 @@
 - `ports/rp2040` / `ports/esp32s3` の I2C / SPI 実装（現在は `unsupported` を返す）
 - abi-spec §8 の配線（役割名 → ピン番号）のオーナー確認
 - 実機に焼いてトレースを突き合わせる（Phase 4 / 5 / 6 の完了条件）
-- CI は一度も実行されていない（リモート未設定）
+- ~~CI は一度も実行されていない~~ → **2026-09-10 に 4 ジョブすべて green**（`v2` ブランチ）
+- リモートは `https://github.com/hota1024/wasmicon`。**作業ブランチは `v2`**。`main` は旧実装（wasm decoder / llvm 試行）でそのまま残してある
 
 **次に読むもの: `docs/verification-report.md`。** 何がどこまで検証されたかと、
 まだ検証されていないことを分けて書いてある。

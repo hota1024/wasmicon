@@ -103,7 +103,23 @@ ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存�
 
 ### 4.4 CI
 
-**一度も実行されていない**（リモート未設定）。
+**2026-09-10 に初めて実行し、4 ジョブすべて green**（`v2` ブランチ、ubuntu-latest）。
+
+初回は `root` ジョブの clippy で落ちた。CI の stable が 1.98.0 で手元が 1.97.1 で、
+1.98 で入った `map_or_identity` に引っかかった。直して 2 回目で green。
+
+- `root`: fmt / clippy / spec テスト（testsuite を固定 SHA で取得して実行）/
+  生成物 diff ゼロ / check-sigs / diff-traces の self-test
+- `guest`: apps workspace の fmt / clippy / wasm32 ビルド
+- `rp2040`: thumbv6m のビルド
+- `differential`: wasmtime との差分テスト 4 件
+
+**wasmtime との一致は x86_64 Linux でも確認できた**（手元は AArch64 macOS）。
+インタプリタの一致がホストのアーキテクチャに依存しないことの傍証にはなるが、
+RP2040 / Xtensa のソフトフロートを跨いだ一致は依然として未検証（§4.2）。
+
+`rust-toolchain.toml` は `channel = "stable"` の浮動。clippy の新しい lint や
+rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）。**固定するかは未決**。
 
 ---
 
