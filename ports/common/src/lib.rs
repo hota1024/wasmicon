@@ -56,6 +56,15 @@ pub trait Board {
     /// GPIO の本数。範囲検査に使う。
     fn gpio_count(&self) -> u32;
 
+    /// ゲストに開放しない GPIO。
+    ///
+    /// トレース用 UART のピン、フラッシュ / PSRAM に繋がっているピン、
+    /// そのチップに存在しない欠番など。開けてしまうとトレースが途切れたり、
+    /// XIP 実行中のフラッシュを叩いてファームウェアごと落ちたりする。
+    fn gpio_reserved(&self, _index: u32) -> bool {
+        false
+    }
+
     fn gpio_configure(&mut self, index: u32, mode: PinMode) -> BoardResult<()>;
     fn gpio_write(&mut self, index: u32, level: Level) -> BoardResult<()>;
     fn gpio_read(&mut self, index: u32) -> BoardResult<Level>;
@@ -263,7 +272,7 @@ impl<B: Board> Resolver for Hal<B> {
                 let role = guest_slice(mem, args[0], args[1])?;
                 let role = core::str::from_utf8(role).unwrap_or("");
                 a.byte(b'"');
-                a.str(role);
+                a.escaped(role.as_bytes());
                 a.byte(b'"');
                 match self.board.pin_by_role(role) {
                     Some(index) => {
@@ -287,7 +296,10 @@ impl<B: Board> Resolver for Hal<B> {
                 a.u32(mode);
                 let slot = self.pins.iter().position(|p| !p.open);
                 let taken = self.pins.iter().any(|p| p.open && p.index == index);
-                status = if index >= self.board.gpio_count() || mode >= PinMode::COUNT {
+                status = if index >= self.board.gpio_count()
+                    || mode >= PinMode::COUNT
+                    || self.board.gpio_reserved(index)
+                {
                     ErrorCode::InvalidArgument.status()
                 } else if taken {
                     ErrorCode::Busy.status()
@@ -657,15 +669,13 @@ impl<B: Board> Resolver for Hal<B> {
                 a.u32(level);
                 a.str(", ");
                 a.byte(b'"');
-                a.bytes(msg);
+                a.escaped(msg);
                 a.byte(b'"');
                 let l = LogLevel::from_u32(level).unwrap_or(LogLevel::Info);
+                // ゲストメモリを直接渡す。写すと長いメッセージが切れるうえ、
+                // UTF-8 の途中で切ると壊れる。
                 let msg = guest_slice(mem, args[1], args[2])?;
-                // 借用の都合で写してから渡す。長いメッセージは切り詰める。
-                let n = msg.len().min(SCRATCH);
-                self.scratch[..n].copy_from_slice(&msg[..n]);
-                let (scratch, board) = (&self.scratch, &mut self.board);
-                board.log(l, &scratch[..n]);
+                self.board.log(l, msg);
             }
         }
 

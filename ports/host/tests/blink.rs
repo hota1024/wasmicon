@@ -78,3 +78,23 @@ fn blink_runs_and_traces() {
         "失敗した host call がある:\n{trace}"
     );
 }
+
+/// abi-spec §9 は 1 host call = 2 行（要求と結果）。ゲストが改行や `"` を
+/// 混ぜてもこの形が崩れないこと。崩れると両ボードの diff が行単位でずれる。
+#[test]
+fn trace_escapes_guest_strings() {
+    let wasm = wat_to_wasm("logesc.wat");
+    let trace = match wasmicon_host::run_wasm(&wasm, true) {
+        Ok(out) => out.trace,
+        Err(e) => panic!("実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+    };
+    println!("{trace}");
+
+    let lines: Vec<&str> = trace.lines().collect();
+    assert_eq!(lines.len(), 2, "1 host call は 2 行のはず:\n{trace}");
+    assert_eq!(
+        lines[0], r#"> wasmicon:hal/log@0.1.0/log(2, "a\nb\"c")"#,
+        "エスケープされていない"
+    );
+    assert_eq!(lines[1], "<");
+}

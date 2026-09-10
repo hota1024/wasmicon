@@ -48,6 +48,26 @@ impl<'a> Buf<'a> {
         }
     }
 
+    /// トレースに埋め込む文字列。改行や `"` をそのまま出すと abi-spec §9 の
+    /// 1 行 1 レコードという形が壊れ、両ボードの diff が行単位でずれる。
+    pub fn escaped(&mut self, s: &[u8]) {
+        for &b in s {
+            match b {
+                b'\n' => self.str("\\n"),
+                b'\r' => self.str("\\r"),
+                b'\t' => self.str("\\t"),
+                b'"' => self.str("\\\""),
+                b'\\' => self.str("\\\\"),
+                0x20..=0x7e => self.byte(b),
+                // 制御文字と非 ASCII は 16 進で出す。UTF-8 の途中で切れても壊れない。
+                _ => {
+                    self.str("\\x");
+                    self.hex(u32::from(b), 2);
+                }
+            }
+        }
+    }
+
     /// 10 進。
     pub fn u64(&mut self, mut v: u64) {
         let mut digits = [0u8; 20];

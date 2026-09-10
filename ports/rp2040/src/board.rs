@@ -23,6 +23,13 @@ const ROLES: &[(&str, u32)] = &[("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("l
 /// SIO の FUNCSEL。ソフトウェア制御の GPIO。
 const FUNCSEL_SIO: u8 = 5;
 
+/// ゲストに開放しない GPIO。
+///
+/// GP0/GP1 はトレース用の UART0。開けられるとトレースが途切れる。
+/// GP23/24/25/29 は Pico W(H) では CYW43439（無線と オンボード LED）との
+/// 接続に使われている。
+const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
+
 /// トレースとログを出す先。
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
@@ -31,6 +38,12 @@ pub trait Serial {
 /// Pico のボード。
 pub struct PicoBoard<S: Serial> {
     serial: S,
+    /// オープンドレインとして開いているピン。
+    ///
+    /// RP2040 のパッドにはオープンドレイン制御が無い（`OD` は出力ディセーブル）
+    /// ので、出力イネーブルで擬似する: low は OE=1 かつ OUT=0、high は OE=0 で
+    /// ハイインピーダンス。
+    open_drain: u32,
 }
 
 impl<S: Serial> PicoBoard<S> {
@@ -39,7 +52,10 @@ impl<S: Serial> PicoBoard<S> {
     /// 呼び出し側は同じペリフェラルを他で触らない責任を負う。
     #[must_use]
     pub unsafe fn new(serial: S) -> Self {
-        PicoBoard { serial }
+        PicoBoard {
+            serial,
+            open_drain: 0,
+        }
     }
 
     /// シリアルへの参照。失敗の理由を出すのに使う。
@@ -65,6 +81,10 @@ impl<S: Serial> Board for PicoBoard<S> {
 
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
+    }
+
+    fn gpio_reserved(&self, index: u32) -> bool {
+        RESERVED.contains(&index)
     }
 
     fn gpio_configure(&mut self, index: u32, mode: PinMode) -> BoardResult<()> {
@@ -104,10 +124,18 @@ impl<S: Serial> Board for PicoBoard<S> {
 
         let mask = 1u32 << index;
         match mode {
-            PinMode::Output | PinMode::OutputOpenDrain => {
+            PinMode::OutputOpenDrain => {
+                // ハイインピーダンスから始める（外部プルアップに任せる）。
+                self.open_drain |= mask;
+                p.SIO.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
+                p.SIO.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
+            }
+            PinMode::Output => {
+                self.open_drain &= !mask;
                 p.SIO.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
             }
             _ => {
+                self.open_drain &= !mask;
                 p.SIO.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
             }
         }
@@ -120,6 +148,17 @@ impl<S: Serial> Board for PicoBoard<S> {
         }
         let sio = Self::sio();
         let mask = 1u32 << index;
+        if self.open_drain & mask != 0 {
+            // オープンドレイン: low は駆動、high はハイインピーダンス。
+            match level {
+                Level::Low => {
+                    sio.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
+                    sio.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
+                }
+                Level::High => sio.gpio_oe_clr().write(|w| unsafe { w.bits(mask) }),
+            }
+            return Ok(());
+        }
         // 出力に設定されていなければ書けない。
         if sio.gpio_oe().read().bits() & mask == 0 {
             return Err(ErrorCode::InvalidArgument);
@@ -138,7 +177,10 @@ impl<S: Serial> Board for PicoBoard<S> {
         let sio = Self::sio();
         let mask = 1u32 << index;
         // 出力モードなら出力値、入力モードなら入力値（WIT の read の定義）。
-        let bits = if sio.gpio_oe().read().bits() & mask != 0 {
+        let bits = if self.open_drain & mask != 0 {
+            // オープンドレインは線の実際の状態を読む。
+            sio.gpio_in().read().bits()
+        } else if sio.gpio_oe().read().bits() & mask != 0 {
             sio.gpio_out().read().bits()
         } else {
             sio.gpio_in().read().bits()
@@ -155,6 +197,7 @@ impl<S: Serial> Board for PicoBoard<S> {
             return;
         }
         // abi-spec §5.2: 入力・プル無しに戻す。
+        self.open_drain &= !(1u32 << index);
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 

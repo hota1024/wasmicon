@@ -113,7 +113,13 @@ fn run(
     invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])
 }
 
-/// HANDOFF §3 #4: ログを出して停止する。再起動しない。
+/// HANDOFF §3 #4 は「ログを出して停止、再起動しない」だが、**理由は出せない**。
+///
+/// シリアルはボードが持っていて panic handler からは届かないため、今は
+/// 停止するだけ。理由を出すには、シリアルのハンドルを panic handler から
+/// 触れる場所（critical-section 付きのグローバル）に置く必要がある。
+/// ランタイム由来の失敗は `main` が捕まえて UART に出すので、ここに来るのは
+/// ポート自身のバグに限られる。
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {

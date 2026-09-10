@@ -12,6 +12,9 @@
 
 mod board;
 
+// panic 時は停止するだけ。理由は出せない（シリアルがボード側にあり
+// panic handler から届かない）。ランタイム由来の失敗は main が捕まえて
+// UART に出すので、ここに来るのはポート自身のバグに限られる。
 use panic_halt as _;
 use rp2040_hal as hal;
 use rp2040_hal::Clock;
@@ -111,6 +114,11 @@ fn main() -> ! {
         )
         .ok()
         .unwrap();
+
+    // TIMER はリセットが掛かったまま起動するので、ここで解除する。
+    // rp2040-hal はこの解除を Timer::new の中でしか行わない。解除せずに
+    // TIMELR を読むとバスフォルトか常時 0 になり、sleep が効かなくなる。
+    let _timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let mut serial = Uart(uart);
     serial.write(b"wasmicon rp2040\r\n");

@@ -20,6 +20,15 @@ const MCU_SEL_GPIO: u8 = 1;
 /// GPIO マトリクスの「GPIO 出力」信号。ESP32-S3 では 128。
 const SIG_GPIO_OUT: u16 = 128;
 
+/// ゲストに開放しない GPIO。
+///
+/// - 22..=25: ESP32-S3 には存在しない欠番
+/// - 26..=32: SPI フラッシュと PSRAM。XIP 実行中に触るとファームウェアごと落ちる
+/// - 43, 44: トレース用の UART0（DevKitC-1 では USB シリアルに直結）
+fn reserved(index: u32) -> bool {
+    matches!(index, 22..=32 | 43 | 44)
+}
+
 /// 役割名 → GPIO 番号（abi-spec §8 の表）。
 ///
 /// `led` が外付けなのは、DevKitC-1 のオンボード LED が WS2812 で
@@ -66,6 +75,10 @@ impl<S: Serial> Board for EspBoard<S> {
 
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
+    }
+
+    fn gpio_reserved(&self, index: u32) -> bool {
+        reserved(index)
     }
 
     fn gpio_configure(&mut self, index: u32, mode: PinMode) -> BoardResult<()> {
