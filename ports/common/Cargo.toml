@@ -1,0 +1,9 @@
+[package]
+name = "wasmicon-port"
+description = "ポート共通のHAL実装。ボード固有の操作だけを Board トレイトに切り出す"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wasmicon-core.workspace = true
