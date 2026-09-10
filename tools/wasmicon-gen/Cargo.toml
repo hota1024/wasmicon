@@ -1,0 +1,9 @@
+[package]
+name = "wasmicon-gen"
+description = "wit/ から runtime / bindings の生成物を出力するジェネレータ"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Phase 1 で wit-parser を足す。

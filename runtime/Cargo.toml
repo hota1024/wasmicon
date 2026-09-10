@@ -1,0 +1,10 @@
+[package]
+name = "wasmicon-core"
+description = "Wasmicon の Core Wasm インタプリタ。no_std、依存クレートゼロ、alloc 不使用"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# 依存クレートを追加しない（HANDOFF §2-11）。
+# spec テストランナー用の dev-dependencies だけは Phase 2 で足してよい。
+[dependencies]

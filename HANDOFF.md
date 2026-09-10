@@ -28,12 +28,12 @@
 | ABI 仕様書 v0.1 | 完了（draft、未決事項 5 件） | `abi-spec.md` |
 | WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
-| ランタイム | **未着手**（実装言語 = Rust `no_std` に決定。§2-11） | — |
-| ジェネレータ / バインディング | **未着手** | — |
-| ポート層 (host / rp2040 / esp32s3) | **未着手**（実装方式は §3 #8） | — |
+| ランタイム | **未着手**（クレートの骨組みのみ。実装言語 = Rust `no_std`。§2-11） | `runtime/` |
+| ジェネレータ / バインディング | **未着手**（クレートの骨組みのみ） | `tools/wasmicon-gen/`, `bindings/rust/` |
+| ポート層 (host / rp2040 / esp32s3) | **未着手**（host のみ骨組み。実装方式は §3 #8） | `ports/host/` |
 | サンプルアプリ | **未着手** | — |
 
-コードは 1 行も書かれていない。設計だけが固まっている状態。
+実装コードはまだ無い。Cargo workspace の骨組み（§3 #9）だけが立っている状態。
 
 ---
 
@@ -68,7 +68,7 @@
 | 6 | `spi.transfer` | v0.1 に残す | 実装コストが低い |
 | 7 | コアの実装分担 | **決定済み → §2-12（フルスクラッチ、Claude Code が書く）** | オーナー判断（2026-09-10） |
 | 8 | **ポート層の実装方式**（Rust 化に伴い新規） | **全て Rust。host = `std`、rp2040 = `rp-hal` + `cortex-m-rt`、esp32s3 = `esp-hal`（`no_std`）。ESP-IDF / Pico SDK は使わない** | コアが Rust である以上 Xtensa のフォークツールチェーンは必須で、C SDK を混ぜても軽くならない。単一言語・単一ツールチェーンの方が軽く安全。**Phase 4 着手前にオーナー確認**（HANDOFF §8） |
-| 9 | **Cargo workspace の分割**（Rust 化に伴い新規） | ターゲットごとに別 workspace。root = `runtime` + `tools/wasmicon-gen` + `ports/host`、`ports/rp2040`、`ports/esp32s3`、guest（`bindings/rust` + `apps/*-rs`）はそれぞれ独立。各々に `rust-toolchain.toml` と `.cargo/config.toml` を置く | 単一 workspace ではターゲット・profile・toolchain が衝突する |
+| 9 | **Cargo workspace の分割**（Rust 化に伴い新規） | **承認済み（2026-09-10）**。ターゲットごとに別 workspace。root = `runtime` + `tools/wasmicon-gen` + `ports/host`。guest workspace の root は `bindings/rust`（Phase 3 で `apps/*-rs` を members に足す）。`ports/rp2040` / `ports/esp32s3` は Phase 4 で作る。`.cargo/config.toml` は **カレントディレクトリ基準**で探索されるので、`apps/*-rs` には `apps/.cargo/config.toml` が別途要る | 単一 workspace ではターゲット・profile・toolchain が衝突する |
 
 デフォルト 2 を採用した場合、`wit/board.wit` を追加し `world app` に `import board;` を足し、`abi-spec.md` §7 と §10 を更新すること。
 
@@ -100,7 +100,7 @@ wasmicon/
 │   ├── esp32s3/               # 別 workspace。esp-hal、toolchain = esp (espup)
 │   └── rp2040/                # 別 workspace。rp-hal + cortex-m-rt、thumbv6m-none-eabi
 ├── bindings/
-│   ├── rust/                  # wasmicon-hal クレート (no_std)。生成物 + 手書きラッパ
+│   ├── rust/                  # wasmicon-hal (no_std)。guest workspace の root。生成物 + 手書きラッパ
 │   └── assemblyscript/        # @wasmicon/hal パッケージ
 ├── apps/                      # *-rs は bindings/rust と同じ guest workspace (wasm32-unknown-unknown)
 │   ├── blink-rs/ blink-as/
@@ -127,7 +127,7 @@ wasmicon/
 
 - Rust `no_std`、**依存クレートゼロ**、`alloc` 不使用。arena（`&'a mut [u8]`）をポートから受け取り、内部構造は生ポインタではなく arena 内のインデックス/オフセットで持つ。
 - lint: CI で `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`。`unsafe` は最小限に閉じ込め、必ず直前に `// SAFETY:` を書く。
-- 軽量化（オーナー要求）: `[profile.release]` は `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`。コアで `core::fmt` を使わない。ジェネリクスの単相化でコードが膨らまないよう型は具体型で書く。サイズは Phase 2 完了時点で計測して記録する。
+- 軽量化（オーナー要求）: root workspace の `[profile.release]` は `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`（サイズ計測用）。`panic = "abort"` と `strip = true` はここに置かず、guest / ポートの workspace 側の `[profile.release]` に置く（ホストツールと `cargo test` は unwind が要る）。コアで `core::fmt` を使わない。ジェネリクスの単相化でコードが膨らまないよう型は具体型で書く。サイズは Phase 2 完了時点で計測して記録する。
 - 構造: `decode`（セクション解析、コードはフラッシュ上のスライス `&'static [u8]` を保持）→ `validate`（型検査 + br のジャンプ先 side table 構築）→ `interp`（スタックマシン、`match` ディスパッチ）。
 - **Rust に computed goto は無い**。`match` ループから始める。明示的テールコール（`become`）は unstable なので当てにしない。最適化は spec テスト通過後にプロファイルを取ってから。
 - Wasm の算術は wrapping。`wrapping_*` / `rotate_*` / `checked_*` を明示的に使う。debug の `overflow-checks` は on のままにし、引っかかった箇所は仕様どおりの wrapping に直す。
@@ -219,7 +219,7 @@ espup install                          # ESP32-S3 (Xtensa フォーク)
 ## 8. オーナー（hota）への確認が必要なタイミング
 
 - ~~Phase 1 着手前: §3 のデフォルト #1（実装言語）と #7（分担）の承認~~ → **2026-09-10 に回答済み。§2-11 / §2-12**
-- Phase 1 着手前: §3 #9（Cargo workspace の分割）で問題ないか
+- ~~Phase 1 着手前: §3 #9（Cargo workspace の分割）~~ → **2026-09-10 に承認済み**
 - Phase 4 着手前: §3 #8（ポート層を全 Rust にする）の承認、実機の配線（abi-spec §8 の表）とシリアルの接続方法
 - Phase 5: 手元にある SHT31 / ILI9341 モジュールの型番（ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 前提）
 

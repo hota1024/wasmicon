@@ -1,0 +1,22 @@
+# guest 用の独立した workspace（HANDOFF §3 #9）。
+# ターゲットが wasm32-unknown-unknown で profile も root と別なので、
+# root workspace には入れない。
+[workspace]
+# Phase 3 で apps/*-rs を足す:
+# members = ["../../apps/blink-rs", "../../apps/sensor-display-rs"]
+
+[package]
+name = "wasmicon-hal"
+description = "ゲスト向け HAL バインディング。生成された extern 宣言 + 安全ラッパ"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
