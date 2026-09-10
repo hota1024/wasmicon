@@ -15,6 +15,14 @@ fn repo_root() -> PathBuf {
 
 /// guest workspace でアプリをビルドして `.wasm` を返す。
 fn build_rust_app(pkg: &str) -> Vec<u8> {
+    // 複数のテストが同じ target ディレクトリに向けて cargo を走らせる。
+    // cargo 自身のロックでビルドは直列化されるが、その隙に別のテストが
+    // 書きかけの .wasm を読むことがある。ビルドと読み出しをまとめて直列化する。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     let root = repo_root();
     // cargo test はテストプロセスに RUSTUP_TOOLCHAIN を渡す。これが立っていると
     // rustup は toolchain override ファイルを一切見ないので、apps/rust-toolchain.toml の
