@@ -18,7 +18,12 @@ use wasmtime::{Caller, Engine, Extern, FuncType, Linker, Module, Store, Val, Val
 /// AssemblyScript が import する `env.abort`（HANDOFF §6）。
 const HOST_ENV_ABORT: u32 = 0xffff;
 
-/// ホスト関数の引数・戻り値の最大個数。`wasmicon-port` と揃える。
+/// ホスト関数の引数・戻り値の最大個数。
+///
+/// `wasmicon_core::interp` の `MAX_HOST_ARITY` と同じ値にしてある。
+/// 現状の最大は `i2c.write-read` の 8 なので余裕はあるが、超えたときに
+/// wasmtime のコールバックの中で添字外れの panic になるのは読みにくいので
+/// 明示的に検査する。
 const MAX_ARITY: usize = 16;
 
 /// wasmtime の `Store` に載せる状態。
@@ -88,15 +93,22 @@ fn define(
 ) -> Result<()> {
     let ty = func_type(engine, sig)?;
     let result_types: Vec<ValType> = ty.results().collect();
+    let module_name = module.to_string();
+    let fn_name = name.to_string();
     linker
         .func_new(module, name, ty, move |mut caller, params, results| {
+            let n = params.len();
+            let m = result_types.len();
+            if n > MAX_ARITY || m > MAX_ARITY {
+                return Err(wasmtime::Error::msg(format!(
+                    "{module_name}/{fn_name} の引数か戻り値が {MAX_ARITY} を超えている"
+                )));
+            }
             let mut args = [0u64; MAX_ARITY];
             for (i, v) in params.iter().enumerate() {
                 args[i] = to_slot(v);
             }
             let mut out = [0u64; MAX_ARITY];
-            let n = params.len();
-            let m = result_types.len();
             let (mem, state) = memory_and_state(&mut caller)?;
             state
                 .hal

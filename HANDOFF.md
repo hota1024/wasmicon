@@ -26,7 +26,7 @@
 |---|---|---|
 | 設計メモ（背景・方針・ロードマップ） | 完了 | `docs/design-notes.md` |
 | 検証レポート | 完了（Phase 6）。実機部分は未達と明記 | `docs/verification-report.md` |
-| ABI 仕様書 v0.1 | 完了（draft）。§10 の未決事項 1 は Phase 3 で決定 | `docs/abi-spec.md` |
+| ABI 仕様書 v0.1 | 完了（draft）。§10 の未決事項は 1 が決定済み、2〜5 が残り | `docs/abi-spec.md` |
 | WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
 | ランタイム | 完了（Phase 2）。spec テストのコア 74 ファイルが通る | `runtime/` |
