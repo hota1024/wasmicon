@@ -30,7 +30,13 @@ impl Resolver for SpecTest {
         }
     }
 
-    fn call(&mut self, _host: u32, _args: &[u64], _results: &mut [u64]) -> Result<()> {
+    fn call(
+        &mut self,
+        _host: u32,
+        _args: &[u64],
+        _results: &mut [u64],
+        _mem: &mut [u8],
+    ) -> Result<()> {
         // print* は何もしない。戻り値は無い。
         Ok(())
     }

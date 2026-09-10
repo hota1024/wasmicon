@@ -210,6 +210,28 @@ pub fn runtime_rs(hal: &Hal) -> String {
     let _ = writeln!(out);
 
     let n = hal.imports().count();
+    let _ = writeln!(out, "impl HostFn {{");
+    let _ = writeln!(out, "    /// `IMPORTS` の索引。");
+    let _ = writeln!(out, "    #[must_use]");
+    let _ = writeln!(out, "    pub const fn index(self) -> u16 {{");
+    let _ = writeln!(out, "        self as u16");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "    /// 索引から復元する。");
+    let _ = writeln!(out, "    #[must_use]");
+    let _ = writeln!(
+        out,
+        "    pub const fn from_index(i: u16) -> Option<Self> {{"
+    );
+    let _ = writeln!(out, "        match i {{");
+    for (i, (_, f)) in hal.imports().enumerate() {
+        let _ = writeln!(out, "            {i} => Some(Self::{}),", f.slot);
+    }
+    let _ = writeln!(out, "            _ => None,");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
     let _ = writeln!(out, "/// v0.1 の全 HAL import（abi-spec §7）。");
     let _ = writeln!(out, "pub static IMPORTS: [ImportDesc; {n}] = [");
     for (iface, f) in hal.imports() {

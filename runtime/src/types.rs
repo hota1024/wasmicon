@@ -107,10 +107,41 @@ impl<'m> FuncType<'m> {
             .filter_map(|b| ValType::from_byte(*b).ok())
     }
 
+    /// `params:results` 表記のシグネチャと一致するか（abi-spec §7）。
+    /// 生成された import 表との完全一致リンクに使う。
+    #[must_use]
+    pub fn sig_matches(&self, sig: &str) -> bool {
+        let mut it = sig.chars();
+        for t in self.params() {
+            if it.next() != Some(sig_char(t)) {
+                return false;
+            }
+        }
+        if it.next() != Some(':') {
+            return false;
+        }
+        for t in self.results() {
+            if it.next() != Some(sig_char(t)) {
+                return false;
+            }
+        }
+        it.next().is_none()
+    }
+
     /// 型が等しいか。import の照合とインダイレクト呼び出しで使う。
     #[must_use]
     pub fn matches(&self, other: &FuncType<'_>) -> bool {
         self.params == other.params && self.results == other.results
+    }
+}
+
+/// シグネチャ表記の 1 文字（abi-spec §7）。
+const fn sig_char(t: ValType) -> char {
+    match t {
+        ValType::I32 => 'i',
+        ValType::I64 => 'I',
+        ValType::F32 => 'f',
+        ValType::F64 => 'F',
     }
 }
 

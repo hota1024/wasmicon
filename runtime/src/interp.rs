@@ -209,7 +209,11 @@ pub fn invoke(
         let host = inst.host_funcs[func as usize];
         let nres = ty.result_count();
         let (a, rest) = stack.split_at_mut(sp);
-        resolver.call(host, &a[sp - args.len()..], &mut rest[..nres])?;
+        let mem: &mut [u8] = match inst.memory.as_mut() {
+            Some(m) => m.bytes_mut(),
+            None => &mut [],
+        };
+        resolver.call(host, &a[sp - args.len()..], &mut rest[..nres], mem)?;
         results[..nres].copy_from_slice(&rest[..nres]);
         return Ok(());
     }
@@ -817,7 +821,11 @@ fn call<'m>(
         let base = *sp - nparams;
         args[..nparams].copy_from_slice(&stack[base..*sp]);
         let host = inst.host_funcs[f as usize];
-        resolver.call(host, &args[..nparams], &mut res[..nresults])?;
+        let mem: &mut [u8] = match inst.memory.as_mut() {
+            Some(m) => m.bytes_mut(),
+            None => &mut [],
+        };
+        resolver.call(host, &args[..nparams], &mut res[..nresults], mem)?;
         stack[base..base + nresults].copy_from_slice(&res[..nresults]);
         *sp = base + nresults;
         return Ok(());

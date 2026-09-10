@@ -28,13 +28,13 @@
 | ABI 仕様書 v0.1 | 完了（draft、未決事項 5 件） | `abi-spec.md` |
 | WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
-| ランタイム | **未着手**（クレートの骨組みのみ。実装言語 = Rust `no_std`。§2-11） | `runtime/` |
+| ランタイム | 完了（Phase 2）。spec テストのコア 74 ファイルが通る | `runtime/` |
 | ジェネレータ `wasmicon-gen` | 完了（Phase 1）。3 出力を生成、abi-spec §7 との一致をテストで検査 | `tools/wasmicon-gen/` |
 | バインディング | 生成物のみ（安全ラッパは Phase 3） | `bindings/rust/`, `bindings/assemblyscript/` |
-| ポート層 (host / rp2040 / esp32s3) | **未着手**（host のみ骨組み。実装方式は §3 #8） | `ports/host/` |
+| ポート層 (host / rp2040 / esp32s3) | host は完了（mock HAL + トレース）。実機は Phase 4（§3 #8） | `ports/host/` |
 | サンプルアプリ | **未着手** | — |
 
-Phase 1（ジェネレータ）まで完了。ランタイムコアとポート層は未着手。
+Phase 2（ランタイムコア + host ポート）まで完了。実機ポートとアプリは未着手。
 
 ---
 
@@ -139,7 +139,9 @@ wasmicon/
 - `memory.grow` はポートが指定する最大ページ数まで。
 - import 解決: 生成された `generated.rs` の表を module 名 + name + sig で完全一致リンク。
 - spec テストランナーは `runtime/tests/` に置く。ここは dev-dependencies を使ってよい（`wast` クレートで `.wast` を直接読む、または `wasm-tools json-from-wast` を使う）。コア本体の依存ゼロは崩さない。
-- **完了条件**: WebAssembly spec testsuite（対応機能セット分）を全通過。`ports/host` で `apps/blink-rs` の Wasm が動き、mock GPIO のトレースが出る。
+- **完了条件**: WebAssembly spec testsuite（対応機能セット分）を全通過。`ports/host` で `apps/blink-rs` の Wasm が動き、mock GPIO のトレースが出る。→ **達成（2026-09-10）**。
+  - 「全通過」の定義は `runtime/tests/spec.rs` の `FILES`（コア 74 ファイル）。除外は同ファイルの `EXCLUDED` に理由つきで列挙した。22507 コマンドが通る
+  - `apps/blink-rs` は Phase 3 で作るので、同じ host call 列を出す手書きの `ports/host/tests/blink.wat` で先に検証している。Phase 3 で本物に差し替える
 - 最適化は spec テスト通過後、プロファイルを取ってから。RP2040 で ILI9341 のテキスト描画が目視で 1 秒以内に終わる程度を目標。
 
 ### Phase 3: Rust / AS バインディング + blink
@@ -215,7 +217,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 # spec テスト変換（Phase 2）
 wasm-tools json-from-wast <file>.wast -o out/<file>.json   # 旧 wast2json 相当
 # ゲスト Wasm の機能検査（Phase 3）
-wasm-tools validate --features=mvp,sign-ext,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
+wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
 # ターゲット準備（Phase 4）
 rustup target add thumbv6m-none-eabi   # RP2040
 espup install                          # ESP32-S3 (Xtensa フォーク)

@@ -59,6 +59,41 @@ pub enum HostFn {
     LogLog,
 }
 
+impl HostFn {
+    /// `IMPORTS` の索引。
+    #[must_use]
+    pub const fn index(self) -> u16 {
+        self as u16
+    }
+
+    /// 索引から復元する。
+    #[must_use]
+    pub const fn from_index(i: u16) -> Option<Self> {
+        match i {
+            0 => Some(Self::GpioPinOpen),
+            1 => Some(Self::GpioPinSetMode),
+            2 => Some(Self::GpioPinRead),
+            3 => Some(Self::GpioPinWrite),
+            4 => Some(Self::GpioPinToggle),
+            5 => Some(Self::GpioPinDrop),
+            6 => Some(Self::I2cBusOpen),
+            7 => Some(Self::I2cBusWrite),
+            8 => Some(Self::I2cBusRead),
+            9 => Some(Self::I2cBusWriteRead),
+            10 => Some(Self::I2cBusDrop),
+            11 => Some(Self::SpiBusOpen),
+            12 => Some(Self::SpiBusWrite),
+            13 => Some(Self::SpiBusTransfer),
+            14 => Some(Self::SpiBusDrop),
+            15 => Some(Self::TimeNowUs),
+            16 => Some(Self::TimeSleepMs),
+            17 => Some(Self::TimeSleepUs),
+            18 => Some(Self::LogLog),
+            _ => None,
+        }
+    }
+}
+
 /// v0.1 の全 HAL import（abi-spec §7）。
 pub static IMPORTS: [ImportDesc; 19] = [
     ImportDesc {

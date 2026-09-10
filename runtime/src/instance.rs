@@ -41,8 +41,11 @@ pub trait Resolver {
     /// import を解決する。型が合わない・見つからないなら `None`。
     fn resolve(&mut self, module: &str, name: &str, ty: &ExternType<'_>) -> Option<Extern>;
 
-    /// ホスト関数を呼ぶ。`args` は引数、`results` に戻り値を書く。
-    fn call(&mut self, host: u32, args: &[u64], results: &mut [u64]) -> Result<()>;
+    /// ホスト関数を呼ぶ。
+    ///
+    /// `mem` はゲストの線形メモリ。`list<u8>` 引数と out ポインタの
+    /// 範囲検査はホスト関数の責務（abi-spec §4.2 / §4.4）。
+    fn call(&mut self, host: u32, args: &[u64], results: &mut [u64], mem: &mut [u8]) -> Result<()>;
 }
 
 /// 線形メモリ。arena の残り全部を持ち、現在のページ数だけを動かす。
