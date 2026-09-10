@@ -28,7 +28,7 @@ pub const MAX_I2C: usize = 2;
 pub const MAX_SPI: usize = 2;
 
 /// AssemblyScript が import する `env.abort` に割り当てる識別子。
-/// `world app` には無い例外的な import（HANDOFF §6）。
+/// `world app` には無い例外的な import（docs/handoff.md §6）。
 const HOST_ENV_ABORT: u32 = 0xffff;
 
 /// 入出力が重なりうる転送で使う一時領域の大きさ。
@@ -236,7 +236,7 @@ fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
 
 impl<B: Board> Resolver for Hal<B> {
     fn resolve(&mut self, module: &str, name: &str, ty: &ExternType<'_>) -> Option<Extern> {
-        // AssemblyScript の env.abort は world app に無い例外的な import（HANDOFF §6）。
+        // AssemblyScript の env.abort は world app に無い例外的な import（docs/handoff.md §6）。
         if module == "env" && name == "abort" {
             return Some(Extern::Func(HOST_ENV_ABORT));
         }

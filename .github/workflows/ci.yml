@@ -34,9 +34,9 @@ jobs:
       # blink と sensor-display の Rust 版 / AS 版のトレース一致（Phase 3 / 5）を含む
       - run: cargo test
       - run: cargo run -p wasmicon-gen -- --check
-      # 参照実装 tools/wit2sig.py との突き合わせ（HANDOFF §5 Phase 1）
+      # 参照実装 tools/wit2sig.py との突き合わせ（docs/handoff.md §5 Phase 1）
       - run: sh tools/check-sigs.sh
-      # トレース diff スクリプトの正規化（HANDOFF §5 Phase 6 の (2)）
+      # トレース diff スクリプトの正規化（docs/handoff.md §5 Phase 6 の (2)）
       - run: sh verify/diff-traces.sh --self-test
 
   # guest workspace: wasm32-unknown-unknown 向けのバインディングとアプリ
@@ -71,7 +71,7 @@ jobs:
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
   # ローカルで `ports/esp32s3/build.sh build --release` を使う。
 
-  # wasmtime との差分テスト（HANDOFF §5 Phase 6 の (3)）。
+  # wasmtime との差分テスト（docs/handoff.md §5 Phase 6 の (3)）。
   # wasmtime は依存が大きいので別 workspace・別ジョブにしてある。
   differential:
     runs-on: ubuntu-latest

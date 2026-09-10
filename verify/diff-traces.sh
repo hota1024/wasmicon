@@ -1,6 +1,6 @@
 #!/bin/sh
 # 2 つのボードのシリアル出力からトレースを取り出して突き合わせる。
-# HANDOFF §5 Phase 6 の (2)。
+# docs/handoff.md §5 Phase 6 の (2)。
 #
 # 使い方:
 #   sh verify/diff-traces.sh pico.log esp32s3.log

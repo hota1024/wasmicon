@@ -1,4 +1,4 @@
-//! Wasm の型。対応機能セット（HANDOFF §2-7）の範囲だけを持つ。
+//! Wasm の型。対応機能セット（docs/handoff.md §2-7）の範囲だけを持つ。
 
 use crate::error::{Error, Result};
 use crate::reader::Reader;
@@ -21,7 +21,7 @@ impl ValType {
             0x7d => Ok(ValType::F32),
             0x7c => Ok(ValType::F64),
             // 0x63..=0x7b は現行仕様の参照型・GC 型・v128。Wasm としては正しいが
-            // 対応機能セット外（HANDOFF §2-7）なので malformed と区別する。
+            // 対応機能セット外（docs/handoff.md §2-7）なので malformed と区別する。
             0x7b => Err(Error::Unsupported("SIMD is not supported")),
             0x63..=0x7a => Err(Error::Unsupported("reference types are not supported")),
             _ => Err(Error::Malformed("malformed value type")),

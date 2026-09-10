@@ -46,7 +46,7 @@ pub enum Error {
     Invalid(&'static str),
     /// インスタンス化時の不正（Wasm 仕様の unlinkable）。
     Unlinkable(&'static str),
-    /// Wasm としては正しいが、対応機能セット（HANDOFF §2-7）の外。
+    /// Wasm としては正しいが、対応機能セット（docs/handoff.md §2-7）の外。
     /// 仕様上の invalid とは区別する。ゲストのバグではなくランタイムの守備範囲外。
     Unsupported(&'static str),
     /// 実行時トラップ。

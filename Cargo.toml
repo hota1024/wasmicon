@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["runtime", "tools/wasmicon-gen", "ports/common", "ports/host"]
-# ターゲット / toolchain / profile が異なるものは別 workspace にする（HANDOFF §3 #9）。
+# ターゲット / toolchain / profile が異なるものは別 workspace にする（docs/handoff.md §3 #9）。
 # bindings/rust は guest workspace の root、apps/*-rs は Phase 3 でそこに加わる。
 # ports/rp2040 と ports/esp32s3 は Phase 4 で作る。
 exclude = ["bindings/rust", "apps", "ports/rp2040", "ports/esp32s3"]
@@ -16,7 +16,7 @@ wasmicon-core = { path = "runtime" }
 wasmicon-port = { path = "ports/common" }
 
 # サイズ計測用。panic = "abort" と strip はここに置かない
-# （ホストツールと cargo test は unwind が要る）。HANDOFF §5 Phase 2
+# （ホストツールと cargo test は unwind が要る）。docs/handoff.md §5 Phase 2
 [profile.release]
 opt-level = "z"
 lto = "fat"

@@ -6,7 +6,7 @@ target = "wasm32-unknown-unknown"
 [target.wasm32-unknown-unknown]
 rustflags = [
     # rustc 1.97 の wasm32 は reference-types をデフォルトで有効にする。
-    # 対応機能セット（HANDOFF §2-7）から外れるので明示的に切る。
+    # 対応機能セット（docs/handoff.md §2-7）から外れるので明示的に切る。
     # 他の 5 つ（bulk-memory / multivalue / mutable-globals /
     # nontrapping-fptoint / sign-ext）は既定で有効かつ対応済み。
     "-Ctarget-feature=-reference-types",

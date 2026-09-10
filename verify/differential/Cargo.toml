@@ -1,4 +1,4 @@
-# 自作インタプリタと wasmtime の差分テスト（HANDOFF §5 Phase 6 の (3)）。
+# 自作インタプリタと wasmtime の差分テスト（docs/handoff.md §5 Phase 6 の (3)）。
 #
 # wasmtime は依存が大きく、root workspace に入れると毎回の cargo test が
 # 重くなる。別 workspace にして CI では専用ジョブで回す。

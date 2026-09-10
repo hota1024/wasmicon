@@ -4,9 +4,11 @@
 
 ## まず読むもの
 
-1. `HANDOFF.md` — 現状、確定事項、未決事項のデフォルト、フェーズと完了条件
-2. `docs/abi-spec.md` — WIT → Core Wasm の lowering 規則。**この仕様が正**
-3. `wit/` — HAL 定義。**唯一の真実**。生成物を手で編集しない
+1. `README.md` — 何のプロジェクトか、構成、ビルドと検証の手順
+2. `docs/TODO.md` — **残作業。ここだけが残作業の正**
+3. `docs/abi-spec.md` — WIT → Core Wasm の lowering 規則。**この仕様が正**
+4. `wit/` — HAL 定義。**唯一の真実**。生成物を手で編集しない
+5. `docs/handoff.md` — 変更禁止の決定事項（§2）と落とし穴（§6）。コードのコメントが節番号で参照している
 
 ## 絶対に守ること
 
@@ -17,7 +19,7 @@
 - `unsafe` は最小限。書くときは直前に `// SAFETY:` を必ず添える
 - コアで `core::fmt`（`format!` / `write!` / `{:?}`）を使わない。バイナリが肥大する
 - 生成物 (`runtime/src/generated.rs`, `bindings/*/generated.*`) はジェネレータ出力のみ。CI で再生成 diff ゼロを検査
-- フェーズは `HANDOFF.md` §5 の順に進め、完了条件を満たしてから次へ
+- `docs/handoff.md` §2 の決定事項を覆さない。覆す必要があるなら実装せず理由を書いてオーナーに確認
 
 ## 検証
 
@@ -29,6 +31,7 @@ sh tools/check-sigs.sh                   # 参照実装 tools/wit2sig.py と突�
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-## 未決事項のデフォルト
+## 残作業と未決事項
 
-`HANDOFF.md` §3 の表に従う。採用したデフォルトはコミットメッセージと PR に明記する。
+`docs/TODO.md` が正。**残作業を他の場所に書き足さない**（散らすと必ず古くなる）。
+オーナーの確定を待っている項目で既定のまま進める場合は、コミットメッセージに明記する。

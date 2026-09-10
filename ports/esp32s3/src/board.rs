@@ -32,7 +32,7 @@ fn reserved(index: u32) -> bool {
 /// 役割名 → GPIO 番号（abi-spec §8 の表）。
 ///
 /// `led` が外付けなのは、DevKitC-1 のオンボード LED が WS2812 で
-/// 素の GPIO では駆動できないため。**実機の配線は未確認**（HANDOFF §8）。
+/// 素の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
 const ROLES: &[(&str, u32)] = &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 14), ("lcd-rst", 15)];
 
 /// トレースとログを出す先。

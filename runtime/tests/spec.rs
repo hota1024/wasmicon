@@ -1,10 +1,10 @@
-//! WebAssembly spec testsuite ランナー（HANDOFF §5 Phase 2 の完了条件）。
+//! WebAssembly spec testsuite ランナー（docs/handoff.md §5 Phase 2 の完了条件）。
 //!
 //! `third_party/testsuite`（`tools/fetch-testsuite.sh` が固定 SHA で取得）の
 //! `.wast` を `wasm-tools json-from-wast` で JSON に変換し、コマンドを順に実行する。
 //!
 //! 「全通過」の定義: `FILES` に挙げた `.wast` の、対応済みコマンド種別が全て通ること。
-//! 除外は `EXCLUDED` に理由つきで列挙する（HANDOFF §3 のデフォルトと同じ扱い）。
+//! 除外は `EXCLUDED` に理由つきで列挙する（docs/handoff.md §3 のデフォルトと同じ扱い）。
 //!
 //! スキップの内訳（2026-09-10 時点、`FILES` の 74 ファイルで 548 件）:
 //! - 549 件: `(module quote ...)` などテキスト形式のモジュール。WAT パーサを
@@ -25,7 +25,7 @@ use wasmicon_core::{Arena, Config, Error, ErrorKind, Exec, decode, instantiate, 
 
 /// 実行対象の `.wast`。段階が進むごとに増やす。
 const FILES: &[&str] = &[
-    // Wasm コア仕様のうち、対応機能セット（HANDOFF §2-7）に収まるファイル。
+    // Wasm コア仕様のうち、対応機能セット（docs/handoff.md §2-7）に収まるファイル。
     // ここに無いものは EXCLUDED の理由で外している。
     "address.wast",
     "align.wast",
@@ -107,7 +107,7 @@ const FILES: &[&str] = &[
 const EXCLUDED: &[(&str, &str)] = &[
     (
         "simd_*, i8x16_*, i16x8_*, i32x4_*, relaxed_*",
-        "SIMD 非対応（HANDOFF §2-7）",
+        "SIMD 非対応（docs/handoff.md §2-7）",
     ),
     ("*atomic*", "threads 非対応"),
     (
@@ -186,7 +186,7 @@ fn convert(root: &Path, wast: &str) -> Option<(serde_json::Value, PathBuf)> {
 struct Tally {
     ran: usize,
     skipped: usize,
-    /// 対応機能セット外でスキップした件数（HANDOFF §2-7）。
+    /// 対応機能セット外でスキップした件数（docs/handoff.md §2-7）。
     unsupported: usize,
     failures: Vec<String>,
 }

@@ -1,4 +1,4 @@
-# guest 用の workspace（HANDOFF §3 #9）。
+# guest 用の workspace（docs/handoff.md §3 #9）。
 # ターゲットが wasm32-unknown-unknown で profile も root と別なので、
 # root workspace には入れない。
 #

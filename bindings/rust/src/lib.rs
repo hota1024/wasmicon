@@ -1,7 +1,7 @@
 //! Wasmicon HAL のゲスト向けバインディング。
 //!
 //! `generated` は `wasmicon-gen` の出力（Phase 1）。手で編集しない。
-//! `hal` は生成された extern 宣言を包む安全なラッパ（HANDOFF §5 Phase 3）。
+//! `hal` は生成された extern 宣言を包む安全なラッパ（docs/handoff.md §5 Phase 3）。
 
 #![no_std]
 

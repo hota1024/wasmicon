@@ -1,6 +1,6 @@
 //! host ポートで手書きの Lチカゲストを動かし、トレースを確かめる。
 //!
-//! HANDOFF §5 Phase 2 の完了条件「ports/host でゲストが動き、mock GPIO の
+//! docs/handoff.md §5 Phase 2 の完了条件「ports/host でゲストが動き、mock GPIO の
 //! トレースが出る」に対応する。Rust 版の `apps/blink-rs` は Phase 3 で作る。
 
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ fn wat_to_wasm(name: &str) -> Vec<u8> {
 fn blink_runs_and_traces() {
     let wasm = wat_to_wasm("blink.wat");
 
-    // 対応機能セット内であることを確かめる（HANDOFF §5 Phase 3 と同じ検査）。
+    // 対応機能セット内であることを確かめる（docs/handoff.md §5 Phase 3 と同じ検査）。
     let ok = Command::new("wasm-tools")
         .args([
             "validate",

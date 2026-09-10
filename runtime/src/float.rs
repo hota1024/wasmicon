@@ -1,7 +1,7 @@
 //! `core` に無い浮動小数演算。
 //!
 //! `no_std` では `floor` / `ceil` / `trunc` / `nearest` / `sqrt` が使えないので
-//! 自前で書く（HANDOFF §6）。依存クレートを増やさないための実装であり、
+//! 自前で書く（docs/handoff.md §6）。依存クレートを増やさないための実装であり、
 //! spec テストの `f32.wast` / `f64.wast` / `float_misc.wast` が正しさを検査する。
 //!
 //! 丸めは全て IEEE 754 の最近接偶数。`sqrt` は仮数を整数平方根で求めてから

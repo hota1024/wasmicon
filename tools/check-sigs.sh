@@ -1,6 +1,6 @@
 #!/bin/sh
 # 参照実装 tools/wit2sig.py と wasmicon-gen のシグネチャ導出が一致することを確認する。
-# HANDOFF §5 Phase 1「まず wit2sig.py の出力と一致することをテストにする」に対応。
+# docs/handoff.md §5 Phase 1「まず wit2sig.py の出力と一致することをテストにする」に対応。
 #
 # 必要: wasm-tools, python3, cargo
 set -eu

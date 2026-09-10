@@ -55,7 +55,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            // HANDOFF §3 #4: トラップしたらログを出して停止する。
+            // docs/handoff.md §3 #4: トラップしたらログを出して停止する。
             eprintln!("wasmicon: {} [{}]", e.reason(), e.kind().name());
             ExitCode::FAILURE
         }

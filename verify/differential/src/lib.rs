@@ -1,6 +1,6 @@
 //! 自作インタプリタと wasmtime で同じ `.wasm` を走らせ、トレースを突き合わせる。
 //!
-//! HANDOFF §5 Phase 6 の (3)。実機とは無関係に**インタプリタの正しさ**を
+//! docs/handoff.md §5 Phase 6 の (3)。実機とは無関係に**インタプリタの正しさ**を
 //! 外部の参照実装で検証する。
 //!
 //! 肝は **HAL を共有する**こと。`wasmicon-port` の `Hal` は
@@ -15,7 +15,7 @@ use wasmicon_host::hal::HostBoard;
 use wasmicon_port::Hal;
 use wasmtime::{Caller, Engine, Extern, FuncType, Linker, Module, Store, Val, ValType};
 
-/// AssemblyScript が import する `env.abort`（HANDOFF §6）。
+/// AssemblyScript が import する `env.abort`（docs/handoff.md §6）。
 const HOST_ENV_ABORT: u32 = 0xffff;
 
 /// ホスト関数の引数・戻り値の最大個数。
@@ -182,7 +182,7 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
             u32::from(desc.host_fn.index()),
         )?;
     }
-    // world app には無い例外的な import（HANDOFF §6）。
+    // world app には無い例外的な import（docs/handoff.md §6）。
     define(
         &mut linker,
         &engine,

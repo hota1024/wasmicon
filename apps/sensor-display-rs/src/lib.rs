@@ -177,7 +177,7 @@ fn format_row(label: u8, centi: i32, unit: u8, out: &mut [u8]) -> usize {
     n
 }
 
-/// `no_std` なので自前で用意する（HANDOFF §3 #4）。
+/// `no_std` なので自前で用意する（docs/handoff.md §3 #4）。
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

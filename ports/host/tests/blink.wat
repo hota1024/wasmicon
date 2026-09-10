@@ -1,6 +1,6 @@
 ;; Lチカの最小ゲスト。手書きの WAT。
 ;;
-;; HANDOFF §5 Phase 2 の完了条件は apps/blink-rs を動かすことだが、
+;; docs/handoff.md §5 Phase 2 の完了条件は apps/blink-rs を動かすことだが、
 ;; それは Phase 3 で作る。ここでは同じ host call 列を出す手書きの
 ;; モジュールでポートとトレースを先に検証する。
 (module

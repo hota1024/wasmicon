@@ -5,7 +5,7 @@
 レポート自身のコミットハッシュはここに書けないので、`git log --oneline -- docs/verification-report.md`
 で最初にこのファイルが入ったコミットを見ること。
 
-HANDOFF §5 Phase 6 の成果物。**何がどこまで検証されたか**と、**まだ検証されて
+docs/handoff.md §5 Phase 6 の成果物。**何がどこまで検証されたか**と、**まだ検証されて
 いないこと**を分けて書く。
 
 ---
@@ -68,7 +68,7 @@ wasmtime 45 で走らせ、トレースが完全一致する**ことを確認し
 | sensor-display | 短 | センサー無応答 |
 
 abi-spec §9 により `time` はトレースに出ないので、**全文一致がそのまま
-HANDOFF §2-10 の「`time` を除く全 host call と結果が一致」の定義**になる。
+docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」の定義**になる。
 `spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが
 同一」を意味する。
 

@@ -17,7 +17,7 @@ const NUM_GPIO: u32 = 30;
 /// 役割名 → GPIO 番号（abi-spec §8 の表）。
 ///
 /// `led` が外付けなのは、Pico W/WH のオンボード LED が CYW43439 側にあって
-/// RP2040 の GPIO では駆動できないため。**実機の配線は未確認**（HANDOFF §8）。
+/// RP2040 の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
 const ROLES: &[(&str, u32)] = &[("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("lcd-rst", 21)];
 
 /// SIO の FUNCSEL。ソフトウェア制御の GPIO。

@@ -11,7 +11,7 @@ edition = "2021"
 rust-version = "1.85"
 
 [features]
-# HANDOFF §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+# docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
 default = ["trace"]
 trace = []
 
@@ -20,7 +20,7 @@ wasmicon-core = { path = "../../runtime" }
 wasmicon-port = { path = "../common" }
 esp-hal = { version = "1.1", features = ["esp32s3", "unstable"] }
 # 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
-# panic handler は自前で持つ（HANDOFF §3 #4: ログを出して停止、再起動しない）。
+# panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
 
 [profile.release]
 opt-level = "z"

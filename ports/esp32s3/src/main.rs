@@ -5,7 +5,7 @@
 //! トレースは UART0 (GPIO43=TX, GPIO44=RX) 115200 8N1 に出す。
 //! DevKitC-1 では UART0 が USB シリアル変換に繋がっている。
 //!
-//! **実機で動作確認していない**（HANDOFF §8 の配線とシリアル接続が未確認）。
+//! **実機で動作確認していない**（docs/handoff.md §8 の配線とシリアル接続が未確認）。
 //! ビルドが通ることまでを確認した段階。
 //!
 //! ビルドには espup が入れる Xtensa の GCC が要る:
@@ -28,7 +28,7 @@ static GUEST: &[u8] =
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// ESP32-S3 は PSRAM 無しで SRAM 512 KB。線形メモリ 4 ページ（256 KB）が
-/// 収まる大きさにしてある（HANDOFF §5 Phase 4）。
+/// 収まる大きさにしてある（docs/handoff.md §5 Phase 4）。
 static mut ARENA: [u8; 300 * 1024] = [0; 300 * 1024];
 
 /// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
@@ -76,7 +76,7 @@ fn main() -> ! {
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
     if let Err(e) = run(&mut hal, arena_buf, scratch_buf) {
-        // HANDOFF §3 #4: ログを出して停止する。再起動はしない。
+        // docs/handoff.md §3 #4: ログを出して停止する。再起動はしない。
         let s = hal.board_mut().serial();
         s.write(b"wasmicon: ");
         s.write(e.reason().as_bytes());
@@ -113,7 +113,7 @@ fn run(
     invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])
 }
 
-/// HANDOFF §3 #4 は「ログを出して停止、再起動しない」だが、**理由は出せない**。
+/// docs/handoff.md §3 #4 は「ログを出して停止、再起動しない」だが、**理由は出せない**。
 ///
 /// シリアルはボードが持っていて panic handler からは届かないため、今は
 /// 停止するだけ。理由を出すには、シリアルのハンドルを panic handler から

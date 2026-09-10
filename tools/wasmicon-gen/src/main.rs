@@ -1,4 +1,4 @@
-//! `wit/` を読み、`docs/abi-spec.md` の規則で生成物を出力する（HANDOFF §5 Phase 1）。
+//! `wit/` を読み、`docs/abi-spec.md` の規則で生成物を出力する（docs/handoff.md §5 Phase 1）。
 //!
 //! 出力:
 //! - `runtime/src/generated.rs`

@@ -4,7 +4,7 @@
 //! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
 //! トレースは UART0 (GP0=TX, GP1=RX) 115200 8N1 に出す。
 //!
-//! **実機で動作確認していない**（HANDOFF §8 の配線とシリアル接続が未確認）。
+//! **実機で動作確認していない**（docs/handoff.md §8 の配線とシリアル接続が未確認）。
 //! ビルドが通ることまでを確認した段階。
 
 #![no_std]
@@ -38,7 +38,7 @@ static GUEST: &[u8] =
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// RP2040 の SRAM は 264 KB なので、線形メモリ 2 ページ（128 KB）が
-/// 収まる大きさにしてある（HANDOFF §5 Phase 4）。
+/// 収まる大きさにしてある（docs/handoff.md §5 Phase 4）。
 static mut ARENA: [u8; 160 * 1024] = [0; 160 * 1024];
 
 /// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
@@ -135,7 +135,7 @@ fn main() -> ! {
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
     if let Err(e) = run(&mut hal, arena_buf, scratch_buf) {
-        // HANDOFF §3 #4: ログを出して停止する。再起動はしない。
+        // docs/handoff.md §3 #4: ログを出して停止する。再起動はしない。
         let s = hal.board_mut().serial();
         s.write(b"wasmicon: ");
         s.write(e.reason().as_bytes());

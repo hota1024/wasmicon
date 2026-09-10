@@ -1,7 +1,7 @@
 # サンプルアプリ共通仕様
 
 `sensor-display-rs`（Rust）と `sensor-display-as`（AssemblyScript）は
-**同じ host call 列と同じピクセル出力**を出さなければならない（HANDOFF §5 Phase 5）。
+**同じ host call 列と同じピクセル出力**を出さなければならない（docs/handoff.md §5 Phase 5）。
 そのために描画の詳細をここで固定する。片方を変えたらもう片方も変える。
 
 検査は `ports/host/tests/apps.rs`。両者のトレースを突き合わせるので、
@@ -29,7 +29,7 @@ humidity_centi =         (10000 * raw_h) / 65535
 
 ### 例外: 浮動小数を 1 箇所だけ使う
 
-決定性検証の題材として、**温度バーの長さだけ** f32 で計算する（HANDOFF §5 Phase 5）。
+決定性検証の題材として、**温度バーの長さだけ** f32 で計算する（docs/handoff.md §5 Phase 5）。
 
 ```
 t      = f32(temp_centi) / 100.0

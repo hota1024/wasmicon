@@ -1,6 +1,6 @@
 //! `apps/` のゲストを host ポートで動かし、トレースを突き合わせる。
 //!
-//! HANDOFF §5 Phase 3 の完了条件:
+//! docs/handoff.md §5 Phase 3 の完了条件:
 //! 「blink-rs と blink-as の Wasm が対応機能セット内で、同じ GPIO トレースを出す」
 
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ fn build_rust_app(pkg: &str) -> Vec<u8> {
     std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
 }
 
-/// 対応機能セット（HANDOFF §2-7）に収まっているか。
+/// 対応機能セット（docs/handoff.md §2-7）に収まっているか。
 fn assert_within_feature_set(wasm: &[u8], label: &str) {
     let tmp = std::env::temp_dir().join(format!("wasmicon-{label}.wasm"));
     std::fs::write(&tmp, wasm).unwrap();
@@ -168,7 +168,7 @@ fn blink_as_runs_on_host() {
 /// Phase 3 の完了条件: Rust 版と AS 版が同じトレースを出す。
 ///
 /// abi-spec §9 により `time` はトレースに出ないので、**トレース全文の一致が
-/// そのまま HANDOFF §2-10 の「time を除く全 host call と結果が一致」**になる。
+/// そのまま docs/handoff.md §2-10 の「time を除く全 host call と結果が一致」**になる。
 #[test]
 fn blink_rs_and_blink_as_agree() {
     let rs = run(&build_rust_app("blink-rs"), "blink-rs");

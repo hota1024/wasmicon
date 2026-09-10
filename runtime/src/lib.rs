@@ -1,6 +1,6 @@
 //! Wasmicon の Core Wasm インタプリタ。
 //!
-//! 規約は `CLAUDE.md` と `HANDOFF.md` §5 Phase 2 が正。
+//! 規約は `CLAUDE.md` と `docs/handoff.md` §5 Phase 2 が正。
 //!
 //! - `no_std`、依存クレートゼロ、`alloc` 不使用。arena はポート層から注入する
 //! - Wasm の算術は wrapping。`wrapping_*` / `rotate_*` / `checked_*` を明示的に使う

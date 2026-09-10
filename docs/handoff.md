@@ -1,11 +1,21 @@
-# Wasmicon 引き継ぎドキュメント（Claude Code 向け）
+# Wasmicon 引き継ぎドキュメント（記録）
 
-作成日: 2026-09-10
-作成者: Claude (Cowork セッション) / オーナー: hota
-同梱: `wit/`（WIT 7 ファイル）, `docs/abi-spec.md`, `docs/design-notes.md`, `tools/wit2sig.py`, `CLAUDE.md`
-更新: 2026-09-10 — §3 の #1（ランタイム実装言語）と #7（実装分担）をオーナーが決定。ランタイムは **Rust `no_std`**。§2-11 / §2-12 に確定事項として移動
+作成日: 2026-09-10 / 作成者: Claude (Cowork セッション) / オーナー: hota
 
-このドキュメントは、設計フェーズを終えた Wasmicon プロジェクトを実装フェーズへ引き継ぐためのものです。**ここに書いてある決定事項は覆さないでください。** 変更が必要だと判断したら、変更せずに理由を書いてオーナーに確認してください。
+**引き継ぎとしての役目は終えた。** ここは「何をどう決めて、どう作ったか」の記録として残す。
+コードのコメント 72 箇所がこの文書の節番号を参照しているので、**節番号は変えない**。
+
+いま知りたいことによって、読む先が違う:
+
+| 知りたいこと | 見る場所 |
+|---|---|
+| このプロジェクトが何か、どうビルドするか | `README.md` |
+| **残っている作業** | `docs/TODO.md` |
+| 何がどこまで検証されたか | `docs/verification-report.md` |
+| WIT → Core Wasm の lowering 規則 | `docs/abi-spec.md`（**この仕様が正**） |
+| なぜその技術を選んだか | `docs/design-notes.md` |
+| **変えてはいけない決定事項** | 本書 §2 |
+| 実装中に踏みそうな穴 | 本書 §6 |
 
 ---
 
@@ -20,31 +30,10 @@
 
 ---
 
-## 1. 現在の状態
+## 1. 現在の状態 → `README.md` と `docs/TODO.md` へ移動
 
-| 成果物 | 状態 | 場所 |
-|---|---|---|
-| 設計メモ（背景・方針・ロードマップ） | 完了 | `docs/design-notes.md` |
-| 検証レポート | 完了（Phase 6）。実機部分は未達と明記 | `docs/verification-report.md` |
-| ABI 仕様書 v0.1 | 完了（draft）。§10 の未決事項は 1 が決定済み、2〜5 が残り | `docs/abi-spec.md` |
-| WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
-| シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
-| ランタイム | 完了（Phase 2）。spec テストのコア 74 ファイルが通る | `runtime/` |
-| ジェネレータ `wasmicon-gen` | 完了（Phase 1）。3 出力を生成、abi-spec §7 との一致をテストで検査 | `tools/wasmicon-gen/` |
-| バインディング | 完了（Phase 3）。Rust は `Drop` 付き安全ラッパ、AS は明示 `close()` | `bindings/rust/`, `bindings/assemblyscript/` |
-| ポート層 | host は完了。rp2040 / esp32s3 はビルドまで（実機未確認） | `ports/common/`, `ports/host/`, `ports/rp2040/`, `ports/esp32s3/` |
-| サンプルアプリ | `blink-rs` / `blink-as` / `sensor-display-rs` / `sensor-display-as` 完了 | `apps/` |
-
-**全 6 フェーズのソフトウェア側が完了**（2026-09-10）。残っているのは実機が要る部分だけ:
-
-- `ports/rp2040` / `ports/esp32s3` の I2C / SPI 実装（現在は `unsupported` を返す）
-- abi-spec §8 の配線（役割名 → ピン番号）のオーナー確認
-- 実機に焼いてトレースを突き合わせる（Phase 4 / 5 / 6 の完了条件）
-- ~~CI は一度も実行されていない~~ → **2026-09-10 に 4 ジョブすべて green**（`v2` ブランチ）
-- リモートは `https://github.com/hota1024/wasmicon`。**作業ブランチは `v2`**。`main` は旧実装（wasm decoder / llvm 試行）でそのまま残してある
-
-**次に読むもの: `docs/verification-report.md`。** 何がどこまで検証されたかと、
-まだ検証されていないことを分けて書いてある。
+状態は変わり続けるので、この文書に置くと必ず古くなる。
+現在地は `README.md`、残作業は `docs/TODO.md` が正。
 
 ---
 
@@ -67,7 +56,10 @@
 
 ## 3. 未決事項と、Claude Code が採用してよいデフォルト
 
-オーナーが未回答の項目。**下記デフォルトで進めてよい**が、着手時に「このデフォルトで進めます」と明示し、後から差し替え可能な構造にすること。
+**この表は決定の記録**。着手当時に未回答だった項目と、採用したデフォルトを残してある。
+実装はすべてこのデフォルトで動いている。
+
+**まだオーナーの確定を待っている項目は `docs/TODO.md` §2 に集約した。** ここには追記しない。
 
 | # | 項目 | デフォルト | 根拠 |
 |---|---|---|---|
@@ -78,7 +70,7 @@
 | 5 | `log` の UTF-8 検証 | しない | 仕様通り |
 | 6 | `spi.transfer` | v0.1 に残す | 実装コストが低い |
 | 7 | コアの実装分担 | **決定済み → §2-12（フルスクラッチ、Claude Code が書く）** | オーナー判断（2026-09-10） |
-| 8 | **ポート層の実装方式**（Rust 化に伴い新規） | **全て Rust。host = `std`、rp2040 = `rp-hal` + `cortex-m-rt`、esp32s3 = `esp-hal`（`no_std`）。ESP-IDF / Pico SDK は使わない** | コアが Rust である以上 Xtensa のフォークツールチェーンは必須で、C SDK を混ぜても軽くならない。単一言語・単一ツールチェーンの方が軽く安全。**Phase 4 着手前にオーナー確認**（HANDOFF §8） |
+| 8 | **ポート層の実装方式**（Rust 化に伴い新規） | **全て Rust。host = `std`、rp2040 = `rp-hal` + `cortex-m-rt`、esp32s3 = `esp-hal`（`no_std`）。ESP-IDF / Pico SDK は使わない** | コアが Rust である以上 Xtensa のフォークツールチェーンは必須で、C SDK を混ぜても軽くならない。単一言語・単一ツールチェーンの方が軽く安全。**2026-09-10 に承認済み**（本書 §8）。3 ポートとも実装済み |
 | 9 | **Cargo workspace の分割**（Rust 化に伴い新規） | **承認済み（2026-09-10）**。ターゲットごとに別 workspace。root = `runtime` + `tools/wasmicon-gen` + `ports/host`。guest workspace の root は `apps`（`bindings/rust` を members に含む）。`ports/rp2040` / `ports/esp32s3` は Phase 4 で作る。`.cargo/config.toml` は **カレントディレクトリ基準**で探索されるので、ゲストのビルドは `cd apps && cargo build --release` で行う | 単一 workspace ではターゲット・profile・toolchain が衝突する |
 
 デフォルト 2 の採用に伴い、`wit/board.wit` を追加し `world app` に `import board;` を足し、`abi-spec.md` §7 / §8 / §10 を更新した。
@@ -88,39 +80,9 @@
 
 ---
 
-## 4. リポジトリ構成（提案）
+## 4. リポジトリ構成 → `README.md` へ移動
 
-```
-wasmicon/
-├── CLAUDE.md                  # Claude Code 向けの短い規約（同梱）
-├── HANDOFF.md                 # 本書
-├── Cargo.toml                 # workspace: runtime, tools/wasmicon-gen, ports/host
-├── rust-toolchain.toml        # stable
-├── docs/
-│   ├── design-notes.md
-│   └── abi-spec.md
-├── wit/                       # 唯一の真実
-│   ├── types.wit gpio.wit i2c.wit spi.wit time.wit log.wit world.wit
-├── tools/
-│   ├── wit2sig.py             # 種。ジェネレータの回帰テストの基準として残す
-│   └── wasmicon-gen/          # Rust (wit-parser) 製ジェネレータ
-├── runtime/                   # wasmicon-core: no_std, 依存クレートゼロ, alloc 不使用
-│   ├── src/                   # lib.rs decode.rs validate.rs interp.rs module.rs generated.rs(生成)
-│   └── tests/                 # spec テストランナー（dev-dependencies は可）
-├── ports/
-│   ├── host/                  # PC 用。std。mock HAL + trace。CI はここで回す
-│   ├── esp32s3/               # 別 workspace。esp-hal、toolchain = esp (espup)
-│   └── rp2040/                # 別 workspace。rp-hal + cortex-m-rt、thumbv6m-none-eabi
-├── bindings/
-│   ├── rust/                  # wasmicon-hal (no_std)。生成物 + 手書きの安全ラッパ
-│   └── assemblyscript/        # @wasmicon/hal パッケージ
-├── apps/                      # guest workspace の root。Cargo.toml / .cargo/config.toml / rust-toolchain.toml
-│   ├── blink-rs/ blink-as/
-│   └── sensor-display-rs/ sensor-display-as/
-└── verify/                    # トレース diff スクリプト、記録済み I2C 応答
-```
-
-`ports/rp2040`、`ports/esp32s3`、guest（`bindings/rust` + `apps/*-rs`）は root workspace に入れず、`Cargo.toml` の `exclude` に列挙する（§3 #9）。
+構成は変わりうるので README を正とする。別 workspace に分けた理由は §3 #9。
 
 ---
 
@@ -231,34 +193,21 @@ wasmicon/
 
 ---
 
-## 7. コマンド早見
+## 7. コマンド早見 → `README.md` へ移動
 
-```bash
-# WIT 検証
-wasm-tools component wit wit/
-# 生成物の更新と検査（Phase 1）
-cargo run -p wasmicon-gen                # 3 ファイルを再生成
-cargo run -p wasmicon-gen -- --check     # 生成物が wit/ と一致するか
-sh tools/check-sigs.sh                   # 参照実装 tools/wit2sig.py と突き合わせ
-# Rust の常用チェック
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-# spec テスト変換（Phase 2）
-wasm-tools json-from-wast <file>.wast -o out/<file>.json   # 旧 wast2json 相当
-# ゲスト Wasm の機能検査（Phase 3）
-wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
-# ターゲット準備（Phase 4）
-rustup target add thumbv6m-none-eabi   # RP2040
-espup install                          # ESP32-S3 (Xtensa フォーク)
-```
+ビルドと検証のコマンドは README を正とする。この文書にしか無かったものは README に移した。
 
 ---
 
-## 8. オーナー（hota）への確認が必要なタイミング
+## 8. オーナーへの確認が必要なタイミング（記録）
 
-- ~~Phase 1 着手前: §3 のデフォルト #1（実装言語）と #7（分担）の承認~~ → **2026-09-10 に回答済み。§2-11 / §2-12**
-- ~~Phase 1 着手前: §3 #9（Cargo workspace の分割）~~ → **2026-09-10 に承認済み**
-- Phase 4 着手前: §3 #8（ポート層を全 Rust にする）の承認、実機の配線（abi-spec §8 の表）とシリアルの接続方法
-- Phase 5: 手元にある SHT31 / ILI9341 モジュールの型番（ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 前提）
+フェーズを進めるうえでオーナーの回答が要った点。**未回答のまま残っているものは
+`docs/TODO.md` §1.1 に集約した。** ここには追記しない。
+
+- ~~Phase 1 着手前: §3 のデフォルト #1（実装言語）と #7（分担）の承認~~ → 2026-09-10 に回答済み。§2-11 / §2-12
+- ~~Phase 1 着手前: §3 #9（Cargo workspace の分割）~~ → 2026-09-10 に承認済み
+- ~~Phase 4 着手前: §3 #8（ポート層を全 Rust にする）の承認~~ → 「Phase 4 へ進んで」の指示をもって承認とみなし、3 ポートとも実装済み
+- 実機の配線（abi-spec §8）、シリアルの接続方法、SHT31 / ILI9341 の型番 → **未回答**（`docs/TODO.md` §1.1）
 
 ---
 

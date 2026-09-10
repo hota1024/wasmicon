@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-# 依存クレートを追加しない（HANDOFF §2-11）。コア本体は依存ゼロを保つ。
+# 依存クレートを追加しない（docs/handoff.md §2-11）。コア本体は依存ゼロを保つ。
 [dependencies]
 
 # spec テストランナー（runtime/tests/）だけは依存を持ってよい。

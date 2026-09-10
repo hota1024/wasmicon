@@ -341,7 +341,7 @@ pub mod log {
 
 /// ボード固有のピン割り当てを役割名で引く。
 /// 同一の Wasm バイナリを ESP32-S3 と RP2040 の両方で動かすために必要
-/// （HANDOFF §3 #2、abi-spec §8）。
+/// （docs/handoff.md §3 #2、abi-spec §8）。
 pub mod board {
     #[link(wasm_import_module = "wasmicon:hal/board@0.1.0")]
     unsafe extern "C" {

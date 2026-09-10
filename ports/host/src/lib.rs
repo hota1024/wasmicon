@@ -1,6 +1,6 @@
 //! PC 用ポート。`.wasm` を読み込み、mock HAL で実行する。
 //!
-//! HANDOFF §5 Phase 2 の完了条件（host で動かしてトレースが出る）はここで検証する。
+//! docs/handoff.md §5 Phase 2 の完了条件（host で動かしてトレースが出る）はここで検証する。
 
 pub mod hal;
 

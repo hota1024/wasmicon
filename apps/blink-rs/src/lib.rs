@@ -1,7 +1,7 @@
 //! Lチカ。Wasmicon の最小ゲスト。
 //!
 //! LED のピン番号は `board.pin-by-role` で引くので、同一の `.wasm` が
-//! ESP32-S3 と RP2040 の両方で動く（abi-spec §8、HANDOFF §3 #2）。
+//! ESP32-S3 と RP2040 の両方で動く（abi-spec §8、docs/handoff.md §3 #2）。
 
 #![no_std]
 
@@ -47,7 +47,7 @@ pub extern "C" fn run() {
 }
 
 /// `no_std` なので自前で用意する。
-/// トラップに落とし、ホストにログを出させて停止させる（HANDOFF §3 #4）。
+/// トラップに落とし、ホストにログを出させて停止させる（docs/handoff.md §3 #4）。
 ///
 /// `cfg(not(test))` なのは、`cargo clippy --all-targets` がテストハーネスを
 /// 組むときに std の panic handler と衝突するため。

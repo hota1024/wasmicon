@@ -1,6 +1,6 @@
 //! 自作インタプリタと wasmtime が同じトレースを出すことを確かめる。
 //!
-//! HANDOFF §5 Phase 6 の (3)。ゲストは `apps/` の 4 つ全部。
+//! docs/handoff.md §5 Phase 6 の (3)。ゲストは `apps/` の 4 つ全部。
 //! 実機とは無関係に、インタプリタの正しさを外部の参照実装で検証する。
 
 use std::path::{Path, PathBuf};
