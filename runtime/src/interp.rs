@@ -610,7 +610,8 @@ fn run<'m>(
             0x40 => {
                 cur.pc += 1; // 0x00
                 let d = pop!() as u32;
-                let r = mem!().grow(d).map_or(-1i32 as u32, |old| old);
+                // 失敗したら -1（abi-spec §6.2）。
+                let r = mem!().grow(d).unwrap_or(-1i32 as u32);
                 push!(u64::from(r));
             }
 
