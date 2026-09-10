@@ -30,6 +30,11 @@ const SPI_HZ: u32 = 24000000;
 const LINE = new Uint8Array(MAX_TEXT);
 
 /// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+///
+/// AssemblyScript には `Drop` が無いので、出口を 1 箇所にまとめて明示的に
+/// `close()` を呼ぶ。順序は `apps/README.md` §4 が定める
+/// `i2c` → `spi` → `rst` → `dc` → `cs`。開けていないものは飛ばす。
+/// Rust 版の `Drop`（宣言の逆順）と同じ順になる。
 export function run(): void {
   log.info("sensor-display start");
 
@@ -40,53 +45,75 @@ export function run(): void {
     log.error("role not found");
     return;
   }
-  const cs = Pin.open(<u32>csIndex, PinMode.Output);
-  const dc = Pin.open(<u32>dcIndex, PinMode.Output);
-  const rst = Pin.open(<u32>rstIndex, PinMode.Output);
-  if (cs == null || dc == null || rst == null) {
-    log.error("gpio open failed");
-    return;
-  }
-  const spi = SpiBus.open(0, SPI_HZ, SpiMode.Mode0);
-  if (spi == null) {
-    log.error("spi open failed");
-    return;
-  }
-  const i2c = I2cBus.open(0, Speed.Standard);
-  if (i2c == null) {
-    log.error("i2c open failed");
-    return;
+
+  // 1 本ずつ開ける。まとめて開けると失敗しても全部呼んでしまい、
+  // Rust 版と host call 列が食い違う。
+  let cs: Pin | null = null;
+  let dc: Pin | null = null;
+  let rst: Pin | null = null;
+  let spi: SpiBus | null = null;
+  let i2c: I2cBus | null = null;
+  let err: string | null = null;
+
+  cs = Pin.open(<u32>csIndex, PinMode.Output);
+  if (cs == null) {
+    err = "gpio open failed";
+  } else {
+    dc = Pin.open(<u32>dcIndex, PinMode.Output);
+    if (dc == null) {
+      err = "gpio open failed";
+    } else {
+      rst = Pin.open(<u32>rstIndex, PinMode.Output);
+      if (rst == null) {
+        err = "gpio open failed";
+      } else {
+        spi = SpiBus.open(0, SPI_HZ, SpiMode.Mode0);
+        if (spi == null) {
+          err = "spi open failed";
+        } else {
+          i2c = I2cBus.open(0, Speed.Standard);
+          if (i2c == null) {
+            err = "i2c open failed";
+          } else {
+            err = draw(spi, cs, dc, rst, i2c);
+          }
+        }
+      }
+    }
   }
 
+  // Rust 版は log してから Drop する。順序を合わせる。
+  if (err != null) log.error(err);
+
+  if (i2c != null) i2c.close();
+  if (spi != null) spi.close();
+  if (rst != null) rst.close();
+  if (dc != null) dc.close();
+  if (cs != null) cs.close();
+}
+
+/// 初期化・センサー読み・描画。失敗したらメッセージを返す。
+function draw(spi: SpiBus, cs: Pin, dc: Pin, rst: Pin, i2c: I2cBus): string | null {
   const display = new Display(spi, cs, dc);
-  display.init(rst);
-  display.fillRect(0, 0, WIDTH, HEIGHT, BG);
+  if (display.init(rst) != 0) return "display failed";
+  if (display.fillRect(0, 0, WIDTH, HEIGHT, BG) != 0) return "display failed";
 
   const reading = read(i2c);
   if (!reading.ok) {
-    log.error(reading.crcFailed ? "sensor crc failed" : "sensor read failed");
-    return;
+    return reading.crcFailed ? "sensor crc failed" : "sensor read failed";
   }
 
   const temp = tempCenti(reading.rawT);
   const humidity = humidityCenti(reading.rawH);
 
   let n = formatRow(0x54, temp, 0x43); // 'T' ... 'C'
-  display.drawText(8, 40, LINE, n, FG, BG);
+  if (display.drawText(8, 40, LINE, n, FG, BG) != 0) return "display failed";
   n = formatRow(0x48, humidity, 0x25); // 'H' ... '%'
-  display.drawText(8, 60, LINE, n, FG, BG);
+  if (display.drawText(8, 60, LINE, n, FG, BG) != 0) return "display failed";
 
   const bar = barPx(temp);
-  if (bar > 0) {
-    display.fillRect(8, 80, <u16>bar, 8, BAR);
-  }
-
-  // AssemblyScript には Drop が無いので明示的に解放する。
-  i2c.close();
-  spi.close();
-  cs.close();
-  dc.close();
-  rst.close();
+  if (bar > 0 && display.fillRect(8, 80, <u16>bar, 8, BAR) != 0) return "display failed";
+  return null;
 }
 
 /// 温度バーの長さ。**このアプリで唯一 f32 を使う場所**（apps/README.md §1）。

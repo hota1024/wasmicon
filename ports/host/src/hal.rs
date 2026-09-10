@@ -37,6 +37,9 @@ pub struct HostBoard {
     /// 読み出しに順に返す応答。空なら `Nack`。
     i2c_replay: Vec<Vec<u8>>,
     replay_pos: usize,
+    /// SPI を `unsupported` にする。実機ポートの現状（Phase 5 未実装）を模して
+    /// 失敗経路をテストするためのもの。
+    spi_unsupported: bool,
 }
 
 impl HostBoard {
@@ -48,7 +51,15 @@ impl HostBoard {
             trace: String::new(),
             i2c_replay: Vec::new(),
             replay_pos: 0,
+            spi_unsupported: false,
         }
+    }
+
+    /// SPI を `unsupported` にする（失敗経路のテスト用）。
+    #[must_use]
+    pub fn with_spi_unsupported(mut self, yes: bool) -> Self {
+        self.spi_unsupported = yes;
+        self
     }
 
     /// 記録済みの I2C 応答を設定する。
@@ -139,10 +150,11 @@ impl Board for HostBoard {
         let Some(resp) = self.i2c_replay.get(self.replay_pos) else {
             return Err(ErrorCode::Nack);
         };
-        self.replay_pos += 1;
+        // 長さが足りないときは消費しない。再試行しても同じ失敗になるようにする。
         if resp.len() < buf.len() {
             return Err(ErrorCode::Io);
         }
+        self.replay_pos += 1;
         let n = buf.len();
         buf.copy_from_slice(&resp[..n]);
         Ok(n)
@@ -161,10 +173,16 @@ impl Board for HostBoard {
     fn i2c_close(&mut self, _index: u32) {}
 
     fn spi_open(&mut self, _index: u32, _frequency_hz: u32, _mode: SpiMode) -> BoardResult<()> {
+        if self.spi_unsupported {
+            return Err(ErrorCode::Unsupported);
+        }
         Ok(())
     }
 
     fn spi_write(&mut self, _index: u32, _data: &[u8]) -> BoardResult<()> {
+        if self.spi_unsupported {
+            return Err(ErrorCode::Unsupported);
+        }
         Ok(())
     }
 

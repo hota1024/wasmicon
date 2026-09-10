@@ -54,11 +54,29 @@ pub fn load_i2c_replay(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> 
 /// # Errors
 /// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
 pub fn run_wasm(wasm: &[u8], trace: bool) -> Result<Outcome, Error> {
-    let replay = std::env::var("WASMICON_I2C_REPLAY")
-        .ok()
-        .and_then(|p| load_i2c_replay(std::path::Path::new(&p)).ok())
-        .unwrap_or_default();
+    // 設定ミスを黙って「センサー無し」に落とさない。読めなければ理由を出す。
+    let replay = match std::env::var("WASMICON_I2C_REPLAY") {
+        Err(_) => Vec::new(),
+        Ok(path) => match load_i2c_replay(std::path::Path::new(&path)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("wasmicon: WASMICON_I2C_REPLAY={path} を読めない: {e}");
+                Vec::new()
+            }
+        },
+    };
     run_wasm_with(wasm, trace, replay)
+}
+
+/// 実行時の設定。
+#[derive(Default)]
+pub struct Options {
+    /// トレースを溜めるか。
+    pub trace: bool,
+    /// I2C の読み出しに順に返す応答。空なら `Nack`。
+    pub i2c_replay: Vec<Vec<u8>>,
+    /// SPI を `unsupported` にする。実機ポートの現状を模した失敗経路のテスト用。
+    pub spi_unsupported: bool,
 }
 
 /// 記録済みの I2C 応答を明示して実行する。
@@ -66,6 +84,22 @@ pub fn run_wasm(wasm: &[u8], trace: bool) -> Result<Outcome, Error> {
 /// # Errors
 /// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
 pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Result<Outcome, Error> {
+    run_wasm_opts(
+        wasm,
+        Options {
+            trace,
+            i2c_replay,
+            spi_unsupported: false,
+        },
+    )
+}
+
+/// 設定を明示して実行する。
+///
+/// # Errors
+/// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
+pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
+    let (trace, i2c_replay, spi_unsupported) = (opts.trace, opts.i2c_replay, opts.spi_unsupported);
     let mut buf = vec![0u8; ARENA];
     let mut scratch_buf = vec![0u8; SCRATCH];
     let mut arena = Arena::new(&mut buf);
@@ -76,7 +110,12 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
     let v = validate::validate(&m, &cfg, &mut arena, &mut scratch)?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
     let mut exec = Exec::new(&cfg, &mut arena)?;
-    let mut hal = Hal::new(hal::HostBoard::new().with_i2c_replay(i2c_replay), trace);
+    let mut hal = Hal::new(
+        hal::HostBoard::new()
+            .with_i2c_replay(i2c_replay)
+            .with_spi_unsupported(spi_unsupported),
+        trace,
+    );
     let mut inst = instantiate(m, v, &cfg, &mut arena, &mut hal)?;
 
     if let Some(start) = inst.module.start {

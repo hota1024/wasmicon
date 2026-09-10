@@ -47,6 +47,25 @@ fn assert_within_feature_set(wasm: &[u8], label: &str) {
     assert!(ok.success(), "{label} が対応機能セット外の命令を含む");
 }
 
+/// 失敗した host call が無いことを確かめる。
+///
+/// ステータスは discriminant + 1 なので、`< 1` だけを見ると
+/// `invalid-argument` しか捕まえられない（`busy` は 3、`nack` は 5）。
+fn assert_no_host_errors(trace: &str, label: &str) {
+    for (i, line) in trace.lines().enumerate() {
+        let Some(rest) = line.strip_prefix("< ") else {
+            continue;
+        };
+        let code = rest.split(' ').next().unwrap_or("0");
+        assert_eq!(
+            code,
+            "0",
+            "{label}: {} 行目の host call が失敗している: {line}",
+            i + 1
+        );
+    }
+}
+
 fn run(wasm: &[u8], label: &str) -> String {
     match wasmicon_host::run_wasm(wasm, true) {
         Ok(out) => out.trace,
@@ -203,10 +222,7 @@ fn sensor_display_rs_runs_on_host() {
             > 240,
         "背景の塗りつぶしが行単位で送られていない"
     );
-    assert!(
-        !trace.contains("\n< 1"),
-        "失敗した host call がある:\n{trace}"
-    );
+    assert_no_host_errors(&trace, "sensor-display-rs");
 }
 
 #[test]
@@ -218,10 +234,7 @@ fn sensor_display_as_runs_on_host() {
         trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
         "SHT31 の読み出しが違う:\n{trace}"
     );
-    assert!(
-        !trace.contains("\n< 1"),
-        "失敗した host call がある:\n{trace}"
-    );
+    assert_no_host_errors(&trace, "sensor-display-as");
 }
 
 /// Phase 5 の完了条件の中核: Rust 版と AS 版が同じ描画をする。
@@ -240,6 +253,64 @@ fn sensor_display_rs_and_as_agree() {
         rs.lines().count() > 1000,
         "トレースが短すぎる（{} 行）",
         rs.lines().count()
+    );
+    assert_traces_equal(&rs, &as_);
+}
+
+/// 失敗経路でも Rust 版と AS 版が一致すること。
+///
+/// Phase 5 の一致検査はハッピーパスしか通らないが、実機では
+/// `ports/rp2040` / `ports/esp32s3` の SPI がまだ `unsupported` を返す。
+/// そこで両言語が食い違うと、実機に持って行った瞬間に比較が意味を失う。
+#[test]
+fn sensor_display_agrees_when_spi_is_unsupported() {
+    let opts = || wasmicon_host::Options {
+        trace: true,
+        i2c_replay: sht31_replay(),
+        spi_unsupported: true,
+    };
+    let go = |wasm: &[u8], label: &str| -> String {
+        match wasmicon_host::run_wasm_opts(wasm, opts()) {
+            Ok(out) => out.trace,
+            Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+        }
+    };
+    let rs = go(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
+    let as_ = go(
+        &build_as_app("sensor-display-as", "sensor_display_as.wasm"),
+        "sensor-display-as",
+    );
+
+    // SPI が開けないので、どちらも同じところで諦めるはず。
+    assert!(
+        rs.contains(r#"log(0, "spi open failed")"#),
+        "Rust 版が spi open failed を出していない:\n{rs}"
+    );
+    assert!(
+        rs.lines().count() < 40,
+        "早期に諦めていない（{} 行）:\n{rs}",
+        rs.lines().count()
+    );
+    assert_traces_equal(&rs, &as_);
+}
+
+/// センサーが応答しないときも一致すること（記録済み応答を渡さない）。
+#[test]
+fn sensor_display_agrees_when_sensor_is_silent() {
+    let go = |wasm: &[u8], label: &str| -> String {
+        match wasmicon_host::run_wasm_with(wasm, true, Vec::new()) {
+            Ok(out) => out.trace,
+            Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+        }
+    };
+    let rs = go(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
+    let as_ = go(
+        &build_as_app("sensor-display-as", "sensor_display_as.wasm"),
+        "sensor-display-as",
+    );
+    assert!(
+        rs.contains(r#"log(0, "sensor read failed")"#),
+        "Rust 版が sensor read failed を出していない"
     );
     assert_traces_equal(&rs, &as_);
 }

@@ -100,6 +100,10 @@ impl<'a> Display<'a> {
         if w == 0 || h == 0 {
             return Ok(());
         }
+        // 画面外は描かない（`apps/README.md` §2）。row バッファの範囲外書き込みも防ぐ。
+        if x + w > WIDTH || y + h > HEIGHT {
+            return Err(ErrorCode::InvalidArgument);
+        }
         self.window(x, y, w, h)?;
 
         let mut row = [0u8; ROW_BYTES];
@@ -126,15 +130,18 @@ impl<'a> Display<'a> {
     /// # Errors
     /// GPIO か SPI が失敗したとき。
     pub fn draw_text(&self, x: u16, y: u16, text: &[u8], fg: u16, bg: u16) -> Result<()> {
-        let len = if text.len() > MAX_TEXT {
-            MAX_TEXT
-        } else {
-            text.len()
-        };
-        if len == 0 {
+        if text.is_empty() {
             return Ok(());
         }
+        // 黙って切り詰めない（`apps/README.md` §2）。
+        if text.len() > MAX_TEXT {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let len = text.len();
         let w = (len * 8) as u16;
+        if x + w > WIDTH || y + 8 > HEIGHT {
+            return Err(ErrorCode::InvalidArgument);
+        }
         self.window(x, y, w, 8)?;
 
         // 8 行ぶんをまとめて組み立てる。行の中は文字ごとに 8 px。

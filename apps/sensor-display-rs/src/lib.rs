@@ -30,24 +30,52 @@ const BAR: u16 = 0xF800;
 const SPI_HZ: u32 = 24_000_000;
 
 /// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+///
+/// ハンドルは全て 1 つのスコープに置き、宣言順を `cs` → `dc` → `rst` → `spi` →
+/// `i2c` にしてある。`Drop` は宣言の逆順に走るので、どの経路で抜けても
+/// `apps/README.md` §4 が定める解放順（i2c → spi → rst → dc → cs）になる。
 #[unsafe(no_mangle)]
 pub extern "C" fn run() {
     log::info("sensor-display start");
-    let Some((display_pins, spi, i2c)) = open_all() else {
+
+    let (Ok(cs_i), Ok(dc_i), Ok(rst_i)) = (
+        board::pin_by_role("lcd-cs"),
+        board::pin_by_role("lcd-dc"),
+        board::pin_by_role("lcd-rst"),
+    ) else {
+        log::error("role not found");
         return;
     };
-    let (cs, dc, rst) = &display_pins;
-    let display = Display::new(&spi, cs, dc);
-
-    if display.init(rst).is_err() {
+    // 1 本ずつ開ける。まとめて開けると失敗しても全部呼んでしまい、
+    // AssemblyScript 版と host call 列が食い違う。
+    let Ok(cs) = Pin::open(cs_i, PinMode::Output) else {
+        log::error("gpio open failed");
+        return;
+    };
+    let Ok(dc) = Pin::open(dc_i, PinMode::Output) else {
+        log::error("gpio open failed");
+        return;
+    };
+    let Ok(rst) = Pin::open(rst_i, PinMode::Output) else {
+        log::error("gpio open failed");
+        return;
+    };
+    let Ok(spi) = SpiBus::open(0, SPI_HZ, Mode::Mode0) else {
         log::error("spi open failed");
         return;
-    }
-    if display
-        .fill_rect(0, 0, ili9341::WIDTH, ili9341::HEIGHT, BG)
-        .is_err()
+    };
+    let Ok(i2c) = I2cBus::open(0, Speed::Standard) else {
+        log::error("i2c open failed");
+        return;
+    };
+
+    let display = Display::new(&spi, &cs, &dc);
+    if display.init(&rst).is_err()
+        || display
+            .fill_rect(0, 0, ili9341::WIDTH, ili9341::HEIGHT, BG)
+            .is_err()
     {
-        log::error("spi open failed");
+        log::error("display failed");
         return;
     }
 
@@ -68,52 +96,30 @@ pub extern "C" fn run() {
 
     let mut buf = [0u8; ili9341::MAX_TEXT];
     let n = format_row(b'T', temp, b'C', &mut buf);
-    let _ = display.draw_text(8, 40, &buf[..n], FG, BG);
+    if display.draw_text(8, 40, &buf[..n], FG, BG).is_err() {
+        log::error("display failed");
+        return;
+    }
     let n = format_row(b'H', humidity, b'%', &mut buf);
-    let _ = display.draw_text(8, 60, &buf[..n], FG, BG);
+    if display.draw_text(8, 60, &buf[..n], FG, BG).is_err() {
+        log::error("display failed");
+        return;
+    }
 
     let bar = bar_px(temp);
-    if bar > 0 {
-        let _ = display.fill_rect(8, 80, bar as u16, 8, BAR);
+    if bar > 0 && display.fill_rect(8, 80, bar as u16, 8, BAR).is_err() {
+        log::error("display failed");
     }
-}
-
-/// 役割名でピンを引き、周辺機器を開ける。
-fn open_all() -> Option<((Pin, Pin, Pin), SpiBus, I2cBus)> {
-    let (Ok(cs_i), Ok(dc_i), Ok(rst_i)) = (
-        board::pin_by_role("lcd-cs"),
-        board::pin_by_role("lcd-dc"),
-        board::pin_by_role("lcd-rst"),
-    ) else {
-        log::error("role not found");
-        return None;
-    };
-    let (Ok(cs), Ok(dc), Ok(rst)) = (
-        Pin::open(cs_i, PinMode::Output),
-        Pin::open(dc_i, PinMode::Output),
-        Pin::open(rst_i, PinMode::Output),
-    ) else {
-        log::error("gpio open failed");
-        return None;
-    };
-    let Ok(spi) = SpiBus::open(0, SPI_HZ, Mode::Mode0) else {
-        log::error("spi open failed");
-        return None;
-    };
-    let Ok(i2c) = I2cBus::open(0, Speed::Standard) else {
-        log::error("i2c open failed");
-        return None;
-    };
-    Some(((cs, dc, rst), spi, i2c))
 }
 
 /// 温度バーの長さ。**このアプリで唯一 f32 を使う場所**（`apps/README.md` §1）。
 ///
 /// クランプは f32 のまま行う。範囲外のまま `i32` に落とすと、Rust の飽和変換と
 /// AssemblyScript のトラップ変換で挙動が分かれる。
-// clippy は `f32::clamp` を勧めるが、AssemblyScript 版と**同じ命令列**にしたい。
-// `clamp` は `f32.min` / `f32.max` に落ちることがあり、AS 側の比較 + 分岐とは
-// 別の命令になる。決定性検証の題材なので構造を揃えておく。
+///
+/// clippy は `f32::clamp` を勧めるが、AssemblyScript 版と**同じ命令列**にしたい。
+/// `clamp` は `f32.min` / `f32.max` に落ちることがあり、AS 側の比較 + 分岐とは
+/// 別の命令になる。決定性検証の題材なので構造を揃えておく。
 #[allow(clippy::manual_clamp)]
 fn bar_px(temp_centi: i32) -> i32 {
     let t = temp_centi as f32 / 100.0;
@@ -127,7 +133,7 @@ fn bar_px(temp_centi: i32) -> i32 {
     b as i32
 }
 
-/// `T 23.45C` の形に整形する。書けた長さを返す。
+/// `T 23.44C` の形に整形する。書けた長さを返す。
 fn format_row(label: u8, centi: i32, unit: u8, out: &mut [u8]) -> usize {
     let mut n = 0;
     let put = |b: u8, out: &mut [u8], n: &mut usize| {
