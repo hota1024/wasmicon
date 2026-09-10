@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{EnumDef, Hal, Import, Ret};
+use crate::model::{EnumDef, FlagsDef, Hal, Import, Ret};
 
 /// 生成物の先頭に置く注意書き。
 fn banner(hal: &Hal, comment: &str) -> String {
@@ -28,13 +28,20 @@ fn rust_doc(out: &mut String, indent: &str, docs: &[String]) {
     }
 }
 
+/// JSDoc ブロックを途中で終わらせないようにする。WIT の `///` に `*/` が
+/// 入ると生成した .ts が壊れるが、それをコンパイルするのは Phase 3 なので
+/// ここで防いでおかないと壊れた生成物がそのままコミットされる。
+fn ts_escape(line: &str) -> String {
+    line.replace("*/", "*\\/")
+}
+
 fn ts_doc(out: &mut String, indent: &str, docs: &[String]) {
     if docs.is_empty() {
         return;
     }
     let _ = writeln!(out, "{indent}/**");
     for line in docs {
-        let _ = writeln!(out, "{indent} * {line}");
+        let _ = writeln!(out, "{indent} * {}", ts_escape(line));
     }
     let _ = writeln!(out, "{indent} */");
 }
@@ -91,6 +98,37 @@ fn rust_enum(out: &mut String, indent: &str, e: &EnumDef, extra: &str) {
     let _ = writeln!(out, "{indent}    }}");
     out.push_str(extra);
     let _ = writeln!(out, "{indent}}}");
+}
+
+/// flags を定数の集合として出す（abi-spec §4.1）。
+fn rust_flags(out: &mut String, indent: &str, f: &FlagsDef) {
+    rust_doc(out, indent, &f.docs);
+    let _ = writeln!(out, "{indent}pub struct {};", f.rust_name);
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{indent}impl {} {{", f.rust_name);
+    for (i, b) in f.bits.iter().enumerate() {
+        rust_doc(out, &format!("{indent}    "), &b.docs);
+        let _ = writeln!(out, "{indent}    pub const {}: u32 = 1 << {i};", b.ident);
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{indent}    /// 定義済みビットのマスク。これ以外が立っていたら invalid-argument。"
+    );
+    let _ = writeln!(
+        out,
+        "{indent}    pub const ALL: u32 = {:#x};",
+        flags_mask(f)
+    );
+    let _ = writeln!(out, "{indent}}}");
+}
+
+fn flags_mask(f: &FlagsDef) -> u32 {
+    if f.bits.len() >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << f.bits.len()) - 1
+    }
 }
 
 fn error_code_extra(indent: &str) -> String {
@@ -201,7 +239,7 @@ pub fn runtime_rs(hal: &Hal) -> String {
     let _ = writeln!(out, "}}");
 
     for iface in &hal.interfaces {
-        if iface.enums.is_empty() {
+        if iface.enums.is_empty() && iface.flags.is_empty() {
             continue;
         }
         let _ = writeln!(out);
@@ -217,6 +255,12 @@ pub fn runtime_rs(hal: &Hal) -> String {
                 String::new()
             };
             rust_enum(&mut out, "    ", e, &extra);
+        }
+        for (i, f) in iface.flags.iter().enumerate() {
+            if i > 0 || !iface.enums.is_empty() {
+                let _ = writeln!(out);
+            }
+            rust_flags(&mut out, "    ", f);
         }
         let _ = writeln!(out, "}}");
     }
@@ -286,6 +330,12 @@ pub fn bindings_rs(hal: &Hal) -> String {
             };
             rust_enum(&mut out, "    ", e, &extra);
         }
+        for f in &iface.flags {
+            if !iface.imports.is_empty() || !iface.enums.is_empty() {
+                let _ = writeln!(out);
+            }
+            rust_flags(&mut out, "    ", f);
+        }
         let _ = writeln!(out, "}}");
     }
 
@@ -318,6 +368,32 @@ pub fn bindings_ts(hal: &Hal) -> String {
             let _ = writeln!(out, "}}");
         }
 
+        for fl in &iface.flags {
+            let _ = writeln!(out);
+            ts_doc(&mut out, "", &fl.docs);
+            let _ = writeln!(out, "// abi-spec §4.1: 宣言順にビット 0 から割り当てる。");
+            for (i, b) in fl.bits.iter().enumerate() {
+                ts_doc(&mut out, "", &b.docs);
+                let _ = writeln!(
+                    out,
+                    "export const {}{}: u32 = {:#x};",
+                    fl.as_name,
+                    b.ident,
+                    1u32 << i
+                );
+            }
+            let _ = writeln!(
+                out,
+                "/** 定義済みビットのマスク。これ以外が立っていたら invalid-argument。 */"
+            );
+            let _ = writeln!(
+                out,
+                "export const {}All: u32 = {:#x};",
+                fl.as_name,
+                flags_mask(fl)
+            );
+        }
+
         for f in &iface.imports {
             let _ = writeln!(out);
             ts_doc(&mut out, "", &f.docs);
@@ -341,5 +417,22 @@ fn ts_ret(f: &Import) -> String {
         Ret::None => "void".to_string(),
         Ret::Status => "u32".to_string(),
         Ret::Scalar(s) => s.assemblyscript().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ts_escape;
+
+    #[test]
+    fn ts_escape_does_not_close_the_jsdoc_block() {
+        let escaped = ts_escape("これは */ を含む");
+        assert!(!escaped.contains("*/"), "JSDoc が途中で閉じる: {escaped}");
+        assert_eq!(escaped, "これは *\\/ を含む");
+    }
+
+    #[test]
+    fn ts_escape_leaves_ordinary_text_alone() {
+        assert_eq!(ts_escape("普通のコメント"), "普通のコメント");
     }
 }

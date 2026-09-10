@@ -18,6 +18,11 @@ jobs:
       # 生成物が wit/ と一致することの検査を含む（HANDOFF §5 Phase 1 完了条件）
       - run: cargo test
       - run: cargo run -p wasmicon-gen -- --check
+      # 参照実装 tools/wit2sig.py との突き合わせ（HANDOFF §5 Phase 1）
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+      - run: sh tools/check-sigs.sh
 
   # guest workspace: wasm32-unknown-unknown 向けバインディング
   guest:

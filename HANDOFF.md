@@ -125,6 +125,7 @@ wasmicon/
 - `wit2sig.py` との突き合わせは `tools/check-sigs.sh`（`wasmicon-gen --sigs` の出力と diff）。abi-spec §7 の表そのものは `tools/wasmicon-gen/tests/abi_spec.rs` にハードコードして検査する（§7 が正なので、期待値は WIT からではなく仕様書から取る）。
 - 生成した Rust は rustfmt に通してから書き出す。そうしないと `cargo fmt --check` と diff ゼロ検査が両立しない。
 - **完了条件**: 3 出力が abi-spec §7 と一致。CI で WIT 変更時に再生成して diff がゼロであることを検査。→ **達成（2026-09-10）**。`.github/workflows/ci.yml` の root ジョブが `cargo test`（`tests/generated_up_to_date.rs`）と `--check` で検査する。
+- `flags` は abi-spec §2.1 が許可しているので生成に対応しているが、v0.1 の `wit/` には無いため実際の出力では使われていない（テストのみ）。
 - 残: AssemblyScript の出力は `asc` でのコンパイル検証をしていない（Phase 3 で AS ツールチェーンを入れたときに行う）。
 
 ### Phase 2: ランタイムコア（ホスト PC 上）

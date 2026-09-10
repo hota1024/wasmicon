@@ -6,7 +6,7 @@ pub mod emit;
 pub mod lower;
 pub mod model;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 
 /// 生成物 1 ファイル。
@@ -21,11 +21,11 @@ pub fn outputs(root: &Path) -> Result<Vec<Output>> {
     Ok(vec![
         Output {
             path: root.join("runtime/src/generated.rs"),
-            contents: rustfmt(&emit::runtime_rs(&hal))?,
+            contents: rustfmt(root, &emit::runtime_rs(&hal))?,
         },
         Output {
             path: root.join("bindings/rust/src/generated.rs"),
-            contents: rustfmt(&emit::bindings_rs(&hal))?,
+            contents: rustfmt(root, &emit::bindings_rs(&hal))?,
         },
         Output {
             path: root.join("bindings/assemblyscript/assembly/generated.ts"),
@@ -47,23 +47,28 @@ pub fn sig_dump(hal: &model::Hal) -> String {
 
 /// 生成した Rust を rustfmt に通す。`cargo fmt --check` と生成物の diff ゼロ検査を
 /// 同時に満たすために必須（rustfmt は rust-toolchain.toml で保証されている）。
-pub fn rustfmt(src: &str) -> Result<String> {
-    let mut path = std::env::temp_dir();
-    path.push(format!(
-        "wasmicon-gen-{}-{:p}.rs",
-        std::process::id(),
-        src.as_ptr()
-    ));
+///
+/// rustfmt は設定ファイルを「整形対象のファイルが置かれた場所」から上に向かって探す。
+/// 一時ディレクトリに置くとリポジトリの `rustfmt.toml` が効かず `cargo fmt` と
+/// 食い違うので、`root/target/`（.gitignore 済み）の下で整形して探索させる。
+/// `--config-path` にディレクトリを渡す方法は、設定ファイルが無いとエラーになるため使わない。
+pub fn rustfmt(root: &Path, src: &str) -> Result<String> {
+    let dir = root.join("target/wasmicon-gen");
+    std::fs::create_dir_all(&dir).with_context(|| format!("{} を作れない", dir.display()))?;
+    let path = dir.join(format!("fmt-{}-{:p}.rs", std::process::id(), src.as_ptr()));
     std::fs::write(&path, src)?;
+
+    let formatted = run_rustfmt(&path).and_then(|()| Ok(std::fs::read_to_string(&path)?));
+    let _ = std::fs::remove_file(&path);
+    formatted
+}
+
+fn run_rustfmt(path: &Path) -> Result<()> {
     let status = std::process::Command::new("rustfmt")
         .args(["--edition", "2024", "--quiet"])
-        .arg(&path)
+        .arg(path)
         .status()
         .context("rustfmt を起動できない（rust-toolchain.toml の components を確認）")?;
-    if !status.success() {
-        bail!("rustfmt が失敗した: {}", path.display());
-    }
-    let out = std::fs::read_to_string(&path)?;
-    let _ = std::fs::remove_file(&path);
-    Ok(out)
+    ensure!(status.success(), "rustfmt が失敗した: {}", path.display());
+    Ok(())
 }

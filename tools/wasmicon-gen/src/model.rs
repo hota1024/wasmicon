@@ -209,6 +209,27 @@ pub struct EnumDef {
     pub cases: Vec<EnumCase>,
 }
 
+/// flags の 1 ビット。
+#[derive(Debug, Clone)]
+pub struct FlagBit {
+    pub docs: Vec<String>,
+    /// PascalCase（Rust / AssemblyScript 共通）。
+    pub ident: String,
+}
+
+/// flags 定義。abi-spec §4.1 により宣言順にビット 0 から割り当てる。
+#[derive(Debug, Clone)]
+pub struct FlagsDef {
+    pub docs: Vec<String>,
+    /// WIT 上の名前。
+    pub wit_name: String,
+    /// Rust の型名。
+    pub rust_name: String,
+    /// AssemblyScript の定数名の前置。
+    pub as_name: String,
+    pub bits: Vec<FlagBit>,
+}
+
 /// 1 インターフェース。
 #[derive(Debug, Clone)]
 pub struct Iface {
@@ -218,6 +239,7 @@ pub struct Iface {
     pub module: String,
     pub docs: Vec<String>,
     pub enums: Vec<EnumDef>,
+    pub flags: Vec<FlagsDef>,
     pub imports: Vec<Import>,
 }
 

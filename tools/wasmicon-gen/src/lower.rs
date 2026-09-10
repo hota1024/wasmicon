@@ -8,7 +8,9 @@ use wit_parser::{
     WorldItem,
 };
 
-use crate::model::{EnumCase, EnumDef, Hal, Iface, Import, Param, Ret, Role, Scalar};
+use crate::model::{
+    EnumCase, EnumDef, FlagBit, FlagsDef, Hal, Iface, Import, Param, Ret, Role, Scalar,
+};
 
 /// `wit/` を読んで ABI モデルを組み立てる。
 pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
@@ -31,12 +33,17 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
         .context("world app が見つからない（abi-spec §2.3）")?;
     let world = &resolve.worlds[world_id];
 
+    let run = world
+        .exports
+        .iter()
+        .find_map(|(_, item)| match item {
+            WorldItem::Function(f) if f.name == "run" => Some(f),
+            _ => None,
+        })
+        .context("world app が run を export していない（abi-spec §3.3）")?;
     ensure!(
-        world
-            .exports
-            .iter()
-            .any(|(_, item)| matches!(item, WorldItem::Function(f) if f.name == "run")),
-        "world app が run を export していない（abi-spec §3.3）"
+        run.params.is_empty() && run.result.is_none(),
+        "export run は func() -> () でなければならない（abi-spec §3.3）"
     );
 
     // インターフェースの順序は world app の import 宣言順に従う。
@@ -74,6 +81,7 @@ fn lower_interface(
     module: String,
 ) -> Result<Iface> {
     let mut enums = Vec::new();
+    let mut flags = Vec::new();
     let mut resources = Vec::new();
 
     for (ty_name, ty_id) in &iface.types {
@@ -101,11 +109,20 @@ fn lower_interface(
                     f.flags.len() <= 32,
                     "flags {ty_name} のケース数が 32 を超えている（abi-spec §2.1）"
                 );
-                // flags は const マスクとして出す。enums とは別扱い。
-                bail!(
-                    "flags {ty_name}: v0.1 の wit/ には flags が無いため生成は未実装。\
-                     必要になったらここに追加する（abi-spec §2.1）"
-                );
+                flags.push(FlagsDef {
+                    docs: docs(&td.docs),
+                    wit_name: ty_name.clone(),
+                    rust_name: pascal(ty_name),
+                    as_name: as_type_name(name, ty_name),
+                    bits: f
+                        .flags
+                        .iter()
+                        .map(|b| FlagBit {
+                            docs: docs(&b.docs),
+                            ident: pascal(&b.name),
+                        })
+                        .collect(),
+                });
             }
             other => bail!(
                 "型 {ty_name} の種類 {} はサブセット外（abi-spec §2.2）",
@@ -150,6 +167,7 @@ fn lower_interface(
         module,
         docs: docs(&iface.docs),
         enums,
+        flags,
         imports,
     })
 }
