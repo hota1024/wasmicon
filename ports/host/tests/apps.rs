@@ -168,3 +168,110 @@ fn blink_rs_and_blink_as_agree() {
     );
     assert!(!pick(&rs).is_empty(), "トレースが空");
 }
+
+/// 記録済みの SHT31 応答（`verify/sht31-replay.txt`）。
+fn sht31_replay() -> Vec<Vec<u8>> {
+    let path = repo_root().join("verify/sht31-replay.txt");
+    wasmicon_host::load_i2c_replay(&path).expect("記録済み応答を読めない")
+}
+
+fn run_with_sensor(wasm: &[u8], label: &str) -> String {
+    match wasmicon_host::run_wasm_with(wasm, true, sht31_replay()) {
+        Ok(out) => out.trace,
+        Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+    }
+}
+
+#[test]
+fn sensor_display_rs_runs_on_host() {
+    let wasm = build_rust_app("sensor-display-rs");
+    assert_within_feature_set(&wasm, "sensor-display-rs");
+    let trace = run_with_sensor(&wasm, "sensor-display-rs");
+
+    // 役割名で 3 本引いている（abi-spec §8、§9 の正規化つき）。
+    for role in ["lcd-cs", "lcd-dc", "lcd-rst"] {
+        assert!(
+            trace.contains(&format!("pin-by-role(\"{role}\")\n< 0 [role:{role}]")),
+            "{role} を引いていない:\n{trace}"
+        );
+    }
+    // SHT31 の単発計測コマンドを書いて 6 バイト読んでいる。
+    assert!(
+        trace.contains("[method]bus.write(1, 68, 0x2400)"),
+        "SHT31 の計測コマンドが違う:\n{trace}"
+    );
+    assert!(
+        trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
+        "SHT31 の読み出しが違う:\n{trace}"
+    );
+    // 背景は 240 行を 1 行ずつ送る（全画面フレームバッファを持たない）。
+    assert!(
+        trace
+            .matches("wasmicon:hal/spi@0.1.0/[method]bus.write")
+            .count()
+            > 240,
+        "背景の塗りつぶしが行単位で送られていない"
+    );
+    // 全ての host call が成功している。
+    assert!(
+        !trace.contains("\n< 1"),
+        "失敗した host call がある:\n{trace}"
+    );
+}
+
+#[test]
+fn sensor_display_as_runs_on_host() {
+    let wasm = build_as_app("sensor-display-as", "sensor_display_as.wasm");
+    assert_within_feature_set(&wasm, "sensor-display-as");
+    let trace = run_with_sensor(&wasm, "sensor-display-as");
+    assert!(
+        trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
+        "SHT31 の読み出しが違う:\n{trace}"
+    );
+    assert!(
+        !trace.contains("\n< 1"),
+        "失敗した host call がある:\n{trace}"
+    );
+}
+
+/// Phase 5 の完了条件の中核: Rust 版と AS 版が同じ描画をする。
+///
+/// `spi.write` のトレースは abi-spec §9 により data の CRC-32 なので、
+/// これが全て一致すれば送っているピクセルが同一だと分かる。
+#[test]
+fn sensor_display_rs_and_as_agree() {
+    let rs = run_with_sensor(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
+    let as_ = run_with_sensor(
+        &build_as_app("sensor-display-as", "sensor_display_as.wasm"),
+        "sensor-display-as",
+    );
+
+    let pick = |t: &str| -> Vec<String> {
+        let lines: Vec<&str> = t.lines().collect();
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.contains("gpio@0.1.0")
+                || l.contains("board@0.1.0")
+                || l.contains("spi@0.1.0")
+                || l.contains("i2c@0.1.0")
+            {
+                out.push((*l).to_string());
+                if let Some(next) = lines.get(i + 1)
+                    && next.starts_with('<')
+                {
+                    out.push((*next).to_string());
+                }
+            }
+        }
+        out
+    };
+
+    let a = pick(&rs);
+    let b = pick(&as_);
+    assert!(a.len() > 500, "トレースが短すぎる（{} 行）", a.len());
+    // 差分は最初の食い違いだけ出す。全部出すと読めない。
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        assert_eq!(x, y, "{i} 行目で食い違う（Rust 版 vs AS 版）");
+    }
+    assert_eq!(a.len(), b.len(), "host call の数が違う");
+}

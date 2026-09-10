@@ -7,7 +7,7 @@
 # `cd apps && cargo build --release -p blink-rs` で行う。
 [workspace]
 resolver = "3"
-members = ["blink-rs", "../bindings/rust"]
+members = ["blink-rs", "sensor-display-rs", "../bindings/rust"]
 
 [workspace.package]
 version = "0.1.0"

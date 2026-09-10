@@ -31,7 +31,7 @@ jobs:
       # spec testsuite（固定 SHA）。runtime/tests/spec.rs が使う
       - run: sh tools/fetch-testsuite.sh
       # 生成物の diff ゼロ検査（Phase 1）、spec テスト（Phase 2）、
-      # blink-rs / blink-as のトレース一致（Phase 3）を含む
+      # blink と sensor-display の Rust 版 / AS 版のトレース一致（Phase 3 / 5）を含む
       - run: cargo test
       - run: cargo run -p wasmicon-gen -- --check
       # 参照実装 tools/wit2sig.py との突き合わせ（HANDOFF §5 Phase 1）

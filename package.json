@@ -4,7 +4,8 @@
   "description": "Wasmicon の AssemblyScript 側（bindings と apps）をまとめる npm workspace",
   "workspaces": [
     "bindings/assemblyscript",
-    "apps/blink-as"
+    "apps/blink-as",
+    "apps/sensor-display-as"
   ],
   "devDependencies": {
     "assemblyscript": "^0.28.8"

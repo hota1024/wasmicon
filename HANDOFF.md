@@ -32,9 +32,9 @@
 | ジェネレータ `wasmicon-gen` | 完了（Phase 1）。3 出力を生成、abi-spec §7 との一致をテストで検査 | `tools/wasmicon-gen/` |
 | バインディング | 完了（Phase 3）。Rust は `Drop` 付き安全ラッパ、AS は明示 `close()` | `bindings/rust/`, `bindings/assemblyscript/` |
 | ポート層 | host は完了。rp2040 / esp32s3 はビルドまで（実機未確認） | `ports/common/`, `ports/host/`, `ports/rp2040/`, `ports/esp32s3/` |
-| サンプルアプリ | `blink-rs` / `blink-as` 完了。sensor-display は Phase 5 | `apps/` |
+| サンプルアプリ | `blink-rs` / `blink-as` / `sensor-display-rs` / `sensor-display-as` 完了 | `apps/` |
 
-Phase 3（バインディング + blink）まで完了。実機ポート（Phase 4）とセンサーアプリ（Phase 5）が残り。
+Phase 5（センサー + ディスプレイ）まで完了。実機での動作確認（Phase 4 / 5 の実機部分）と Phase 6 が残り。
 
 ---
 
@@ -175,8 +175,11 @@ wasmicon/
 
 - SHT31: 0x44、単発計測コマンド `0x2400`（高精度・クロックストレッチなし）、15 ms 待ち、6 バイト読み（T MSB, T LSB, CRC, RH MSB, RH LSB, CRC）。CRC-8（poly 0x31, init 0xFF）をゲストで検証。温度 = -45 + 175·raw/65535、湿度 = 100·raw/65535。**表示は固定小数（×100 の整数）で計算し、浮動小数点を使うのはあえて 1 箇所（f32 変換）に限定**して決定性検証の題材にする。
 - ILI9341: 初期化シーケンスは一般的なもの（SWRESET, SLPOUT, PIXFMT=0x55 (RGB565), MADCTL, DISPON）。描画は「矩形塗り」と「8×8 ビットマップフォントでの文字列描画」の 2 プリミティブのみ。行単位（最大 320×8×2 = 5 KB）のバッファを `spi.write` で送る。全画面フレームバッファは持たない（RP2040 に載らない）。
-- Rust 版と AS 版は**同じ描画結果**になるよう、フォントと座標を共通仕様にする（`apps/README.md` に書く）。
-- **完了条件**: 4 通り（Rust/AS × ESP32-S3/Pico）で表示が出る。
+- Rust 版と AS 版は**同じ描画結果**になるよう、フォントと座標を共通仕様にする（`apps/README.md` に書く）。→ **書いた**（137 行）。片方を変えたらもう片方も変える。
+- **完了条件**: 4 通り（Rust/AS × ESP32-S3/Pico）で表示が出る。→ **ソフト側は達成、実機は未確認（2026-09-10）**。
+  - `ports/host` で両ゲストを走らせ、`gpio` / `spi` / `i2c` / `board` の host call 列 606 行が**完全一致**することをテストで検査する（`ports/host/tests/apps.rs`）。`spi.write` のトレースは abi-spec §9 により data の CRC-32 なので、一致は「送っているピクセルが同一」を意味する
+  - センサーは `verify/sht31-replay.txt` の記録済み応答を `WASMICON_I2C_REPLAY` で流し込む。実機から記録したものへの差し替えは Phase 6
+  - 実機の I2C / SPI は `ports/rp2040` / `ports/esp32s3` でまだ `unsupported` を返す。ここを実装しないと実機では動かない
 
 ### Phase 6: クロスボード検証
 

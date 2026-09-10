@@ -27,10 +27,16 @@ struct PinState {
 }
 
 /// PC 上の mock ボード。ペリフェラルは繋がっていない。
+///
+/// I2C は記録済みの応答を順に返す（`WASMICON_I2C_REPLAY`）。実機のセンサーが
+/// 無くてもゲストを最後まで走らせられるようにするため。
 pub struct HostBoard {
     pins: [PinState; NUM_GPIO],
     start: Instant,
     trace: String,
+    /// 読み出しに順に返す応答。空なら `Nack`。
+    i2c_replay: Vec<Vec<u8>>,
+    replay_pos: usize,
 }
 
 impl HostBoard {
@@ -40,7 +46,16 @@ impl HostBoard {
             pins: [PinState::default(); NUM_GPIO],
             start: Instant::now(),
             trace: String::new(),
+            i2c_replay: Vec::new(),
+            replay_pos: 0,
         }
+    }
+
+    /// 記録済みの I2C 応答を設定する。
+    #[must_use]
+    pub fn with_i2c_replay(mut self, replay: Vec<Vec<u8>>) -> Self {
+        self.i2c_replay = replay;
+        self
     }
 
     /// 溜めたトレース。
@@ -113,21 +128,34 @@ impl Board for HostBoard {
     }
 
     fn i2c_write(&mut self, _index: u32, _address: u16, _data: &[u8]) -> BoardResult<()> {
-        Err(ErrorCode::Nack)
+        // 記録済み応答があるなら、書き込みは受け付ける（計測コマンドなど）。
+        if self.i2c_replay.is_empty() {
+            return Err(ErrorCode::Nack);
+        }
+        Ok(())
     }
 
-    fn i2c_read(&mut self, _index: u32, _address: u16, _buf: &mut [u8]) -> BoardResult<usize> {
-        Err(ErrorCode::Nack)
+    fn i2c_read(&mut self, _index: u32, _address: u16, buf: &mut [u8]) -> BoardResult<usize> {
+        let Some(resp) = self.i2c_replay.get(self.replay_pos) else {
+            return Err(ErrorCode::Nack);
+        };
+        self.replay_pos += 1;
+        if resp.len() < buf.len() {
+            return Err(ErrorCode::Io);
+        }
+        let n = buf.len();
+        buf.copy_from_slice(&resp[..n]);
+        Ok(n)
     }
 
     fn i2c_write_read(
         &mut self,
-        _index: u32,
-        _address: u16,
+        index: u32,
+        address: u16,
         _data: &[u8],
-        _buf: &mut [u8],
+        buf: &mut [u8],
     ) -> BoardResult<usize> {
-        Err(ErrorCode::Nack)
+        self.i2c_read(index, address, buf)
     }
 
     fn i2c_close(&mut self, _index: u32) {}

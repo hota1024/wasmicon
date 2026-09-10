@@ -1,0 +1,18 @@
+{
+  "targets": {
+    "release": {
+      "outFile": "build/sensor_display_as.wasm",
+      "optimizeLevel": 3,
+      "shrinkLevel": 2,
+      "converge": false,
+      "noAssert": true
+    }
+  },
+  "options": {
+    "runtime": "stub",
+    "initialMemory": 1,
+    "exportStart": false,
+    "disable": ["simd", "threads", "exception-handling", "reference-types"],
+    "enable": ["sign-extension", "nontrapping-f2i", "bulk-memory", "mutable-globals"]
+  }
+}

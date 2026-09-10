@@ -1,0 +1,10 @@
+{
+  "name": "sensor-display-as",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SHT31 を読んで ILI9341 に表示する。sensor-display-rs と同じ出力を出す",
+  "type": "module",
+  "scripts": {
+    "build": "asc assembly/index.ts --config asconfig.json --target release"
+  }
+}
