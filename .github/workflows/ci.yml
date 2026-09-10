@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # root workspace: ランタイムコア、ジェネレータ、host ポート
+  root:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # 生成物が wit/ と一致することの検査を含む（HANDOFF §5 Phase 1 完了条件）
+      - run: cargo test
+      - run: cargo run -p wasmicon-gen -- --check
+
+  # guest workspace: wasm32-unknown-unknown 向けバインディング
+  guest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/rust
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings

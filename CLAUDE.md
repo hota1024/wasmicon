@@ -22,8 +22,10 @@
 ## 検証
 
 ```bash
-wasm-tools component wit wit/                                # WIT 構文
-python3 tools/wit2sig.py <(wasm-tools component wit --json wit/)   # ABI シグネチャ参照実装
+wasm-tools component wit wit/            # WIT 構文
+cargo run -p wasmicon-gen                # 生成物を更新
+cargo run -p wasmicon-gen -- --check     # 生成物が wit/ と一致するか
+sh tools/check-sigs.sh                   # 参照実装 tools/wit2sig.py と突き合わせ
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 

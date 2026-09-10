@@ -5,3 +5,5 @@
 //! （`Pin` / `I2cBus` / `SpiBus`、`Drop` で `[resource-drop]` を呼ぶ）を書く。
 
 #![no_std]
+
+pub mod generated;

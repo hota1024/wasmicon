@@ -6,4 +6,5 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-# Phase 1 で wit-parser を足す。
+anyhow = "1.0.104"
+wit-parser = "0.258.0"

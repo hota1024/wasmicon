@@ -29,11 +29,12 @@
 | WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
 | ランタイム | **未着手**（クレートの骨組みのみ。実装言語 = Rust `no_std`。§2-11） | `runtime/` |
-| ジェネレータ / バインディング | **未着手**（クレートの骨組みのみ） | `tools/wasmicon-gen/`, `bindings/rust/` |
+| ジェネレータ `wasmicon-gen` | 完了（Phase 1）。3 出力を生成、abi-spec §7 との一致をテストで検査 | `tools/wasmicon-gen/` |
+| バインディング | 生成物のみ（安全ラッパは Phase 3） | `bindings/rust/`, `bindings/assemblyscript/` |
 | ポート層 (host / rp2040 / esp32s3) | **未着手**（host のみ骨組み。実装方式は §3 #8） | `ports/host/` |
 | サンプルアプリ | **未着手** | — |
 
-実装コードはまだ無い。Cargo workspace の骨組み（§3 #9）だけが立っている状態。
+Phase 1（ジェネレータ）まで完了。ランタイムコアとポート層は未着手。
 
 ---
 
@@ -121,7 +122,10 @@ wasmicon/
 - Rust + `wit-parser` クレートで実装。`tools/wit2sig.py` と同じ規則を Rust に移植し、まず `wit2sig.py` の出力と一致することをテストにする。
 - 出力: (a) `runtime/src/generated.rs` — import 表（module, name, sig 文字列, ホスト関数のスロット）とエラーコード enum、(b) `bindings/rust/src/generated.rs` — `#[link(wasm_import_module=...)]` extern 宣言と enum、(c) `bindings/assemblyscript/assembly/generated.ts` — `@external` 宣言と enum。
 - サブセット外の WIT 構文はエラーで拒否する。
-- **完了条件**: 3 出力が abi-spec §7 と一致。CI で WIT 変更時に再生成して diff がゼロであることを検査。
+- `wit2sig.py` との突き合わせは `tools/check-sigs.sh`（`wasmicon-gen --sigs` の出力と diff）。abi-spec §7 の表そのものは `tools/wasmicon-gen/tests/abi_spec.rs` にハードコードして検査する（§7 が正なので、期待値は WIT からではなく仕様書から取る）。
+- 生成した Rust は rustfmt に通してから書き出す。そうしないと `cargo fmt --check` と diff ゼロ検査が両立しない。
+- **完了条件**: 3 出力が abi-spec §7 と一致。CI で WIT 変更時に再生成して diff がゼロであることを検査。→ **達成（2026-09-10）**。`.github/workflows/ci.yml` の root ジョブが `cargo test`（`tests/generated_up_to_date.rs`）と `--check` で検査する。
+- 残: AssemblyScript の出力は `asc` でのコンパイル検証をしていない（Phase 3 で AS ツールチェーンを入れたときに行う）。
 
 ### Phase 2: ランタイムコア（ホスト PC 上）
 
@@ -201,8 +205,10 @@ wasmicon/
 ```bash
 # WIT 検証
 wasm-tools component wit wit/
-# シグネチャ導出（ジェネレータの参照実装）
-wasm-tools component wit --json wit/ > /tmp/hal.json && python3 tools/wit2sig.py /tmp/hal.json
+# 生成物の更新と検査（Phase 1）
+cargo run -p wasmicon-gen                # 3 ファイルを再生成
+cargo run -p wasmicon-gen -- --check     # 生成物が wit/ と一致するか
+sh tools/check-sigs.sh                   # 参照実装 tools/wit2sig.py と突き合わせ
 # Rust の常用チェック
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 # spec テスト変換（Phase 2）

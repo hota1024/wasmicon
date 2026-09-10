@@ -11,5 +11,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod generated;
+
 // Phase 2 で decode / validate / interp / module を足す。
-// generated.rs は wasmicon-gen の出力（Phase 1）。手で編集しない。

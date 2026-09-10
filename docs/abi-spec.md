@@ -342,18 +342,21 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 ## 付録 A. ゲスト側コード例（Rust, 生成物のイメージ）
 
 ```rust
-// 生成: wasmicon:hal/gpio@0.1.0
-#[link(wasm_import_module = "wasmicon:hal/gpio@0.1.0")]
-extern "C" {
-    #[link_name = "[static]pin.open"]
-    fn pin_open(index: u32, mode: u32, out: *mut u32) -> u32;
-    #[link_name = "[method]pin.write"]
-    fn pin_write(this: u32, level: u32) -> u32;
-    #[link_name = "[resource-drop]pin"]
-    fn pin_drop(this: u32);
+// 生成: bindings/rust/src/generated.rs
+// インターフェースごとに mod を作る（i2c.bus.open と spi.bus.open の衝突を避けるため）
+pub mod gpio {
+    #[link(wasm_import_module = "wasmicon:hal/gpio@0.1.0")]
+    unsafe extern "C" {
+        #[link_name = "[static]pin.open"]
+        pub fn pin_open(index: u32, mode: u32, out: *mut u32) -> u32;
+        #[link_name = "[method]pin.write"]
+        pub fn pin_write(this: u32, level: u32) -> u32;
+        #[link_name = "[resource-drop]pin"]
+        pub fn pin_drop(this: u32);
+    }
 }
 
-// 生成: 安全なラッパ
+// 手書き: 安全なラッパ（Phase 3）
 pub struct Pin(u32);
 impl Pin {
     pub fn open(index: u32, mode: PinMode) -> Result<Pin, ErrorCode> {
@@ -386,14 +389,20 @@ declare function i2c_bus_drop(self: u32): void;
 ## 付録 C. ホスト側 import 表（Rust, 生成物のイメージ）
 
 ```rust
-// 生成: wasmicon:hal/gpio@0.1.0
-pub struct Import {
+// 生成: runtime/src/generated.rs
+pub struct ImportDesc {
     pub module: &'static str,  // "wasmicon:hal/gpio@0.1.0"
     pub name: &'static str,    // "[static]pin.open"
     pub sig: &'static str,     // "iii:i"  params:results, i=i32 I=i64 f=f32 F=f64
+    pub host_fn: HostFn,       // ポート層がディスパッチに使うスロット
 }
 
-pub static GPIO_IMPORTS: [Import; 6] = [ /* ... */ ];
+#[repr(u16)]
+pub enum HostFn { GpioPinOpen, GpioPinSetMode, /* ... */ LogLog }
+
+pub static IMPORTS: [ImportDesc; 19] = [ /* ... */ ];
+
+pub fn resolve(module: &str, name: &str) -> Option<&'static ImportDesc>;
 ```
 
-ホスト関数の実体はポート層が `sig` に対応する Rust 関数として供給し、ランタイムは module + name + sig の完全一致で解決する。
+ランタイムは module + name で `ImportDesc` を引き、`sig` がゲストの型と完全一致することを確かめてから `host_fn` をリンクする。ホスト関数の実体はポート層が供給する。
