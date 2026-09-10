@@ -6,13 +6,22 @@
 //! 「全通過」の定義: `FILES` に挙げた `.wast` の、対応済みコマンド種別が全て通ること。
 //! 除外は `EXCLUDED` に理由つきで列挙する（HANDOFF §3 のデフォルトと同じ扱い）。
 //!
+//! スキップの内訳（2026-09-10 時点、`FILES` の 74 ファイルで 548 件）:
+//! - 549 件: `(module quote ...)` などテキスト形式のモジュール。WAT パーサを
+//!   持たないので扱えない（バイナリ形式の同等ケースは実行している）
+//! - 21 件: 名前つきモジュールへの操作。複数インスタンスは v0.1 の範囲外
+//! - 5 件: `register` / `module_definition`。リンク用
+//!
 //! 開発用に全ファイルを走らせて現状を一覧する調査モードがある:
 //! `cargo test -p wasmicon-core --test spec -- --ignored --nocapture`
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmicon_core::{Arena, Config, Error, ErrorKind, decode, validate};
+mod support;
+
+use support::{SpecTest, is_trap, parse_arg, parse_expected};
+use wasmicon_core::{Arena, Config, Error, ErrorKind, Exec, decode, instantiate, invoke, validate};
 
 /// 実行対象の `.wast`。段階が進むごとに増やす。
 const FILES: &[&str] = &[
@@ -122,8 +131,20 @@ const EXCLUDED: &[(&str, &str)] = &[
 ];
 
 /// 対応済みコマンド種別。段階が進むごとに増やす。
-/// 2b でデコード + 検証まで。実行系は 2c で足す。
-const SUPPORTED: &[&str] = &["module", "assert_malformed", "assert_invalid"];
+const SUPPORTED: &[&str] = &[
+    "module",
+    "assert_malformed",
+    "assert_invalid",
+    "assert_unlinkable",
+    "assert_uninstantiable",
+    "assert_return",
+    "assert_trap",
+    "assert_exhaustion",
+    "action",
+];
+
+/// arena の大きさ。残りが線形メモリになる（`Arena::alloc_rest`）。
+const ARENA: usize = 48 << 20;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -170,19 +191,324 @@ struct Tally {
     failures: Vec<String>,
 }
 
-fn arena_buf() -> Vec<u8> {
-    vec![0u8; 8 << 20]
+impl Tally {
+    fn fail(&mut self, wast: &str, line: u64, msg: String) {
+        self.failures.push(format!("{wast}:{line}: {msg}"));
+    }
 }
 
-/// デコード + 検証。実行はまだしない。
+fn arena_buf() -> Vec<u8> {
+    // alloc_zeroed なので実際に触ったページしか実体化しない。
+    vec![0u8; ARENA]
+}
+
+fn cfg() -> Config {
+    Config::default()
+}
+
+/// デコード + 検証だけ行う（`assert_malformed` / `assert_invalid` 用）。
 fn load(bytes: &[u8]) -> Result<(), Error> {
     let mut buf = arena_buf();
-    let mut scratch_buf = arena_buf();
+    let mut scratch_buf = vec![0u8; 8 << 20];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
     let m = decode::decode(bytes, &mut arena)?;
-    validate::validate(&m, &Config::default(), &mut arena, &mut scratch)?;
+    validate::validate(&m, &cfg(), &mut arena, &mut scratch)?;
     Ok(())
+}
+
+/// インスタンス化まで行う（`assert_unlinkable` / `assert_uninstantiable` 用）。
+fn load_and_instantiate(bytes: &[u8]) -> Result<(), Error> {
+    let mut buf = arena_buf();
+    let mut scratch_buf = vec![0u8; 8 << 20];
+    let mut arena = Arena::new(&mut buf);
+    let mut scratch = Arena::new(&mut scratch_buf);
+    let m = decode::decode(bytes, &mut arena)?;
+    let v = validate::validate(&m, &cfg(), &mut arena, &mut scratch)?;
+    let mut exec = Exec::new(&cfg(), &mut arena)?;
+    let mut r = SpecTest;
+    let mut inst = instantiate(m, v, &cfg(), &mut arena, &mut r)?;
+    if let Some(start) = inst.module.start {
+        invoke(&mut inst, &mut exec, &mut r, start, &[], &mut [])?;
+    }
+    Ok(())
+}
+
+/// 読み込みが指定した区分で失敗することを確かめる。
+fn expect(
+    tally: &mut Tally,
+    wast: &str,
+    line: u64,
+    cmd: &serde_json::Value,
+    bytes: &[u8],
+    want: ErrorKind,
+    instantiate_too: bool,
+) {
+    let r = if instantiate_too {
+        load_and_instantiate(bytes)
+    } else {
+        load(bytes)
+    };
+    match r {
+        Err(e) if e.kind() == want => tally.ran += 1,
+        // 対応機能セット外の構文を含むケースは、期待どおりに落ちたかを判定できない。
+        Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
+        Err(e) => tally.fail(
+            wast,
+            line,
+            format!(
+                "{} を期待したが {} [{}]（期待: {}）",
+                want.name(),
+                e.kind().name(),
+                e.reason(),
+                cmd["text"].as_str().unwrap_or("?")
+            ),
+        ),
+        Ok(()) => tally.fail(
+            wast,
+            line,
+            format!(
+                "{} を期待したが成功した（{}）",
+                want.name(),
+                cmd["text"].as_str().unwrap_or("?")
+            ),
+        ),
+    }
+}
+
+/// モジュールを伴わない検査（malformed / invalid / unlinkable / uninstantiable）。
+/// 扱えたら `true`。
+fn standalone(tally: &mut Tally, wast: &str, dir: &Path, cmd: &serde_json::Value) -> bool {
+    let ty = cmd["type"].as_str().unwrap_or("");
+    let line = cmd["line"].as_u64().unwrap_or(0);
+    let want = match ty {
+        "assert_malformed" => ErrorKind::Malformed,
+        "assert_invalid" => ErrorKind::Invalid,
+        "assert_unlinkable" => ErrorKind::Unlinkable,
+        "assert_uninstantiable" => ErrorKind::Trap,
+        _ => return false,
+    };
+    if cmd["module_type"].as_str() != Some("binary") {
+        tally.skipped += 1;
+        return true;
+    }
+    let Some(file) = cmd["filename"].as_str() else {
+        tally.skipped += 1;
+        return true;
+    };
+    let bytes = std::fs::read(dir.join(file)).unwrap();
+    let with_inst = matches!(ty, "assert_unlinkable" | "assert_uninstantiable");
+    expect(tally, wast, line, cmd, &bytes, want, with_inst);
+    true
+}
+
+/// 1 つのモジュールと、それに続くコマンド列を実行する。
+fn run_chunk(
+    tally: &mut Tally,
+    wast: &str,
+    dir: &Path,
+    module_cmd: &serde_json::Value,
+    rest: &[serde_json::Value],
+) {
+    let line = module_cmd["line"].as_u64().unwrap_or(0);
+    if module_cmd["module_type"].as_str() == Some("text") {
+        tally.skipped += 1 + rest.len();
+        return;
+    }
+    let Some(file) = module_cmd["filename"].as_str() else {
+        tally.skipped += 1 + rest.len();
+        return;
+    };
+    let wasm = std::fs::read(dir.join(file)).unwrap();
+
+    let mut buf = arena_buf();
+    let mut scratch_buf = vec![0u8; 8 << 20];
+    let mut arena = Arena::new(&mut buf);
+    let mut scratch = Arena::new(&mut scratch_buf);
+    let c = cfg();
+
+    let m = match decode::decode(&wasm, &mut arena) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::Unsupported => {
+            tally.unsupported += 1 + rest.len();
+            return;
+        }
+        Err(e) => {
+            tally.fail(
+                wast,
+                line,
+                format!("デコード失敗: {} [{}]", e.reason(), e.kind().name()),
+            );
+            return;
+        }
+    };
+    let v = match validate::validate(&m, &c, &mut arena, &mut scratch) {
+        Ok(v) => v,
+        Err(e) if e.kind() == ErrorKind::Unsupported => {
+            tally.unsupported += 1 + rest.len();
+            return;
+        }
+        Err(e) => {
+            tally.fail(
+                wast,
+                line,
+                format!("検証失敗: {} [{}]", e.reason(), e.kind().name()),
+            );
+            return;
+        }
+    };
+    // Exec は線形メモリ（arena の残り全部）より先に確保する。
+    let mut exec = match Exec::new(&c, &mut arena) {
+        Ok(e) => e,
+        Err(e) => {
+            tally.fail(wast, line, format!("Exec 確保失敗: {}", e.reason()));
+            return;
+        }
+    };
+    let mut res = SpecTest;
+    let mut inst = match instantiate(m, v, &c, &mut arena, &mut res) {
+        Ok(i) => i,
+        Err(e) if e.kind() == ErrorKind::Unsupported => {
+            tally.unsupported += 1 + rest.len();
+            return;
+        }
+        Err(e) => {
+            tally.fail(
+                wast,
+                line,
+                format!("インスタンス化失敗: {} [{}]", e.reason(), e.kind().name()),
+            );
+            return;
+        }
+    };
+    if let Some(start) = inst.module.start {
+        if let Err(e) = invoke(&mut inst, &mut exec, &mut res, start, &[], &mut []) {
+            tally.fail(wast, line, format!("start 関数が失敗: {}", e.reason()));
+            return;
+        }
+    }
+    tally.ran += 1;
+
+    for cmd in rest {
+        let ty = cmd["type"].as_str().unwrap_or("");
+        let line = cmd["line"].as_u64().unwrap_or(0);
+        if standalone(tally, wast, dir, cmd) {
+            continue;
+        }
+        if !SUPPORTED.contains(&ty) {
+            tally.skipped += 1;
+            continue;
+        }
+        let action = &cmd["action"];
+        // 名前つきモジュールへの操作は扱わない（複数インスタンスは v0.1 の範囲外）。
+        if action["module"].is_string() {
+            tally.skipped += 1;
+            continue;
+        }
+        match action["type"].as_str() {
+            Some("invoke") => {
+                let name = action["field"].as_str().unwrap_or("");
+                let Some(func) = inst.export_func(name) else {
+                    tally.fail(wast, line, format!("export {name} が無い"));
+                    continue;
+                };
+                let raw = action["args"].as_array().cloned().unwrap_or_default();
+                let mut args = Vec::new();
+                let mut bad = false;
+                for a in &raw {
+                    match parse_arg(a) {
+                        Some(v) => args.push(v),
+                        None => bad = true,
+                    }
+                }
+                if bad {
+                    tally.unsupported += 1;
+                    continue;
+                }
+                let mut out = [0u64; 16];
+                let n = inst.func_type(func).map_or(0, |t| t.result_count());
+                let r = invoke(&mut inst, &mut exec, &mut res, func, &args, &mut out[..n]);
+                check(tally, wast, line, cmd, ty, r, &out[..n]);
+            }
+            Some("get") => {
+                let name = action["field"].as_str().unwrap_or("");
+                let Some(v) = inst.export_global(name) else {
+                    tally.fail(wast, line, format!("global {name} が無い"));
+                    continue;
+                };
+                check(tally, wast, line, cmd, ty, Ok(()), &[v]);
+            }
+            _ => tally.skipped += 1,
+        }
+    }
+}
+
+/// 実行結果を期待値と突き合わせる。
+fn check(
+    tally: &mut Tally,
+    wast: &str,
+    line: u64,
+    cmd: &serde_json::Value,
+    ty: &str,
+    r: Result<(), Error>,
+    out: &[u64],
+) {
+    match ty {
+        "assert_return" | "action" => match r {
+            Ok(()) => {
+                let want = cmd["expected"].as_array().cloned().unwrap_or_default();
+                for (i, w) in want.iter().enumerate() {
+                    let e = parse_expected(w);
+                    if e.is_unsupported() {
+                        tally.unsupported += 1;
+                        return;
+                    }
+                    let Some(&got) = out.get(i) else {
+                        tally.fail(wast, line, format!("戻り値が足りない（{i} 番目）"));
+                        return;
+                    };
+                    if !e.matches(got) {
+                        tally.fail(
+                            wast,
+                            line,
+                            format!(
+                                "{i} 番目の戻り値が違う: {got:#x} != {}",
+                                w["value"].as_str().unwrap_or("?")
+                            ),
+                        );
+                        return;
+                    }
+                }
+                tally.ran += 1;
+            }
+            Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
+            Err(e) => tally.fail(wast, line, format!("実行に失敗: {}", e.reason())),
+        },
+        "assert_trap" => match r {
+            Err(ref e) if is_trap(e) => tally.ran += 1,
+            Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
+            Err(e) => tally.fail(
+                wast,
+                line,
+                format!("trap を期待したが {} [{}]", e.kind().name(), e.reason()),
+            ),
+            Ok(()) => tally.fail(wast, line, "trap を期待したが成功した".to_string()),
+        },
+        "assert_exhaustion" => match r {
+            Err(e) if e.kind() == ErrorKind::Exhausted => tally.ran += 1,
+            Err(e) => tally.fail(
+                wast,
+                line,
+                format!(
+                    "exhaustion を期待したが {} [{}]",
+                    e.kind().name(),
+                    e.reason()
+                ),
+            ),
+            Ok(()) => tally.fail(wast, line, "exhaustion を期待したが成功した".to_string()),
+        },
+        _ => tally.skipped += 1,
+    }
 }
 
 /// 1 ファイル分のコマンドを実行する。失敗は `tally.failures` に積む。
@@ -197,90 +523,22 @@ fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
         return;
     };
 
-    for cmd in commands {
-        let ty = cmd["type"].as_str().unwrap_or("");
-        let line = cmd["line"].as_u64().unwrap_or(0);
-        if !SUPPORTED.contains(&ty) {
-            tally.skipped += 1;
-            continue;
+    let mut i = 0;
+    while i < commands.len() {
+        let cmd = &commands[i];
+        if cmd["type"].as_str() == Some("module") {
+            let mut j = i + 1;
+            while j < commands.len() && commands[j]["type"].as_str() != Some("module") {
+                j += 1;
+            }
+            run_chunk(tally, wast, &dir, cmd, &commands[i + 1..j]);
+            i = j;
+        } else {
+            if !standalone(tally, wast, &dir, cmd) {
+                tally.skipped += 1;
+            }
+            i += 1;
         }
-        match ty {
-            "module" => {
-                if cmd["module_type"].as_str() == Some("text") {
-                    tally.skipped += 1;
-                    continue;
-                }
-                let Some(file) = cmd["filename"].as_str() else {
-                    tally.skipped += 1;
-                    continue;
-                };
-                let bytes = std::fs::read(dir.join(file)).unwrap();
-                match load(&bytes) {
-                    Ok(()) => tally.ran += 1,
-                    // 上流の testsuite は core の .wast にも post-MVP 機能を混ぜている。
-                    // 対応機能セット外はスキップし、件数だけ表に出す。
-                    Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
-                    Err(e) => tally.failures.push(format!(
-                        "{wast}:{line}: 正しいモジュールの読み込みに失敗: {} [{}]",
-                        e.reason(),
-                        e.kind().name()
-                    )),
-                }
-            }
-            "assert_malformed" => {
-                if cmd["module_type"].as_str() != Some("binary") {
-                    tally.skipped += 1;
-                    continue;
-                }
-                let Some(file) = cmd["filename"].as_str() else {
-                    tally.skipped += 1;
-                    continue;
-                };
-                let bytes = std::fs::read(dir.join(file)).unwrap();
-                expect(tally, wast, line, cmd, &bytes, ErrorKind::Malformed);
-            }
-            "assert_invalid" => {
-                if cmd["module_type"].as_str() != Some("binary") {
-                    tally.skipped += 1;
-                    continue;
-                }
-                let Some(file) = cmd["filename"].as_str() else {
-                    tally.skipped += 1;
-                    continue;
-                };
-                let bytes = std::fs::read(dir.join(file)).unwrap();
-                expect(tally, wast, line, cmd, &bytes, ErrorKind::Invalid);
-            }
-            _ => tally.skipped += 1,
-        }
-    }
-}
-
-/// 読み込みが指定した区分で失敗することを確かめる。
-fn expect(
-    tally: &mut Tally,
-    wast: &str,
-    line: u64,
-    cmd: &serde_json::Value,
-    bytes: &[u8],
-    want: ErrorKind,
-) {
-    match load(bytes) {
-        Err(e) if e.kind() == want => tally.ran += 1,
-        // 対応機能セット外の構文を含むケースは、期待どおりに落ちたかを判定できない。
-        Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
-        Err(e) => tally.failures.push(format!(
-            "{wast}:{line}: {} を期待したが {} [{}]（期待: {}）",
-            want.name(),
-            e.kind().name(),
-            e.reason(),
-            cmd["text"].as_str().unwrap_or("?")
-        )),
-        Ok(()) => tally.failures.push(format!(
-            "{wast}:{line}: {} を期待したが成功した（{}）",
-            want.name(),
-            cmd["text"].as_str().unwrap_or("?")
-        )),
     }
 }
 

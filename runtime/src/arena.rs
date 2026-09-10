@@ -72,8 +72,27 @@ impl<'a> Arena<'a> {
         Ok(slice)
     }
 
-    /// `n` バイトを 0 で埋めて確保する（線形メモリなど）。
+    /// `n` バイトを 0 で埋めて確保する。
     pub fn alloc_bytes(&mut self, n: usize) -> Result<&'a mut [u8]> {
         self.alloc(n, 0u8)
+    }
+
+    /// 残り全部を確保する。**中身は初期化しない。**
+    ///
+    /// 線形メモリ用。bump allocator は伸長できないので、最後にこれで残りを渡し、
+    /// `memory.grow` はその範囲内で現在ページ数を増やすだけにする。
+    /// これを呼んだ後は他の確保ができない。
+    ///
+    /// 0 埋めをここでやらないのは、arena 全体を触ると使わないページまで
+    /// 実体化してしまうため。実際に使うページだけを `instantiate` と
+    /// `Memory::grow` が 0 埋めする。
+    pub fn alloc_rest(&mut self) -> &'a mut [u8] {
+        let n = self.buf.len() - self.used;
+        // SAFETY: [used, len) はまだ誰にも配っていない領域で、buf の範囲内。
+        // used をここまで進めるので二度と配られない。u8 なのでアラインは不要。
+        let slice =
+            unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr().add(self.used), n) };
+        self.used = self.buf.len();
+        slice
     }
 }
