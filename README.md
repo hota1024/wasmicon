@@ -48,12 +48,16 @@ docs/                 仕様・設計・検証レポート・残作業
 
 ## ビルドと検証
 
+上から順にそのまま貼れる。**`cargo test` の前に testsuite を取ること。**
+無いと spec テストは「取得されていない」と出して丸ごとスキップし、
+それでも `test result: ok` になる。
+
 ```bash
+# spec テストに要る testsuite（固定 SHA）。cargo test より先に。
+sh tools/fetch-testsuite.sh
+
 # ホスト側（ランタイム、ジェネレータ、host ポート）
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-
-# spec テストには testsuite の取得が要る（固定 SHA）
-sh tools/fetch-testsuite.sh
 
 # 生成物が wit/ と一致しているか
 cargo run -p wasmicon-gen -- --check
@@ -61,15 +65,15 @@ sh tools/check-sigs.sh          # 参照実装 tools/wit2sig.py と突き合わ�
 
 # ゲスト（wasm32-unknown-unknown と AssemblyScript）
 npm ci
-cd apps && cargo build --release
-cd apps/sensor-display-as && npx asc assembly/index.ts --config asconfig.json --target release
+(cd apps && cargo build --release)
+(cd apps/sensor-display-as && npx asc assembly/index.ts --config asconfig.json --target release)
 
 # 実機向け
-cd ports/rp2040 && cargo build --release
+(cd ports/rp2040 && cargo build --release)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
 
 # wasmtime との差分テスト（インタプリタの正しさ）
-cd verify/differential && cargo test
+(cd verify/differential && cargo test)
 
 # 実機のトレースを突き合わせる（2 ボード）
 sh verify/diff-traces.sh pico.log esp32s3.log

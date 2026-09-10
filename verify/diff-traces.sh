@@ -106,6 +106,18 @@ if diff -q "$work/a.trace" "$work/b.trace" > /dev/null; then
     exit 0
 fi
 
+# 不一致は「これから原因を追う」場面なので、証拠を消してはいけない。
+# 作業ディレクトリは trap で消えるため、残す先を別に作って写す。
+out=$(mktemp -d -t wasmicon-trace-diff)
+cp "$work/a.trace" "$out/a.trace"
+cp "$work/b.trace" "$out/b.trace"
+diff -u "$out/a.trace" "$out/b.trace" > "$out/diff.txt" || true
+nd=$(wc -l < "$out/diff.txt" | tr -d ' ')
+
 echo "不一致: $1 は $na 行、$2 は $nb 行" >&2
-diff -u "$work/a.trace" "$work/b.trace" | head -40
+head -40 "$out/diff.txt"
+if [ "$nd" -gt 40 ]; then
+    echo "  （差分 $nd 行のうち先頭 40 行）" >&2
+fi
+echo "  正規化済みトレースと差分の全文: $out" >&2
 exit 1

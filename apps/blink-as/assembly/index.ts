@@ -4,7 +4,7 @@
 // ESP32-S3 と RP2040 の両方で動く（abi-spec §8）。
 
 // asc はスコープ付き npm パッケージ（@wasmicon/hal）を ~lib として解決できないので
-// 相対パスで参照する。配置は docs/handoff.md §4 で固定されている。
+// 相対パスで参照する。配置は README.md の「構成」を正とする。
 import {
   Level,
   Pin,

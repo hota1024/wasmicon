@@ -6,11 +6,9 @@
 //! 「全通過」の定義: `FILES` に挙げた `.wast` の、対応済みコマンド種別が全て通ること。
 //! 除外は `EXCLUDED` に理由つきで列挙する（docs/handoff.md §3 のデフォルトと同じ扱い）。
 //!
-//! スキップの内訳（2026-09-10 時点、`FILES` の 74 ファイルで 548 件）:
-//! - 549 件: `(module quote ...)` などテキスト形式のモジュール。WAT パーサを
-//!   持たないので扱えない（バイナリ形式の同等ケースは実行している）
-//! - 21 件: 名前つきモジュールへの操作。複数インスタンスは v0.1 の範囲外
-//! - 5 件: `register` / `module_definition`。リンク用
+//! スキップの内訳は実行時に出る（`-- --nocapture`）。手で書くと必ずずれるので
+//! ここには書かない。JSON を静的に数えた値ともずれる: 機能セット外と判定した
+//! チャンクは後続のコマンドまで「機能セット外」に数えるため。
 //!
 //! 開発用に全ファイルを走らせて現状を一覧する調査モードがある:
 //! `cargo test -p wasmicon-core --test spec -- --ignored --nocapture`
@@ -188,6 +186,12 @@ struct Tally {
     skipped: usize,
     /// 対応機能セット外でスキップした件数（docs/handoff.md §2-7）。
     unsupported: usize,
+    /// スキップの内訳。テキスト形式のモジュール（WAT パーサを持たない）。
+    skip_text: usize,
+    /// 名前つきモジュールへの操作。複数インスタンスは v0.1 の範囲外。
+    skip_named: usize,
+    /// `register` など、対応していないコマンド種別。
+    skip_kind: usize,
     failures: Vec<String>,
 }
 
@@ -290,6 +294,7 @@ fn standalone(tally: &mut Tally, wast: &str, dir: &Path, cmd: &serde_json::Value
     };
     if cmd["module_type"].as_str() != Some("binary") {
         tally.skipped += 1;
+        tally.skip_text += 1;
         return true;
     }
     let Some(file) = cmd["filename"].as_str() else {
@@ -313,6 +318,7 @@ fn run_chunk(
     let line = module_cmd["line"].as_u64().unwrap_or(0);
     if module_cmd["module_type"].as_str() == Some("text") {
         tally.skipped += 1 + rest.len();
+        tally.skip_text += 1 + rest.len();
         return;
     }
     let Some(file) = module_cmd["filename"].as_str() else {
@@ -397,12 +403,14 @@ fn run_chunk(
         }
         if !SUPPORTED.contains(&ty) {
             tally.skipped += 1;
+            tally.skip_kind += 1;
             continue;
         }
         let action = &cmd["action"];
         // 名前つきモジュールへの操作は扱わない（複数インスタンスは v0.1 の範囲外）。
         if action["module"].is_string() {
             tally.skipped += 1;
+            tally.skip_named += 1;
             continue;
         }
         match action["type"].as_str() {
@@ -536,6 +544,7 @@ fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
         } else {
             if !standalone(tally, wast, &dir, cmd) {
                 tally.skipped += 1;
+                tally.skip_kind += 1;
             }
             i += 1;
         }
@@ -557,12 +566,19 @@ fn spec_testsuite() {
         run_file(&root, wast, &mut tally);
     }
     println!(
-        "spec: {} コマンド実行 / {} 機能セット外 / {} 未実装でスキップ / {} ファイル / 除外 {} 分類",
+        "spec: {} コマンド実行 / {} 機能セット外 / {} スキップ / {} ファイル / 除外 {} 分類",
         tally.ran,
         tally.unsupported,
         tally.skipped,
         FILES.len(),
         EXCLUDED.len()
+    );
+    println!(
+        "      スキップの内訳: テキスト形式 {} / 名前つきモジュール {} / 未対応の種別 {} / その他 {}",
+        tally.skip_text,
+        tally.skip_named,
+        tally.skip_kind,
+        tally.skipped - tally.skip_text - tally.skip_named - tally.skip_kind
     );
     assert!(tally.ran > 0, "1 つもコマンドを実行していない");
     assert!(
@@ -602,6 +618,9 @@ fn spec_survey() {
         total.ran += t.ran;
         total.skipped += t.skipped;
         total.unsupported += t.unsupported;
+        total.skip_text += t.skip_text;
+        total.skip_named += t.skip_named;
+        total.skip_kind += t.skip_kind;
         total.failures.extend(t.failures);
     }
     println!(
