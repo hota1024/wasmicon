@@ -19,6 +19,9 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      # ports/host のテストが apps/ のゲストをビルドするので必要。
+      # 入れ子の cargo には rust-toolchain.toml が効かない場合があるため明示する。
+      - run: rustup target add wasm32-unknown-unknown
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # wasm-tools は check-sigs.sh、spec テスト、ゲストの機能検査が使う

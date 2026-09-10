@@ -16,8 +16,12 @@ fn repo_root() -> PathBuf {
 /// guest workspace でアプリをビルドして `.wasm` を返す。
 fn build_rust_app(pkg: &str) -> Vec<u8> {
     let root = repo_root();
+    // cargo test はテストプロセスに RUSTUP_TOOLCHAIN を渡す。これが立っていると
+    // rustup は toolchain override ファイルを一切見ないので、apps/rust-toolchain.toml の
+    // targets（wasm32-unknown-unknown の自動導入）が効かない。外してから起動する。
     let status = Command::new("cargo")
         .current_dir(root.join("apps"))
+        .env_remove("RUSTUP_TOOLCHAIN")
         .args(["build", "--release", "-p", pkg])
         .status()
         .expect("cargo を起動できない");
@@ -86,6 +90,13 @@ fn assert_blink_trace(trace: &str, label: &str) {
 
 /// AssemblyScript のアプリを asc でビルドして `.wasm` を返す。
 fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
+    // asc は同じ outFile に書くので、テストが並列に走ると書きかけを読んでしまう。
+    // ビルドと読み出しをまとめて直列化する。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     let root = repo_root();
     let app = root.join("apps").join(dir);
     assert!(
@@ -133,12 +144,22 @@ fn blink_rs_and_blink_as_agree() {
     let rs = run(&build_rust_app("blink-rs"), "blink-rs");
     let as_ = run(&build_as_app("blink-as", "blink_as.wasm"), "blink-as");
 
-    // log のメッセージは同じ文字列だが、比較の主眼は gpio と board の列。
+    // 比較の主眼は gpio と board の列。HANDOFF §2-10 は「全 host call 列と
+    // 結果が一致」なので、要求の行だけでなく直後の結果の行（< ...）も含める。
     let pick = |t: &str| -> Vec<String> {
-        t.lines()
-            .filter(|l| l.contains("gpio@0.1.0") || l.contains("board@0.1.0"))
-            .map(str::to_string)
-            .collect()
+        let lines: Vec<&str> = t.lines().collect();
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.contains("gpio@0.1.0") || l.contains("board@0.1.0") {
+                out.push((*l).to_string());
+                if let Some(next) = lines.get(i + 1)
+                    && next.starts_with('<')
+                {
+                    out.push((*next).to_string());
+                }
+            }
+        }
+        out
     };
     assert_eq!(
         pick(&rs),

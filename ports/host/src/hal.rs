@@ -77,6 +77,9 @@ impl MockHal {
     }
 
     /// abi-spec §9: 役割名で配った GPIO 番号は番号ではなく役割名で出す。
+    ///
+    /// 判断材料は数値だけなので、ゲストがハードコードした番号が役割割り当てと
+    /// 一致していると、それも役割名になる。abi-spec §9 がその前提を明記している。
     fn fmt_pin(&self, index: u32) -> String {
         match self.roles.iter().find(|(i, _)| *i == index) {
             Some((_, role)) => format!("role:{role}"),

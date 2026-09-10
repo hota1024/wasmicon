@@ -13,12 +13,16 @@ use crate::generated::types::ErrorCode;
 pub type Result<T> = core::result::Result<T, ErrorCode>;
 
 /// ステータスを `Result` に変換する。
+///
+/// `ErrorCode::from_status` は 0（成功）と範囲外の両方で `None` を返すので、
+/// 0 かどうかを先に見る。範囲外のステータスを成功として通すと、
+/// 例えば `Pin::open` が無効ハンドル 0（abi-spec §5.1）を包んで返してしまう。
 #[inline]
 fn check(status: u32) -> Result<()> {
-    match ErrorCode::from_status(status) {
-        None => Ok(()),
-        Some(e) => Err(e),
+    if status == 0 {
+        return Ok(());
     }
+    Err(ErrorCode::from_status(status).unwrap_or(ErrorCode::Io))
 }
 
 /// 汎用デジタル入出力。
