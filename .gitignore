@@ -5,3 +5,4 @@ third_party/
 apps/*/build/
 ports/*/target/
 verify/*/target/
+.claude/worktrees/
