@@ -21,6 +21,10 @@ const MAX_SPI: usize = 2;
 /// ボードの GPIO 本数（mock）。
 const NUM_GPIO: usize = 48;
 
+/// mock ボードの役割名 → GPIO 番号（abi-spec §8）。
+/// 実機のポートはこの表を自分のボードのものに差し替える。
+const ROLES: &[(&str, u32)] = &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 11), ("lcd-rst", 12)];
+
 /// AssemblyScript が import する `env.abort` に割り当てる識別子。
 /// `world app` には無い例外的な import（HANDOFF §6）。
 const HOST_ENV_ABORT: u32 = 0xffff;
@@ -46,6 +50,8 @@ pub struct MockHal {
     i2c: [Bus; MAX_I2C],
     spi: [Bus; MAX_SPI],
     gpio_used: [bool; NUM_GPIO],
+    /// `pin-by-role` で配った番号と役割名（abi-spec §9 の正規化に使う）。
+    roles: Vec<(u32, &'static str)>,
     start: Instant,
 }
 
@@ -59,6 +65,7 @@ impl MockHal {
             i2c: [Bus::default(); MAX_I2C],
             spi: [Bus::default(); MAX_SPI],
             gpio_used: [false; NUM_GPIO],
+            roles: Vec::new(),
             start: Instant::now(),
         }
     }
@@ -67,6 +74,14 @@ impl MockHal {
     #[must_use]
     pub fn trace_output(&self) -> &str {
         &self.out
+    }
+
+    /// abi-spec §9: 役割名で配った GPIO 番号は番号ではなく役割名で出す。
+    fn fmt_pin(&self, index: u32) -> String {
+        match self.roles.iter().find(|(i, _)| *i == index) {
+            Some((_, role)) => format!("role:{role}"),
+            None => index.to_string(),
+        }
     }
 
     fn emit(&mut self, line: &str) {
@@ -183,7 +198,7 @@ impl Resolver for MockHal {
         match f {
             HostFn::GpioPinOpen => {
                 let (index, mode, out) = (args[0] as u32, args[1] as u32, args[2] as u32);
-                let _ = write!(argtext, "{index}, {mode}");
+                let _ = write!(argtext, "{}, {mode}", self.fmt_pin(index));
                 let slot = self.pins.iter().position(|p| !p.open);
                 status = if index as usize >= NUM_GPIO || mode >= generated::gpio::PinMode::COUNT {
                     ErrorCode::InvalidArgument.status()
@@ -395,6 +410,23 @@ impl Resolver for MockHal {
             }
             HostFn::TimeSleepUs => {
                 std::thread::sleep(std::time::Duration::from_micros(args[0]));
+            }
+
+            HostFn::BoardPinByRole => {
+                let role = guest_slice(mem, args[0] as u32, args[1] as u32)?;
+                let text = String::from_utf8_lossy(role).into_owned();
+                let _ = write!(argtext, "{text:?}");
+                match ROLES.iter().find(|(r, _)| *r == text) {
+                    Some(&(role_name, index)) => {
+                        put_u32(mem, args[2] as u32, index)?;
+                        if !self.roles.iter().any(|(i, _)| *i == index) {
+                            self.roles.push((index, role_name));
+                        }
+                        // 番号そのものはボード依存なので役割名で出す（abi-spec §9）。
+                        outs.push(format!("role:{role_name}"));
+                    }
+                    None => status = ErrorCode::Unsupported.status(),
+                }
             }
 
             HostFn::LogLog => {

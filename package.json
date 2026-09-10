@@ -1,0 +1,15 @@
+{
+  "name": "wasmicon",
+  "private": true,
+  "description": "Wasmicon の AssemblyScript 側（bindings と apps）をまとめる npm workspace",
+  "workspaces": [
+    "bindings/assemblyscript",
+    "apps/blink-as"
+  ],
+  "devDependencies": {
+    "assemblyscript": "^0.28.8"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present"
+  }
+}

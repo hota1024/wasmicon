@@ -1,7 +1,0 @@
-# cargo はカレントディレクトリから上に向かって .cargo/config.toml を探す。
-# したがってこの設定は bindings/rust の中で cargo を実行したときだけ効く。
-# Phase 3 で apps/*-rs をビルドするには apps/.cargo/config.toml が別途要る。
-# ゲストのビルドフラグ（--initial-memory, -z stack-size, target-feature）は
-# アプリをリンクするときに効くものなので、HANDOFF §5 Phase 3 でそちらに置く。
-[build]
-target = "wasm32-unknown-unknown"

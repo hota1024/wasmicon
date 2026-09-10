@@ -264,3 +264,24 @@ export enum LogLevel {
  */
 @external("wasmicon:hal/log@0.1.0", "log")
 export declare function log_log(level: u32, messagePtr: usize, messageLen: u32): void;
+
+// ---- wasmicon:hal/board@0.1.0 ----
+
+/**
+ * ボード固有のピン割り当てを役割名で引く。
+ * 同一の Wasm バイナリを ESP32-S3 と RP2040 の両方で動かすために必要
+ * （HANDOFF §3 #2、abi-spec §8）。
+ */
+
+/**
+ * 役割名から GPIO 番号を引く。
+ * そのボードに割り当てが無ければ unsupported を返す。
+ * 
+ * 役割名は小文字の kebab-case。v0.1 で定めるもの:
+ * - `led`      オンボード LED
+ * - `lcd-cs`   ILI9341 のチップセレクト
+ * - `lcd-dc`   ILI9341 のデータ/コマンド切り替え
+ * - `lcd-rst`  ILI9341 のリセット
+ */
+@external("wasmicon:hal/board@0.1.0", "pin-by-role")
+export declare function board_pin_by_role(rolePtr: usize, roleLen: u32, out: usize): u32;

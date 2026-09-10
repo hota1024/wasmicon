@@ -11,6 +11,7 @@ world app {
     import spi;
     import time;
     import log;
+    import board;
 
     /// エントリポイント。ホストがインスタンス化後に 1 回呼ぶ。
     /// 戻ると、ホストはインスタンスを破棄してよい。

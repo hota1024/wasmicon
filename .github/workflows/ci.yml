@@ -9,31 +9,39 @@ env:
 
 jobs:
   # root workspace: ランタイムコア、ジェネレータ、host ポート
+  # host ポートのテストは apps/ のゲストをビルドして動かすので、
+  # Rust の wasm32 ターゲットと AssemblyScript もここで要る。
   root:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # wasm-tools は check-sigs.sh と spec テストランナーが使う
+      # wasm-tools は check-sigs.sh、spec テスト、ゲストの機能検査が使う
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-tools
       # spec testsuite（固定 SHA）。runtime/tests/spec.rs が使う
       - run: sh tools/fetch-testsuite.sh
-      # 生成物の diff ゼロ検査（Phase 1 完了条件）と spec テストを含む
+      # 生成物の diff ゼロ検査（Phase 1）、spec テスト（Phase 2）、
+      # blink-rs / blink-as のトレース一致（Phase 3）を含む
       - run: cargo test
       - run: cargo run -p wasmicon-gen -- --check
       # 参照実装 tools/wit2sig.py との突き合わせ（HANDOFF §5 Phase 1）
       - run: sh tools/check-sigs.sh
 
-  # guest workspace: wasm32-unknown-unknown 向けバインディング
+  # guest workspace: wasm32-unknown-unknown 向けのバインディングとアプリ
   guest:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: bindings/rust
+        working-directory: apps
     steps:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --release

@@ -43,6 +43,8 @@ const SPEC_SECTION_7: &[(&str, &str, &str)] = &[
     ("wasmicon:hal/time@0.1.0", "sleep-us", "i:"),
     // wasmicon:hal/log@0.1.0
     ("wasmicon:hal/log@0.1.0", "log", "iii:"),
+    // wasmicon:hal/board@0.1.0
+    ("wasmicon:hal/board@0.1.0", "pin-by-role", "iii:i"),
 ];
 
 /// abi-spec §7 の error-code の表。ステータス値は discriminant + 1。
@@ -103,7 +105,7 @@ fn interfaces_follow_world_import_order() {
     let names: Vec<&str> = hal.interfaces.iter().map(|i| i.name.as_str()).collect();
     assert_eq!(
         names,
-        ["types", "gpio", "i2c", "spi", "time", "log"],
+        ["types", "gpio", "i2c", "spi", "time", "log", "board"],
         "world app の import 宣言順と一致しない"
     );
 }

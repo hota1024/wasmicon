@@ -1,0 +1,11 @@
+{
+  "name": "@wasmicon/hal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wasmicon HAL のゲスト向けバインディング（AssemblyScript）",
+  "type": "module",
+  "ascMain": "assembly/index.ts",
+  "exports": {
+    ".": "./assembly/index.ts"
+  }
+}

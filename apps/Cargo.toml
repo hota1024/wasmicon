@@ -1,0 +1,26 @@
+# guest 用の workspace（HANDOFF §3 #9）。
+# ターゲットが wasm32-unknown-unknown で profile も root と別なので、
+# root workspace には入れない。
+#
+# ここを root にしているのは、cargo の `.cargo/config.toml` が
+# カレントディレクトリ基準で探索されるため。アプリのビルドは
+# `cd apps && cargo build --release -p blink-rs` で行う。
+[workspace]
+resolver = "3"
+members = ["blink-rs", "../bindings/rust"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+wasmicon-hal = { path = "../bindings/rust" }
+
+# ゲストはサイズが全て。トラップは abort に落とす。
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

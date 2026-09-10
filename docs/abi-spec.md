@@ -274,6 +274,15 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 |---|---|---|
 | `log` | `(param i32 i32 i32)` | `(level, msg-ptr, msg-len)` |
 
+### `wasmicon:hal/board@0.1.0`
+
+| import 名 | Core Wasm 型 | 備考 |
+|---|---|---|
+| `pin-by-role` | `(param i32 i32 i32) (result i32)` | `(role-ptr, role-len, out-index) -> ec` |
+
+役割名は小文字の kebab-case。v0.1 で定めるもの: `led`, `lcd-cs`, `lcd-dc`, `lcd-rst`。
+そのボードに割り当てが無ければ `unsupported` を返す。
+
 ### `wasmicon:hal/types@0.1.0`
 
 関数なし。`error-code` の discriminant（§4.4 のステータスは `+1`）:
@@ -303,6 +312,19 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 | ILI9341 DC | `gpio.pin` | GPIO14 | GP20 |
 | ILI9341 RST | `gpio.pin` | GPIO15 | GP21 |
 
+`board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応。ポート層の `board` 設定に置く:
+
+| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | ホスト (mock) |
+|---|---|---|---|
+| `led` | GPIO2（外付け） | GP15（外付け） | 2 |
+| `lcd-cs` | GPIO10 | GP17 | 10 |
+| `lcd-dc` | GPIO14 | GP20 | 11 |
+| `lcd-rst` | GPIO15 | GP21 | 12 |
+
+`led` に外付けを充てるのは、どちらのボードもオンボード LED が素の GPIO ではないため
+（Pico W/WH は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812）。実機の配線は
+Phase 4 でオーナーに確認する。
+
 **GPIO 番号がボードごとに異なる**ため、目標アプリの「同一バイナリで同一結果」を実現するには、ゲストがピン番号をハードコードしない仕組みが要る。v0.1 では次のいずれかとする（未決、§10 参照）:
 
 - (a) ゲストがボードごとに別ビルドする（`cfg` / 定数で切り替え）
@@ -324,6 +346,11 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 - `list<u8>` 引数は 16 進ダンプ、長さ 32 バイト超は先頭 16 バイト + CRC-32。
 - `time` インターフェースの呼び出しはトレースに**含めない**（実時間に依存するため）。
 - `spi.write` の `data` は CRC-32 のみ（ピクセルデータの一致確認用）。
+- **`board.pin-by-role` が返した GPIO 番号は役割名に置き換えて出す。** ボードごとに
+  番号が違うため、そのまま出すと同一バイナリでもトレースが一致しない。
+  ポートは `pin-by-role` で配った番号と役割名の対応を覚えておき、`gpio.pin.open` の
+  `index` 引数を `role:led` の形で出す。`pin-by-role` 自身の戻り値も同様。
+  役割名を経由せずゲストが直接指定した番号は、そのまま数値で出す。
 
 2 つのボードでこのトレースを diff し、`time` を除く全 host call 列と結果が一致することを「同じ結果が出る」の定義とする。
 
@@ -331,7 +358,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 ## 10. 未決事項
 
-1. ボードごとの GPIO 番号差の吸収方法（§8 の (a) か (b)）。
+1. ~~ボードごとの GPIO 番号差の吸収方法（§8 の (a) か (b)）~~ → **(b) を採用（2026-09-10）**。`wasmicon:hal/board@0.1.0` の `pin-by-role`。役割名は HANDOFF §3 #2 のデフォルト。
 2. `sleep-ms` 中のホストの挙動（他タスクへ譲るか、単純ビジーウェイトか）。ポート層の HAL に委ねる（`HANDOFF.md` §3 #3）。
 3. トラップ後の挙動（再起動 / 停止 / `run` 再呼び出し）。
 4. `log` の `string` に UTF-8 検証を入れるか（現状: 入れない）。

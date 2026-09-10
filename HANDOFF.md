@@ -30,11 +30,11 @@
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
 | ランタイム | 完了（Phase 2）。spec テストのコア 74 ファイルが通る | `runtime/` |
 | ジェネレータ `wasmicon-gen` | 完了（Phase 1）。3 出力を生成、abi-spec §7 との一致をテストで検査 | `tools/wasmicon-gen/` |
-| バインディング | 生成物のみ（安全ラッパは Phase 3） | `bindings/rust/`, `bindings/assemblyscript/` |
+| バインディング | 完了（Phase 3）。Rust は `Drop` 付き安全ラッパ、AS は明示 `close()` | `bindings/rust/`, `bindings/assemblyscript/` |
 | ポート層 (host / rp2040 / esp32s3) | host は完了（mock HAL + トレース）。実機は Phase 4（§3 #8） | `ports/host/` |
-| サンプルアプリ | **未着手** | — |
+| サンプルアプリ | `blink-rs` / `blink-as` 完了。sensor-display は Phase 5 | `apps/` |
 
-Phase 2（ランタイムコア + host ポート）まで完了。実機ポートとアプリは未着手。
+Phase 3（バインディング + blink）まで完了。実機ポート（Phase 4）とセンサーアプリ（Phase 5）が残り。
 
 ---
 
@@ -62,16 +62,17 @@ Phase 2（ランタイムコア + host ポート）まで完了。実機ポー�
 | # | 項目 | デフォルト | 根拠 |
 |---|---|---|---|
 | 1 | ランタイム実装言語 | **決定済み → §2-11（Rust `no_std`）** | オーナー判断（2026-09-10）「組込みを安全に書けるから」。軽量化の工夫は Phase 2 の条件に入れた |
-| 2 | ボード間の GPIO 番号差の吸収 | **(b) `wasmicon:hal/board@0.1.0` を追加**: `pin-by-role: func(role: string) -> result<u32, error-code>`。役割名は `"lcd-cs"`, `"lcd-dc"`, `"lcd-rst"` など | 同一バイナリで検証するため必須。abi-spec §8 |
+| 2 | ボード間の GPIO 番号差の吸収 | **採用済み（2026-09-10）**。`wasmicon:hal/board@0.1.0` の `pin-by-role`。役割名は `led` / `lcd-cs` / `lcd-dc` / `lcd-rst`（abi-spec §8 の表）。**役割名はオーナー未確認のまま既定で進めた** | 同一バイナリで検証するため必須 |
 | 3 | `sleep-ms` 中の挙動 | ポート層の HAL に委ねる。host: `std::thread::sleep`、rp2040 / esp32s3: 各 HAL クレートの `Delay`（#8 に依存） | 自然な選択 |
 | 4 | トラップ後の挙動 | ログ出力して停止（無限ループ / abort）。再起動しない | デバッグしやすい |
 | 5 | `log` の UTF-8 検証 | しない | 仕様通り |
 | 6 | `spi.transfer` | v0.1 に残す | 実装コストが低い |
 | 7 | コアの実装分担 | **決定済み → §2-12（フルスクラッチ、Claude Code が書く）** | オーナー判断（2026-09-10） |
 | 8 | **ポート層の実装方式**（Rust 化に伴い新規） | **全て Rust。host = `std`、rp2040 = `rp-hal` + `cortex-m-rt`、esp32s3 = `esp-hal`（`no_std`）。ESP-IDF / Pico SDK は使わない** | コアが Rust である以上 Xtensa のフォークツールチェーンは必須で、C SDK を混ぜても軽くならない。単一言語・単一ツールチェーンの方が軽く安全。**Phase 4 着手前にオーナー確認**（HANDOFF §8） |
-| 9 | **Cargo workspace の分割**（Rust 化に伴い新規） | **承認済み（2026-09-10）**。ターゲットごとに別 workspace。root = `runtime` + `tools/wasmicon-gen` + `ports/host`。guest workspace の root は `bindings/rust`（Phase 3 で `apps/*-rs` を members に足す）。`ports/rp2040` / `ports/esp32s3` は Phase 4 で作る。`.cargo/config.toml` は **カレントディレクトリ基準**で探索されるので、`apps/*-rs` には `apps/.cargo/config.toml` が別途要る | 単一 workspace ではターゲット・profile・toolchain が衝突する |
+| 9 | **Cargo workspace の分割**（Rust 化に伴い新規） | **承認済み（2026-09-10）**。ターゲットごとに別 workspace。root = `runtime` + `tools/wasmicon-gen` + `ports/host`。guest workspace の root は `apps`（`bindings/rust` を members に含む）。`ports/rp2040` / `ports/esp32s3` は Phase 4 で作る。`.cargo/config.toml` は **カレントディレクトリ基準**で探索されるので、ゲストのビルドは `cd apps && cargo build --release` で行う | 単一 workspace ではターゲット・profile・toolchain が衝突する |
 
-デフォルト 2 を採用した場合、`wit/board.wit` を追加し `world app` に `import board;` を足し、`abi-spec.md` §7 と §10 を更新すること。
+デフォルト 2 の採用に伴い、`wit/board.wit` を追加し `world app` に `import board;` を足し、`abi-spec.md` §7 / §8 / §10 を更新した。
+あわせて **abi-spec §9 に正規化の規則を追加**した。役割名で引いた GPIO 番号はボードごとに違うため、そのままトレースに出すと同一バイナリでも一致しない。ポートは番号を `role:led` の形に置き換えて出す。
 
 デフォルト 8 を却下する（C SDK を使う）場合、Phase 1 の出力に C ヘッダ (`runtime/include/wasmicon/hal.h`) を戻し、コアを `staticlib` として `extern "C"` API を生やす必要がある。
 
@@ -101,9 +102,9 @@ wasmicon/
 │   ├── esp32s3/               # 別 workspace。esp-hal、toolchain = esp (espup)
 │   └── rp2040/                # 別 workspace。rp-hal + cortex-m-rt、thumbv6m-none-eabi
 ├── bindings/
-│   ├── rust/                  # wasmicon-hal (no_std)。guest workspace の root。生成物 + 手書きラッパ
+│   ├── rust/                  # wasmicon-hal (no_std)。生成物 + 手書きの安全ラッパ
 │   └── assemblyscript/        # @wasmicon/hal パッケージ
-├── apps/                      # *-rs は bindings/rust と同じ guest workspace (wasm32-unknown-unknown)
+├── apps/                      # guest workspace の root。Cargo.toml / .cargo/config.toml / rust-toolchain.toml
 │   ├── blink-rs/ blink-as/
 │   └── sensor-display-rs/ sensor-display-as/
 └── verify/                    # トレース diff スクリプト、記録済み I2C 応答
@@ -149,7 +150,8 @@ wasmicon/
 
 - Rust: `no_std` クレート、`wasm32-unknown-unknown`。生成 extern を `Pin` / `I2cBus` / `SpiBus` の安全ラッパ（`Drop` で `[resource-drop]`）で包む。ビルドフラグ: `-C target-feature=-reference-types,+sign-ext,+nontrapping-fptoint,+bulk-memory,+mutable-globals,+multivalue`、`--initial-memory=65536`、`-z stack-size=8192`、`panic=abort`、`opt-level=z`。
 - AS: `--runtime stub`、`--initialMemory 1`、`--disable simd,threads,exception-handling`、`--enable sign-extension,nontrapping-f2i,bulk-memory,mutable-globals`。`env.abort` は AS 用に小さな shim をホストへ用意（トラップに変換）。
-- **完了条件**: `blink-rs` と `blink-as` の Wasm を `wasm-tools validate --features=...` で対応機能セット内であることを確認し、`ports/host` で同じ GPIO トレースを出す。
+- **完了条件**: `blink-rs` と `blink-as` の Wasm を `wasm-tools validate --features=...` で対応機能セット内であることを確認し、`ports/host` で同じ GPIO トレースを出す。→ **達成（2026-09-10）**。`ports/host/tests/apps.rs` が両方をビルドして機能検査し、`gpio` と `board` の host call 列が完全一致することを検査する。blink-rs 796 バイト / blink-as 2.1 KB。
+- AssemblyScript のビルドはリポジトリルートの npm workspace（`npm ci`）+ `npx asc`。asc がスコープ付きパッケージ (`@wasmicon/hal`) を `~lib` として解決できないので、アプリ側は相対パスで import している。
 
 ### Phase 4: ポート `rp2040` → `esp32s3`
 

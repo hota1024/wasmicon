@@ -1,0 +1,13 @@
+[package]
+name = "blink-rs"
+description = "Lチカ。board.pin-by-role で LED のピンを引くので同一バイナリが両ボードで動く"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+# cdylib にすると memory が "memory" として export される（abi-spec §3.3）。
+crate-type = ["cdylib"]
+
+[dependencies]
+wasmicon-hal.workspace = true

@@ -57,6 +57,8 @@ pub enum HostFn {
     TimeSleepUs,
     /// `wasmicon:hal/log@0.1.0` の `log`
     LogLog,
+    /// `wasmicon:hal/board@0.1.0` の `pin-by-role`
+    BoardPinByRole,
 }
 
 impl HostFn {
@@ -89,13 +91,14 @@ impl HostFn {
             16 => Some(Self::TimeSleepMs),
             17 => Some(Self::TimeSleepUs),
             18 => Some(Self::LogLog),
+            19 => Some(Self::BoardPinByRole),
             _ => None,
         }
     }
 }
 
 /// v0.1 の全 HAL import（abi-spec §7）。
-pub static IMPORTS: [ImportDesc; 19] = [
+pub static IMPORTS: [ImportDesc; 20] = [
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[static]pin.open",
@@ -209,6 +212,12 @@ pub static IMPORTS: [ImportDesc; 19] = [
         name: "log",
         sig: "iii:",
         host_fn: HostFn::LogLog,
+    },
+    ImportDesc {
+        module: "wasmicon:hal/board@0.1.0",
+        name: "pin-by-role",
+        sig: "iii:i",
+        host_fn: HostFn::BoardPinByRole,
     },
 ];
 

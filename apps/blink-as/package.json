@@ -1,0 +1,13 @@
+{
+  "name": "blink-as",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lチカ（AssemblyScript）。blink-rs と同じ host call 列を出す",
+  "type": "module",
+  "dependencies": {
+    "@wasmicon/hal": "*"
+  },
+  "scripts": {
+    "build": "asc assembly/index.ts --config asconfig.json --target release"
+  }
+}
