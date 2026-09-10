@@ -1,0 +1,13 @@
+package wasmicon:hal@0.1.0;
+
+/// 時間。
+interface time {
+    /// 起動からの単調増加マイクロ秒。ラップアラウンドは考慮しなくてよい（u64）。
+    now-us: func() -> u64;
+
+    /// ms ミリ秒ブロッキング待機。
+    sleep-ms: func(ms: u32);
+
+    /// us マイクロ秒ブロッキング待機。ホストの分解能に依存する。
+    sleep-us: func(us: u32);
+}

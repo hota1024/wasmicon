@@ -1,0 +1,14 @@
+package wasmicon:hal@0.1.0;
+
+/// デバッグ出力。ホストは通常シリアルコンソールへ出力する。
+interface log {
+    enum level {
+        error,
+        warn,
+        info,
+        debug,
+    }
+
+    /// message は UTF-8。改行はホストが付加する。
+    log: func(level: level, message: string);
+}

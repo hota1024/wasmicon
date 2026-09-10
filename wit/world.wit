@@ -1,0 +1,18 @@
+package wasmicon:hal@0.1.0;
+
+/// Wasmicon 上で動くアプリケーションの world。
+/// Wasmicon は Component Model を使わないため、この world は
+/// 「ゲストモジュールが import してよい関数の集合」と「ゲストが export すべき関数」を
+/// 記述するための IDL としてのみ使う。
+world app {
+    import types;
+    import gpio;
+    import i2c;
+    import spi;
+    import time;
+    import log;
+
+    /// エントリポイント。ホストがインスタンス化後に 1 回呼ぶ。
+    /// 戻ると、ホストはインスタンスを破棄してよい。
+    export run: func();
+}

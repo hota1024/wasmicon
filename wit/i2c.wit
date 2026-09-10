@@ -1,0 +1,34 @@
+package wasmicon:hal@0.1.0;
+
+/// I2C マスター。
+interface i2c {
+    use types.{error-code};
+
+    enum speed {
+        /// 100 kHz
+        standard,
+        /// 400 kHz
+        fast,
+        /// 1 MHz
+        fast-plus,
+    }
+
+    /// I2C バスを表すリソース。
+    /// index はプラットフォーム固有のバス番号（ESP32-S3: I2C0/1、RP2040: i2c0/1）。
+    /// SDA/SCL のピン割り当てはホスト側のボード設定で決まる（ABI 仕様書 §7 参照）。
+    resource bus {
+        /// バスを初期化して確保する。
+        open: static func(index: u32, speed: speed) -> result<bus, error-code>;
+
+        /// 7bit アドレス address のデバイスに data を書く（START ... STOP）。
+        write: func(address: u16, data: list<u8>) -> result<_, error-code>;
+
+        /// 7bit アドレス address のデバイスから len バイト読む（START ... STOP）。
+        /// Wasmicon ABI では戻りの list<u8> は呼び出し側が用意したバッファに書き込まれる。
+        read: func(address: u16, len: u32) -> result<list<u8>, error-code>;
+
+        /// data を書いた後、Repeated START で len バイト読む（STOP は最後のみ）。
+        /// レジスタ読み出しの定型パターン。
+        write-read: func(address: u16, data: list<u8>, len: u32) -> result<list<u8>, error-code>;
+    }
+}

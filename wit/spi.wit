@@ -1,0 +1,36 @@
+package wasmicon:hal@0.1.0;
+
+/// SPI マスター。
+/// チップセレクト (CS) はこのインターフェースでは扱わない。
+/// ゲストが gpio で CS/DC ピンを直接制御する（ILI9341 のような DC 付きデバイスに合わせた設計）。
+/// ビット順は MSB first 固定、ワード幅は 8bit 固定。
+interface spi {
+    use types.{error-code};
+
+    /// CPOL/CPHA の組み合わせ。
+    enum mode {
+        /// CPOL=0, CPHA=0
+        mode0,
+        /// CPOL=0, CPHA=1
+        mode1,
+        /// CPOL=1, CPHA=0
+        mode2,
+        /// CPOL=1, CPHA=1
+        mode3,
+    }
+
+    /// SPI バスを表すリソース。
+    /// index はプラットフォーム固有のバス番号。
+    /// SCK/MOSI/MISO のピン割り当てはホスト側のボード設定で決まる。
+    resource bus {
+        /// バスを初期化して確保する。frequency-hz はホストが対応できる最も近い値に丸められる。
+        open: static func(index: u32, frequency-hz: u32, mode: mode) -> result<bus, error-code>;
+
+        /// data を送信する。受信データは捨てる。ディスプレイ描画のホットパス。
+        write: func(data: list<u8>) -> result<_, error-code>;
+
+        /// 全二重転送。data を送信し、同じ長さの受信データを返す。
+        /// Wasmicon ABI では戻りの list<u8> は呼び出し側が用意したバッファに書き込まれる。
+        transfer: func(data: list<u8>) -> result<list<u8>, error-code>;
+    }
+}

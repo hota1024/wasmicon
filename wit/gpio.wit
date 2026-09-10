@@ -1,0 +1,43 @@
+package wasmicon:hal@0.1.0;
+
+/// 汎用デジタル入出力。
+interface gpio {
+    use types.{error-code};
+
+    enum level {
+        low,
+        high,
+    }
+
+    enum pin-mode {
+        /// 入力（プル無し）
+        input,
+        /// 入力（プルアップ）
+        input-pull-up,
+        /// 入力（プルダウン）
+        input-pull-down,
+        /// プッシュプル出力
+        output,
+        /// オープンドレイン出力
+        output-open-drain,
+    }
+
+    /// 1 本の GPIO ピンを表すリソース。
+    /// index はプラットフォーム固有の GPIO 番号（ESP32-S3: GPIOn、RP2040: GPn）。
+    resource pin {
+        /// ピンを確保しモードを設定する。既に確保済みなら busy。
+        open: static func(index: u32, mode: pin-mode) -> result<pin, error-code>;
+
+        /// モードを変更する。
+        set-mode: func(mode: pin-mode) -> result<_, error-code>;
+
+        /// 現在の入力レベルを読む。出力モードでも読める（出力値が返る）。
+        read: func() -> result<level, error-code>;
+
+        /// 出力レベルを設定する。入力モードなら invalid-argument。
+        write: func(level: level) -> result<_, error-code>;
+
+        /// 出力レベルを反転する。
+        toggle: func() -> result<_, error-code>;
+    }
+}
