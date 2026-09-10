@@ -1,0 +1,10 @@
+# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
+# ビルドは `cd ports/rp2040 && cargo build --release`。
+[build]
+target = "thumbv6m-none-eabi"
+
+[target.thumbv6m-none-eabi]
+rustflags = [
+    "-Clink-arg=--nmagic",
+    "-Clink-arg=-Tlink.x",
+]

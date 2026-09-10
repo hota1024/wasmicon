@@ -157,7 +157,10 @@ wasmicon/
 
 - **Pico を先に**やる（制約が厳しい方から）。
 - ポート層の実装方式は §3 #8（全 Rust）。着手前にオーナー確認。
-- Pico: `rp-hal` + `cortex-m-rt`、`thumbv6m-none-eabi`、`memory` 上限 2 ページ。Wasm バイナリは `include_bytes!` で `.rodata`（flash, XIP）に置き `&'static [u8]` としてランタイムに渡す。
+- Pico: `rp2040-hal` + `cortex-m-rt`、`thumbv6m-none-eabi`、`memory` 上限 2 ページ。Wasm バイナリは `include_bytes!` で `.rodata`（flash, XIP）に置き `&'static [u8]` としてランタイムに渡す。
+  - GPIO は番号で動的に触るので、型付きピンではなく SIO / IO_BANK0 / PADS_BANK0 のレジスタを直接叩く。型付きピンは静的な割り当て向けで、`pin.open(index)` の形に合わない
+  - マイコン向けに `Config` を絞る（値スタック 512 / ネスト 64 / ローカル 256 / 呼び出し深さ 32）。ホストの既定値のままだと検証の作業領域が数百 KB になり SRAM に載らない
+  - **2026-09-10 時点: ビルドが通るところまで。実機での動作は未確認**（フラッシュ 56 KB / RAM 172 KB）
 - ESP32-S3: `esp-hal`（`no_std`）、espup が入れる Xtensa ツールチェーン（`rust-toolchain.toml` の `channel = "esp"`）、上限 4 ページ（PSRAM なし）。
 - トレースは cargo feature `trace` を有効にしたビルドで abi-spec §9 形式をシリアル（UART / USB-CDC）に出す。
 - ボード設定（abi-spec §8 の表）は `ports/<board>/src/board.rs` に集約し、`board.pin-by-role` を実装。

@@ -1,0 +1,33 @@
+# RP2040 (Raspberry Pi Pico WH) 用ポート。
+# root workspace とはターゲットも toolchain も profile も違うので別 workspace。
+[workspace]
+
+[package]
+name = "wasmicon-rp2040"
+description = "Wasmicon の RP2040 ポート"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[features]
+# HANDOFF §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+default = ["trace"]
+trace = []
+
+[dependencies]
+wasmicon-core = { path = "../../runtime" }
+wasmicon-port = { path = "../common" }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl"] }
+rp2040-boot2 = "0.3"
+panic-halt = "1"
+embedded-hal = "1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+# デバッグ情報は残す（probe-rs で追える）。フラッシュには載らない。
+debug = true
