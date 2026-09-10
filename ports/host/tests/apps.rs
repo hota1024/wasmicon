@@ -138,35 +138,26 @@ fn blink_as_runs_on_host() {
     assert_blink_trace(&trace, "blink-as");
 }
 
-/// Phase 3 の完了条件: Rust 版と AS 版が同じ GPIO トレースを出す。
+/// Phase 3 の完了条件: Rust 版と AS 版が同じトレースを出す。
+///
+/// abi-spec §9 により `time` はトレースに出ないので、**トレース全文の一致が
+/// そのまま HANDOFF §2-10 の「time を除く全 host call と結果が一致」**になる。
 #[test]
 fn blink_rs_and_blink_as_agree() {
     let rs = run(&build_rust_app("blink-rs"), "blink-rs");
     let as_ = run(&build_as_app("blink-as", "blink_as.wasm"), "blink-as");
+    assert_traces_equal(&rs, &as_);
+}
 
-    // 比較の主眼は gpio と board の列。HANDOFF §2-10 は「全 host call 列と
-    // 結果が一致」なので、要求の行だけでなく直後の結果の行（< ...）も含める。
-    let pick = |t: &str| -> Vec<String> {
-        let lines: Vec<&str> = t.lines().collect();
-        let mut out = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
-            if l.contains("gpio@0.1.0") || l.contains("board@0.1.0") {
-                out.push((*l).to_string());
-                if let Some(next) = lines.get(i + 1)
-                    && next.starts_with('<')
-                {
-                    out.push((*next).to_string());
-                }
-            }
-        }
-        out
-    };
-    assert_eq!(
-        pick(&rs),
-        pick(&as_),
-        "Rust 版と AS 版で host call 列が違う\n--- rust ---\n{rs}\n--- as ---\n{as_}"
-    );
-    assert!(!pick(&rs).is_empty(), "トレースが空");
+/// トレースを行単位で突き合わせる。最初の食い違いだけ報告する。
+fn assert_traces_equal(rs: &str, as_: &str) {
+    let a: Vec<&str> = rs.lines().collect();
+    let b: Vec<&str> = as_.lines().collect();
+    assert!(!a.is_empty(), "トレースが空");
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        assert_eq!(x, y, "{} 行目で食い違う（Rust 版 vs AS 版）", i + 1);
+    }
+    assert_eq!(a.len(), b.len(), "トレースの行数が違う");
 }
 
 /// 記録済みの SHT31 応答（`verify/sht31-replay.txt`）。
@@ -212,7 +203,6 @@ fn sensor_display_rs_runs_on_host() {
             > 240,
         "背景の塗りつぶしが行単位で送られていない"
     );
-    // 全ての host call が成功している。
     assert!(
         !trace.contains("\n< 1"),
         "失敗した host call がある:\n{trace}"
@@ -238,6 +228,7 @@ fn sensor_display_as_runs_on_host() {
 ///
 /// `spi.write` のトレースは abi-spec §9 により data の CRC-32 なので、
 /// これが全て一致すれば送っているピクセルが同一だと分かる。
+/// 比較はトレース全文（= §2-10 の定義そのもの）。
 #[test]
 fn sensor_display_rs_and_as_agree() {
     let rs = run_with_sensor(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
@@ -245,33 +236,10 @@ fn sensor_display_rs_and_as_agree() {
         &build_as_app("sensor-display-as", "sensor_display_as.wasm"),
         "sensor-display-as",
     );
-
-    let pick = |t: &str| -> Vec<String> {
-        let lines: Vec<&str> = t.lines().collect();
-        let mut out = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
-            if l.contains("gpio@0.1.0")
-                || l.contains("board@0.1.0")
-                || l.contains("spi@0.1.0")
-                || l.contains("i2c@0.1.0")
-            {
-                out.push((*l).to_string());
-                if let Some(next) = lines.get(i + 1)
-                    && next.starts_with('<')
-                {
-                    out.push((*next).to_string());
-                }
-            }
-        }
-        out
-    };
-
-    let a = pick(&rs);
-    let b = pick(&as_);
-    assert!(a.len() > 500, "トレースが短すぎる（{} 行）", a.len());
-    // 差分は最初の食い違いだけ出す。全部出すと読めない。
-    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-        assert_eq!(x, y, "{i} 行目で食い違う（Rust 版 vs AS 版）");
-    }
-    assert_eq!(a.len(), b.len(), "host call の数が違う");
+    assert!(
+        rs.lines().count() > 1000,
+        "トレースが短すぎる（{} 行）",
+        rs.lines().count()
+    );
+    assert_traces_equal(&rs, &as_);
 }

@@ -177,7 +177,8 @@ wasmicon/
 - ILI9341: 初期化シーケンスは一般的なもの（SWRESET, SLPOUT, PIXFMT=0x55 (RGB565), MADCTL, DISPON）。描画は「矩形塗り」と「8×8 ビットマップフォントでの文字列描画」の 2 プリミティブのみ。行単位（最大 320×8×2 = 5 KB）のバッファを `spi.write` で送る。全画面フレームバッファは持たない（RP2040 に載らない）。
 - Rust 版と AS 版は**同じ描画結果**になるよう、フォントと座標を共通仕様にする（`apps/README.md` に書く）。→ **書いた**（137 行）。片方を変えたらもう片方も変える。
 - **完了条件**: 4 通り（Rust/AS × ESP32-S3/Pico）で表示が出る。→ **ソフト側は達成、実機は未確認（2026-09-10）**。
-  - `ports/host` で両ゲストを走らせ、`gpio` / `spi` / `i2c` / `board` の host call 列 606 行が**完全一致**することをテストで検査する（`ports/host/tests/apps.rs`）。`spi.write` のトレースは abi-spec §9 により data の CRC-32 なので、一致は「送っているピクセルが同一」を意味する
+  - `ports/host` で両ゲストを走らせ、**トレース全文（1215 行）が完全一致**することをテストで検査する（`ports/host/tests/apps.rs`）。abi-spec §9 により `time` はトレースに出ないので、全文一致がそのまま §2-10 の「`time` を除く全 host call と結果が一致」になる。`spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが同一」を意味する
+  - ただしこれは **host（1 プラットフォーム）上での一致**。RP2040 のソフトフロートと Xtensa の f32 FPU を跨いだ一致は Phase 6 の実測対象で、まだ確かめていない
   - センサーは `verify/sht31-replay.txt` の記録済み応答を `WASMICON_I2C_REPLAY` で流し込む。実機から記録したものへの差し替えは Phase 6
   - 実機の I2C / SPI は `ports/rp2040` / `ports/esp32s3` でまだ `unsupported` を返す。ここを実装しないと実機では動かない
 
