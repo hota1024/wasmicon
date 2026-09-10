@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-# 依存クレートを追加しない（HANDOFF §2-11）。
-# spec テストランナー用の dev-dependencies だけは Phase 2 で足してよい。
+# 依存クレートを追加しない（HANDOFF §2-11）。コア本体は依存ゼロを保つ。
 [dependencies]
+
+# spec テストランナー（runtime/tests/）だけは依存を持ってよい。
+[dev-dependencies]
+serde_json = "1"

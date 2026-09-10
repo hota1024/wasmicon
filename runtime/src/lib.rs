@@ -11,6 +11,14 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod arena;
+pub mod decode;
+pub mod error;
 pub mod generated;
+pub mod module;
+pub mod reader;
+pub mod types;
 
-// Phase 2 で decode / validate / interp / module を足す。
+pub use arena::Arena;
+pub use error::{Error, ErrorKind, Result, Trap};
+pub use module::Module;
