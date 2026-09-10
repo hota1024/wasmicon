@@ -24,7 +24,8 @@
 
 | 成果物 | 状態 | 場所 |
 |---|---|---|
-| 設計メモ（背景・方針・ロードマップ） | 完了 | `design-notes.md` |
+| 設計メモ（背景・方針・ロードマップ） | 完了 | `docs/design-notes.md` |
+| 検証レポート | 完了（Phase 6）。実機部分は未達と明記 | `docs/verification-report.md` |
 | ABI 仕様書 v0.1 | 完了（draft、未決事項 5 件） | `abi-spec.md` |
 | WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
@@ -184,8 +185,11 @@ wasmicon/
 
 ### Phase 6: クロスボード検証
 
-- `verify/` に、(1) 記録済み SHT31 応答を返す mock I2C モード（ポート層の `WASMICON_I2C_REPLAY`）、(2) 2 ボードのトレースを diff するスクリプト、(3) `ports/host` + wasmtime での差分テスト（インタプリタの正しさ）。
-- **完了条件**: 同一 `.wasm`（Rust 版、AS 版それぞれ）を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致。結果を `docs/verification-report.md` にまとめる。
+- `verify/` に、(1) 記録済み SHT31 応答を返す mock I2C モード（ポート層の `WASMICON_I2C_REPLAY`）、(2) 2 ボードのトレースを diff するスクリプト、(3) `ports/host` + wasmtime での差分テスト（インタプリタの正しさ）。→ **3 つとも作った（2026-09-10）**。
+  - (1) `WASMICON_I2C_REPLAY` + `verify/sht31-replay.txt`。応答は**合成データ**で、実機から記録したものへの差し替えが残る
+  - (2) `verify/diff-traces.sh`。シリアルのバナーとゲストの `[wasm]` 行を落として `> ` / `< ` の行だけを突き合わせる。`--self-test` で正規化の正しさを検査できる
+  - (3) `verify/differential/`。**HAL を共有**して同じ `.wasm` を wasmtime 45 と自作インタプリタで走らせる。`Resolver::call` がエンジンに依存しないので、差が出たらそれはインタプリタのバグ。4 ゲスト全部で完全一致
+- **完了条件**: 同一 `.wasm`（Rust 版、AS 版それぞれ）を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致。結果を `docs/verification-report.md` にまとめる。→ **未達（実機が必要）**。ソフトウェア側で確かめられることは全て確かめた。詳細は `docs/verification-report.md`。
 
 ---
 

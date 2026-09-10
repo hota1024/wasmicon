@@ -36,6 +36,8 @@ jobs:
       - run: cargo run -p wasmicon-gen -- --check
       # 参照実装 tools/wit2sig.py との突き合わせ（HANDOFF §5 Phase 1）
       - run: sh tools/check-sigs.sh
+      # トレース diff スクリプトの正規化（HANDOFF §5 Phase 6 の (2)）
+      - run: sh verify/diff-traces.sh --self-test
 
   # guest workspace: wasm32-unknown-unknown 向けのバインディングとアプリ
   guest:
@@ -68,3 +70,17 @@ jobs:
 
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
   # ローカルで `ports/esp32s3/build.sh build --release` を使う。
+
+  # wasmtime との差分テスト（HANDOFF §5 Phase 6 の (3)）。
+  # wasmtime は依存が大きいので別 workspace・別ジョブにしてある。
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo test
+        working-directory: verify/differential

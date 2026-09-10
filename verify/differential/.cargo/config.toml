@@ -1,0 +1,2 @@
+# root workspace とは別なので、ここで cargo を実行する。
+# `cd verify/differential && cargo test`

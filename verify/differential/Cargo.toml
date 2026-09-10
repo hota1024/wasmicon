@@ -1,0 +1,19 @@
+# 自作インタプリタと wasmtime の差分テスト（HANDOFF §5 Phase 6 の (3)）。
+#
+# wasmtime は依存が大きく、root workspace に入れると毎回の cargo test が
+# 重くなる。別 workspace にして CI では専用ジョブで回す。
+[workspace]
+
+[package]
+name = "wasmicon-differential"
+description = "同じ .wasm を wasmicon-core と wasmtime で走らせてトレースを突き合わせる"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+wasmicon-core = { path = "../../runtime" }
+wasmicon-port = { path = "../../ports/common" }
+wasmicon-host = { path = "../../ports/host" }
+wasmtime = "45"
+anyhow = "1"

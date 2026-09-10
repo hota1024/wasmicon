@@ -4,3 +4,4 @@ node_modules/
 third_party/
 apps/*/build/
 ports/*/target/
+verify/*/target/
