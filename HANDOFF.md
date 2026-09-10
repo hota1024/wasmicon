@@ -132,7 +132,8 @@ wasmicon/
 
 - Rust `no_std`、**依存クレートゼロ**、`alloc` 不使用。arena（`&'a mut [u8]`）をポートから受け取り、内部構造は生ポインタではなく arena 内のインデックス/オフセットで持つ。
 - lint: CI で `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`。`unsafe` は最小限に閉じ込め、必ず直前に `// SAFETY:` を書く。
-- 軽量化（オーナー要求）: root workspace の `[profile.release]` は `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`（サイズ計測用）。`panic = "abort"` と `strip = true` はここに置かず、guest / ポートの workspace 側の `[profile.release]` に置く（ホストツールと `cargo test` は unwind が要る）。コアで `core::fmt` を使わない。ジェネリクスの単相化でコードが膨らまないよう型は具体型で書く。サイズは Phase 2 完了時点で計測して記録する。
+- 軽量化（オーナー要求）: root workspace の `[profile.release]` は `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`（サイズ計測用）。`panic = "abort"` と `strip = true` はここに置かず、guest / ポートの workspace 側の `[profile.release]` に置く（ホストツールと `cargo test` は unwind が要る）。コアで `core::fmt` を使わない。ジェネリクスの単相化でコードが膨らまないよう型は具体型で書く。
+  - サイズ計測: `sh tools/measure-size.sh`。**2026-09-10 時点で thumbv6m-none-eabi 向け 49.4 KiB**（`.text` + `.rodata`、LTO なしの上限値）。RP2040 の 2 MB フラッシュに対して十分小さい
 - 構造: `decode`（セクション解析、コードはフラッシュ上のスライス `&'static [u8]` を保持）→ `validate`（型検査 + br のジャンプ先 side table 構築）→ `interp`（スタックマシン、`match` ディスパッチ）。
 - **Rust に computed goto は無い**。`match` ループから始める。明示的テールコール（`become`）は unstable なので当てにしない。最適化は spec テスト通過後にプロファイルを取ってから。
 - Wasm の算術は wrapping。`wrapping_*` / `rotate_*` / `checked_*` を明示的に使う。debug の `overflow-checks` は on のままにし、引っかかった箇所は仕様どおりの wrapping に直す。
