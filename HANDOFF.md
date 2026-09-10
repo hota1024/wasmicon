@@ -26,7 +26,7 @@
 |---|---|---|
 | 設計メモ（背景・方針・ロードマップ） | 完了 | `docs/design-notes.md` |
 | 検証レポート | 完了（Phase 6）。実機部分は未達と明記 | `docs/verification-report.md` |
-| ABI 仕様書 v0.1 | 完了（draft、未決事項 5 件） | `abi-spec.md` |
+| ABI 仕様書 v0.1 | 完了（draft）。§10 の未決事項 1 は Phase 3 で決定 | `docs/abi-spec.md` |
 | WIT 定義 `wasmicon:hal@0.1.0` | 完了、`wasm-tools component wit` で検証済み | `wit/*.wit` |
 | シグネチャ導出スクリプト（ジェネレータの種） | 完了、abi-spec §7 と一致確認済み | `tools/wit2sig.py` |
 | ランタイム | 完了（Phase 2）。spec テストのコア 74 ファイルが通る | `runtime/` |
@@ -35,7 +35,15 @@
 | ポート層 | host は完了。rp2040 / esp32s3 はビルドまで（実機未確認） | `ports/common/`, `ports/host/`, `ports/rp2040/`, `ports/esp32s3/` |
 | サンプルアプリ | `blink-rs` / `blink-as` / `sensor-display-rs` / `sensor-display-as` 完了 | `apps/` |
 
-Phase 5（センサー + ディスプレイ）まで完了。実機での動作確認（Phase 4 / 5 の実機部分）と Phase 6 が残り。
+**全 6 フェーズのソフトウェア側が完了**（2026-09-10）。残っているのは実機が要る部分だけ:
+
+- `ports/rp2040` / `ports/esp32s3` の I2C / SPI 実装（現在は `unsupported` を返す）
+- abi-spec §8 の配線（役割名 → ピン番号）のオーナー確認
+- 実機に焼いてトレースを突き合わせる（Phase 4 / 5 / 6 の完了条件）
+- CI は一度も実行されていない（リモート未設定）
+
+**次に読むもの: `docs/verification-report.md`。** 何がどこまで検証されたかと、
+まだ検証されていないことを分けて書いてある。
 
 ---
 
