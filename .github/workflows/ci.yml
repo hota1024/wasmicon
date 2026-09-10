@@ -48,3 +48,23 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --release
+
+  # RP2040 ポート。thumbv6m のビルドが通ることだけを見る（実機は回せない）。
+  rp2040:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ports/rp2040
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add thumbv6m-none-eabi
+      # ゲストを先に作る（include_bytes! で埋め込むため）
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --release
+        working-directory: apps
+      - run: cargo fmt --check
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo build --release
+
+  # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
+  # ローカルで `ports/esp32s3/build.sh build --release` を使う。

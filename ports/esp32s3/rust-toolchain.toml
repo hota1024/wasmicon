@@ -1,0 +1,3 @@
+[toolchain]
+# espup が入れる Xtensa 対応のフォーク。
+channel = "esp"

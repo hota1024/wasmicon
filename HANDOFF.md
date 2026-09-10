@@ -31,7 +31,7 @@
 | ランタイム | 完了（Phase 2）。spec テストのコア 74 ファイルが通る | `runtime/` |
 | ジェネレータ `wasmicon-gen` | 完了（Phase 1）。3 出力を生成、abi-spec §7 との一致をテストで検査 | `tools/wasmicon-gen/` |
 | バインディング | 完了（Phase 3）。Rust は `Drop` 付き安全ラッパ、AS は明示 `close()` | `bindings/rust/`, `bindings/assemblyscript/` |
-| ポート層 (host / rp2040 / esp32s3) | host は完了（mock HAL + トレース）。実機は Phase 4（§3 #8） | `ports/host/` |
+| ポート層 | host は完了。rp2040 / esp32s3 はビルドまで（実機未確認） | `ports/common/`, `ports/host/`, `ports/rp2040/`, `ports/esp32s3/` |
 | サンプルアプリ | `blink-rs` / `blink-as` 完了。sensor-display は Phase 5 | `apps/` |
 
 Phase 3（バインディング + blink）まで完了。実機ポート（Phase 4）とセンサーアプリ（Phase 5）が残り。
@@ -162,9 +162,14 @@ wasmicon/
   - マイコン向けに `Config` を絞る（値スタック 512 / ネスト 64 / ローカル 256 / 呼び出し深さ 32）。ホストの既定値のままだと検証の作業領域が数百 KB になり SRAM に載らない
   - **2026-09-10 時点: ビルドが通るところまで。実機での動作は未確認**（フラッシュ 56 KB / RAM 172 KB）
 - ESP32-S3: `esp-hal`（`no_std`）、espup が入れる Xtensa ツールチェーン（`rust-toolchain.toml` の `channel = "esp"`）、上限 4 ページ（PSRAM なし）。
+  - Xtensa のプリビルド core は配られていないので `.cargo/config.toml` で `build-std = ["core"]` を指定する
+  - リンカ（`xtensa-esp32s3-elf-gcc`）は espup が入れるが PATH に無い。`ports/esp32s3/build.sh` が `~/export-esp.sh` を読んでから cargo を呼ぶ
+  - GPIO は RP2040 と同じくレジスタ直叩き（IO_MUX の MCU_SEL=1、GPIO マトリクスの out_sel=128）
+  - arena は 300 KB。320 KB にするとリンカが「location counter を戻せない」と言って落ちる（DRAM の実効容量の上限）
+  - **2026-09-10 時点: ビルドが通るところまで。実機での動作は未確認**（.text 80 KB / .bss 405 KB）
 - トレースは cargo feature `trace` を有効にしたビルドで abi-spec §9 形式をシリアル（UART / USB-CDC）に出す。
 - ボード設定（abi-spec §8 の表）は `ports/<board>/src/board.rs` に集約し、`board.pin-by-role` を実装。
-- **完了条件**: 両ボードで `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致。
+- **完了条件**: 両ボードで `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致。→ **未達（実機が必要）**。2026-09-10 時点で両ターゲットのビルドとリンクが通るところまで。焼いて動かす検証はオーナーの実機と §8 の配線確認を待つ。
 
 ### Phase 5: センサー + ディスプレイアプリ
 
