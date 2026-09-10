@@ -81,6 +81,9 @@ pub fn decode<'m, 'a>(bytes: &'m [u8], arena: &mut Arena<'a>) -> Result<Module<'
             continue;
         }
 
+        if id == 13 {
+            return Err(Error::Unsupported("exception handling is not supported"));
+        }
         let rank = section_rank(id).ok_or(Error::Malformed("malformed section id"))?;
         if rank <= last_rank {
             return Err(Error::Malformed("unexpected content after last section"));
@@ -233,7 +236,14 @@ fn decode_table_type(r: &mut Reader<'_>) -> Result<Limits> {
     // 要素型は funcref のみ（reference-types 非対応）。
     match r.u8()? {
         0x70 => {}
-        0x6f => return Err(Error::Unsupported("reference types are not supported")),
+        0x40 => {
+            return Err(Error::Unsupported(
+                "table with initializer is not supported",
+            ));
+        }
+        0x63..=0x6f | 0x71..=0x7a => {
+            return Err(Error::Unsupported("reference types are not supported"));
+        }
         _ => return Err(Error::Malformed("malformed reference type")),
     }
     Limits::decode(r, MAX_TABLE_ELEMS, "table size")
@@ -409,6 +419,12 @@ fn const_expr<'m>(r: &mut Reader<'m>) -> Result<&'m [u8]> {
             }
             0x23 => {
                 r.u32_leb()?;
+            }
+            // extended-const 提案の算術。Wasm としては正しいが対応機能セット外。
+            0x6a..=0x6c | 0x7c..=0x7e => {
+                return Err(Error::Unsupported(
+                    "extended constant expressions are not supported",
+                ));
             }
             _ => return Err(Error::Invalid("constant expression required")),
         }

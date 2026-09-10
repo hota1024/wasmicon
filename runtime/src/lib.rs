@@ -12,13 +12,16 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 pub mod arena;
+pub mod config;
 pub mod decode;
 pub mod error;
 pub mod generated;
 pub mod module;
 pub mod reader;
 pub mod types;
+pub mod validate;
 
 pub use arena::Arena;
+pub use config::Config;
 pub use error::{Error, ErrorKind, Result, Trap};
 pub use module::Module;

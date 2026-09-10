@@ -12,54 +12,118 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmicon_core::{Arena, ErrorKind, decode};
+use wasmicon_core::{Arena, Config, Error, ErrorKind, decode, validate};
 
 /// 実行対象の `.wast`。段階が進むごとに増やす。
 const FILES: &[&str] = &[
-    // --- 2a: デコードのみ（module コマンド）---
+    // Wasm コア仕様のうち、対応機能セット（HANDOFF §2-7）に収まるファイル。
+    // ここに無いものは EXCLUDED の理由で外している。
+    "address.wast",
+    "align.wast",
     "binary.wast",
-    "custom.wast",
-    "type.wast",
-    "func.wast",
+    "binary-leb128.wast",
     "block.wast",
-    "loop.wast",
     "br.wast",
     "br_if.wast",
     "br_table.wast",
+    "bulk.wast",
     "call.wast",
+    "call_indirect.wast",
+    "comments.wast",
+    "const.wast",
+    "conversions.wast",
+    "custom.wast",
+    "data.wast",
+    "elem.wast",
+    "endianness.wast",
+    "exports.wast",
+    "f32.wast",
+    "f32_bitwise.wast",
+    "f32_cmp.wast",
+    "f64.wast",
+    "f64_bitwise.wast",
+    "f64_cmp.wast",
+    "fac.wast",
+    "float_exprs.wast",
+    "float_literals.wast",
+    "float_memory.wast",
+    "float_misc.wast",
+    "forward.wast",
+    "func.wast",
+    "func_ptrs.wast",
+    "global.wast",
     "i32.wast",
     "i64.wast",
-    "f32.wast",
-    "f64.wast",
+    "if.wast",
+    "inline-module.wast",
+    "int_exprs.wast",
+    "int_literals.wast",
+    "labels.wast",
+    "left-to-right.wast",
+    "load.wast",
+    "local_get.wast",
+    "local_set.wast",
+    "local_tee.wast",
+    "loop.wast",
     "memory.wast",
     "memory_copy.wast",
     "memory_fill.wast",
     "memory_init.wast",
-    "global.wast",
-    "start.wast",
-    "endianness.wast",
-    "forward.wast",
+    "memory_redundancy.wast",
+    "memory_size.wast",
+    "memory_trap.wast",
+    "names.wast",
     "nop.wast",
-    "local_get.wast",
-    "local_set.wast",
-    "local_tee.wast",
+    "return.wast",
+    "select.wast",
+    "skip-stack-guard-page.wast",
+    "stack.wast",
+    "start.wast",
+    "store.wast",
+    "switch.wast",
+    "token.wast",
+    "traps.wast",
+    "type.wast",
+    "unreachable.wast",
+    "unreached-invalid.wast",
+    "unreached-valid.wast",
+    "unwind.wast",
+    "utf8-custom-section-id.wast",
+    "utf8-import-field.wast",
+    "utf8-import-module.wast",
+    "utf8-invalid-encoding.wast",
 ];
 
 /// 除外したファイルと理由。
 const EXCLUDED: &[(&str, &str)] = &[
-    ("simd_*.wast", "SIMD 非対応（HANDOFF §2-7）"),
-    ("*atomic*.wast", "threads 非対応"),
-    ("ref_*.wast / select.wast", "reference-types 非対応"),
-    ("table*.wast / elem.wast", "table.* 命令が非対応"),
     (
-        "linking.wast / imports.wast",
+        "simd_*, i8x16_*, i16x8_*, i32x4_*, relaxed_*",
+        "SIMD 非対応（HANDOFF §2-7）",
+    ),
+    ("*atomic*", "threads 非対応"),
+    (
+        "ref*, br_on_*, call_ref, i31",
+        "reference-types / GC 非対応",
+    ),
+    ("table*", "table.* 命令が非対応"),
+    ("return_call*", "tail-call 非対応"),
+    ("throw*, try_table, tag 系", "exception-handling 非対応"),
+    ("*64.wast, memory64*", "memory64 非対応"),
+    (
+        "address0/1, load0/1/2, data0, exports0 など数字付き",
+        "multi-memory 非対応",
+    ),
+    ("array*, struct, type-rec, type-canon など", "GC 非対応"),
+    (
+        "linking*, imports*, instance",
         "複数モジュールのリンクは v0.1 の範囲外",
     ),
+    ("memory_grow", "multi-memory のモジュールを含む"),
 ];
 
 /// 対応済みコマンド種別。段階が進むごとに増やす。
-/// 2a ではデコードだけなので `module` のみ。
-const SUPPORTED: &[&str] = &["module"];
+/// 2b でデコード + 検証まで。実行系は 2c で足す。
+const SUPPORTED: &[&str] = &["module", "assert_malformed", "assert_invalid"];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -110,6 +174,17 @@ fn arena_buf() -> Vec<u8> {
     vec![0u8; 8 << 20]
 }
 
+/// デコード + 検証。実行はまだしない。
+fn load(bytes: &[u8]) -> Result<(), Error> {
+    let mut buf = arena_buf();
+    let mut scratch_buf = arena_buf();
+    let mut arena = Arena::new(&mut buf);
+    let mut scratch = Arena::new(&mut scratch_buf);
+    let m = decode::decode(bytes, &mut arena)?;
+    validate::validate(&m, &Config::default(), &mut arena, &mut scratch)?;
+    Ok(())
+}
+
 /// 1 ファイル分のコマンドを実行する。失敗は `tally.failures` に積む。
 fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
     let Some((json, dir)) = convert(root, wast) else {
@@ -140,15 +215,13 @@ fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
                     continue;
                 };
                 let bytes = std::fs::read(dir.join(file)).unwrap();
-                let mut buf = arena_buf();
-                let mut arena = Arena::new(&mut buf);
-                match decode::decode(&bytes, &mut arena) {
-                    Ok(_) => tally.ran += 1,
+                match load(&bytes) {
+                    Ok(()) => tally.ran += 1,
                     // 上流の testsuite は core の .wast にも post-MVP 機能を混ぜている。
                     // 対応機能セット外はスキップし、件数だけ表に出す。
                     Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
                     Err(e) => tally.failures.push(format!(
-                        "{wast}:{line}: 正しいモジュールのデコードに失敗: {} [{}]",
+                        "{wast}:{line}: 正しいモジュールの読み込みに失敗: {} [{}]",
                         e.reason(),
                         e.kind().name()
                     )),
@@ -164,23 +237,50 @@ fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
                     continue;
                 };
                 let bytes = std::fs::read(dir.join(file)).unwrap();
-                let mut buf = arena_buf();
-                let mut arena = Arena::new(&mut buf);
-                match decode::decode(&bytes, &mut arena) {
-                    Err(e) if e.kind() == ErrorKind::Malformed => tally.ran += 1,
-                    Err(e) => tally.failures.push(format!(
-                        "{wast}:{line}: malformed を期待したが {} [{}]",
-                        e.kind().name(),
-                        e.reason()
-                    )),
-                    Ok(_) => tally.failures.push(format!(
-                        "{wast}:{line}: malformed を期待したが成功した（{}）",
-                        cmd["text"].as_str().unwrap_or("?")
-                    )),
+                expect(tally, wast, line, cmd, &bytes, ErrorKind::Malformed);
+            }
+            "assert_invalid" => {
+                if cmd["module_type"].as_str() != Some("binary") {
+                    tally.skipped += 1;
+                    continue;
                 }
+                let Some(file) = cmd["filename"].as_str() else {
+                    tally.skipped += 1;
+                    continue;
+                };
+                let bytes = std::fs::read(dir.join(file)).unwrap();
+                expect(tally, wast, line, cmd, &bytes, ErrorKind::Invalid);
             }
             _ => tally.skipped += 1,
         }
+    }
+}
+
+/// 読み込みが指定した区分で失敗することを確かめる。
+fn expect(
+    tally: &mut Tally,
+    wast: &str,
+    line: u64,
+    cmd: &serde_json::Value,
+    bytes: &[u8],
+    want: ErrorKind,
+) {
+    match load(bytes) {
+        Err(e) if e.kind() == want => tally.ran += 1,
+        // 対応機能セット外の構文を含むケースは、期待どおりに落ちたかを判定できない。
+        Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
+        Err(e) => tally.failures.push(format!(
+            "{wast}:{line}: {} を期待したが {} [{}]（期待: {}）",
+            want.name(),
+            e.kind().name(),
+            e.reason(),
+            cmd["text"].as_str().unwrap_or("?")
+        )),
+        Ok(()) => tally.failures.push(format!(
+            "{wast}:{line}: {} を期待したが成功した（{}）",
+            want.name(),
+            cmd["text"].as_str().unwrap_or("?")
+        )),
     }
 }
 
