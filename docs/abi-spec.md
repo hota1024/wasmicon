@@ -426,7 +426,7 @@ P4 のフラッシュと PSRAM は GPIO 空間の外の専用 MSPI ピンに出�
 
 ## 11. 層の分割: `wasmicon:hal` と `wasmicon:device`（2026-09-11 承認）
 
-### 10.1 なぜ分けるか
+### 11.1 なぜ分けるか
 
 §1 の HAL（gpio / i2c / spi）は **L1 = チップの足を貸す**層で、デバイス固有の
 ロジックはゲストが持つ（ILI9341 のコマンド列も SHT31 の手順もゲスト側）。
@@ -444,9 +444,9 @@ gpio/i2c/spi のどれにも当てはまらない。ここを扱うには、ポ�
 | 層 | L1（足を貸す） | L2（機能を貸す） |
 | ドライバの所有者 | ゲスト | ポート |
 | 例 | gpio / i2c / spi / time / log / board | display |
-| トレース一致の要求 | **する**（§9） | **しない**（下記 10.4） |
+| トレース一致の要求 | **する**（§9） | **しない**（下記 §11.4） |
 
-### 10.2 パッケージ構成
+### 11.2 パッケージ構成
 
 world を hal に置いたまま device を import させると、device が hal の
 `error-code` を `use` した時点で**依存が循環する**（`wasm-tools` で確認済み）。
@@ -460,7 +460,7 @@ wit/deps/device/            package wasmicon:device@0.1.0 — L2（hal の型を
 
 依存は `app → hal, device` と `device → hal` の一方向のみ。
 
-### 10.3 world は 2 つ。任意性はここで表現する
+### 11.3 world は 2 つ。任意性はここで表現する
 
 `ports/common` は §6.4 の**完全一致リンク**なので、display を持たないボードで
 display を import するゲストはリンクに失敗する。これは関数単位で驚くべきでは
@@ -473,7 +473,7 @@ world app-display { include app; import wasmicon:device/display@0.1.0; }
 
 ポートは自分が提供する world に対応する import 表だけを登録する。
 
-### 10.4 決定性の扱い
+### 11.4 決定性の扱い
 
 **`device` は §9 のトレース一致要求の対象外とする。** `time` と同じ扱い。
 
@@ -486,7 +486,12 @@ world app-display { include app; import wasmicon:device/display@0.1.0; }
 **ゲストが raw SPI で ILI9341 を叩く現在の経路は維持する**。`device:display` は
 「L1 では表現できないパネル」専用であり、SPI パネルの置き換えではない。
 
-### 10.5 lowering への影響
+**device の呼び出しはトレースに出す**（2026-09-11 承認）。`time` のように
+出力ごと省くのではなく、§9 の書式で出したうえで **`verify/diff-traces.sh` 側で
+落とす**。実機で display を直すときにトレースが見えないのは痛いという判断。
+落とす処理は、既にある「`[wasm]` 行を落とす」のと同じ形で足す。
+
+### 11.5 lowering への影響
 
 - §3.1 のモジュール名 `<ns>:<pkg>/<iface>@<ver>` はそのまま使える。
   device は `wasmicon:device/display@0.1.0` になる。**規則の変更は無い**

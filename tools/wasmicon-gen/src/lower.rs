@@ -57,9 +57,22 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
             .name
             .clone()
             .context("無名のインターフェースは使わない")?;
+        // モジュール名は **インターフェースが属するパッケージ**から組み立てる
+        // （world が属するパッケージではない）。abi-spec §11 で
+        // wasmicon:device を別パッケージに切るため、ここを取り違えると
+        // device の import 名が wasmicon:hal/... になってしまう。
+        let iface_pkg_id = iface
+            .package
+            .context("インターフェースに所属パッケージが無い")?;
+        let iface_pkg = &resolve.packages[iface_pkg_id];
+        let iface_version = iface_pkg
+            .name
+            .version
+            .as_ref()
+            .context("パッケージにバージョンが無い。abi-spec §3.1 はバージョン必須")?;
         let module = format!(
             "{}:{}/{}@{}",
-            pkg.name.namespace, pkg.name.name, name, version
+            iface_pkg.name.namespace, iface_pkg.name.name, name, iface_version
         );
         interfaces.push(
             lower_interface(&resolve, *id, iface, &name, module)

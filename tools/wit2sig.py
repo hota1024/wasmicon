@@ -44,8 +44,19 @@ def outp(t):
         return 'iii'  # buf, cap, len-out
     return 'i'
 
+def module(iface):
+    """abi-spec §3.1 のモジュール名 <ns>:<pkg>/<iface>@<ver>。
+
+    **インターフェースが属するパッケージ**から組み立てる（world が属する
+    パッケージではない）。§11 で wasmicon:device を別パッケージに切るため、
+    ここを取り違えると device の import 名が wasmicon:hal/... になる。
+    """
+    full = d['packages'][iface['package']]['name']  # 例: wasmicon:hal@0.1.0
+    base, _, ver = full.partition('@')
+    return f"{base}/{iface['name']}@{ver}"
+
 for iface in d['interfaces']:
-    print(f"--- wasmicon:hal/{iface['name']}@0.1.0")
+    print(f"--- {module(iface)}")
     for fname, f in iface['functions'].items():
         sig = ''.join(flat(p['type']) for p in f['params'])
         r = f.get('result')

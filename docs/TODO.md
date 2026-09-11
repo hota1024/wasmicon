@@ -155,8 +155,10 @@ esp-bsp の `bsp_feature_enable(BSP_FEATURE_LCD)` は PI4IOE5V6408（内部 I2C,
       import 表を hal 群と device 群に分け、ポートが登録する群を選べるようにする
 - [ ] `tools/wit2sig.py` と `sh tools/check-sigs.sh` を 2 パッケージに対応させる
 - [ ] バインディング（Rust / AssemblyScript）に device のモジュールを足す
-- [ ] `verify/diff-traces.sh` の扱いを決める。§11.4 により device はトレース一致の
-      対象外。**トレースに出さない**（`time` と同じ）か、出して diff 側で落とすか
+- [ ] `verify/diff-traces.sh` に device 行を落とす処理を足す。**方針は決定済み**
+      （§11.4、2026-09-11）: device の呼び出しは §9 の書式でトレースに出し、
+      比較時に diff-traces 側で落とす。`[wasm]` 行と同じ扱い。
+      `--self-test` にも device 行が落ちることの検査を足すこと
 - [ ] `ports/common` が device 群を任意で登録できるようにする（§6.4 の完全一致
       リンクは維持する）
 
