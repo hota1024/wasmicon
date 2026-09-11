@@ -24,7 +24,7 @@ use esp_hal::peripherals::Peripherals;
 mod tab5;
 
 #[cfg(feature = "tab5")]
-pub use tab5::{steal_serial, DEF};
+pub use tab5::{steal_serial, Hw, DEF};
 
 /// トレースとログを出す先。**どこへ出すかはボードが決める**。
 ///
@@ -38,6 +38,10 @@ pub trait Serial {
 /// このビルドのトレース出力の型。
 #[cfg(feature = "tab5")]
 pub type Trace = tab5::TraceOut;
+
+/// このビルドの I2C バスの型。
+#[cfg(feature = "tab5")]
+pub type I2cBus = esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>;
 
 // ボードはちょうど 1 つ選ぶ。Cargo の feature は加算的なので、
 // 「選ばれていない」と「複数選ばれた」の両方をここで弾く。
@@ -79,10 +83,10 @@ impl BoardDef {
     }
 }
 
-/// トレースとログの出力先を開く。ボードごとに経路が違う。
-pub fn open_serial(p: Peripherals) -> Trace {
+/// ボードのハードウェアを初期化する。ボードごとに経路もバスも違う。
+pub fn open(p: Peripherals) -> Hw {
     #[cfg(feature = "tab5")]
-    return tab5::open_serial(p);
+    return tab5::open(p);
 
     // ボードが選ばれていないときの本当のエラーは上の compile_error! なので、
     // 「戻り値の型が合わない」という無関係なエラーでそれが埋もれないようにする。

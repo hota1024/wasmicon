@@ -11,23 +11,27 @@ use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::{Board, BoardResult};
 
-use crate::boards::{Serial, DEF};
+use crate::boards::{I2cBus, Serial, DEF};
 use crate::chip::{self, Gpio};
 
 /// ESP32-P4 のボード。どのボードかは feature で選ぶ（`crate::boards`）。
 pub struct EspBoard<S: Serial> {
     serial: S,
     gpio: Gpio,
+    /// ゲストに開放するバス。Tab5 では PORT.A（外部ユニット用）。
+    /// **内部 I2C はここに入れない。** 電源とタッチとコーデックが同じ線に
+    /// いるので、ゲストに触らせない（abi-spec §8、docs/TODO.md §1.1.5）。
+    i2c: I2cBus,
 }
 
 impl<S: Serial> EspBoard<S> {
     /// # Safety
     /// GPIO と IO_MUX をこのボードが排他的に使うこと。
     #[must_use]
-    pub unsafe fn new(serial: S) -> Self {
+    pub unsafe fn new(serial: S, i2c: I2cBus) -> Self {
         // SAFETY: 呼び出し側の契約をそのまま chip::Gpio に渡す。
         let gpio = unsafe { Gpio::steal() };
-        EspBoard { serial, gpio }
+        EspBoard { serial, gpio, i2c }
     }
 
     /// シリアルへの参照。失敗の理由を出すのに使う。
@@ -66,26 +70,51 @@ impl<S: Serial> Board for EspBoard<S> {
         let _ = self.gpio.configure(index, PinMode::Input);
     }
 
-    // --- I2C / SPI は Phase 5 で実装する ---
+    // --- I2C: index 0 = ボードが公開する外部バス。SPI は未実装 ---
 
-    fn i2c_open(&mut self, _index: u32, _speed: Speed) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+    fn i2c_open(&mut self, index: u32, _speed: Speed) -> BoardResult<()> {
+        // index 0 だけ。ボードが持つバスは 1 本（abi-spec §8）。
+        // 速度は今のところ `open` 時の設定を変えない（既定のまま）。
+        if index == 0 {
+            Ok(())
+        } else {
+            Err(ErrorCode::InvalidArgument)
+        }
     }
-    fn i2c_write(&mut self, _index: u32, _address: u16, _data: &[u8]) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+
+    fn i2c_write(&mut self, index: u32, address: u16, data: &[u8]) -> BoardResult<()> {
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        self.i2c.write(addr7(address)?, data).map_err(map_i2c_err)
     }
-    fn i2c_read(&mut self, _index: u32, _address: u16, _buf: &mut [u8]) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+
+    fn i2c_read(&mut self, index: u32, address: u16, buf: &mut [u8]) -> BoardResult<usize> {
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        self.i2c
+            .read(addr7(address)?, buf)
+            .map(|()| buf.len())
+            .map_err(map_i2c_err)
     }
+
     fn i2c_write_read(
         &mut self,
-        _index: u32,
-        _address: u16,
-        _data: &[u8],
-        _buf: &mut [u8],
+        index: u32,
+        address: u16,
+        data: &[u8],
+        buf: &mut [u8],
     ) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        self.i2c
+            .write_read(addr7(address)?, data, buf)
+            .map(|()| buf.len())
+            .map_err(map_i2c_err)
     }
+
     fn i2c_close(&mut self, _index: u32) {}
 
     fn spi_open(&mut self, _index: u32, _frequency_hz: u32, _mode: SpiMode) -> BoardResult<()> {
@@ -127,5 +156,25 @@ impl<S: Serial> Board for EspBoard<S> {
     fn trace(&mut self, line: &[u8]) {
         self.serial.write(line);
         self.serial.write(b"\r\n");
+    }
+}
+
+/// WIT の `u16` アドレスを 7bit に落とす。10bit アドレスは扱わない。
+fn addr7(address: u16) -> BoardResult<u8> {
+    u8::try_from(address)
+        .ok()
+        .filter(|a| *a < 0x80)
+        .ok_or(ErrorCode::InvalidArgument)
+}
+
+/// esp-hal の I2C エラーを abi-spec §7 のコードへ落とす。
+fn map_i2c_err(e: esp_hal::i2c::master::Error) -> ErrorCode {
+    use esp_hal::i2c::master::Error as E;
+    match e {
+        E::AcknowledgeCheckFailed(_) => ErrorCode::Nack,
+        E::Timeout => ErrorCode::Timeout,
+        E::ZeroLengthInvalid => ErrorCode::InvalidArgument,
+        E::FifoExceeded => ErrorCode::OutOfMemory,
+        _ => ErrorCode::Io,
     }
 }
