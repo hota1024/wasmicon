@@ -98,9 +98,7 @@ P4 の USB_DEVICE (USB-Serial-JTAG) に繋がっている**。ペリフェラル
 - `cat` でポートを開くと `rst:0x17 CHIP_USB_UART_RESET` が起き、ROM バナーの
   31 バイトだけ取れて切れる（開くと DTR が動いてリセットされる）
 
-**有力な仮説: esp-hal の USB-Serial-JTAG ドライバが P4 v1.0 シリコンで動かない。**
-ESP-IDF が v0.x〜v1.x と v3.x を別レンジ (`REV_LESS_V3`) として扱い、既定を
-v3.1 にしているのは、まさにこの種の errata が理由である可能性が高い。未検証。
+**→ 下の「最小再現で切り分けた結果」で実証した。wasmicon のコードは無関係。**
 
 **バックライトによる目視確認は成立しない（2026-09-11 に実機で確認）。**
 `led-backlight` feature で `led` を G22 に向けても光らなかった。原因は
@@ -133,16 +131,46 @@ esp-bsp の `bsp_feature_enable(BSP_FEATURE_LCD)` は PI4IOE5V6408（内部 I2C,
 - 投機的に入れていた 2 秒待機は外した。タイマー依存の待ちを起動経路の先頭に
   置くと、タイマーが動いていない場合にそこで全部止まり、切り分けを妨げる
 
-**いまの本質的な問題は「観測手段が無いこと」。** 出力も画面も確認できないまま
-仮説ベースの変更を重ねても検証できない。**次は最小再現で切り分ける**:
+#### 最小再現で切り分けた結果（2026-09-11、決着）
 
-- [ ] **esp-hal だけの最小アプリ**（wasmicon を一切含まず、esp-println か
-      生の `UsbSerialJtag` でループ出力するだけ）を焼く。
-      - 出れば → プラットフォーム側は正常。**こちらのコードの問題**
-      - 出なければ → この個体で USB-Serial-JTAG からアプリの出力が取れない。
-        UART0 経路（USB シリアル変換 + M5-Bus 13/14）へ戻す判断材料になる
-- [ ] **USB シリアル変換を 1 個用意する**のが最短。これがあれば UART0 で
-      確実に観測でき、ここまでの堂々巡りが終わる
+**この Tab5（ESP32-P4 v1.0）では、アプリからの USB-Serial-JTAG 出力が取れない。
+wasmicon のコードは無関係。**
+
+wasmicon を一切含まない 30 行の esp-hal アプリで再現した:
+
+```rust
+#![no_std] #![no_main]
+esp_bootloader_esp_idf::esp_app_desc!();
+#[esp_hal::main]
+fn main() -> ! {
+    let p = esp_hal::init(esp_hal::Config::default());
+    let mut usb = UsbSerialJtag::new(p.USB_DEVICE);
+    loop {
+        let _ = usb.write(b"p4-min alive\r\n");
+        let _ = usb.flush_tx();
+        for _ in 0..20_000_000u32 { core::hint::spin_loop(); }  // タイマー非依存
+    }
+}
+```
+
+- I2C もタイマー依存の待ちもゲスト実行も含まない
+- それでも `boot: Loaded app from partition` の直後に `Broken pipe` になり、
+  **`p4-min alive` は 1 行も出ない**
+- アプリ実行中にポートを開き直しても **0 バイト**（1 秒ごとに出しているのに）
+- ROM とブートローダの出力は同じ USB から出ている。
+  **ROM 側の USB は動いていて、アプリが握った瞬間に止まる**
+
+ESP-IDF が v0.x〜v1.x と v3.x を別レンジ (`REV_LESS_V3`) にして既定を v3.1 に
+していることと整合する。**シリコンの errata という仮説を強く支持する**（未確定）。
+
+**判断ミスの記録**: トレースを UART0 から USB-Serial-JTAG に変えたのは
+「部品不要」を優先した判断だったが、**この個体では機能しない経路だった**。
+その結果、観測手段が無いまま仮説ベースの変更を重ねることになった。
+UART のままなら USB シリアル変換 1 個で最初から観測できていた。
+
+- [ ] **トレースを UART0 (G37/G38) に戻す。** 3 ポートで経路が揃う利点もある。
+      3.3V の USB シリアル変換 1 個と M5-Bus 13/14 への配線が要る
+- [ ] あるいは **v3.x シリコンの P4** を使う（USB-Serial-JTAG が使える見込み）
 
 選択肢:
 
