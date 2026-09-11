@@ -9,7 +9,7 @@ use wit_parser::{
 };
 
 use crate::model::{
-    EnumCase, EnumDef, FlagBit, FlagsDef, Hal, Iface, Import, Param, Ret, Role, Scalar,
+    EnumCase, EnumDef, FlagBit, FlagsDef, Group, Hal, Iface, Import, Param, Ret, Role, Scalar,
 };
 
 /// `wit/` を読んで ABI モデルを組み立てる。
@@ -24,10 +24,15 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
     // モジュール名はそれぞれの所属パッケージから引く（下記）。
     let pkg = &resolve.packages[pkg_id];
 
+    // abi-spec §11.3: world は 2 つある。生成物は 1 セットで、import は全 world の
+    // 上位集合（= app-display）から採る。ポートは `Group` で登録する群を選ぶ。
+    // app-display は `include app` なので、hal の並び順は app と同じまま後ろに
+    // device が付く。HostFn の順序が動かないのはこのため。
     let world_id = *pkg
         .worlds
-        .get("app")
-        .context("world app が見つからない（abi-spec §2.3）")?;
+        .get("app-display")
+        .or_else(|| pkg.worlds.get("app"))
+        .context("world app / app-display が見つからない（abi-spec §2.3, §11.3）")?;
     let world = &resolve.worlds[world_id];
 
     let run = world
@@ -71,11 +76,31 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
             "{}:{}/{}@{}",
             iface_pkg.name.namespace, iface_pkg.name.name, name, iface_version
         );
+        // 層はパッケージ名で決まる（abi-spec §11.1）。
+        let group = match (
+            iface_pkg.name.namespace.as_str(),
+            iface_pkg.name.name.as_str(),
+        ) {
+            ("wasmicon", "hal") => Group::Hal,
+            ("wasmicon", "device") => Group::Device,
+            (ns, n) => bail!(
+                "未知のパッケージ {ns}:{n}。abi-spec §11.1 は wasmicon:hal と \
+                 wasmicon:device だけを定義している"
+            ),
+        };
         interfaces.push(
-            lower_interface(&resolve, *id, iface, &name, module)
+            lower_interface(&resolve, *id, iface, &name, module, group)
                 .with_context(|| format!("interface {name} の lowering に失敗した"))?,
         );
     }
+
+    // 群の順序を固定する（hal → device）。world の解決順は `include` の扱いで
+    // 変わりうるが、`HostFn` と `IMPORTS` の並びは生成物の差分に直結するので、
+    // ここで安定させる。群内の順序は world の宣言順のまま。
+    interfaces.sort_by_key(|i| match i.group {
+        Group::Hal => 0,
+        Group::Device => 1,
+    });
 
     Ok(Hal { interfaces })
 }
@@ -86,6 +111,7 @@ fn lower_interface(
     iface: &Interface,
     name: &str,
     module: String,
+    group: Group,
 ) -> Result<Iface> {
     let mut enums = Vec::new();
     let mut flags = Vec::new();
@@ -172,6 +198,7 @@ fn lower_interface(
     Ok(Iface {
         name: name.to_string(),
         module,
+        group,
         docs: docs(&iface.docs),
         enums,
         flags,

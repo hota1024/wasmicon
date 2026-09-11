@@ -130,35 +130,38 @@ esp-bsp の `bsp_feature_enable(BSP_FEATURE_LCD)` は PI4IOE5V6408（内部 I2C,
       **トレースが黙って欠ける**。検証の測定器としては最悪の壊れ方なので、
       入れるなら欠けたことを検出できる形にすること
 
-### 1.1.7 `wasmicon:device` の切り出し（方針承認済み、実装未着手）
+### 1.1.7 `wasmicon:device` の切り出し（ABI 面は完了、実装が残り）
 
-方針は `docs/abi-spec.md` §11（2026-09-11 承認）。**ABI 変更を伴う**ので、
-着手前に §11 を読むこと。`wasmicon:hal` は凍結し、内容は変えない。
+方針は `docs/abi-spec.md` §11（2026-09-11 承認）。`wasmicon:hal` は凍結し、
+内容を変えない。**hal の import 表は 20 件のまま 1 行も動いていない**
+（組み替え前後で `--sigs` を diff して確認済み）。
 
-`wasm-tools` で構成の成立は検証済み:
+済み:
 
-- 3 パッケージ（`wasmicon:app` / `wasmicon:hal` / `wasmicon:device`）なら
-  循環せず、device が hal の `error-code` を `use` できる
-- world を hal に残したまま device を import すると**依存が循環して弾かれる**
-- world 2 つ（`app` / `app-display`）で display の任意性を表現できる
+- [x] `wit/` を 3 パッケージに組み替えた（`wasmicon:app` / `hal` / `device`）。
+      world を hal に残したまま device を import すると、device が hal の
+      `error-code` を `use` した時点で**依存が循環して弾かれる**ため
+- [x] `wit/deps/device/display.wit` と `world app-display` を追加
+- [x] ジェネレータと `tools/wit2sig.py` のモジュール名をインターフェースの
+      所属パッケージから引くようにした
+- [x] ジェネレータが 2 world を扱う（import は上位集合 `app-display` から採り、
+      群の順序を hal → device に固定する）
+- [x] `ImportDesc` に `group` を持たせ、`ports/common` は **hal 群だけを登録**する。
+      `world app-display` のゲストは display を持たないポートでリンクエラーになる
+- [x] `check-sigs.sh` が 27 imports で一致。**独立実装の `wit2sig.py` が device の
+      lowering にも同じ結論を出している**
+- [x] abi-spec §11.6 に device の正規表を追加し、`tests/abi_spec.rs` が転記して検査
 
-残りの作業:
+残り:
 
-- [x] `wit/` を組み替える（`wit/` = world only の `wasmicon:app`、
-      `wit/deps/hal/` = L1）。**import 表が不変であることを確認済み**。
-      残るのは `wit/deps/device/` の追加
-- [x] **ジェネレータの修正。** モジュール名をインターフェースの所属パッケージから
-      引くようにした（ジェネレータと `tools/wit2sig.py` の両方）
-- [ ] ジェネレータが world を 2 つ扱えるようにする（現在 `world app` 決め打ち）。
-      import 表を hal 群と device 群に分け、ポートが登録する群を選べるようにする
-- [ ] `tools/wit2sig.py` と `sh tools/check-sigs.sh` を 2 パッケージに対応させる
-- [ ] バインディング（Rust / AssemblyScript）に device のモジュールを足す
+- [ ] バインディング（Rust / AssemblyScript）に device のモジュールを足す。
+      現状 `bindings/` は生成されるが、ゲストから使う薄いラッパが無い
 - [ ] `verify/diff-traces.sh` に device 行を落とす処理を足す。**方針は決定済み**
       （§11.4、2026-09-11）: device の呼び出しは §9 の書式でトレースに出し、
       比較時に diff-traces 側で落とす。`[wasm]` 行と同じ扱い。
       `--self-test` にも device 行が落ちることの検査を足すこと
-- [ ] `ports/common` が device 群を任意で登録できるようにする（§6.4 の完全一致
-      リンクは維持する）
+- [ ] display を提供するポート側の実装（Tab5 の MIPI-DSI）。
+      **その前に §1.1.5 の「内部 I2C + エキスパンダで LCD の電源を入れる」が要る**
 
 ### 1.2 実装
 

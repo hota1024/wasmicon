@@ -191,6 +191,28 @@ pub fn runtime_rs(hal: &Hal) -> String {
     let _ = writeln!(out, "    pub sig: &'static str,");
     let _ = writeln!(out, "    /// ポート層がディスパッチに使うスロット。");
     let _ = writeln!(out, "    pub host_fn: HostFn,");
+    let _ = writeln!(
+        out,
+        "    /// 属する層（abi-spec §11.1）。ポートは登録する群をこれで選ぶ。"
+    );
+    let _ = writeln!(out, "    pub group: Group,");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "/// インターフェースが属する層（abi-spec §11.1）。");
+    let _ = writeln!(out, "///");
+    let _ = writeln!(
+        out,
+        "/// `Hal` は全ポートが実装する。`Device` はポートがドライバを持つもので、"
+    );
+    let _ = writeln!(
+        out,
+        "/// 提供しないポートは登録しない（その world のゲストはリンクに失敗する）。"
+    );
+    let _ = writeln!(out, "#[derive(Clone, Copy, PartialEq, Eq)]");
+    let _ = writeln!(out, "pub enum Group {{");
+    let _ = writeln!(out, "    Hal,");
+    let _ = writeln!(out, "    Device,");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
 
@@ -239,6 +261,7 @@ pub fn runtime_rs(hal: &Hal) -> String {
         let _ = writeln!(out, "        name: \"{}\",", f.name);
         let _ = writeln!(out, "        sig: \"{}\",", f.sig());
         let _ = writeln!(out, "        host_fn: HostFn::{},", f.slot);
+        let _ = writeln!(out, "        group: Group::{},", iface.group.rust_ident());
         let _ = writeln!(out, "    }},");
     }
     let _ = writeln!(out, "];");

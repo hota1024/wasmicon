@@ -59,12 +59,54 @@ const SPEC_ERROR_CODE: &[&str] = &[
     "OutOfMemory",
 ];
 
+/// abi-spec §11.6「device の import 一覧（正規表）」からの転記。
+/// hal (§7) とは別の群なので、表も分けてある（abi-spec §11.1）。
+const SPEC_SECTION_11: &[(&str, &str, &str)] = &[
+    // wasmicon:device/display@0.1.0
+    (
+        "wasmicon:device/display@0.1.0",
+        "[static]surface.open",
+        "ii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]surface.width",
+        "ii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]surface.height",
+        "ii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]surface.format",
+        "ii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]surface.blit",
+        "iiiiiii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]surface.flush",
+        "i:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[resource-drop]surface",
+        "i:",
+    ),
+];
+
 #[test]
 fn import_table_matches_abi_spec_section_7() {
     let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("wit/ を読めない");
 
     let mut expected: Vec<String> = SPEC_SECTION_7
         .iter()
+        .chain(SPEC_SECTION_11)
         .map(|(m, n, s)| format!("{m}\t{n}\t{s}"))
         .collect();
     expected.sort();
@@ -105,7 +147,9 @@ fn interfaces_follow_world_import_order() {
     let names: Vec<&str> = hal.interfaces.iter().map(|i| i.name.as_str()).collect();
     assert_eq!(
         names,
-        ["types", "gpio", "i2c", "spi", "time", "log", "board"],
-        "world app の import 宣言順と一致しない"
+        [
+            "types", "gpio", "i2c", "spi", "time", "log", "board", "display"
+        ],
+        "world の import 宣言順と一致しない（hal 群が先、device 群が後: abi-spec §11.1）"
     );
 }

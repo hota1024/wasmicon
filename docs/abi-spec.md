@@ -500,6 +500,27 @@ world app-display { include app; import wasmicon:device/display@0.1.0; }
 - §2 のサブセットは device にも同じく適用する。`record` / `tuple` が無いので、
   面の情報は `width()` / `height()` / `format()` のように個別のアクセサにする
 
+### 11.6 device の import 一覧（正規表）
+
+§7 が hal（L1）の正規表であるのと同じ位置づけ。群が違うので表も分ける。
+`sig` 表記は §7 と同じ（`params:results`、`i`=i32）。
+
+| モジュール | フィールド | sig |
+|---|---|---|
+| `wasmicon:device/display@0.1.0` | `[static]surface.open` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.width` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.height` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.format` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.blit` | `iiiiiii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.flush` | `i:i` |
+| `wasmicon:device/display@0.1.0` | `[resource-drop]surface` | `i:` |
+
+`blit` の `iiiiiii` は self, x, y, w, h と `list<u8>` の (ptr, len)。
+`width` などの `ii` は self と out ポインタ（§4.4）。
+
+この表は `tools/wasmicon-gen/tests/abi_spec.rs` が転記して検査している。
+**表を変えたらテストも変える。** 逆も同じ。
+
 ---
 
 ## 付録 A. ゲスト側コード例（Rust, 生成物のイメージ）

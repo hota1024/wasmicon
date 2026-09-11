@@ -285,3 +285,80 @@ export declare function log_log(level: u32, messagePtr: usize, messageLen: u32):
  */
 @external("wasmicon:hal/board@0.1.0", "pin-by-role")
 export declare function board_pin_by_role(rolePtr: usize, roleLen: u32, out: usize): u32;
+
+// ---- wasmicon:device/display@0.1.0 ----
+
+/**
+ * ピクセル面としてのディスプレイ。
+ * 
+ * **L2 のインターフェース**（abi-spec §11）。ポートがパネルのドライバを持つ。
+ * gpio/i2c/spi では表現できないパネル（MIPI-DSI など）のためにある。
+ * 
+ * SPI パネル（ILI9341 等）は**このインターフェースの対象ではない**。
+ * ゲストが `wasmicon:hal/spi` で直接叩く既存の経路を使う。そちらは
+ * ピクセル列そのものがボード間で比較でき、決定性検証の対象になっている（§11.4）。
+ * 
+ * 解像度はボードごとに違う。ゲストは `width` / `height` を問い合わせて適応する。
+ * そのため **device の呼び出しはボード間で一致しない**。§9 のトレース一致要求の
+ * 対象外であり、`verify/diff-traces.sh` が比較時に落とす（§11.4）。
+ */
+
+/**
+ * ピクセルの並び。
+ */
+export enum DisplayFormat {
+  /**
+   * 16bit。1 ピクセル 2 バイト、リトルエンディアン。
+   */
+  Rgb565 = 0,
+}
+
+/**
+ * 面を確保する。ポートはここでパネルの電源投入と初期化を行ってよい。
+ */
+@external("wasmicon:device/display@0.1.0", "[static]surface.open")
+export declare function display_surface_open(index: u32, out: usize): u32;
+
+/**
+ * 幅（ピクセル）。
+ */
+@external("wasmicon:device/display@0.1.0", "[method]surface.width")
+export declare function display_surface_width(self: u32, out: usize): u32;
+
+/**
+ * 高さ（ピクセル）。
+ */
+@external("wasmicon:device/display@0.1.0", "[method]surface.height")
+export declare function display_surface_height(self: u32, out: usize): u32;
+
+/**
+ * ピクセルの並び。
+ */
+@external("wasmicon:device/display@0.1.0", "[method]surface.format")
+export declare function display_surface_format(self: u32, out: usize): u32;
+
+/**
+ * 矩形 (x, y, w, h) にピクセルを書き込む。
+ * 
+ * pixels の長さは `w * h * (format のバイト数)` でなければならず、
+ * 違えば `invalid-argument`。矩形が面からはみ出す場合も `invalid-argument`。
+ * 
+ * `spi.transfer` や `i2c.write-read` と違って**読み出し専用**なので、
+ * 送信元と受信先が重なる問題が無く、ポートは中間バッファに写さずに
+ * ゲストメモリを直接読んでよい（128 バイトの上限は掛からない）。
+ */
+@external("wasmicon:device/display@0.1.0", "[method]surface.blit")
+export declare function display_surface_blit(self: u32, x: u32, y: u32, w: u32, h: u32, pixelsPtr: usize, pixelsLen: u32): u32;
+
+/**
+ * 書き込んだ内容を画面へ反映する。
+ * ポートがフレームバッファを持つ場合はここで転送する。
+ */
+@external("wasmicon:device/display@0.1.0", "[method]surface.flush")
+export declare function display_surface_flush(self: u32): u32;
+
+/**
+ * surface のハンドルを解放する。無効なハンドルは無視される（abi-spec §5.2）。
+ */
+@external("wasmicon:device/display@0.1.0", "[resource-drop]surface")
+export declare function display_surface_drop(self: u32): void;

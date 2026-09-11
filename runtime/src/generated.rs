@@ -13,6 +13,18 @@ pub struct ImportDesc {
     pub sig: &'static str,
     /// ポート層がディスパッチに使うスロット。
     pub host_fn: HostFn,
+    /// 属する層（abi-spec §11.1）。ポートは登録する群をこれで選ぶ。
+    pub group: Group,
+}
+
+/// インターフェースが属する層（abi-spec §11.1）。
+///
+/// `Hal` は全ポートが実装する。`Device` はポートがドライバを持つもので、
+/// 提供しないポートは登録しない（その world のゲストはリンクに失敗する）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Hal,
+    Device,
 }
 
 /// ホスト関数のスロット。`IMPORTS` の要素と 1 対 1 に対応する。
@@ -59,6 +71,20 @@ pub enum HostFn {
     LogLog,
     /// `wasmicon:hal/board@0.1.0` の `pin-by-role`
     BoardPinByRole,
+    /// `wasmicon:device/display@0.1.0` の `[static]surface.open`
+    DisplaySurfaceOpen,
+    /// `wasmicon:device/display@0.1.0` の `[method]surface.width`
+    DisplaySurfaceWidth,
+    /// `wasmicon:device/display@0.1.0` の `[method]surface.height`
+    DisplaySurfaceHeight,
+    /// `wasmicon:device/display@0.1.0` の `[method]surface.format`
+    DisplaySurfaceFormat,
+    /// `wasmicon:device/display@0.1.0` の `[method]surface.blit`
+    DisplaySurfaceBlit,
+    /// `wasmicon:device/display@0.1.0` の `[method]surface.flush`
+    DisplaySurfaceFlush,
+    /// `wasmicon:device/display@0.1.0` の `[resource-drop]surface`
+    DisplaySurfaceDrop,
 }
 
 impl HostFn {
@@ -92,132 +118,208 @@ impl HostFn {
             17 => Some(Self::TimeSleepUs),
             18 => Some(Self::LogLog),
             19 => Some(Self::BoardPinByRole),
+            20 => Some(Self::DisplaySurfaceOpen),
+            21 => Some(Self::DisplaySurfaceWidth),
+            22 => Some(Self::DisplaySurfaceHeight),
+            23 => Some(Self::DisplaySurfaceFormat),
+            24 => Some(Self::DisplaySurfaceBlit),
+            25 => Some(Self::DisplaySurfaceFlush),
+            26 => Some(Self::DisplaySurfaceDrop),
             _ => None,
         }
     }
 }
 
 /// v0.1 の全 HAL import（abi-spec §7）。
-pub static IMPORTS: [ImportDesc; 20] = [
+pub static IMPORTS: [ImportDesc; 27] = [
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[static]pin.open",
         sig: "iii:i",
         host_fn: HostFn::GpioPinOpen,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[method]pin.set-mode",
         sig: "ii:i",
         host_fn: HostFn::GpioPinSetMode,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[method]pin.read",
         sig: "ii:i",
         host_fn: HostFn::GpioPinRead,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[method]pin.write",
         sig: "ii:i",
         host_fn: HostFn::GpioPinWrite,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[method]pin.toggle",
         sig: "i:i",
         host_fn: HostFn::GpioPinToggle,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[resource-drop]pin",
         sig: "i:",
         host_fn: HostFn::GpioPinDrop,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/i2c@0.1.0",
         name: "[static]bus.open",
         sig: "iii:i",
         host_fn: HostFn::I2cBusOpen,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/i2c@0.1.0",
         name: "[method]bus.write",
         sig: "iiii:i",
         host_fn: HostFn::I2cBusWrite,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/i2c@0.1.0",
         name: "[method]bus.read",
         sig: "iiiiii:i",
         host_fn: HostFn::I2cBusRead,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/i2c@0.1.0",
         name: "[method]bus.write-read",
         sig: "iiiiiiii:i",
         host_fn: HostFn::I2cBusWriteRead,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/i2c@0.1.0",
         name: "[resource-drop]bus",
         sig: "i:",
         host_fn: HostFn::I2cBusDrop,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/spi@0.1.0",
         name: "[static]bus.open",
         sig: "iiii:i",
         host_fn: HostFn::SpiBusOpen,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/spi@0.1.0",
         name: "[method]bus.write",
         sig: "iii:i",
         host_fn: HostFn::SpiBusWrite,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/spi@0.1.0",
         name: "[method]bus.transfer",
         sig: "iiiiii:i",
         host_fn: HostFn::SpiBusTransfer,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/spi@0.1.0",
         name: "[resource-drop]bus",
         sig: "i:",
         host_fn: HostFn::SpiBusDrop,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/time@0.1.0",
         name: "now-us",
         sig: ":I",
         host_fn: HostFn::TimeNowUs,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/time@0.1.0",
         name: "sleep-ms",
         sig: "i:",
         host_fn: HostFn::TimeSleepMs,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/time@0.1.0",
         name: "sleep-us",
         sig: "i:",
         host_fn: HostFn::TimeSleepUs,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/log@0.1.0",
         name: "log",
         sig: "iii:",
         host_fn: HostFn::LogLog,
+        group: Group::Hal,
     },
     ImportDesc {
         module: "wasmicon:hal/board@0.1.0",
         name: "pin-by-role",
         sig: "iii:i",
         host_fn: HostFn::BoardPinByRole,
+        group: Group::Hal,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[static]surface.open",
+        sig: "ii:i",
+        host_fn: HostFn::DisplaySurfaceOpen,
+        group: Group::Device,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[method]surface.width",
+        sig: "ii:i",
+        host_fn: HostFn::DisplaySurfaceWidth,
+        group: Group::Device,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[method]surface.height",
+        sig: "ii:i",
+        host_fn: HostFn::DisplaySurfaceHeight,
+        group: Group::Device,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[method]surface.format",
+        sig: "ii:i",
+        host_fn: HostFn::DisplaySurfaceFormat,
+        group: Group::Device,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[method]surface.blit",
+        sig: "iiiiiii:i",
+        host_fn: HostFn::DisplaySurfaceBlit,
+        group: Group::Device,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[method]surface.flush",
+        sig: "i:i",
+        host_fn: HostFn::DisplaySurfaceFlush,
+        group: Group::Device,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[resource-drop]surface",
+        sig: "i:",
+        host_fn: HostFn::DisplaySurfaceDrop,
+        group: Group::Device,
     },
 ];
 
@@ -439,6 +541,42 @@ pub mod log {
                 1 => Some(Self::Warn),
                 2 => Some(Self::Info),
                 3 => Some(Self::Debug),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// ピクセル面としてのディスプレイ。
+///
+/// **L2 のインターフェース**（abi-spec §11）。ポートがパネルのドライバを持つ。
+/// gpio/i2c/spi では表現できないパネル（MIPI-DSI など）のためにある。
+///
+/// SPI パネル（ILI9341 等）は**このインターフェースの対象ではない**。
+/// ゲストが `wasmicon:hal/spi` で直接叩く既存の経路を使う。そちらは
+/// ピクセル列そのものがボード間で比較でき、決定性検証の対象になっている（§11.4）。
+///
+/// 解像度はボードごとに違う。ゲストは `width` / `height` を問い合わせて適応する。
+/// そのため **device の呼び出しはボード間で一致しない**。§9 のトレース一致要求の
+/// 対象外であり、`verify/diff-traces.sh` が比較時に落とす（§11.4）。
+pub mod display {
+    /// ピクセルの並び。
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[repr(u32)]
+    pub enum Format {
+        /// 16bit。1 ピクセル 2 バイト、リトルエンディアン。
+        Rgb565 = 0,
+    }
+
+    impl Format {
+        /// ケース数。
+        pub const COUNT: u32 = 1;
+
+        /// discriminant から復元する。範囲外なら `None`（abi-spec §4.1）。
+        #[must_use]
+        pub const fn from_u32(v: u32) -> Option<Self> {
+            match v {
+                0 => Some(Self::Rgb565),
                 _ => None,
             }
         }

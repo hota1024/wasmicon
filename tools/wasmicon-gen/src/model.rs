@@ -230,6 +230,28 @@ pub struct FlagsDef {
     pub bits: Vec<FlagBit>,
 }
 
+/// インターフェースが属する層（abi-spec §11.1）。
+///
+/// ポートは登録する群をここで選ぶ。生成物は 1 セットのままで、
+/// world ごとに出し分けはしない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// `wasmicon:hal` — L1。ポートにデバイス固有のロジックを置かない。
+    Hal,
+    /// `wasmicon:device` — L2。ポートがドライバを持つ。
+    Device,
+}
+
+impl Group {
+    /// 生成物に出す Rust の識別子。
+    pub fn rust_ident(self) -> &'static str {
+        match self {
+            Group::Hal => "Hal",
+            Group::Device => "Device",
+        }
+    }
+}
+
 /// 1 インターフェース。
 #[derive(Debug, Clone)]
 pub struct Iface {
@@ -237,6 +259,8 @@ pub struct Iface {
     pub name: String,
     /// Core Wasm の import モジュール名（`wasmicon:hal/gpio@0.1.0`）。
     pub module: String,
+    /// 属する層。
+    pub group: Group,
     pub docs: Vec<String>,
     pub enums: Vec<EnumDef>,
     pub flags: Vec<FlagsDef>,

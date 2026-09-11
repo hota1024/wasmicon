@@ -21,3 +21,14 @@ world app {
     /// 戻ると、ホストはインスタンスを破棄してよい。
     export run: func();
 }
+
+/// L1 + display。パネルを持つボード向け（abi-spec §11.3）。
+///
+/// display の有無を関数単位ではなく **world 単位の選択**として表明する。
+/// `ports/common` は §6.4 の完全一致リンクなので、display を持たないボードで
+/// この world のゲストを動かすとリンクエラーになる。それが正しい振る舞い。
+world app-display {
+    include app;
+
+    import wasmicon:device/display@0.1.0;
+}
