@@ -168,6 +168,32 @@ ESP-IDF が v0.x〜v1.x と v3.x を別レンジ (`REV_LESS_V3`) にして既定
 その結果、観測手段が無いまま仮説ベースの変更を重ねることになった。
 UART のままなら USB シリアル変換 1 個で最初から観測できていた。
 
+#### USB-OTG も試したが列挙されなかった（2026-09-11）
+
+arduino-esp32 の Tab5 定義が `build.usb_mode=0`（TinyUSB / USB-OTG）なので、
+**Serial-JTAG ではなく OTG が正しい経路**と考えて試した。オーナー環境では
+「USB CDC On Boot = Enabled」で `/dev/cu.usbmodem14401` にログが出ている。
+
+- esp-hal の OTG ドライバは embassy-usb 前提。executor を持たずに手で
+  ポーリングする形で最小再現を書いた（`Usb::new_hs` + `CdcAcmClass`）
+- **最初の版は非同期ブロックの中で数え上げスピンしていて、その間
+  `device.run()` がポーリングされず列挙が成立しなかった。** これは自分のバグ。
+  待ちを入れるなら必ず await する形にすること
+- 直した版でも**列挙されない**。アプリ実行後も `USB JTAG/serial debug unit`
+  のままで、こちらの CDC は現れない
+- 「USB-C が Serial-JTAG のパッド側で HS は未接続」なのか「アプリが USB 初期化
+  前に落ちている」のか、**観測手段が無いので区別できていない**
+
+**教訓: 観測手段を確保する前にハードの試行錯誤を続けない。** このセッションで
+同じ失敗を 2 度繰り返した（Serial-JTAG と OTG）。トレースを UART0 から動かした
+判断が、そもそもの原因。
+
+未取得の決定的情報:
+
+- [ ] **Arduino 動作中の USB 識別情報**（VID/PID・Product Name）。
+      `ioreg -c IOUSBHostDevice -w0 | grep -B2 -A6 -i "vendor name"` 等で取れる。
+      これが分かれば、どの USB コントローラが USB-C に繋がっているかが確定する
+
 - [ ] **トレースを UART0 (G37/G38) に戻す。** 3 ポートで経路が揃う利点もある。
       3.3V の USB シリアル変換 1 個と M5-Bus 13/14 への配線が要る
 - [ ] あるいは **v3.x シリコンの P4** を使う（USB-Serial-JTAG が使える見込み）
