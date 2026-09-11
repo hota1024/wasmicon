@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-09-10
+最終更新: 2026-09-11
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -10,22 +10,53 @@
 
 ## 1. 実機が要るもの
 
-実機（ESP32-S3 DevKitC-1 / Raspberry Pi Pico WH）が手元に来るまで進められない。
+実機（ESP32-S3 DevKitC-1 / M5Stack Tab5 / Raspberry Pi Pico WH）が
+手元に来るまで進められない。
 
 ### 1.1 オーナーに聞くこと
 
 - [ ] **実機の配線**。`docs/abi-spec.md` §8 の表（I2C/SPI のピン、役割名 → GPIO 番号）が実機と合っているか
-- [ ] **シリアルの接続方法**。RP2040 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
-- [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 を前提にしている
+- [ ] **シリアルの接続方法**。RP2040 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44)、Tab5 は UART0 (G37/G38 = M5-Bus 13/14) を前提にしている
+- [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 を前提にしている。
+      **Tab5 の内部 I2C には PI4IOE5V6408-2 が 0x44 で載っている**ので、SHT31 を内部バスに
+      繋ぐならアドレスを 0x45 にする必要がある（現在は PORT.A に出しているので衝突しない）
 - [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
-- [ ] **`led` に外付け LED を充てている**。どちらのボードもオンボード LED が素の GPIO ではないため（Pico W/WH は CYW43439、DevKitC-1 は WS2812）
+- [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH は CYW43439、DevKitC-1 は WS2812、**Tab5 はユーザーが振れる LED を持たない**）
+- [ ] **PORT.A の SDA/SCL（ESP32-P4 / Tab5）**。Tab5 の PinMap は色と GPIO
+      （Yellow=G53, White=G54）までで、どちらが SDA かを書いていない。
+      M5Stack の通例（Yellow=SCL, White=SDA）に従って **SCL=G53 / SDA=G54** と
+      しているが、**逆だとする二次情報もある**。実機かテスタで確定させる。
+      I2C は未実装なので、今のところ間違っていても表 1 行の問題で済む
+- [ ] **Tab5 のトレース取り込み方法**。UART0 (G37/G38) は M5-Bus の 13/14 番ピンに
+      出ているだけで USB には繋がっていない。取り込みに USB シリアル変換が要る。
+      USB-Serial-JTAG に移せば変換なしで取れるが、**移すかどうかは未決**
+      （移すと 3 ポートで出力経路が揃わなくなる）
+- [ ] **M5-Bus のラベル付きピンが何か**。PB_IN (G17) / PB_OUT (G52) は名前から
+      電源ボタン系と推定して `reserved` に入れてある。違うならゲストに開けてよい。
+      PC_RX (G7) / PC_TX (G6) は逆に**開けたまま**にしてあるが、書き込み経路の
+      UART なら塞ぐべき
+- [ ] **Tab5 の PinMap に出てこない GPIO（0, 1, 24, 25, 33, 46, 49, 50）の扱い**。
+      周辺の表にも M5-Bus にも PORT.A にも出てこない。塞いでいないが、未接続なのか
+      内部で使われているのかが分からない。なお 33 と 35 は P4 の strapping ピン
+      (32..=38) なので、開けてはいるが出力に使うと起動に影響しうる
 
 ### 1.2 実装
 
 - [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。これが無いと sensor-display は実機で動かない
 - [ ] **`ports/esp32s3` の I2C / SPI**。同上
+- [ ] **`ports/esp32p4` の I2C / SPI**。同上
+- [ ] **`ports/esp32p4` の 2 つ目のボード定義**。チップ層 (`src/chip.rs`) と
+      ボード定義 (`src/boards/`) は分けてあるが、**定義は Tab5 の 1 つだけ**。
+      M5Stamp ESP32P4 はオンボードの GPIO 割り当てが非公開で書けない。
+      Function-EV-Board と P4-EYE なら esp-bsp のヘッダから今すぐ書ける
+      （実機がある場合）。**2 つ目を足すときは `src/boards/mod.rs` の
+      「複数選択」ガードを一緒に足すこと**（コメントに書いてある）
 
 ### 1.3 検証（Phase 4 / 5 / 6 の完了条件）
+
+Phase 4 / 5 / 6 の完了条件は **ESP32-S3 と Pico WH の 2 ボード**で定義されている
+（`docs/handoff.md` §5）。ESP32-P4 は後から足したボードなので完了条件は変えていない。
+P4 の分は下に別項として置く。
 
 - [ ] 両ボードで `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致（Phase 4）
 - [ ] 4 通り（Rust/AS × 2 ボード）で表示が出る（Phase 5）
@@ -36,13 +67,25 @@
 - [ ] `verify/sht31-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
 - [ ] 結果を `docs/verification-report.md` に反映する
 
+ESP32-P4 の分（Phase 4 / 5 / 6 と同じことを 3 ボード目にも通す）:
+
+- [ ] ESP32-P4 で `blink-rs` / `blink-as` が動き、トレースが host 版と一致
+- [ ] ESP32-P4 で sensor-display の表示が出る（Rust / AS）
+- [ ] 同一 `.wasm` を 3 ボードで走らせ、`time` を除くトレースが完全一致
+  （`sh verify/diff-traces.sh esp32s3.log esp32p4.log` を追加で回す）
+- [ ] **P4 の f32 の一致**。P4 の HP コアは RV32IMA**F**C でハード FPU（単精度）。
+      RP2040 のソフトフロートと ESP32-S3 の Xtensa FPU に加えて 3 つ目の実装になるので、
+      温度バーの計算がここでも一致するかは実測対象
+
 ### 1.4 実機で最初に疑うところ
 
-**両ポートの GPIO はレジスタ直叩きで、一度も観測していない。**
+**3 ポートとも GPIO はレジスタ直叩きで、一度も観測していない。**
 「blink が光らない」を最初の期待値として想定すること。
 
 - RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）
 - ESP32-S3: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの out_sel=128）
+- ESP32-P4: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの **out_sel=256**）。
+  S3 と定数が違うのはここと GPIO 本数（0..=54）だけで、レジスタ名は同じ
 
 ---
 

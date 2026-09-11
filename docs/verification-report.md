@@ -80,20 +80,21 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**両ポートともビルドが通るところまでで、一度も焼いていない。**
+**3 ポートともビルドが通るところまでで、一度も焼いていない。**
 
-- GPIO はどちらもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
-  ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
+- GPIO はいずれもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
+  ESP32-S3 / ESP32-P4 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
   実機で最初に起きることとして「blink が光らない」を想定すべき
-- `ports/rp2040` / `ports/esp32s3` の I2C / SPI は `unsupported` を返す。
-  sensor-display は実機では動かない
+- `ports/rp2040` / `ports/esp32s3` / `ports/esp32p4` の I2C / SPI は
+  `unsupported` を返す。sensor-display は実機では動かない
 - abi-spec §8 の配線（役割名 → ピン番号）はオーナー未確認
 
 ### 4.2 ボード間の浮動小数の一致
 
 sensor-display が唯一 f32 を使う温度バーの計算は、**ホスト 1 プラットフォーム
 での一致しか確認していない**。RP2040 は `compiler_builtins` のソフトフロート、
-ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）なので、
+ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）、
+ESP32-P4 は RV32IMAFC の単精度ハード FPU と、実装が 3 通りある。
 ここが Phase 6 の本来の実測対象。
 
 ### 4.3 記録済み I2C 応答
@@ -125,15 +126,19 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
 
 ## 5. 実機で検証するときの手順
 
-1. `ports/rp2040` / `ports/esp32s3` の I2C / SPI を実装する
+1. `ports/rp2040` / `ports/esp32s3` / `ports/esp32p4` の I2C / SPI を実装する
 2. abi-spec §8 の配線を確認し、役割名の表を実機に合わせる
 3. 焼く
    - RP2040: ELF を `picotool load`、または `elf2uf2-rs` で UF2 にして BOOTSEL
    - ESP32-S3: `ports/esp32s3/build.sh run --release`（espflash）
-4. シリアル（どちらも 115200 8N1）を捕まえてファイルに落とす
+   - ESP32-P4 (Tab5): `cd ports/esp32p4 && cargo run --release`（espflash。espup は要らない）
+4. シリアル（いずれも 115200 8N1）を捕まえてファイルに落とす
    - RP2040: UART0 (GP0=TX, GP1=RX)
    - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 では USB シリアルに直結)
+   - ESP32-P4 (Tab5): UART0 (G37/G38)。**M5-Bus の 13/14 番ピンに出ているだけで
+     USB には繋がっていない**ので USB シリアル変換が要る
 5. 突き合わせる: `sh verify/diff-traces.sh pico.log esp32s3.log`
+   （3 ボード目を足すなら `sh verify/diff-traces.sh esp32s3.log esp32p4.log` も）
    - バナーとゲストの `[wasm]` 行は自動で落とす
    - `time` はトレースに出ず、役割名で引いた GPIO 番号は `role:led` に
      正規化済みなので、追加の加工は要らない

@@ -1,6 +1,6 @@
 # Wasmicon
 
-マイコン（ESP32-S3 / RP2040）向けの WebAssembly 実行環境。
+マイコン（ESP32-S3 / ESP32-P4 / RP2040）向けの WebAssembly 実行環境。
 
 - **Runtime**: 自作の Core Wasm インタプリタ。`no_std`、依存クレートゼロ、`alloc` 不使用
 - **HAL**: GPIO / I2C / SPI / time / log / board を WIT で定義。**Component Model は使わない**。
@@ -12,8 +12,16 @@
 
 ## 現在地
 
-全 6 フェーズのソフトウェア側が完了し、CI は 4 ジョブとも green。
+全 6 フェーズのソフトウェア側が完了し、CI は 5 ジョブとも green。
 **残っているのは実機が要る部分**（→ [`docs/TODO.md`](docs/TODO.md)）。
+
+ボードは ESP32-S3 / RP2040 に加えて **ESP32-P4** を足してある（`ports/esp32p4`）。
+GPIO / time / log までは 3 ポートとも同じ形で、I2C / SPI は 3 ポートとも未実装。
+
+P4 ポートだけは**チップ層とボード定義を分けてある**。同じ P4 でもボードごとに
+GPIO の意味が入れ替わる（`G23` は P4-EYE ではオンボード LED、Tab5 では TP_INT、
+Function-EV-Board では LCD バックライト）ため、予約ピンと役割名は共有できない。
+ボード定義は `src/boards/` に置き、Cargo feature でちょうど 1 つ選ぶ（既定 = `tab5`）。
 
 | 検証 | 状態 |
 |---|---|
@@ -36,6 +44,10 @@ ports/common/         ポート共通の HAL。ボード固有の操作だけ Bo
 ports/host/           PC 用。mock HAL + トレース。CI はここで回す
 ports/rp2040/         Raspberry Pi Pico WH（別 workspace）
 ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
+ports/esp32p4/        ESP32-P4（別 workspace、RISC-V なので upstream stable）
+  src/chip.rs           P4 のレジスタ操作。ボードに依存しない
+  src/boards/           どのピンが何に繋がっているか。feature でちょうど 1 つ選ぶ
+  src/board.rs          上の 2 つを繋いで Board トレイトを実装する
 bindings/rust/        ゲスト向け Rust バインディング
 bindings/assemblyscript/  同 AssemblyScript
 apps/                 ゲスト（別 workspace）。blink と sensor-display の Rust / AS 版
@@ -43,7 +55,7 @@ verify/               検証の道具。wasmtime との差分テスト、トレ�
 docs/                 仕様・設計・検証レポート・残作業
 ```
 
-`ports/rp2040` / `ports/esp32s3` / `apps` / `verify/differential` は
+`ports/rp2040` / `ports/esp32s3` / `ports/esp32p4` / `apps` / `verify/differential` は
 ターゲットも toolchain も profile も違うので**別 workspace**にしてある。
 
 ## ビルドと検証
@@ -71,6 +83,8 @@ npm ci
 # 実機向け
 (cd ports/rp2040 && cargo build --release)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
+(cd ports/esp32p4 && cargo build --release) # P4 は RISC-V なので espup 不要
+                                            # ボードは feature で選ぶ（既定 = tab5）
 
 # wasmtime との差分テスト（インタプリタの正しさ）
 (cd verify/differential && cargo test)
@@ -84,6 +98,7 @@ wasm-tools json-from-wast <file>.wast -o out/<file>.json   # spec テストの�
 wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
 rustup target add thumbv6m-none-eabi                       # RP2040
 espup install                                              # ESP32-S3（Xtensa フォーク）
+rustup target add riscv32imafc-unknown-none-elf            # ESP32-P4
 sh tools/measure-size.sh                                   # コアのコードサイズ
 ```
 

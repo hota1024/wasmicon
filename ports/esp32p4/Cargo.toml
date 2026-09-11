@@ -1,0 +1,35 @@
+# ESP32-P4 (M5Stack Tab5) 用ポート。
+# P4 は RISC-V なので upstream Rust の riscv32imafc-unknown-none-elf で
+# そのまま組める（ESP32-S3 の Xtensa と違って espup は要らない）。
+# root workspace とはターゲットも profile も違うので別 workspace。
+[workspace]
+
+[package]
+name = "wasmicon-esp32p4"
+description = "Wasmicon の ESP32-P4 ポート"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[features]
+# docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+# ボードは `src/boards/` からちょうど 1 つ選ぶ。既定を tab5 にしてあるので
+# `cargo build --release` はそのまま Tab5 向けになる。
+default = ["trace", "tab5"]
+trace = []
+
+# --- ボード（ちょうど 1 つ。src/boards/mod.rs が個数を検査する）---
+tab5 = []
+
+[dependencies]
+wasmicon-core = { path = "../../runtime" }
+wasmicon-port = { path = "../common" }
+# esp32p4 の feature は esp-hal 1.2 から。1.1 では存在しない。
+esp-hal = { version = "1.2", features = ["esp32p4", "unstable"] }
+# 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
+# panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1

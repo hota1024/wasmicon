@@ -68,6 +68,24 @@ jobs:
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
 
+  # ESP32-P4 ポート。P4 は RISC-V なので upstream の riscv32imafc で回せる
+  # （ESP32-S3 と違い espup が要らない）。実機は回せないのでビルドまで。
+  esp32p4:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ports/esp32p4
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add riscv32imafc-unknown-none-elf
+      # ゲストを先に作る（include_bytes! で埋め込むため）
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --release
+        working-directory: apps
+      - run: cargo fmt --check
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo build --release
+
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
   # ローカルで `ports/esp32s3/build.sh build --release` を使う。
 

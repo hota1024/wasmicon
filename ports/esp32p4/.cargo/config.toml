@@ -1,0 +1,11 @@
+# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
+# ビルドは `cd ports/esp32p4 && cargo build --release`。
+#
+# ESP32-P4 の HP コアは RV32IMAFC。upstream Rust に core のプリビルドがあるので
+# ESP32-S3 のような build-std は要らない。
+[build]
+target = "riscv32imafc-unknown-none-elf"
+
+[target.riscv32imafc-unknown-none-elf]
+runner = "espflash flash --monitor"
+rustflags = ["-Clink-arg=-Tlinkall.x"]
