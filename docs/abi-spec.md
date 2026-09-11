@@ -45,7 +45,9 @@ Wasmicon の WIT は以下の構文・型のみを使う。ジェネレータは
 ### 2.3 構文上の制約
 
 - 1 パッケージ `wasmicon:hal@X.Y.Z` に全インターフェースを置く。
-- `world app` がゲストの import/export 全体を記述する。
+  **→ §11 で見直し（2026-09-11）。** `wasmicon:device` を別パッケージとして切り、
+  world は `wasmicon:app` に移す。§2.1 / §2.2 の型サブセットは全パッケージ共通。
+- `world app` がゲストの import/export 全体を記述する（§11 で world は 2 つになる）。
 - 共通型は `interface types` に置き、各インターフェースから `use types.{...}` する。
 - ドキュメントコメント（`///`）は生成物のコメントにそのまま転記される。
 
@@ -419,6 +421,79 @@ P4 のフラッシュと PSRAM は GPIO 空間の外の専用 MSPI ピンに出�
 3. トラップ後の挙動（再起動 / 停止 / `run` 再呼び出し）。
 4. `log` の `string` に UTF-8 検証を入れるか（現状: 入れない）。
 5. `spi.transfer` を v0.1 に残すか（目標アプリでは不要。ILI9341 の ID 読み出しに使える程度）。
+
+---
+
+## 11. 層の分割: `wasmicon:hal` と `wasmicon:device`（2026-09-11 承認）
+
+### 10.1 なぜ分けるか
+
+§1 の HAL（gpio / i2c / spi）は **L1 = チップの足を貸す**層で、デバイス固有の
+ロジックはゲストが持つ（ILI9341 のコマンド列も SHT31 の手順もゲスト側）。
+
+一方 **MIPI-DSI のパネルは L1 では表現できない**。高速差動シリアルであり、
+gpio/i2c/spi のどれにも当てはまらない。ここを扱うには、ポートがドライバを持つ
+**L2 = 機能を貸す**層が要る。
+
+**境界の基準（これが判断の唯一の根拠）:**
+
+> **ポートにデバイス固有のロジックを置く必要があるものは `device`。置かずに済むものは `hal`。**
+
+| | `wasmicon:hal` | `wasmicon:device` |
+|---|---|---|
+| 層 | L1（足を貸す） | L2（機能を貸す） |
+| ドライバの所有者 | ゲスト | ポート |
+| 例 | gpio / i2c / spi / time / log / board | display |
+| トレース一致の要求 | **する**（§9） | **しない**（下記 10.4） |
+
+### 10.2 パッケージ構成
+
+world を hal に置いたまま device を import させると、device が hal の
+`error-code` を `use` した時点で**依存が循環する**（`wasm-tools` で確認済み）。
+そこで world を独立させる:
+
+```
+wit/                        package wasmicon:app@0.1.0   — world だけ
+wit/deps/hal/               package wasmicon:hal@0.1.0   — L1（world を持たない）
+wit/deps/device/            package wasmicon:device@0.1.0 — L2（hal の型を use する）
+```
+
+依存は `app → hal, device` と `device → hal` の一方向のみ。
+
+### 10.3 world は 2 つ。任意性はここで表現する
+
+`ports/common` は §6.4 の**完全一致リンク**なので、display を持たないボードで
+display を import するゲストはリンクに失敗する。これは関数単位で驚くべきでは
+なく、**world 単位の選択**として表明する:
+
+```wit
+world app { /* L1 のみ */ }
+world app-display { include app; import wasmicon:device/display@0.1.0; }
+```
+
+ポートは自分が提供する world に対応する import 表だけを登録する。
+
+### 10.4 決定性の扱い
+
+**`device` は §9 のトレース一致要求の対象外とする。** `time` と同じ扱い。
+
+理由は、解像度をゲストが問い合わせて適応する方針（2026-09-11 承認）を採るため。
+240×320 と 1280×720 では後続の描画呼び出しの中身そのものが変わり、正規化で
+吸収できない。`pin-by-role` のように番号だけを正規化する手は使えない。
+
+**したがってクロスボードのピクセル検証は L1 の SPI 経路で行う。** ILI9341 を
+複数のマイコンから駆動して結果が一致すれば十分とする（2026-09-11 承認）。
+**ゲストが raw SPI で ILI9341 を叩く現在の経路は維持する**。`device:display` は
+「L1 では表現できないパネル」専用であり、SPI パネルの置き換えではない。
+
+### 10.5 lowering への影響
+
+- §3.1 のモジュール名 `<ns>:<pkg>/<iface>@<ver>` はそのまま使える。
+  device は `wasmicon:device/display@0.1.0` になる。**規則の変更は無い**
+- §4 の型 lowering、§5 の resource / ハンドル、§7 のステータス（discriminant + 1）も
+  そのまま適用する。`error-code` は hal のものを共有する
+- §2 のサブセットは device にも同じく適用する。`record` / `tuple` が無いので、
+  面の情報は `width()` / `height()` / `format()` のように個別のアクセサにする
 
 ---
 

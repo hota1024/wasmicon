@@ -130,6 +130,36 @@ esp-bsp の `bsp_feature_enable(BSP_FEATURE_LCD)` は PI4IOE5V6408（内部 I2C,
       **トレースが黙って欠ける**。検証の測定器としては最悪の壊れ方なので、
       入れるなら欠けたことを検出できる形にすること
 
+### 1.1.7 `wasmicon:device` の切り出し（方針承認済み、実装未着手）
+
+方針は `docs/abi-spec.md` §11（2026-09-11 承認）。**ABI 変更を伴う**ので、
+着手前に §11 を読むこと。`wasmicon:hal` は凍結し、内容は変えない。
+
+`wasm-tools` で構成の成立は検証済み:
+
+- 3 パッケージ（`wasmicon:app` / `wasmicon:hal` / `wasmicon:device`）なら
+  循環せず、device が hal の `error-code` を `use` できる
+- world を hal に残したまま device を import すると**依存が循環して弾かれる**
+- world 2 つ（`app` / `app-display`）で display の任意性を表現できる
+
+残りの作業:
+
+- [ ] `wit/` を 3 パッケージ構成に組み替える
+      （`wit/deps/hal/` と `wit/deps/device/` を作り、`wit/` は world だけにする）
+- [ ] **ジェネレータの修正。** `tools/wasmicon-gen/src/lower.rs` は
+      `push_dir` が返す単一パッケージ名から全インターフェースのモジュール名を
+      組み立てている（`format!("{}:{}/{}@{}", pkg.name.namespace, ...)`）。
+      **インターフェースの所属パッケージから引くように直さないと、
+      device の import 名が `wasmicon:hal/display@0.1.0` になってしまう**
+- [ ] ジェネレータが world を 2 つ扱えるようにする（現在 `world app` 決め打ち）。
+      import 表を hal 群と device 群に分け、ポートが登録する群を選べるようにする
+- [ ] `tools/wit2sig.py` と `sh tools/check-sigs.sh` を 2 パッケージに対応させる
+- [ ] バインディング（Rust / AssemblyScript）に device のモジュールを足す
+- [ ] `verify/diff-traces.sh` の扱いを決める。§11.4 により device はトレース一致の
+      対象外。**トレースに出さない**（`time` と同じ）か、出して diff 側で落とすか
+- [ ] `ports/common` が device 群を任意で登録できるようにする（§6.4 の完全一致
+      リンクは維持する）
+
 ### 1.2 実装
 
 - [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。これが無いと sensor-display は実機で動かない
