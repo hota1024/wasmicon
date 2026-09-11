@@ -144,13 +144,11 @@ esp-bsp の `bsp_feature_enable(BSP_FEATURE_LCD)` は PI4IOE5V6408（内部 I2C,
 
 残りの作業:
 
-- [ ] `wit/` を 3 パッケージ構成に組み替える
-      （`wit/deps/hal/` と `wit/deps/device/` を作り、`wit/` は world だけにする）
-- [ ] **ジェネレータの修正。** `tools/wasmicon-gen/src/lower.rs` は
-      `push_dir` が返す単一パッケージ名から全インターフェースのモジュール名を
-      組み立てている（`format!("{}:{}/{}@{}", pkg.name.namespace, ...)`）。
-      **インターフェースの所属パッケージから引くように直さないと、
-      device の import 名が `wasmicon:hal/display@0.1.0` になってしまう**
+- [x] `wit/` を組み替える（`wit/` = world only の `wasmicon:app`、
+      `wit/deps/hal/` = L1）。**import 表が不変であることを確認済み**。
+      残るのは `wit/deps/device/` の追加
+- [x] **ジェネレータの修正。** モジュール名をインターフェースの所属パッケージから
+      引くようにした（ジェネレータと `tools/wit2sig.py` の両方）
 - [ ] ジェネレータが world を 2 つ扱えるようにする（現在 `world app` 決め打ち）。
       import 表を hal 群と device 群に分け、ポートが登録する群を選べるようにする
 - [ ] `tools/wit2sig.py` と `sh tools/check-sigs.sh` を 2 パッケージに対応させる

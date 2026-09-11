@@ -8,6 +8,8 @@
 2. `docs/TODO.md` — **残作業。ここだけが残作業の正**
 3. `docs/abi-spec.md` — WIT → Core Wasm の lowering 規則。**この仕様が正**
 4. `wit/` — HAL 定義。**唯一の真実**。生成物を手で編集しない
+   - `wit/` は world だけ（`wasmicon:app`）。インターフェースは `wit/deps/hal/`
+     （L1）と `wit/deps/device/`（L2）に分かれる。理由は `docs/abi-spec.md` §11
 5. `docs/handoff.md` — 変更禁止の決定事項（§2）と落とし穴（§6）。コードのコメントが節番号で参照している
 
 ## 絶対に守ること

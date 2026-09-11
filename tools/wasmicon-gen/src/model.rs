@@ -244,10 +244,12 @@ pub struct Iface {
 }
 
 /// HAL 全体。
+///
+/// パッケージ名は持たない。abi-spec §11.2 でインターフェースが複数パッケージ
+/// (hal / device) に分かれるため、全体を 1 つの名前で呼べなくなった。
+/// モジュール名は `Iface` が個別に持つ。
 #[derive(Debug, Clone)]
 pub struct Hal {
-    /// `wasmicon:hal@0.1.0`
-    pub package: String,
     pub interfaces: Vec<Iface>,
 }
 

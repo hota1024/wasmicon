@@ -19,13 +19,10 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
         .push_dir(wit_dir)
         .with_context(|| format!("{} の解析に失敗した", wit_dir.display()))?;
 
+    // abi-spec §11.2 により、ここで返るのは world を持つ `wasmicon:app`。
+    // インターフェースは `wit/deps/` 配下の別パッケージ（hal / device）にあり、
+    // モジュール名はそれぞれの所属パッケージから引く（下記）。
     let pkg = &resolve.packages[pkg_id];
-    let version = pkg
-        .name
-        .version
-        .as_ref()
-        .context("パッケージにバージョンが無い。abi-spec §3.1 はバージョン必須")?;
-    let package = format!("{}:{}@{}", pkg.name.namespace, pkg.name.name, version);
 
     let world_id = *pkg
         .worlds
@@ -80,10 +77,7 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
         );
     }
 
-    Ok(Hal {
-        package,
-        interfaces,
-    })
+    Ok(Hal { interfaces })
 }
 
 fn lower_interface(

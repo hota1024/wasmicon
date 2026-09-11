@@ -42,6 +42,9 @@ Function-EV-Board では LCD バックライト）ため、予約ピンと役割
 
 ```
 wit/                  HAL 定義。唯一の真実。生成物を手で編集しない
+  world.wit             world のみ（wasmicon:app）
+  deps/hal/             L1: gpio / i2c / spi / time / log / board（wasmicon:hal）
+  deps/device/          L2: ポートがドライバを持つもの（wasmicon:device、abi-spec §11）
 tools/wasmicon-gen/   wit/ から 3 つの生成物を出すジェネレータ
 runtime/              wasmicon-core。no_std / 依存ゼロ / alloc 不使用のインタプリタ
 ports/common/         ポート共通の HAL。ボード固有の操作だけ Board トレイトに切り出す
