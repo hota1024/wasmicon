@@ -19,14 +19,25 @@
 //! 番号から実行時に引けないため、ボードごとに `open_serial` を持つ。
 
 use esp_hal::peripherals::Peripherals;
-use esp_hal::uart::Uart;
-use esp_hal::Blocking;
 
 #[cfg(feature = "tab5")]
 mod tab5;
 
 #[cfg(feature = "tab5")]
 pub use tab5::DEF;
+
+/// トレースとログを出す先。**どこへ出すかはボードが決める**。
+///
+/// Tab5 は USB-Serial-JTAG（USB-C 1 本で取れる）、RP2040 / ESP32-S3 ポートは
+/// UART を使っている。トレースの**内容**は同じなので `verify/diff-traces.sh`
+/// での突き合わせには影響しない。
+pub trait Serial {
+    fn write(&mut self, bytes: &[u8]);
+}
+
+/// このビルドのトレース出力の型。
+#[cfg(feature = "tab5")]
+pub type Trace = tab5::TraceOut;
 
 // ボードはちょうど 1 つ選ぶ。Cargo の feature は加算的なので、
 // 「選ばれていない」と「複数選ばれた」の両方をここで弾く。
@@ -68,8 +79,8 @@ impl BoardDef {
     }
 }
 
-/// トレースとログを出す UART を開く。ボードごとにピンが違う。
-pub fn open_serial(p: Peripherals) -> Uart<'static, Blocking> {
+/// トレースとログの出力先を開く。ボードごとに経路が違う。
+pub fn open_serial(p: Peripherals) -> Trace {
     #[cfg(feature = "tab5")]
     return tab5::open_serial(p);
 

@@ -11,13 +11,8 @@ use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::{Board, BoardResult};
 
-use crate::boards::DEF;
+use crate::boards::{Serial, DEF};
 use crate::chip::{self, Gpio};
-
-/// トレースとログを出す先。
-pub trait Serial {
-    fn write(&mut self, bytes: &[u8]);
-}
 
 /// ESP32-P4 のボード。どのボードかは feature で選ぶ（`crate::boards`）。
 pub struct EspBoard<S: Serial> {

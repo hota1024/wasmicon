@@ -23,12 +23,15 @@ mod board;
 mod boards;
 mod chip;
 
-use esp_hal::uart::Uart;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::Hal;
 
-use board::{EspBoard, Serial};
-use boards::DEF;
+use board::EspBoard;
+use boards::{Serial, DEF};
+
+// espflash が焼く前に検査する ESP-IDF のアプリ記述子。無いと書き込みを拒否される
+// （ビルドは通るので、実機に焼くまで気づかない）。
+esp_bootloader_esp_idf::esp_app_desc!();
 
 /// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
 static GUEST: &[u8] =
@@ -56,21 +59,11 @@ const MCU_CONFIG: Config = Config {
     operand_stack_slots: 1024,
 };
 
-/// UART0 への出力。
-struct SerialPort<'a>(Uart<'a, esp_hal::Blocking>);
-
-impl Serial for SerialPort<'_> {
-    fn write(&mut self, bytes: &[u8]) {
-        let _ = self.0.write(bytes);
-        let _ = self.0.flush();
-    }
-}
-
 #[esp_hal::main]
 fn main() -> ! {
     let p = esp_hal::init(esp_hal::Config::default());
 
-    let mut serial = SerialPort(boards::open_serial(p));
+    let mut serial = boards::open_serial(p);
     serial.write(b"wasmicon ");
     serial.write(DEF.name.as_bytes());
     serial.write(b"\r\n");
@@ -100,7 +93,7 @@ fn main() -> ! {
 
 /// デコードから `run` の呼び出しまで。
 fn run(
-    hal: &mut Hal<EspBoard<SerialPort<'static>>>,
+    hal: &mut Hal<EspBoard<boards::Trace>>,
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) -> Result<(), wasmicon_core::Error> {

@@ -8,10 +8,10 @@
 //! 表は abi-spec §8、未確認の項目は docs/TODO.md §1.1。
 
 use esp_hal::peripherals::Peripherals;
-use esp_hal::uart::{Config as UartConfig, Uart};
+use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;
 use esp_hal::Blocking;
 
-use super::BoardDef;
+use super::{BoardDef, Serial};
 
 /// ゲストに開放しない GPIO。**チップではなくボードの都合**で塞いでいる。
 ///
@@ -62,14 +62,24 @@ pub const DEF: BoardDef = BoardDef {
     reserved: RESERVED,
 };
 
-/// UART0 (G37=TX, G38=RX) 115200 8N1。
+/// トレースの出力先。**USB-Serial-JTAG を使う**（USB-C 1 本で取れる）。
 ///
-/// **Tab5 では UART0 は M5-Bus の 13/14 番ピンに出ているだけ**で USB には
-/// 繋がっていないので、取り込みには USB シリアル変換が要る
-/// （USB-Serial-JTAG に移すかは未決。docs/TODO.md §1.1）。
-pub fn open_serial(p: Peripherals) -> Uart<'static, Blocking> {
-    Uart::new(p.UART0, UartConfig::default())
-        .unwrap()
-        .with_tx(p.GPIO37)
-        .with_rx(p.GPIO38)
+/// UART0 (G37/G38) にも出せるが、Tab5 ではそれが M5-Bus の 13/14 番ピンに
+/// 出ているだけで USB には繋がっておらず、取り込みに USB シリアル変換と
+/// 30 ピンコネクタへの配線が要る。USB-Serial-JTAG なら追加の部品が要らない。
+///
+/// **ホストが読んでいないと `write` はブロックする**（esp-hal の実装が
+/// エンドポイントの空きをビジーウェイトする）。`espflash --monitor` なり
+///端末なりを繋いでいないと、最初のバナー出力で止まったように見える。
+pub struct TraceOut(UsbSerialJtag<'static, Blocking>);
+
+impl Serial for TraceOut {
+    fn write(&mut self, bytes: &[u8]) {
+        let _ = self.0.write(bytes);
+        let _ = self.0.flush_tx();
+    }
+}
+
+pub fn open_serial(p: Peripherals) -> TraceOut {
+    TraceOut(UsbSerialJtag::new(p.USB_DEVICE))
 }

@@ -80,7 +80,9 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**3 ポートともビルドが通るところまでで、一度も焼いていない。**
+**3 ポートともランタイムのコードは一度も実機で動いていない。**
+ESP32-P4 だけは 2026-09-11 に M5Stack Tab5 へ書き込みまで到達したが、
+**ブートローダに弾かれて起動しなかった**（下記）。RP2040 / ESP32-S3 は未着手。
 
 - GPIO はいずれもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
   ESP32-S3 / ESP32-P4 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
@@ -88,6 +90,37 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 - `ports/rp2040` / `ports/esp32s3` / `ports/esp32p4` の I2C / SPI は
   `unsupported` を返す。sensor-display は実機では動かない
 - abi-spec §8 の配線（役割名 → ピン番号）はオーナー未確認
+
+#### ESP32-P4 / M5Stack Tab5 への書き込み（2026-09-11）
+
+espflash 4.5.0 で書き込みは成功したが、**2nd stage bootloader が
+シリコンリビジョンで拒否**した:
+
+```
+I (27) boot: chip revision: v1.0
+I (28) boot: efuse block revision: v0.3
+E (79) boot_comm: chip revision check failed. Required >= v3.0, found v1.0.
+E (85) boot: Factory app partition is not bootable
+```
+
+- 手元の Tab5 は **ESP32-P4 v1.0**（ROM `esp32p4-eco2-20240710`）
+- espflash 4.5.0 はイメージヘッダの `min_chip_rev_full` に **300 (v3.0) を固定で
+  書き込む**。`--min-chip-rev 0.0` を渡してもヘッダは変わらない（確認済み）
+- `--force` は espflash 側の検査を飛ばすだけで、ブートローダが同じ欄を見て拒む
+- **ポートの不具合ではない。** ランタイムのコードには到達していないので、
+  GPIO もトレースもこの試行では何も検証できていない
+
+この試行で**ビルドでは出ない不具合が 3 件**見つかり、いずれも修正済み:
+
+1. espflash は ESP-IDF のアプリ記述子が無いイメージを焼かない
+   → `esp-bootloader-esp-idf` の `esp_app_desc!()` を追加
+2. ポートの `rust-version` 宣言 1.85 が誤り（esp-hal 1.2.1 自身が 1.95 を要求）
+   → 1.95 に修正
+3. トレースの取り込みに USB シリアル変換と M5-Bus への配線が要る問題
+   → USB-Serial-JTAG に変更し、USB-C 1 本で取れるようにした
+
+書き込み前に工場出荷ファーム 16MB を全て退避し、試行後に書き戻して
+**先頭 1MB のバイト一致を確認**した。実機は試行前の状態に戻してある。
 
 ### 4.2 ボード間の浮動小数の一致
 

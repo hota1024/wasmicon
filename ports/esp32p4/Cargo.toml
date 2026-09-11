@@ -9,7 +9,9 @@ name = "wasmicon-esp32p4"
 description = "Wasmicon の ESP32-P4 ポート"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+# esp-hal 1.2 と esp-bootloader-esp-idf 0.6 がどちらも 1.95 を要求する。
+# 他のポート（1.85）より高いのはそのため。
+rust-version = "1.95"
 
 [features]
 # docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
@@ -26,6 +28,9 @@ wasmicon-core = { path = "../../runtime" }
 wasmicon-port = { path = "../common" }
 # esp32p4 の feature は esp-hal 1.2 から。1.1 では存在しない。
 esp-hal = { version = "1.2", features = ["esp32p4", "unstable"] }
+# espflash は ESP-IDF のアプリ記述子が無いイメージを焼かない。
+# `esp_app_desc!()` を置くためだけに要る（ブートローダ自体は espflash が用意する）。
+esp-bootloader-esp-idf = { version = "0.6", features = ["esp32p4"] }
 # 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
 # panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
 
