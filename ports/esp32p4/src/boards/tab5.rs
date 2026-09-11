@@ -31,10 +31,24 @@ use super::{BoardDef, Serial};
 /// - `39..=44`: microSD。カードが DAT を駆動する
 ///
 /// 開いている番号のうち 33 と 35 は P4 の strapping ピン（32..=38）。
+#[cfg(not(feature = "led-backlight"))]
 const RESERVED: &[(u32, u32)] = &[
     (8, 15),
     (17, 17),
     (20, 23),
+    (26, 32),
+    (34, 34),
+    (36, 44),
+    (52, 52),
+];
+
+/// `led-backlight` のときは 22 だけ開ける（下の `LED` を参照）。他は同じ。
+#[cfg(feature = "led-backlight")]
+const RESERVED: &[(u32, u32)] = &[
+    (8, 15),
+    (17, 17),
+    (20, 21),
+    (23, 23),
     (26, 32),
     (34, 34),
     (36, 44),
@@ -47,9 +61,26 @@ const RESERVED: &[(u32, u32)] = &[
 /// `led` が外付けなのは、**Tab5 にユーザーが振れるオンボード LED が無い**ため
 /// （esp-bsp の `m5stack_tab5.h` にも「Buttons and LEDs are not present」とある）。
 /// **実機の配線は未確認**（docs/TODO.md §1.1）。
+/// `led` 役割に充てる GPIO。既定は M5-Bus pin 2 に出ている汎用の G16（外付け）。
+///
+/// `led-backlight` feature を有効にすると **G22（LCD のバックライト LEDA）**に
+/// 向ける。部品も配線もなしに blink が目視できるようになるので、実機で最初に
+/// 「動いているか」を見るときに使う。副作用として G22 を `reserved` から外す。
+///
+/// **トレースは変わらない。** `pin-by-role` で引いた番号は `wasmicon-port` の
+/// `write_pin` が `role:led` に正規化するため（abi-spec §9）、どちらのビルドでも
+/// `diff-traces.sh` の比較結果は同一になる。
+///
+/// 画像は出ない。パネルを初期化していないので点灯・消灯が見えるだけ。
+/// LEDA の極性は未確認なので、反転して見えるかもしれない（点滅自体は見える）。
+#[cfg(not(feature = "led-backlight"))]
+const LED: u32 = 16;
+#[cfg(feature = "led-backlight")]
+const LED: u32 = 22;
+
 const ROLES: &[(&str, u32)] = &[
-    // M5-Bus pin 2
-    ("led", 16),
+    // 既定は M5-Bus pin 2、led-backlight のときは LCD のバックライト
+    ("led", LED),
     // M5-Bus pin 22 / 23 / 8
     ("lcd-cs", 48),
     ("lcd-dc", 47),

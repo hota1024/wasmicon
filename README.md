@@ -89,6 +89,8 @@ npm ci
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
 (cd ports/esp32p4 && cargo build --release) # P4 は RISC-V なので espup 不要
                                             # ボードは feature で選ぶ（既定 = tab5）
+# Tab5 で部品なしに目視する（led 役割を LCD バックライトに向ける。トレースは不変）
+(cd ports/esp32p4 && cargo build --release --features led-backlight)
 
 # wasmtime との差分テスト（インタプリタの正しさ）
 (cd verify/differential && cargo test)

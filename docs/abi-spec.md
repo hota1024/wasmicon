@@ -339,6 +339,11 @@ Tab5 の番号は Tab5 の PinMap (<https://docs.m5stack.com/en/core/Tab5>) に�
 （Pico W/WH は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812、**Tab5 はそもそも
 ユーザーが振れる LED を持たない**）。実機の配線は Phase 4 でオーナーに確認する。
 
+Tab5 には、`led` を LCD のバックライト (G22) に向ける `led-backlight` ビルドが
+ある（既定では無効。docs/TODO.md §1.4）。部品なしで目視するためのもので、
+**トレースは既定ビルドと同一**（役割名で引いた番号は §9 により `role:led` に
+正規化される）。上の表はあくまで既定の割り当てを示す。
+
 ゲストに開放しない GPIO（`gpio_reserved`）もポートごとに違う:
 
 | ボード | 塞いでいる番号 | 理由 |

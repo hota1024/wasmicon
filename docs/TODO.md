@@ -119,6 +119,28 @@ ESP32-P4 の分（Phase 4 / 5 / 6 と同じことを 3 ボード目にも通す�
 ランタイムのコードに一度も到達していなかった（§1.1.5）。起動していれば
 バナー（`wasmicon esp32p4/tab5`）が出る。**バナーが出ないうちは GPIO の話ではない。**
 
+#### Tab5 で部品なしに目視する（`led-backlight` feature）
+
+```sh
+cd ports/esp32p4 && cargo run --release --features led-backlight
+```
+
+`led` 役割を LCD のバックライト (G22) に向けるビルド。外付け LED も M5-Bus への
+配線も要らず、blink が画面の明滅として見える。副作用として G22 を `reserved` から
+外す（他の予約は既定と同一で、差分は 22 の 1 本だけ）。
+
+**トレースは既定ビルドと完全に同一。** `pin-by-role` で引いた番号は
+`wasmicon-port` の `write_pin` が `role:led` に正規化するので（abi-spec §9）、
+`diff-traces.sh` の比較結果は変わらない。
+
+- [ ] **ただし今の blink は速すぎて見えない。** `BLINKS = 3` / `INTERVAL_MS = 1`
+      なので全体が約 6ms で終わる。目視するには `apps/blink-rs` と
+      `apps/blink-as` の `INTERVAL_MS` を上げる必要がある（両方揃えること）。
+      **`time` はトレースに出ない**ので、変えてもトレースの一致検証には影響しない。
+      host のテストが 3×2×interval だけ遅くなるのが唯一のコスト
+- 画像は出ない。パネルを初期化していないので点灯・消灯が見えるだけ
+- LEDA の極性は未確認なので、反転して見えるかもしれない（点滅自体は見える）
+
 ---
 
 ## 2. 実機なしで判断できること

@@ -23,6 +23,11 @@ trace = []
 # --- ボード（ちょうど 1 つ。src/boards/mod.rs が個数を検査する）---
 tab5 = []
 
+# 実機で目視確認するためのビルド。`led` 役割を Tab5 の LCD バックライト (G22) に
+# 向けるので、部品も配線もなしに blink が画面の明滅として見える。
+# トレースは変わらない（`role:led` に正規化されるため）。既定では無効。
+led-backlight = []
+
 [dependencies]
 wasmicon-core = { path = "../../runtime" }
 wasmicon-port = { path = "../common" }
