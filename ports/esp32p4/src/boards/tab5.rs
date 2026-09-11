@@ -114,3 +114,18 @@ impl Serial for TraceOut {
 pub fn open_serial(p: Peripherals) -> TraceOut {
     TraceOut(UsbSerialJtag::new(p.USB_DEVICE))
 }
+
+/// パニック経路から出力先を作り直す。
+///
+/// 通常の `TraceOut` はボードが持っていて panic handler からは届かないので、
+/// USB_DEVICE を奪い直す。`esp_hal::init` の中で落ちた場合はまだ誰も
+/// USB_DEVICE を取っていないし、後から落ちた場合も以降は停止するだけなので、
+/// 二重に触っても競合しない。
+///
+/// # Safety
+/// panic handler からのみ呼ぶこと。
+pub unsafe fn steal_serial() -> TraceOut {
+    // SAFETY: 上の契約により、これ以降 USB_DEVICE を使うのはこの一つだけ。
+    let usb = unsafe { esp_hal::peripherals::USB_DEVICE::steal() };
+    TraceOut(UsbSerialJtag::new(usb))
+}

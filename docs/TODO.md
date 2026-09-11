@@ -41,30 +41,63 @@
       内部で使われているのかが分からない。なお 33 と 35 は P4 の strapping ピン
       (32..=38) なので、開けてはいるが出力に使うと起動に影響しうる
 
-### 1.1.5 【ブロッカー】手元の Tab5 は ESP32-P4 v1.0 で起動できない
+### 1.1.5 シリコンリビジョン（解決済み）と、次に出たトレース取り込みの問題
 
-2026-09-11 に実機へ書き込んだ結果、**2nd stage bootloader に弾かれた**。
-詳細と生ログは `docs/verification-report.md` §4.1。
+#### 解決済み: Tab5 の ESP32-P4 v1.0 で起動する
+
+2026-09-11 の最初の書き込みは 2nd stage bootloader に弾かれた:
 
 ```
 E (79) boot_comm: chip revision check failed. Required >= v3.0, found v1.0.
 ```
 
+**原因は esp-hal の既定値**で、ポートの不具合ではなかった。
+
 - 手元の個体は **ESP32-P4 v1.0**（ROM `esp32p4-eco2-20240710`）
-- espflash 4.5.0 はイメージヘッダの `min_chip_rev_full` に 300 (v3.0) を固定で書く。
-  `--min-chip-rev 0.0` では変わらない。espflash 4.6.0 のリリースノートにも該当修正なし
-- `--force` は espflash 側の検査を飛ばすだけで、ブートローダが同じ欄を見て拒む
-- **ポートの不具合ではない。** ランタイムのコードには一度も到達していない
+- espflash はイメージヘッダの `min_chip_rev_full` を ELF のメタデータ
+  (`build_info.MIN_CHIP_REVISION`) から読み、`flash_data.min_chip_rev.max(metadata)`
+  で下から clamp する。だから espflash の `--min-chip-rev 0.0` は効かない
+- その metadata を書いているのは esp-hal の esp-config オプション
+  `min-chip-revision`。**P4 の既定が 300 (v3.0)** になっている
 
-これが解けるまで **ESP32-P4 の Phase 4 以降は進められない**。選択肢:
+**解決**: `ports/esp32p4/.cargo/config.toml` の `[env]` で
 
-- [ ] **v3.x シリコンの P4 ボードを使う**（Stamp-P4 など新しい個体）。一番素直
-- [ ] `CONFIG_ESP32P4_REV_MIN` を下げた ESP-IDF のブートローダを用意する。
-      正攻法だが Rust ポートの外の作業になる
-- [ ] イメージヘッダの `min_chip_rev` を書き換えて SHA-256 を張り直す。
-      **ベンダーの安全ゲートの迂回**にあたる。v5.5 系が v1.0 を切ったのは
-      おそらく errata が理由なので、通っても動作の保証は無い。**非推奨**
-- [ ] esp-hal 側が v1.0 を再びサポートするのを待つ（見込みは薄い）
+```toml
+ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"
+```
+
+これは **ESP-IDF の `CONFIG_ESP32P4_REV_MIN_100`（"Rev v1.0"）に対応する正規の
+設定**で、迂回ではない。設定後はイメージヘッダが min=100 / max=199 になり、
+この max=199 は ESP-IDF の `ESP32P4_REV_MAX_FULL = 199 if ESP32P4_SELECTS_REV_LESS_V3`
+と一致する。`--force` なしで書き込め、`boot: Loaded app from partition at
+offset 0x10000` まで到達する。
+
+v3.x の個体しか使わなくなったら 300 に戻してよい。
+
+#### 未解決: USB-Serial-JTAG にトレースが出てこない
+
+アプリはロードされ実行に入るが、**トレースを取り込めていない**。
+
+- 保存 PC が `esp_sync::GenericRawMutex::acquire`（`UsbSerialJtag::write` の
+  待ちループの中）を指す。**ホストがドレインするまでブロックする**実装なので、
+  そこで止まっている
+- `rst:0x17 (CHIP_USB_UART_RESET)` が出る。**ホストが CDC を開閉するたびに
+  チップがリセット**されるため、モニタを繋ぐと起動し直す
+- `--before no-reset-no-sync --after no-reset` でリセットせずに聴いても
+  18 秒間バナーが出なかった
+- P4 は USB_DEVICE (Serial-JTAG) と USB_OTG があり、**Tab5 の USB-C がどちらの
+  PHY に繋がっているかを確認していない**。ROM のダウンロードは通るので
+  Serial-JTAG のはずだが、アプリ側から使えるかは別問題
+
+選択肢:
+
+- [ ] Tab5 の USB-C がどの USB ペリフェラルに繋がっているか確定させる
+      （回路図か、esp-bsp / ESPHome が USB をどう扱っているか）
+- [ ] トレースを UART0 (G37/G38) に戻す。**確実だが** USB シリアル変換と
+      M5-Bus 13/14 への配線が要る（部品が要る）
+- [ ] `UsbSerialJtag::write` のブロックに上限を付ける。ハングはしなくなるが
+      **トレースが黙って欠ける**。検証の測定器としては最悪の壊れ方なので、
+      入れるなら欠けたことを検出できる形にすること
 
 ### 1.2 実装
 
@@ -94,7 +127,7 @@ P4 の分は下に別項として置く。
 - [ ] 結果を `docs/verification-report.md` に反映する
 
 ESP32-P4 の分（Phase 4 / 5 / 6 と同じことを 3 ボード目にも通す）。
-**§1.1.5 のブロッカーが解けるまで着手できない**:
+**起動はするようになったが、トレースを取り込めていない（§1.1.5 後半）**:
 
 - [ ] ESP32-P4 で `blink-rs` / `blink-as` が動き、トレースが host 版と一致
 - [ ] ESP32-P4 で sensor-display の表示が出る（Rust / AS）

@@ -115,15 +115,36 @@ fn run(
     invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])
 }
 
-/// docs/handoff.md §3 #4 は「ログを出して停止、再起動しない」だが、**理由は出せない**。
+/// docs/handoff.md §3 #4: ログを出して停止する。再起動はしない。
 ///
-/// シリアルはボードが持っていて panic handler からは届かないため、今は
-/// 停止するだけ。理由を出すには、シリアルのハンドルを panic handler から
-/// 触れる場所（critical-section 付きのグローバル）に置く必要がある。
-/// ランタイム由来の失敗は `main` が捕まえて UART に出すので、ここに来るのは
-/// ポート自身のバグに限られる。
+/// ランタイム由来の失敗は `main` が捕まえて出すので、ここに来るのはポート自身か
+/// esp-hal のバグに限られる。**その場所が分からないと実機では手も足も出ない**ので、
+/// USB_DEVICE を奪い直して `panic at <file>:<line>` を出す。
+///
+/// `core::fmt` は使わない（バイナリが肥大するため）。行番号は手で 10 進に直す。
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // SAFETY: 以降は停止するだけなので、USB_DEVICE を二重に触っても競合しない。
+    let mut out = unsafe { boards::steal_serial() };
+    out.write(b"\r\npanic");
+    if let Some(loc) = info.location() {
+        out.write(b" at ");
+        out.write(loc.file().as_bytes());
+        out.write(b":");
+        let mut buf = [0u8; 10];
+        let mut n = loc.line();
+        let mut i = buf.len();
+        loop {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 || i == 0 {
+                break;
+            }
+        }
+        out.write(&buf[i..]);
+    }
+    out.write(b"\r\n");
     loop {
         core::hint::spin_loop();
     }

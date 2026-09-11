@@ -93,8 +93,11 @@ ESP32-P4 だけは 2026-09-11 に M5Stack Tab5 へ書き込みまで到達した
 
 #### ESP32-P4 / M5Stack Tab5 への書き込み（2026-09-11）
 
-espflash 4.5.0 で書き込みは成功したが、**2nd stage bootloader が
-シリコンリビジョンで拒否**した:
+**到達点**: アプリはロードされ実行に入るところまで来たが、**トレースを
+取り込めていないので、ランタイムの動作は何も検証できていない**。
+経緯と残りの選択肢は `docs/TODO.md` §1.1.5。
+
+最初の書き込みは 2nd stage bootloader がシリコンリビジョンで拒否した:
 
 ```
 I (27) boot: chip revision: v1.0
@@ -104,11 +107,19 @@ E (85) boot: Factory app partition is not bootable
 ```
 
 - 手元の Tab5 は **ESP32-P4 v1.0**（ROM `esp32p4-eco2-20240710`）
-- espflash 4.5.0 はイメージヘッダの `min_chip_rev_full` に **300 (v3.0) を固定で
-  書き込む**。`--min-chip-rev 0.0` を渡してもヘッダは変わらない（確認済み）
-- `--force` は espflash 側の検査を飛ばすだけで、ブートローダが同じ欄を見て拒む
-- **ポートの不具合ではない。** ランタイムのコードには到達していないので、
-  GPIO もトレースもこの試行では何も検証できていない
+- **ポートの不具合ではなく esp-hal の既定値だった。** esp-config の
+  `min-chip-revision` が P4 で 300 (v3.0) 既定になっており、espflash はその値を
+  ELF のメタデータから読んでヘッダに書く（`--min-chip-rev` は下から clamp される）
+- `ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"` を `.cargo/config.toml` の `[env]` に
+  置いて解決した。ESP-IDF の `CONFIG_ESP32P4_REV_MIN_100` に対応する正規の設定で、
+  ヘッダは min=100 / max=199 になる（max は ESP-IDF の `REV_LESS_V3` の範囲と一致）
+- 解決後は `--force` なしで書き込め、`boot: Loaded app from partition at
+  offset 0x10000` まで到達する
+
+**ただしトレースが取り込めていない。** 保存 PC が `UsbSerialJtag::write` の
+待ちループを指し、ホストが CDC を開閉するとチップがリセットされる
+(`rst:0x17 CHIP_USB_UART_RESET`)。バナーすら取れていないため、
+**GPIO もトレースもこの時点では何も検証できていない。**
 
 この試行で**ビルドでは出ない不具合が 3 件**見つかり、いずれも修正済み:
 
