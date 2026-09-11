@@ -8,7 +8,7 @@
 //!
 //! ゲストの `.wasm` はフラッシュに埋め込み、XIP 上のスライスをそのまま
 //! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
-//! トレースの出力先はボード定義が決める（Tab5 は USB-Serial-JTAG）。
+//! トレースの出力先はボード定義が決める（Tab5 は UART0 115200 8N1）。
 //!
 //! **実機でランタイムの動作を確認できていない。** Tab5 では書き込みと起動まで
 //! 到達するが、トレースを取り込めていない（docs/TODO.md §1.1.5）。
@@ -64,7 +64,6 @@ fn main() -> ! {
     let p = esp_hal::init(esp_hal::Config::default());
 
     let hw = boards::open(p);
-    let lcd_ok = hw.lcd_ok;
     let mut serial = hw.serial;
     serial.write(b"wasmicon ");
     serial.write(DEF.name.as_bytes());
@@ -89,21 +88,8 @@ fn main() -> ! {
         s.write(b"]\r\n");
     }
 
-    // **実機の切り分け用。** USB-Serial-JTAG はホストが繋がっていないと
-    // 出力が掃けず、起動直後の 1 回きりの出力は取りこぼす（`Serial::write` は
-    // 50ms で諦める）。後からモニタを繋いでも状態が分かるよう、1 秒ごとに
-    // 出し続ける。docs/TODO.md §1.1.5。
     loop {
-        let s = hal.board_mut().serial();
-        s.write(if lcd_ok {
-            b"wasmicon: alive lcd=1\r\n"
-        } else {
-            b"wasmicon: alive lcd=0\r\n"
-        });
-        let start = chip::now_us();
-        while chip::now_us() - start < 1_000_000 {
-            core::hint::spin_loop();
-        }
+        core::hint::spin_loop();
     }
 }
 

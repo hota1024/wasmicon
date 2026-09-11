@@ -9,10 +9,8 @@
 
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::Peripherals;
-use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;
+use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_hal::Blocking;
-
-use wasmicon_core::generated::gpio::{Level, PinMode};
 
 use super::{BoardDef, Serial};
 
@@ -102,51 +100,24 @@ pub const DEF: BoardDef = BoardDef {
     reserved: RESERVED,
 };
 
-/// トレースの出力先。**USB-Serial-JTAG を使う**（USB-C 1 本で取れる）。
+/// トレースの出力先。**UART0 (G37=TX, G38=RX) 115200 8N1。**
 ///
-/// UART0 (G37/G38) にも出せるが、Tab5 ではそれが M5-Bus の 13/14 番ピンに
-/// 出ているだけで USB には繋がっておらず、取り込みに USB シリアル変換と
-/// 30 ピンコネクタへの配線が要る。USB-Serial-JTAG なら追加の部品が要らない。
+/// Tab5 では UART0 は M5-Bus の 13/14 番ピンに出ているだけで USB には
+/// 繋がっていない。取り込みには 3.3V の USB シリアル変換が要る。
 ///
-/// **ホストが読んでいないと `write` はブロックする**（esp-hal の実装が
-/// エンドポイントの空きをビジーウェイトする）。`espflash --monitor` なり
-///端末なりを繋いでいないと、最初のバナー出力で止まったように見える。
-pub struct TraceOut(UsbSerialJtag<'static, Blocking>);
-
-/// ホストが読まないときに諦めるまでの時間。
+/// **一度 USB-Serial-JTAG に変更したが戻した**（2026-09-11）。部品が要らない
+/// 利点はあったが、この個体では出力を取れず、しかも失敗の原因を切り分ける
+/// 手段が無くなった。USB-OTG も試したが列挙されなかった。経緯は
+/// docs/TODO.md §1.1.5。UART なら RP2040 / ESP32-S3 と経路が揃う。
 ///
-/// **esp-hal の `UsbSerialJtag::write` はホストがドレインするまで無限に
-/// ビジーウェイトする。** USB-Serial-JTAG はホストが CDC を開いていないと
-/// エンドポイントが掃けないので、モニタを繋いでいない実機ではそこで止まる。
-/// 2026-09-11 に Tab5 でこれを踏み、起動直後のバナー出力で停止していた
-/// （保存 PC が `UsbSerialJtag` の待ちループを指していた）。
-///
-/// **測定器であるトレースを黙って捨てるのは避けたいが、装置ごと止まるのは
-/// もっと悪い。** ここで諦めた場合は取りこぼしとして扱う（docs/TODO.md §1.1.5）。
-const WRITE_TIMEOUT_US: u64 = 50_000;
+/// UART は受け手がいなくても送信が詰まらないので、`UsbSerialJtag` と違って
+/// ホスト未接続で止まることはない。
+pub struct TraceOut(Uart<'static, Blocking>);
 
 impl Serial for TraceOut {
     fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            let start = crate::chip::now_us();
-            loop {
-                if self.0.write_byte_nb(b).is_ok() {
-                    break;
-                }
-                if crate::chip::now_us() - start > WRITE_TIMEOUT_US {
-                    // ホストがいない。以降も掃けないので、この書き込みは捨てる。
-                    return;
-                }
-                core::hint::spin_loop();
-            }
-        }
-        let start = crate::chip::now_us();
-        while self.0.flush_tx_nb().is_err() {
-            if crate::chip::now_us() - start > WRITE_TIMEOUT_US {
-                return;
-            }
-            core::hint::spin_loop();
-        }
+        let _ = self.0.write(bytes);
+        let _ = self.0.flush();
     }
 }
 
@@ -158,9 +129,6 @@ impl Serial for TraceOut {
 /// ゲストにも `Board` にも渡さない（docs/TODO.md §1.1.5）。
 pub struct Hw {
     pub serial: TraceOut,
-    /// `power_on_lcd` が成功したか。実機で切り分けるために持ち回る
-    /// （シリアルが後から繋がれても分かるよう、`main` が定期的に出す）。
-    pub lcd_ok: bool,
     /// PORT.A (G54=SDA / G53=SCL)。外部ユニット用。ゲストの `i2c.bus` index 0。
     /// SDA/SCL の極性は未確認（docs/TODO.md §1.1）。
     pub i2c_porta: I2c<'static, Blocking>,
@@ -182,9 +150,6 @@ const EXPANDER_LCD: u8 = 0x43;
 /// そのエキスパンダ上で LCD_EN が繋がっているビット。
 /// `IO_EXPANDER_PIN_NUM_4 = (1ULL << 4)` なのでマスクは 0x10。
 const LCD_EN_BIT: u8 = 1 << 4;
-
-/// バックライト (LEDA)。LCD_EN を立てた後にこれを駆動すると画面が光る。
-const BACKLIGHT: u32 = 22;
 
 type I2cResult = Result<(), esp_hal::i2c::master::Error>;
 
@@ -222,38 +187,13 @@ fn power_on_lcd(i2c: &mut I2c<'static, Blocking>) -> I2cResult {
     Ok(())
 }
 
-/// バックライトを明滅させる。**実機の診断用**。
-///
-/// USB-Serial-JTAG が読めない状態（docs/TODO.md §1.1.5）では、画面が唯一の
-/// 可視な出力になる。成功と失敗で回数と間隔を変えることで、シリアル無しでも
-/// 次の 3 つを 1 回の観測で区別できる:
-///
-/// - ゆっくり数回 → I2C 成功
-/// - 速く多数回   → I2C 失敗（ただし G22 は見えている）
-/// - 全く変化なし → G22 自体が見えない（LCD_EN が効いていないか配線）
-///
-/// LEDA の極性が未確認なので、点灯/消灯どちらが「オン」でも変化が見えるように
-/// トグルしている。
-fn blink_backlight(times: u32, period_us: u64) {
-    // SAFETY: `EspBoard` はまだ作られていない。ここで作る `Gpio` は
-    // この関数を出る前に捨てるので、排他の契約は保たれる。
-    let mut gpio = unsafe { crate::chip::Gpio::steal() };
-    if gpio.configure(BACKLIGHT, PinMode::Output).is_err() {
-        return;
-    }
-    for i in 0..times {
-        let level = if i % 2 == 0 { Level::High } else { Level::Low };
-        let _ = gpio.write(BACKLIGHT, level);
-        let start = crate::chip::now_us();
-        while crate::chip::now_us() - start < period_us {
-            core::hint::spin_loop();
-        }
-    }
-    let _ = gpio.write(BACKLIGHT, Level::High);
-}
-
 pub fn open(p: Peripherals) -> Hw {
-    let out = TraceOut(UsbSerialJtag::new(p.USB_DEVICE));
+    let out = TraceOut(
+        Uart::new(p.UART0, UartConfig::default())
+            .expect("UART0 の初期化に失敗")
+            .with_tx(p.GPIO37)
+            .with_rx(p.GPIO38),
+    );
 
     // 以前ここで 2 秒待っていたが外した。`Serial::write` に上限を付けたので
     // ホスト待ちで止まることは無くなり、待つ理由が無い。
@@ -276,24 +216,15 @@ pub fn open(p: Peripherals) -> Hw {
     // **シリアルより先に画面へ出す。** シリアルはホスト次第で詰まるので、
     // 可視な診断をその後ろに置くと、詰まったときに何も見えなくなる。
     let ok = power_on_lcd(&mut i2c_internal).is_ok();
-    if ok {
-        blink_backlight(6, 300_000); // ゆっくり 6 回 = I2C 成功
+    serial.write(if ok {
+        b"lcd: power on\r\n"
     } else {
-        blink_backlight(20, 80_000); // 速く 20 回 = I2C 失敗
-    }
-    if ok {
-        serial.write(b"lcd: power on\r\n");
-    } else {
-        serial.write(b"lcd: power on failed\r\n");
-    }
+        b"lcd: power on failed\r\n"
+    });
 
     // 内部バスは `Hw` に入れない。今はここで LCD の電源を入れるだけで、
     // ゲストにも渡さないため。display を実装するときに持ち回る形へ変える。
-    Hw {
-        serial,
-        lcd_ok: ok,
-        i2c_porta,
-    }
+    Hw { serial, i2c_porta }
 }
 
 /// パニック経路から出力先を作り直す。
@@ -306,7 +237,16 @@ pub fn open(p: Peripherals) -> Hw {
 /// # Safety
 /// panic handler からのみ呼ぶこと。
 pub unsafe fn steal_serial() -> TraceOut {
-    // SAFETY: 上の契約により、これ以降 USB_DEVICE を使うのはこの一つだけ。
-    let usb = unsafe { esp_hal::peripherals::USB_DEVICE::steal() };
-    TraceOut(UsbSerialJtag::new(usb))
+    // SAFETY: 上の契約により、これ以降 UART0 と TX ピンを使うのはこの一つだけ。
+    let (uart, tx) = unsafe {
+        (
+            esp_hal::peripherals::UART0::steal(),
+            esp_hal::peripherals::GPIO37::steal(),
+        )
+    };
+    TraceOut(
+        Uart::new(uart, UartConfig::default())
+            .expect("UART0 の初期化に失敗")
+            .with_tx(tx),
+    )
 }
