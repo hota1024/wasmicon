@@ -64,8 +64,14 @@ const RESERVED: &[(u32, u32)] = &[
 /// `led` 役割に充てる GPIO。既定は M5-Bus pin 2 に出ている汎用の G16（外付け）。
 ///
 /// `led-backlight` feature を有効にすると **G22（LCD のバックライト LEDA）**に
-/// 向ける。部品も配線もなしに blink が目視できるようになるので、実機で最初に
-/// 「動いているか」を見るときに使う。副作用として G22 を `reserved` から外す。
+/// 向ける。副作用として G22 を `reserved` から外す。
+///
+/// **現状このビルドでは何も光らない。** Tab5 のバックライトは G22 だけでは
+/// 点かず、**PI4IOE5V6408（内部 I2C, 0x43）のピン 4 = `BSP_LCD_EN` で
+/// LCD の電源を入れる**必要がある（esp-bsp の `bsp_feature_enable`
+/// `BSP_FEATURE_LCD` がやっていること）。内部 I2C (G31/G32) は `reserved` で、
+/// I2C 自体も未実装なので、**エキスパンダを叩けるようになるまでこの feature は
+/// 目視確認には使えない**。2026-09-11 に実機で確認済み（docs/TODO.md §1.1.5）。
 ///
 /// **トレースは変わらない。** `pin-by-role` で引いた番号は `wasmicon-port` の
 /// `write_pin` が `role:led` に正規化するため（abi-spec §9）、どちらのビルドでも
