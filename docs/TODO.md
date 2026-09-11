@@ -78,23 +78,35 @@ v3.x の個体しか使わなくなったら 300 に戻してよい。
 
 アプリはロードされ実行に入るが、**トレースを取り込めていない**。
 
-- 保存 PC が `esp_sync::GenericRawMutex::acquire`（`UsbSerialJtag::write` の
-  待ちループの中）を指す。**ホストがドレインするまでブロックする**実装なので、
-  そこで止まっている
-- `rst:0x17 (CHIP_USB_UART_RESET)` が出る。**ホストが CDC を開閉するたびに
-  チップがリセット**されるため、モニタを繋ぐと起動し直す
-- `--before no-reset-no-sync --after no-reset` でリセットせずに聴いても
-  18 秒間バナーが出なかった
-- P4 は USB_DEVICE (Serial-JTAG) と USB_OTG があり、**Tab5 の USB-C がどちらの
-  PHY に繋がっているかを確認していない**。ROM のダウンロードは通るので
-  Serial-JTAG のはずだが、アプリ側から使えるかは別問題
+**USB-C の接続先は確定した（疑いは晴れた）。** `ioreg` で見ると
+`USB JTAG/serial debug unit / Espressif` として列挙されるので、**Tab5 の USB-C は
+P4 の USB_DEVICE (USB-Serial-JTAG) に繋がっている**。ペリフェラルの選択は正しい。
+
+それでも出てこない。分かっている事実:
+
+- ブートローダの `Loaded app from partition at offset 0x10000` までは必ず届く。
+  その直後にホスト側が `Broken pipe` になる
+- **アプリ起動時に USB が再列挙される**（`ioreg` の registry id が変わる）。
+  `esp_hal::init` が `disable_peripherals()` で一度落とし、こちらが
+  `UsbSerialJtag::new` で入れ直すため
+- 再列挙後に `/dev/cu.usbmodem*` を開き直しても **0 バイト**。20 秒待っても何も出ない
+- 保存 PC は `esp_sync::GenericRawMutex::acquire`（`UsbSerialJtag::write` の
+  ホスト待ちビジーウェイトの中）を指す
+- `open_serial` に 2 秒の待ちを入れるとリセットループ自体は止まった（改善）。
+  ただし出力は出ないまま
+- `--before no-reset-no-sync --after no-reset` でリセットせず聴いても出ない
+- `cat` でポートを開くと `rst:0x17 CHIP_USB_UART_RESET` が起き、ROM バナーの
+  31 バイトだけ取れて切れる（開くと DTR が動いてリセットされる）
+
+**有力な仮説: esp-hal の USB-Serial-JTAG ドライバが P4 v1.0 シリコンで動かない。**
+ESP-IDF が v0.x〜v1.x と v3.x を別レンジ (`REV_LESS_V3`) として扱い、既定を
+v3.1 にしているのは、まさにこの種の errata が理由である可能性が高い。未検証。
 
 選択肢:
 
-- [ ] Tab5 の USB-C がどの USB ペリフェラルに繋がっているか確定させる
-      （回路図か、esp-bsp / ESPHome が USB をどう扱っているか）
-- [ ] トレースを UART0 (G37/G38) に戻す。**確実だが** USB シリアル変換と
-      M5-Bus 13/14 への配線が要る（部品が要る）
+- [ ] **v3.x シリコンの P4 で試す。** 上の仮説の検証も兼ねる。一番情報量が多い
+- [ ] **トレースを UART0 (G37/G38) に戻す。** USB を経由しないので確実。
+      ただし USB シリアル変換と M5-Bus 13/14 への配線（＝部品）が要る
 - [ ] `UsbSerialJtag::write` のブロックに上限を付ける。ハングはしなくなるが
       **トレースが黙って欠ける**。検証の測定器としては最悪の壊れ方なので、
       入れるなら欠けたことを検出できる形にすること

@@ -112,7 +112,19 @@ impl Serial for TraceOut {
 }
 
 pub fn open_serial(p: Peripherals) -> TraceOut {
-    TraceOut(UsbSerialJtag::new(p.USB_DEVICE))
+    let out = TraceOut(UsbSerialJtag::new(p.USB_DEVICE));
+
+    // **ここで待たないと最初の 1 行が出ない。**
+    // `esp_hal::init` が周辺を一度落とすため、USB-Serial-JTAG はアプリ起動時に
+    // 再列挙される。ホストが列挙を終える前に書くと、`write` がドレインされずに
+    // 止まったまま（`UsbSerialJtag::write` はホスト待ちでビジーウェイトする）
+    // ホスト側の開き直しで DTR が動き、`rst:0x17 CHIP_USB_UART_RESET` で
+    // リセットが繰り返される。
+    let start = crate::chip::now_us();
+    while crate::chip::now_us() - start < 2_000_000 {
+        core::hint::spin_loop();
+    }
+    out
 }
 
 /// パニック経路から出力先を作り直す。
