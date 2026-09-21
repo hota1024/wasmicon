@@ -10,15 +10,20 @@
 //! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
 //! トレースの出力先はボード定義が決める（Tab5 は UART0 115200 8N1）。
 //!
-//! **2026-09-21 に Tab5 実機でトレースの取り込みに成功した**（CP2102N を
-//! M5-Bus 14 番 = G37 に繋ぐ）。`decode` / `validate` / `Exec::new` までは
-//! 実機で正しく動くことを確認済み。`instantiate` を通ると `Module` が壊れる
-//! 問題が残っている（docs/TODO.md §1.1.5）。
+//! **2026-09-21 に Tab5 実機で blink が完走した。** トレースは UART0 (G37) から
+//! 3.3V USB シリアル変換で取り込む。`verify/diff-traces.sh` でホストの出力と
+//! **差分ゼロ**（20 行一致）を確認済み。
 //!
-//! この個体は **P4 v1.0 / ROM esp32p4-eco2** で、esp-hal 1.2 が前提にしている
-//! v3.x / ECO5 と噛み合わない。そのための回避が 3 つ入っている:
-//! `.cargo/config.toml` の `ESP_HAL_CONFIG_MIN_CHIP_REVISION`、
-//! `vendor/esp-sync`、`rom-pre-eco5.x` + `src/mem.rs`。
+//! この個体は **P4 v1.0 / ROM esp32p4-eco2 / 使える L2MEM は 640KB** で、
+//! esp-hal 1.2 が前提にしている v3.x / ECO5 / 768KB と噛み合わない。
+//! そのための回避が 4 つ入っている（すべて上流のバグ回避であって好みではない）:
+//!
+//! - `.cargo/config.toml` の `ESP_HAL_CONFIG_MIN_CHIP_REVISION`（書き込み拒否）
+//! - `vendor/esp-sync`（CSR 0x347 が不正命令）
+//! - `rom-pre-eco5.x` の ROM アドレス表 + `src/mem.rs`（64bit シフトと memcpy 系）
+//! - `rom-pre-eco5.x` の `_stack_start`（スタックが実在しない RAM に置かれる）
+//!
+//! 詳細と削除条件は docs/TODO.md §1.1.5。
 //!
 //! ESP32-P4 は RISC-V (RV32IMAFC) なので upstream Rust でそのまま組める:
 //! `cd ports/esp32p4 && cargo build --release`

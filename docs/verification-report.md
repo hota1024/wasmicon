@@ -80,15 +80,16 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**2026-09-21 に ESP32-P4 / M5Stack Tab5 でランタイムが初めて実機で動いた。**
-`decode` / `validate` / `Exec::new` までは実機で正しく動くことを確認済み。
-`instantiate` を通ると `Module` が壊れる問題が残っており、ゲストの実行までは
-到達していない（docs/TODO.md §1.1.5）。RP2040 / ESP32-S3 は未着手。
+**2026-09-21 に ESP32-P4 / M5Stack Tab5 で blink が実機で完走した。**
+`verify/diff-traces.sh` でホストの出力と**差分ゼロ**（20 行一致）を確認済み。
+同じ `.wasm` が PC と実機で同一の host call 列を出す。GPIO のレジスタ直叩きも
+含めて動作している。RP2040 / ESP32-S3 は未着手。
 
 トレースは UART0 (G37) から 3.3V USB シリアル変換（CP2102N）経由で取り込む。
-そこに至るまでに **esp-hal 1.2 が P4 v3.x / ECO5 を前提にしている**ことに
-起因する不整合を 4 つ潰した（シリコンリビジョン / esp-sync の Zcmp 回避 /
-ROM 関数アドレス表 / memcpy 系）。詳細は docs/TODO.md §1.1.5。
+そこに至るまでに **esp-hal 1.2 が新しい P4 を前提にしている**ことに起因する
+不整合を 4 つ潰した（シリコンリビジョン / esp-sync の Zcmp 回避 / ROM 関数
+アドレス表と memcpy 系 / **スタックが実在しない RAM に置かれる**）。
+いずれも**クラッシュせず静かに誤動作する**種類で、詳細は docs/TODO.md §1.1.5。
 
 - GPIO はいずれもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
   ESP32-S3 / ESP32-P4 は GPIO / IO_MUX）。型は通ったが一つも観測していない。

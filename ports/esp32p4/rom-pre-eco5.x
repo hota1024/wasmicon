@@ -40,3 +40,23 @@ memcpy  = wasmicon_memcpy;
 memmove = wasmicon_memmove;
 memset  = wasmicon_memset;
 memcmp  = wasmicon_memcmp;
+
+/* スタックの先頭を**実在する RAM の内側**へ下げる。
+ *
+ * esp-hal は L2MEM を 768KB (0x4FF00000..0x4FFC0000) とみなし
+ * `_stack_start = 0x4FFADFC0` を置く。しかし実機で測ると
+ * **0x4FF9E000 は生きていて 0x4FFA0000 は死んでいる**。つまり使えるのは
+ * 0x4FF00000..0x4FFA0000 の 640KB だけで、上位 128KB は L2 キャッシュに
+ * 割り当てられていて RAM として存在しない（128KB は P4 の L2 キャッシュ容量）。
+ *
+ * 実在しない領域に置かれたスタックは**キャッシュに載っている間だけ正しく
+ * 見える**。arena に 48KB 以上書いてキャッシュラインが追い出された瞬間に
+ * 内容が失われ、`instantiate` が線形メモリを 64KB ゼロ埋めした直後に
+ * `Instance` が壊れる、という症状になっていた（2026-09-21 に実機で特定）。
+ * クラッシュせず静かに壊すので、これも発見が難しい類い。
+ *
+ * **上流が L2 キャッシュ設定を見て RAM 長を決めるようになったら消すこと。**
+ * 経緯と測定値は docs/TODO.md §1.1.5。
+ */
+_stack_start = 0x4FFA0000;
+_stack_start_cpu0 = 0x4FFA0000;

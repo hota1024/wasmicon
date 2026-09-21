@@ -136,43 +136,63 @@ v3.x の個体しか使わなくなったら 300 に戻してよい。
 **上流が ROM リビジョンとチップリビジョンを選べるようになったら、
 2 と 3 と `vendor/esp-sync` は消すこと。** 上流への報告は未実施。
 
-#### 未解決: `instantiate` が `Instance` を壊す（2026-09-21）
+#### 解決済み 4: スタックが実在しない RAM に置かれていた（2026-09-21）
 
-上の 4 つを直した結果、**`decode` / `validate` / `Exec::new` は実機で完全に
-正しく動く**ところまで来た。`instantiate` を通ると `Module` が壊れる。
+**これが最後の、そして最も厄介な 1 件。** 上の 3 つを直すと
+`decode` / `validate` / `Exec::new` は実機で完全に正しく動くようになったが、
+`instantiate` を通ると `Module` が丸ごと 0 に潰れた。
 
 ```
 after decode:   types=7 imports=7 funcs=3 mems=1 exports=2 code=3
 after validate: types=7 imports=7 funcs=3 mems=1 exports=2 code=3
 after exec:     types=7 imports=7 funcs=3 mems=1 exports=2 code=3
 after inst:     types=0 imports=0 funcs=0 mems=0 exports=0 code=0
-→ wasmicon: export run が無い [unlinkable]
 ```
 
-**実機で潰した可能性**（いずれも「原因ではない」と実証済み）:
+**原因**: esp-hal は P4 の L2MEM を 768KB (0x4FF00000..0x4FFC0000) とみなして
+`_stack_start = 0x4FFADFC0` を置く。しかし実測すると
+**0x4FF9E000 は生きていて 0x4FFA0000 は死んでいる**。使えるのは
+**0x4FF00000..0x4FFA0000 の 640KB だけ**で、上位 128KB は L2 キャッシュに
+割り当てられていて RAM として存在しない（128KB は P4 の L2 キャッシュ容量）。
 
-- フラッシュ (XIP) の読み出し — ELF 埋め込みバイトと完全一致、
-  デバイス上で `len=775` / マジック / メモリセクション `01 00 01` すべて正しい
-- `Reader` — セクション走査もインポート 7 件もデバイス上で完全に正しい
-- arena のサイズと配置 — `arena=0x4ff43284..0x4ff8e284`、`scratch` は直後、
-  `sp~0x4ffade00` で **121KB の余裕**。`used=9412 cap=307200 rest=297788` で
-  線形メモリの 64KB ゼロ埋めは余裕で内側。192KB に縮めても症状は同じ
-- `memcpy` / `memset` — 自前実装に差し替えても症状は同じ
-- `instantiate` のロジック — elem / data セグメントはすべて境界検査付きの
-  安全な Rust で、範囲外書き込みは起こり得ない
+実在しない領域のスタックは**キャッシュに載っている間だけ正しく見える**。
+`instantiate` が線形メモリを 64KB ゼロ埋めするとキャッシュラインが追い出され、
+書き戻し先が無いのでスタックの内容が失われる。クラッシュせず静かに壊す。
 
-- [ ] **次にやること**: `instantiate` が呼ぶ**他の ROM 関数**を疑う。
-      バイナリには ROM 領域への呼び出しが約 115 箇所ある。非 ECO5 の表も
-      ECO2 と完全一致する保証はなく、経験的に確認できたのは `__ashldi3` だけ。
-      ROM 関数を使わせない（compiler_builtins の実装に寄せる）方法を探すのが
-      本筋。難しければ `instantiate` 内にマーカーを刻んで、どの行で壊れるかを
-      実機で二分探索する
-- [ ] 診断の足場は 2026-09-21 のコミットで外してある。再開するときは
-      `chip::early_write` と `EarlyOut`（`core::fmt` 出力先）が残っているので、
-      `write!(EarlyOut, ...)` を刻み直せばよい
+**解決**: `ports/esp32p4/rom-pre-eco5.x` で `_stack_start = 0x4FFA0000;`。
+（`_stack_start_cpu0` は上書きできないが、esp-riscv-rt が実際に使うのは
+`_stack_start` の方だったので効いた。）
+
+切り分けに効いた観測（再開するとき参考になる）:
+
+- fill のサイズを振ると **32KB は無傷、48KB で壊れる**。サイズ依存＝
+  キャッシュの追い出し量依存だった
+- スタック上のカナリアは **volatile で読み書きしないと意味がない**。
+  普通の代入だと最適化でレジスタに載り、スタックが壊れても検出できない
+- `0x4FF00000` から一定間隔で目印を書き、arena を大量に触って追い出してから
+  読み戻すと、実 RAM の上端が 1 回で出る
+
+**上流が L2 キャッシュ設定を見て RAM 長を決めるようになったら消すこと。**
+
+#### 到達点: blink が実機で完走（2026-09-21）
+
+```
+$ sh verify/diff-traces.sh blink-host.log blink-tab5.log
+一致: 20 行
+```
+
+**同じ `.wasm` が PC と Tab5 実機で完全に同一の host call 列を出す。**
+GPIO のレジスタ直叩きも含めて動作しており、docs/handoff.md §5 Phase 4 の
+完了条件を満たした。
+
+- [ ] 再開するときの足場: `chip::early_write` と `EarlyOut`（`core::fmt` の
+      出力先）を残してあるので、`write!(EarlyOut, ...)` を刻めばよい
 - [ ] **u64 を `core::fmt` で 10 進整形しない**。`<u64 as Display>::fmt` の
-      スタックバッファが esp-hal のスタックガードに当たって panic した。
+      スタックバッファが esp-hal のスタックガードに当たって panic する。
       u32 2 本に割るか 16 進で出すこと
+- [ ] `ARENA` は 300KB のままだが、スタックは
+      `__ebss (0x4FF902C4) .. 0x4FFA0000` の **約 63KB** に減った。
+      sensor-display のような深い経路を通すときは足りるか確認すること
 
 #### 経緯: USB-Serial-JTAG にトレースが出てこない（2026-09-21 に UART0 で解決）
 
