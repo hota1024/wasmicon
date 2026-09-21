@@ -227,26 +227,7 @@ pub fn open(p: Peripherals) -> Hw {
     Hw { serial, i2c_porta }
 }
 
-/// パニック経路から出力先を作り直す。
-///
-/// 通常の `TraceOut` はボードが持っていて panic handler からは届かないので、
-/// USB_DEVICE を奪い直す。`esp_hal::init` の中で落ちた場合はまだ誰も
-/// USB_DEVICE を取っていないし、後から落ちた場合も以降は停止するだけなので、
-/// 二重に触っても競合しない。
-///
-/// # Safety
-/// panic handler からのみ呼ぶこと。
-pub unsafe fn steal_serial() -> TraceOut {
-    // SAFETY: 上の契約により、これ以降 UART0 と TX ピンを使うのはこの一つだけ。
-    let (uart, tx) = unsafe {
-        (
-            esp_hal::peripherals::UART0::steal(),
-            esp_hal::peripherals::GPIO37::steal(),
-        )
-    };
-    TraceOut(
-        Uart::new(uart, UartConfig::default())
-            .expect("UART0 の初期化に失敗")
-            .with_tx(tx),
-    )
-}
+// パニック経路の出力はここに持たない。**`chip::early_write` を使う。**
+// 以前は UART を奪い直して組み立てていたが、`esp_hal::init` の中で落ちると
+// panic handler 自身がクロック未設定のまま UART 生成へ入って止まり、panic が
+// 一切観測できなかった（2026-09-21、Tab5）。詳細は docs/TODO.md §1.1.5。

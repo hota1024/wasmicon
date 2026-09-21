@@ -10,8 +10,15 @@
 //! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
 //! トレースの出力先はボード定義が決める（Tab5 は UART0 115200 8N1）。
 //!
-//! **実機でランタイムの動作を確認できていない。** Tab5 では書き込みと起動まで
-//! 到達するが、トレースを取り込めていない（docs/TODO.md §1.1.5）。
+//! **2026-09-21 に Tab5 実機でトレースの取り込みに成功した**（CP2102N を
+//! M5-Bus 14 番 = G37 に繋ぐ）。`decode` / `validate` / `Exec::new` までは
+//! 実機で正しく動くことを確認済み。`instantiate` を通ると `Module` が壊れる
+//! 問題が残っている（docs/TODO.md §1.1.5）。
+//!
+//! この個体は **P4 v1.0 / ROM esp32p4-eco2** で、esp-hal 1.2 が前提にしている
+//! v3.x / ECO5 と噛み合わない。そのための回避が 3 つ入っている:
+//! `.cargo/config.toml` の `ESP_HAL_CONFIG_MIN_CHIP_REVISION`、
+//! `vendor/esp-sync`、`rom-pre-eco5.x` + `src/mem.rs`。
 //!
 //! ESP32-P4 は RISC-V (RV32IMAFC) なので upstream Rust でそのまま組める:
 //! `cd ports/esp32p4 && cargo build --release`
@@ -22,6 +29,7 @@
 mod board;
 mod boards;
 mod chip;
+mod mem;
 
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::Hal;
@@ -61,6 +69,11 @@ const MCU_CONFIG: Config = Config {
 
 #[esp_hal::main]
 fn main() -> ! {
+    // **`esp_hal::init` より前**に出す。ブートローダが設定した UART0 へ生で
+    // 書くので、クロックにもドライバにも依存しない。ここまで出れば「アプリに
+    // 制御が渡った」ことが確定し、以降のどこで止まっても切り分けられる。
+    chip::early_write(b"\r\nwasmicon: entry\r\n");
+
     let p = esp_hal::init(esp_hal::Config::default());
 
     let hw = boards::open(p);
@@ -107,10 +120,6 @@ fn run(
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;
     let mut inst = instantiate(m, v, &MCU_CONFIG, &mut arena, hal)?;
-
-    if let Some(start) = inst.module.start {
-        invoke(&mut inst, &mut exec, hal, start, &[], &mut [])?;
-    }
     let entry = inst
         .export_func("run")
         .ok_or(wasmicon_core::Error::Unlinkable("export run が無い"))?;
@@ -121,33 +130,33 @@ fn run(
 ///
 /// ランタイム由来の失敗は `main` が捕まえて出すので、ここに来るのはポート自身か
 /// esp-hal のバグに限られる。**その場所が分からないと実機では手も足も出ない**ので、
-/// USB_DEVICE を奪い直して `panic at <file>:<line>` を出す。
+/// `chip::early_write` で `panic at <file>:<line>` を出す。
 ///
-/// `core::fmt` は使わない（バイナリが肥大するため）。行番号は手で 10 進に直す。
+/// **ドライバを作り直さない。** 以前はここで UART を組み立てていたが、
+/// `esp_hal::init` の中で落ちた場合は panic handler 自身がクロック未設定の
+/// まま UART 生成に入って止まり、**panic が一切見えなかった**（2026-09-21、
+/// Tab5）。生レジスタ書き込みなら初期化状態に依存しない。
+///
+/// **ここでだけ `core::fmt` を使う。** 規約が禁じているのは `runtime/` コアで、
+/// ポートのこの経路は別。しかも esp-hal の例外ハンドラ自身が `panic!` に
+/// フォーマット引数（例外コード・`mepc`・`mtval`・レジスタ）を渡しているので、
+/// fmt の機構はどのみちリンクされる。**実機では例外コードと `mepc` が読めないと
+/// 何も分からない**ので、場所だけでなくメッセージ全文を出す。
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // SAFETY: 以降は停止するだけなので、USB_DEVICE を二重に触っても競合しない。
-    let mut out = unsafe { boards::steal_serial() };
-    out.write(b"\r\npanic");
-    if let Some(loc) = info.location() {
-        out.write(b" at ");
-        out.write(loc.file().as_bytes());
-        out.write(b":");
-        let mut buf = [0u8; 10];
-        let mut n = loc.line();
-        let mut i = buf.len();
-        loop {
-            i -= 1;
-            buf[i] = b'0' + (n % 10) as u8;
-            n /= 10;
-            if n == 0 || i == 0 {
-                break;
-            }
-        }
-        out.write(&buf[i..]);
-    }
-    out.write(b"\r\n");
+    use core::fmt::Write;
+    let _ = write!(EarlyOut, "\r\npanic: {info}\r\n");
     loop {
         core::hint::spin_loop();
+    }
+}
+
+/// `chip::early_write` を `core::fmt` の出力先にする。panic 経路専用。
+struct EarlyOut;
+
+impl core::fmt::Write for EarlyOut {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        chip::early_write(s.as_bytes());
+        Ok(())
     }
 }

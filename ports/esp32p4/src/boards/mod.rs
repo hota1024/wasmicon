@@ -24,7 +24,7 @@ use esp_hal::peripherals::Peripherals;
 mod tab5;
 
 #[cfg(feature = "tab5")]
-pub use tab5::{steal_serial, Hw, DEF};
+pub use tab5::{Hw, DEF};
 
 /// トレースとログを出す先。**どこへ出すかはボードが決める**。
 ///

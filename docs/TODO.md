@@ -71,7 +71,110 @@ offset 0x10000` まで到達する。
 
 v3.x の個体しか使わなくなったら 300 に戻してよい。
 
-#### 未解決: USB-Serial-JTAG にトレースが出てこない
+#### 解決済み: トレースの取り込み（2026-09-21）
+
+**Tab5 実機からトレースを取り込めるようになった。** 経路は UART0 (G37) →
+3.3V USB シリアル変換（Adafruit CP2102N）→ PC。配線は 2 本だけ:
+
+| CP2102N | Tab5 M5-Bus |
+|---|---|
+| GND | pin 1（または 3 / 5） |
+| RXD | **pin 14 = G37 (TXD0)** |
+| 5V / 3V | **繋がない**（Tab5 は自前で給電済み） |
+
+115200 8N1。ピン 14 の隣が pin 12 = 3V3 なので挿し間違いに注意。
+
+取り込み側の落とし穴が 2 つあった。
+
+1. **macOS では `cu.*` をクローズすると termios が既定へ戻る。** 別プロセスで
+   `stty` を打ってから `cat` で開き直しても効かず、既定の 9600 で聴いてしまう。
+   **fd を開いたままボーレートを設定する**こと（`tcsetattr` 後に読み返して検証する）
+2. **USB-C を PC に繋いだまま espflash からリセットすると必ず download モードに
+   落ちる**（`rst:0x17 CHIP_USB_UART_RESET` / `boot:0x204 DOWNLOAD`）。
+   `--after hard-reset` / `watchdog-reset` / `--before no-reset-no-sync` のどれでも同じ。
+   **電源ボタン（ダブルプレスで OFF → 1 回押しで ON）なら通常起動する**
+   （`rst:0x1 POWERON` / `boot:0x20e SPI_FAST_FLASH_BOOT`）。
+   `espflash reset` を 2 回叩くと 2 回目が通常起動になることもある
+
+#### 解決済み: esp-hal 1.2 が P4 v3.x / ECO5 を前提にしている（2026-09-21）
+
+手元の Tab5 は **P4 v1.0 / ROM `esp32p4-eco2-20240710`**。esp-hal 1.2 系は
+より新しいシリコンと ROM を前提にしており、**同じ構図の不整合が 3 つ**出た。
+シリコンリビジョン（上記）を含めると 4 つ。
+
+1. **esp-sync の Zcmp 回避が不正命令になる。**
+   `esp-sync 0.3.0` の `raw.rs` は `SingleCoreInterruptLock::enter` で
+   `csrrw a0, 0x347, t0`（`mintthresh`）を書く。これは **P4 v3.2/ECO7 の Zcmp
+   ハードウェアバグ回避**（IDF-14279 / DIG-661）だが、分岐条件が
+   `cfg(esp32p4)` だけで**リビジョンも Zcmp の有無も見ていない**
+   （上流自身が `// TODO: any with zcmp` と書いている）。v1.0 では CSR 0x347 が
+   不正命令になり、`esp_hal::init` の中で例外 → RWDT リセットの無限ループ。
+   しかも我々のターゲット `riscv32imafc` は **Zcmp を含まない**ので元々不要。
+   → `ports/esp32p4/vendor/esp-sync` に写しを置き、`[patch.crates-io]` で
+   差し替えて P4 分岐だけ削除（汎用 riscv 経路へフォールバック）。
+   差分は `WASMICON LOCAL PATCH` の 2 箇所だけ。
+
+2. **ROM 関数のアドレス表が ECO5 固定。**
+   `esp-rom-sys 0.1.5` の `ld/esp32p4/rom-functions.x` は
+   `esp32p4.rom.eco5.*.ld` をハードコードしている（選択肢が無い）。
+   非 ECO5 版は同じディレクトリに同梱されているのに使われない。
+   実害: `__ashldi3` が ECO5=`0x4fc00744` / 非 ECO5=`0x4fc00750` と **12 バイト**
+   ずれ、64bit 可変シフトが別の関数に当たる。`u64_leb` が 1 ではなく
+   `0x0000_0001_0000_0001` を返し、`decode` が
+   「memory size must be at most 65536 pages」で失敗していた。
+   **クラッシュせずもっともらしい誤値を返す**ので発見が難しい。
+   → `ports/esp32p4/rom-pre-eco5.x` で非 ECO5 の表を読み直し、
+   linkall.x の**後**に渡してシンボル代入の後勝ちで上書きする。
+
+3. **`memcpy` / `memset` / `memmove` / `memcmp` も ECO5 のアドレス。**
+   `ld/esp32p4/rom/additional.ld`（冒頭に `Ref: esp-idf esp32p4.rom.libc.ld (eco5)`）
+   にあり、非 ECO5 版のアドレスは同梱されていない。
+   → ROM を使わず `ports/esp32p4/src/mem.rs` の自前実装へ向ける。
+   LLVM が「バイトコピーのループ」を `memcpy` 呼び出しへ畳み込んで自分自身を
+   無限再帰で呼ぶのを防ぐため、読み書きに volatile を使っている。
+
+**上流が ROM リビジョンとチップリビジョンを選べるようになったら、
+2 と 3 と `vendor/esp-sync` は消すこと。** 上流への報告は未実施。
+
+#### 未解決: `instantiate` が `Instance` を壊す（2026-09-21）
+
+上の 4 つを直した結果、**`decode` / `validate` / `Exec::new` は実機で完全に
+正しく動く**ところまで来た。`instantiate` を通ると `Module` が壊れる。
+
+```
+after decode:   types=7 imports=7 funcs=3 mems=1 exports=2 code=3
+after validate: types=7 imports=7 funcs=3 mems=1 exports=2 code=3
+after exec:     types=7 imports=7 funcs=3 mems=1 exports=2 code=3
+after inst:     types=0 imports=0 funcs=0 mems=0 exports=0 code=0
+→ wasmicon: export run が無い [unlinkable]
+```
+
+**実機で潰した可能性**（いずれも「原因ではない」と実証済み）:
+
+- フラッシュ (XIP) の読み出し — ELF 埋め込みバイトと完全一致、
+  デバイス上で `len=775` / マジック / メモリセクション `01 00 01` すべて正しい
+- `Reader` — セクション走査もインポート 7 件もデバイス上で完全に正しい
+- arena のサイズと配置 — `arena=0x4ff43284..0x4ff8e284`、`scratch` は直後、
+  `sp~0x4ffade00` で **121KB の余裕**。`used=9412 cap=307200 rest=297788` で
+  線形メモリの 64KB ゼロ埋めは余裕で内側。192KB に縮めても症状は同じ
+- `memcpy` / `memset` — 自前実装に差し替えても症状は同じ
+- `instantiate` のロジック — elem / data セグメントはすべて境界検査付きの
+  安全な Rust で、範囲外書き込みは起こり得ない
+
+- [ ] **次にやること**: `instantiate` が呼ぶ**他の ROM 関数**を疑う。
+      バイナリには ROM 領域への呼び出しが約 115 箇所ある。非 ECO5 の表も
+      ECO2 と完全一致する保証はなく、経験的に確認できたのは `__ashldi3` だけ。
+      ROM 関数を使わせない（compiler_builtins の実装に寄せる）方法を探すのが
+      本筋。難しければ `instantiate` 内にマーカーを刻んで、どの行で壊れるかを
+      実機で二分探索する
+- [ ] 診断の足場は 2026-09-21 のコミットで外してある。再開するときは
+      `chip::early_write` と `EarlyOut`（`core::fmt` 出力先）が残っているので、
+      `write!(EarlyOut, ...)` を刻み直せばよい
+- [ ] **u64 を `core::fmt` で 10 進整形しない**。`<u64 as Display>::fmt` の
+      スタックバッファが esp-hal のスタックガードに当たって panic した。
+      u32 2 本に割るか 16 進で出すこと
+
+#### 経緯: USB-Serial-JTAG にトレースが出てこない（2026-09-21 に UART0 で解決）
 
 アプリはロードされ実行に入るが、**トレースを取り込めていない**。
 

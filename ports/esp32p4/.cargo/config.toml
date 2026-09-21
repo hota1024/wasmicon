@@ -21,4 +21,12 @@ target = "riscv32imafc-unknown-none-elf"
 
 [target.riscv32imafc-unknown-none-elf]
 runner = "espflash flash --monitor"
-rustflags = ["-Clink-arg=-Tlinkall.x"]
+# rom-pre-eco5.x は **linkall.x の後**に読ませる。ROM 関数アドレスの表を
+# ECO5 版から非 ECO5 版へ、シンボル代入の後勝ちで上書きするため。
+# 手元の Tab5 の ROM は esp32p4-eco2-20240710 で ECO5 ではない。
+# 理由と実害は rom-pre-eco5.x のコメントと docs/TODO.md §1.1.5。
+rustflags = [
+    "-Clink-arg=-Tlinkall.x",
+    "-Clink-arg=-L.",
+    "-Clink-arg=-Trom-pre-eco5.x",
+]

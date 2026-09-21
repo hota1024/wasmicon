@@ -7,7 +7,7 @@
 //! ESP32-S3 版と同じ形だが、チップ固有の定数が 2 つ違う（`NUM_GPIO` と
 //! `SIG_GPIO_OUT`）。レジスタとフィールドの名前は S3 と同じ。
 
-use esp_hal::peripherals::{GPIO, IO_MUX};
+use esp_hal::peripherals::{GPIO, IO_MUX, UART0};
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::BoardResult;
@@ -162,4 +162,32 @@ pub fn now_us() -> u64 {
     esp_hal::time::Instant::now()
         .duration_since_epoch()
         .as_micros()
+}
+
+/// ブートローダが設定済みの UART0 へ、生レジスタで直接書く。
+///
+/// **クロックにもドライバにも依存しない。** `esp_hal::init` より前や panic
+/// handler の中など「まだ／もう何も信用できない」場所のための出口で、
+/// ボーレートは ESP-IDF ブートローダが設定した値（115200）をそのまま使う。
+///
+/// 通常の経路では使わない。ボード定義の `Serial` 実装の方を使うこと。
+///
+/// **必ず戻る。** FIFO が捌けないときは上限まで待って諦める。観測用の出口が
+/// 別のハングを生むと切り分けの役に立たない（2026-09-21 に Tab5 で、panic
+/// handler が UART を作り直す実装だったために panic が一切見えなかった）。
+pub fn early_write(bytes: &[u8]) {
+    // SAFETY: UART0 の FIFO と STATUS を触るだけ。呼ぶのは起動直後か panic
+    // 経路に限られ、どちらも他に UART0 を使っている実行主体がいない。
+    let uart = unsafe { UART0::steal() };
+    let rb = uart.register_block();
+    for &b in bytes {
+        // TX FIFO は 128 段。余裕を見て 120 未満まで空くのを待つ。
+        let mut waited = 0u32;
+        while rb.status().read().txfifo_cnt().bits() >= 120 && waited < 1_000_000 {
+            waited = waited.wrapping_add(1);
+            core::hint::spin_loop();
+        }
+        // SAFETY: FIFO への 1 バイト書き込み。副作用は送信のみ。
+        rb.fifo().write(|w| unsafe { w.rxfifo_rd_byte().bits(b) });
+    }
 }

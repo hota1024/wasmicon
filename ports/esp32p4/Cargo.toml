@@ -42,6 +42,20 @@ esp-bootloader-esp-idf = { version = "0.6", features = ["esp32p4"] }
 # 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
 # panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
 
+# esp-hal が引く esp-sync を、ローカルで 1 箇所だけ直した写しに差し替える。
+#
+# **これは上流のバグ回避であって、好みの改変ではない。** esp-sync 0.3.0 は
+# P4 v3.2/ECO7 の Zcmp ハードウェアバグ回避として mintthresh (CSR 0x347) を
+# 書くが、分岐条件が `cfg(esp32p4)` だけでリビジョンを見ていない。Tab5 の
+# P4 **v1.0** ではこれが不正命令になり、`esp_hal::init` の中で例外 → RWDT
+# リセットの無限ループになる（2026-09-21、実機の mepc/mtval から特定）。
+# 我々のターゲット `riscv32imafc` は Zcmp を含まないので元々不要な処理。
+#
+# **上流が直したら消すこと。** 差分は vendor/esp-sync/src/raw.rs の
+# `WASMICON LOCAL PATCH` 2 箇所だけ。経緯と削除条件は docs/TODO.md §1.1.5。
+[patch.crates-io]
+esp-sync = { path = "vendor/esp-sync" }
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
