@@ -80,20 +80,94 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**両ポートともビルドが通るところまでで、一度も焼いていない。**
+**2026-09-21 に ESP32-P4 / M5Stack Tab5 で blink と sensor-display が実機で完走した。**
+`verify/diff-traces.sh` でホストの出力と**差分ゼロ**を確認済み。
 
-- GPIO はどちらもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
-  ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
-  実機で最初に起きることとして「blink が光らない」を想定すべき
-- `ports/rp2040` / `ports/esp32s3` の I2C / SPI は `unsupported` を返す。
-  sensor-display は実機では動かない
+| ゲスト | 一致行数 |
+|---|---|
+| blink-rs（host vs Tab5） | 20 |
+| blink-as（host vs Tab5） | 20 |
+| blink（Tab5 上で Rust vs AS） | 20 |
+| sensor-display-rs（host vs Tab5） | **1078** |
+| sensor-display-as（host vs Tab5） | **1078** |
+| sensor-display（Tab5 上で Rust vs AS） | **1078** |
+
+sensor-display は SHT31 も ILI9341 も繋がない状態での実行で、センサー無応答の
+経路を通る。意味があるのは中身で、**254 本の `spi.bus.write` が `crc32=` まで
+一致**する = **送っているピクセルがホストとビット一致**している。f32 を使う
+温度バーの計算も一致した。GPIO / I2C / SPI のレジスタ直叩きが実機で動いている。
+
+RP2040 / ESP32-S3 は未着手なので、**ボード間**の一致（Phase 6 の本来の対象）は
+まだ取れていない。
+
+トレースは UART0 (G37) から 3.3V USB シリアル変換（CP2102N）経由で取り込む。
+そこに至るまでに **esp-hal 1.2 が新しい P4 を前提にしている**ことに起因する
+不整合を 4 つ潰した（シリコンリビジョン / esp-sync の Zcmp 回避 / ROM 関数
+アドレス表と memcpy 系 / **スタックが実在しない RAM に置かれる**）。
+いずれも**クラッシュせず静かに誤動作する**種類で、詳細は docs/TODO.md §1.1.5。
+
+- GPIO はいずれもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
+  ESP32-S3 / ESP32-P4 は GPIO / IO_MUX）。**ESP32-P4 は実機で観測済み**だが、
+  **RP2040 / ESP32-S3 は型が通っただけで一つも観測していない**。
+  この 2 つは実機で最初に起きることとして「blink が光らない」を想定すべき
+- **`ports/rp2040` / `ports/esp32s3` の I2C / SPI は `unsupported` を返す**ので、
+  sensor-display はこの 2 ポートでは実機で動かない（ESP32-P4 は実装済み）
 - abi-spec §8 の配線（役割名 → ピン番号）はオーナー未確認
+
+#### ESP32-P4 / M5Stack Tab5 への書き込み（2026-09-11）
+
+> **この節は 2026-09-11 時点の記録**（履歴として残す）。ここで書かれている
+> 「トレースが取れない」は 2026-09-21 に解決した。現在の状況は上の §4.1 冒頭。
+
+**当時の到達点**: アプリはロードされ実行に入るところまで来たが、**トレースを
+取り込めていないので、ランタイムの動作は何も検証できていなかった**。
+経緯は `docs/TODO.md` §1.1.5。
+
+最初の書き込みは 2nd stage bootloader がシリコンリビジョンで拒否した:
+
+```
+I (27) boot: chip revision: v1.0
+I (28) boot: efuse block revision: v0.3
+E (79) boot_comm: chip revision check failed. Required >= v3.0, found v1.0.
+E (85) boot: Factory app partition is not bootable
+```
+
+- 手元の Tab5 は **ESP32-P4 v1.0**（ROM `esp32p4-eco2-20240710`）
+- **ポートの不具合ではなく esp-hal の既定値だった。** esp-config の
+  `min-chip-revision` が P4 で 300 (v3.0) 既定になっており、espflash はその値を
+  ELF のメタデータから読んでヘッダに書く（`--min-chip-rev` は下から clamp される）
+- `ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"` を `.cargo/config.toml` の `[env]` に
+  置いて解決した。ESP-IDF の `CONFIG_ESP32P4_REV_MIN_100` に対応する正規の設定で、
+  ヘッダは min=100 / max=199 になる（max は ESP-IDF の `REV_LESS_V3` の範囲と一致）
+- 解決後は `--force` なしで書き込め、`boot: Loaded app from partition at
+  offset 0x10000` まで到達する
+
+**ただしトレースが取り込めていない。** USB-Serial-JTAG と USB-OTG の両方を
+試したがアプリの出力は 1 バイトも取れず、**失敗の原因を切り分ける手段が無い**まま
+終わった。2026-09-11 に **UART0 に戻す**判断をしたので、3.3V の USB シリアル変換
+を M5-Bus 13/14 に繋げば読めるようになる。
+**2026-09-21 にそれを繋いで解決した**（§4.1 冒頭）。
+
+この試行で**ビルドでは出ない不具合が 3 件**見つかり、いずれも修正済み:
+
+1. espflash は ESP-IDF のアプリ記述子が無いイメージを焼かない
+   → `esp-bootloader-esp-idf` の `esp_app_desc!()` を追加
+2. ポートの `rust-version` 宣言 1.85 が誤り（esp-hal 1.2.1 自身が 1.95 を要求）
+   → 1.95 に修正
+3. トレースの取り込みに USB シリアル変換と M5-Bus への配線が要る問題
+   → 一度 USB-Serial-JTAG に変更したが、**この個体で出力が取れず UART0 に戻した**
+   （2026-09-11）。USB-OTG も試したが列挙されず、いずれも原因を切り分ける手段が
+   無いまま終わった。経緯と教訓は docs/TODO.md §1.1.5
+
+書き込み前に工場出荷ファーム 16MB を全て退避し、試行後に書き戻して
+**先頭 1MB のバイト一致を確認**した。実機は試行前の状態に戻してある。
 
 ### 4.2 ボード間の浮動小数の一致
 
 sensor-display が唯一 f32 を使う温度バーの計算は、**ホスト 1 プラットフォーム
 での一致しか確認していない**。RP2040 は `compiler_builtins` のソフトフロート、
-ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）なので、
+ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）、
+ESP32-P4 は RV32IMAFC の単精度ハード FPU と、実装が 3 通りある。
 ここが Phase 6 の本来の実測対象。
 
 ### 4.3 記録済み I2C 応答
@@ -125,15 +199,20 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
 
 ## 5. 実機で検証するときの手順
 
-1. `ports/rp2040` / `ports/esp32s3` の I2C / SPI を実装する
+1. `ports/rp2040` / `ports/esp32s3` の I2C / SPI を実装する（ESP32-P4 は実装済み）
 2. abi-spec §8 の配線を確認し、役割名の表を実機に合わせる
 3. 焼く
    - RP2040: ELF を `picotool load`、または `elf2uf2-rs` で UF2 にして BOOTSEL
    - ESP32-S3: `ports/esp32s3/build.sh run --release`（espflash）
-4. シリアル（どちらも 115200 8N1）を捕まえてファイルに落とす
+   - ESP32-P4 (Tab5): `cd ports/esp32p4 && cargo run --release`（espflash。espup は要らない）
+4. シリアル（いずれも 115200 8N1）を捕まえてファイルに落とす
    - RP2040: UART0 (GP0=TX, GP1=RX)
    - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 では USB シリアルに直結)
+   - ESP32-P4 (Tab5): UART0 (G37/G38)。**M5-Bus の 13/14 番ピンに出ているだけで
+     USB には繋がっていない**ので 3.3V の USB シリアル変換が要る
+     （CP2102N で取り込み済み。配線は docs/TODO.md §1.1.5）
 5. 突き合わせる: `sh verify/diff-traces.sh pico.log esp32s3.log`
+   （3 ボード目を足すなら `sh verify/diff-traces.sh esp32s3.log esp32p4.log` も）
    - バナーとゲストの `[wasm]` 行は自動で落とす
    - `time` はトレースに出ず、役割名で引いた GPIO 番号は `role:led` に
      正規化済みなので、追加の加工は要らない

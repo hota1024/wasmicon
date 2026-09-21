@@ -9,7 +9,7 @@ use wit_parser::{
 };
 
 use crate::model::{
-    EnumCase, EnumDef, FlagBit, FlagsDef, Hal, Iface, Import, Param, Ret, Role, Scalar,
+    EnumCase, EnumDef, FlagBit, FlagsDef, Group, Hal, Iface, Import, Param, Ret, Role, Scalar,
 };
 
 /// `wit/` を読んで ABI モデルを組み立てる。
@@ -19,18 +19,34 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
         .push_dir(wit_dir)
         .with_context(|| format!("{} の解析に失敗した", wit_dir.display()))?;
 
+    // abi-spec §11.2 により、ここで返るのは world を持つ `wasmicon:app`。
+    // インターフェースは `wit/deps/` 配下の別パッケージ（hal / device）にあり、
+    // モジュール名はそれぞれの所属パッケージから引く（下記）。
     let pkg = &resolve.packages[pkg_id];
-    let version = pkg
-        .name
-        .version
-        .as_ref()
-        .context("パッケージにバージョンが無い。abi-spec §3.1 はバージョン必須")?;
-    let package = format!("{}:{}@{}", pkg.name.namespace, pkg.name.name, version);
 
+    // abi-spec §11.3: world は 2 つある。生成物は 1 セットで、import は全 world の
+    // 上位集合（= app-display）から採る。ポートは `Group` で登録する群を選ぶ。
+    // app-display は `include app` なので、hal の並び順は app と同じまま後ろに
+    // device が付く。HostFn の順序が動かないのはこのため。
+    //
+    // **world が増えたら黙って無視せずに落とす。** import は下で選ぶ 1 つの
+    // world からしか採らないので、上位集合でない world が足されるとその import が
+    // `IMPORTS` に入らず、ゲストは理由の分からないリンクエラーになる。
+    if let Some(unknown) = pkg
+        .worlds
+        .keys()
+        .find(|n| n.as_str() != "app" && n.as_str() != "app-display")
+    {
+        bail!(
+            "未知の world {unknown}。import は app-display（無ければ app）からしか \
+             採らない。world を足すならここも直すこと（abi-spec §11.3）"
+        );
+    }
     let world_id = *pkg
         .worlds
-        .get("app")
-        .context("world app が見つからない（abi-spec §2.3）")?;
+        .get("app-display")
+        .or_else(|| pkg.worlds.get("app"))
+        .context("world app / app-display が見つからない（abi-spec §2.3, §11.3）")?;
     let world = &resolve.worlds[world_id];
 
     let run = world
@@ -57,20 +73,50 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
             .name
             .clone()
             .context("無名のインターフェースは使わない")?;
+        // モジュール名は **インターフェースが属するパッケージ**から組み立てる
+        // （world が属するパッケージではない）。abi-spec §11 で
+        // wasmicon:device を別パッケージに切るため、ここを取り違えると
+        // device の import 名が wasmicon:hal/... になってしまう。
+        let iface_pkg_id = iface
+            .package
+            .context("インターフェースに所属パッケージが無い")?;
+        let iface_pkg = &resolve.packages[iface_pkg_id];
+        let iface_version = iface_pkg
+            .name
+            .version
+            .as_ref()
+            .context("パッケージにバージョンが無い。abi-spec §3.1 はバージョン必須")?;
         let module = format!(
             "{}:{}/{}@{}",
-            pkg.name.namespace, pkg.name.name, name, version
+            iface_pkg.name.namespace, iface_pkg.name.name, name, iface_version
         );
+        // 層はパッケージ名で決まる（abi-spec §11.1）。
+        let group = match (
+            iface_pkg.name.namespace.as_str(),
+            iface_pkg.name.name.as_str(),
+        ) {
+            ("wasmicon", "hal") => Group::Hal,
+            ("wasmicon", "device") => Group::Device,
+            (ns, n) => bail!(
+                "未知のパッケージ {ns}:{n}。abi-spec §11.1 は wasmicon:hal と \
+                 wasmicon:device だけを定義している"
+            ),
+        };
         interfaces.push(
-            lower_interface(&resolve, *id, iface, &name, module)
+            lower_interface(&resolve, *id, iface, &name, module, group)
                 .with_context(|| format!("interface {name} の lowering に失敗した"))?,
         );
     }
 
-    Ok(Hal {
-        package,
-        interfaces,
-    })
+    // 群の順序を固定する（hal → device）。world の解決順は `include` の扱いで
+    // 変わりうるが、`HostFn` と `IMPORTS` の並びは生成物の差分に直結するので、
+    // ここで安定させる。群内の順序は world の宣言順のまま。
+    interfaces.sort_by_key(|i| match i.group {
+        Group::Hal => 0,
+        Group::Device => 1,
+    });
+
+    Ok(Hal { interfaces })
 }
 
 fn lower_interface(
@@ -79,6 +125,7 @@ fn lower_interface(
     iface: &Interface,
     name: &str,
     module: String,
+    group: Group,
 ) -> Result<Iface> {
     let mut enums = Vec::new();
     let mut flags = Vec::new();
@@ -165,6 +212,7 @@ fn lower_interface(
     Ok(Iface {
         name: name.to_string(),
         module,
+        group,
         docs: docs(&iface.docs),
         enums,
         flags,

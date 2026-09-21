@@ -1,0 +1,55 @@
+package wasmicon:device@0.1.0;
+
+/// ピクセル面としてのディスプレイ。
+///
+/// **L2 のインターフェース**（abi-spec §11）。ポートがパネルのドライバを持つ。
+/// gpio/i2c/spi では表現できないパネル（MIPI-DSI など）のためにある。
+///
+/// SPI パネル（ILI9341 等）は**このインターフェースの対象ではない**。
+/// ゲストが `wasmicon:hal/spi` で直接叩く既存の経路を使う。そちらは
+/// ピクセル列そのものがボード間で比較でき、決定性検証の対象になっている（§11.4）。
+///
+/// 解像度はボードごとに違う。ゲストは `width` / `height` を問い合わせて適応する。
+/// そのため **device の呼び出しはボード間で一致しない**。§9 のトレース一致要求の
+/// 対象外とする（§11.4）。呼び出し自体はトレースに出し、比較時に
+/// `verify/diff-traces.sh` 側で落とす方針だが、**その処理はまだ入っていない**
+/// （docs/TODO.md）。
+interface display {
+    use wasmicon:hal/types@0.1.0.{error-code};
+
+    /// ピクセルの並び。
+    enum format {
+        /// 16bit。1 ピクセル 2 バイト、リトルエンディアン。
+        rgb565,
+    }
+
+    /// 描画先の面。
+    /// index はプラットフォーム固有の面番号。どのパネルに対応するかはポートが決める。
+    resource surface {
+        /// 面を確保する。ポートはここでパネルの電源投入と初期化を行ってよい。
+        open: static func(index: u32) -> result<surface, error-code>;
+
+        /// 幅（ピクセル）。
+        width: func() -> result<u32, error-code>;
+
+        /// 高さ（ピクセル）。
+        height: func() -> result<u32, error-code>;
+
+        /// ピクセルの並び。
+        format: func() -> result<format, error-code>;
+
+        /// 矩形 (x, y, w, h) にピクセルを書き込む。
+        ///
+        /// pixels の長さは `w * h * (format のバイト数)` でなければならず、
+        /// 違えば `invalid-argument`。矩形が面からはみ出す場合も `invalid-argument`。
+        ///
+        /// `spi.transfer` や `i2c.write-read` と違って**読み出し専用**なので、
+        /// 送信元と受信先が重なる問題が無く、ポートは中間バッファに写さずに
+        /// ゲストメモリを直接読んでよい（128 バイトの上限は掛からない）。
+        blit: func(x: u32, y: u32, w: u32, h: u32, pixels: list<u8>) -> result<_, error-code>;
+
+        /// 書き込んだ内容を画面へ反映する。
+        /// ポートがフレームバッファを持つ場合はここで転送する。
+        flush: func() -> result<_, error-code>;
+    }
+}

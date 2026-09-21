@@ -245,6 +245,13 @@ impl<B: Board> Resolver for Hal<B> {
         };
         // 生成された表と module + name + sig で完全一致（abi-spec §6.4）。
         let desc = generated::resolve(module, name)?;
+        // **`device` 群は登録しない。** この HAL は L1 だけを提供する
+        // （abi-spec §11.1）。display を持つポートは `Board` ではなく専用の
+        // リゾルバでこの群を足すこと。登録しないので、`world app-display` の
+        // ゲストはここでリンクエラーになる。それが §11.3 の意図した振る舞い。
+        if !matches!(desc.group, generated::Group::Hal) {
+            return None;
+        }
         if !ft.sig_matches(desc.sig) {
             return None;
         }
@@ -676,6 +683,19 @@ impl<B: Board> Resolver for Hal<B> {
                 // UTF-8 の途中で切ると壊れる。
                 let msg = guest_slice(mem, args[1], args[2])?;
                 self.board.log(l, msg);
+            }
+
+            // `device` 群（abi-spec §11.1）。この HAL は L1 だけを提供するので、
+            // `resolve` がこれらを登録しない。したがって**ここには到達しない**。
+            // 網羅性のために置いてあるだけで、万一届いたらリンク側のバグ。
+            HostFn::DisplaySurfaceOpen
+            | HostFn::DisplaySurfaceWidth
+            | HostFn::DisplaySurfaceHeight
+            | HostFn::DisplaySurfaceFormat
+            | HostFn::DisplaySurfaceBlit
+            | HostFn::DisplaySurfaceFlush
+            | HostFn::DisplaySurfaceDrop => {
+                return Err(Error::Unlinkable("device 群は wasmicon-port が提供しない"));
             }
         }
 

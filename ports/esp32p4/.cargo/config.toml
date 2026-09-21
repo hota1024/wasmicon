@@ -1,0 +1,32 @@
+# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
+# ビルドは `cd ports/esp32p4 && cargo build --release`。
+#
+# ESP32-P4 の HP コアは RV32IMAFC。upstream Rust に core のプリビルドがあるので
+# ESP32-S3 のような build-std は要らない。
+[env]
+# 対象シリコンの最小リビジョン（major*100+minor）。esp-hal の既定は P4 で 300
+# (v3.0) だが、手元の M5Stack Tab5 は **v1.0** なので、そのままだと
+# 2nd stage bootloader が `chip revision check failed` で起動を拒否する。
+#
+# これは迂回ではなく、ESP-IDF の `CONFIG_ESP32P4_REV_MIN_100`（"Rev v1.0"）に
+# 対応する正規の設定。esp-hal では `min-chip-revision` という esp-config の
+# 整数オプションとして公開されている。espflash はこの値を ELF のメタデータ
+# (`build_info.MIN_CHIP_REVISION`) から読んでイメージヘッダに書く。
+#
+# v3.x の個体しか使わなくなったら 300 に戻してよい（docs/TODO.md §1.1.5）。
+ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"
+
+[build]
+target = "riscv32imafc-unknown-none-elf"
+
+[target.riscv32imafc-unknown-none-elf]
+runner = "espflash flash --monitor"
+# rom-pre-eco5.x は **linkall.x の後**に読ませる。ROM 関数アドレスの表を
+# ECO5 版から非 ECO5 版へ、シンボル代入の後勝ちで上書きするため。
+# 手元の Tab5 の ROM は esp32p4-eco2-20240710 で ECO5 ではない。
+# 理由と実害は rom-pre-eco5.x のコメントと docs/TODO.md §1.1.5。
+rustflags = [
+    "-Clink-arg=-Tlinkall.x",
+    "-Clink-arg=-L.",
+    "-Clink-arg=-Trom-pre-eco5.x",
+]

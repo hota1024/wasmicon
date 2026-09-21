@@ -45,7 +45,9 @@ Wasmicon の WIT は以下の構文・型のみを使う。ジェネレータは
 ### 2.3 構文上の制約
 
 - 1 パッケージ `wasmicon:hal@X.Y.Z` に全インターフェースを置く。
-- `world app` がゲストの import/export 全体を記述する。
+  **→ §11 で見直し（2026-09-11）。** `wasmicon:device` を別パッケージとして切り、
+  world は `wasmicon:app` に移す。§2.1 / §2.2 の型サブセットは全パッケージ共通。
+- `world app` がゲストの import/export 全体を記述する（§11 で world は 2 つになる）。
 - 共通型は `interface types` に置き、各インターフェースから `use types.{...}` する。
 - ドキュメントコメント（`///`）は生成物のコメントにそのまま転記される。
 
@@ -202,7 +204,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 ### 6.2 メモリ
 
 - `memory` を 1 つ定義し `"memory"` として export する。import memory は不可。
-- 最小ページ数はプラットフォームの上限以下でなければならない。上限は **ポートが決める**。参考値: RP2040 = 2 ページ (128 KiB)、ESP32-S3 (PSRAM なし) = 4 ページ (256 KiB)。
+- 最小ページ数はプラットフォームの上限以下でなければならない。上限は **ポートが決める**。参考値: RP2040 = 2 ページ (128 KiB)、ESP32-S3 (PSRAM なし) = 4 ページ (256 KiB)、ESP32-P4 = 4 ページ (256 KiB、L2MEM 768 KiB なので余裕はあるが S3 と揃えてある)。
 - `memory.grow` は上限までは成功し、超えると `-1` を返す（トラップしない）。
 - データセグメントは受動・能動とも可。
 
@@ -304,26 +306,77 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 `index` の解釈と SDA/SCL/SCK/MOSI/MISO のピン割り当てはポート層のボード設定で決める。ゲストからは `index` だけが見える。目標アプリ向けの初期割り当て案:
 
-| 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH |
-|---|---|---|---|
-| I2C バス (SHT31) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 |
-| SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
-| ILI9341 CS | `gpio.pin` | GPIO10 | GP17 |
-| ILI9341 DC | `gpio.pin` | GPIO14 | GP20 |
-| ILI9341 RST | `gpio.pin` | GPIO15 | GP21 |
+| 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | ESP32-P4 (M5Stack Tab5) | Raspberry Pi Pico WH |
+|---|---|---|---|---|
+| I2C バス (SHT31) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | PORT.A: SDA=G54, SCL=G53 | i2c0: SDA=GP4, SCL=GP5 |
+| SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | M5-Bus: SCK=G5, MOSI=G18, MISO=G19 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
+| ILI9341 CS | `gpio.pin` | GPIO10 | G48 | GP17 |
+| ILI9341 DC | `gpio.pin` | GPIO14 | G47 | GP20 |
+| ILI9341 RST | `gpio.pin` | GPIO15 | G45 | GP21 |
+
+Tab5 の番号は Tab5 の PinMap (<https://docs.m5stack.com/en/core/Tab5>) に載っている
+ものから取った。**チップの IO_MUX ではなくボードの配線が制約になる**:
+
+- **I2C を内部バス (G31/G32) ではなく PORT.A に出しているのは、内部バスが使えない
+  ため**。内部バスにはタッチ・ES8388・ES7210・BMI270・RX8130CE・INA226 と
+  PI4IOE5V6408 が 2 つ載っていて、そのうち **PI4IOE5V6408-2 のアドレスが 0x44 で、
+  SHT31 の既定アドレスと衝突する**。PORT.A は外部ユニット用の HY2.0-4P なので
+  衝突しない（SDA/SCL の割り当ては §8 末尾の注を参照）
+- SPI は M5-Bus に出ている SCK/MOSI/MISO をそのまま使う。P4 の SPI2 は IO_MUX が
+  G7..G10 に直結しているが、**Tab5 ではその範囲が ESP32-C6 の SDIO に取られている**
+  ので使えない。GPIO マトリクス経由になる
+- CS / DC / RST は M5-Bus の汎用 GPIO から取った（strapping ピン 32..=38 と
+  PB_IN / PB_OUT は避けてある）
 
 `board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応。ポート層の `board` 設定に置く:
 
-| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | ホスト (mock) |
-|---|---|---|---|
-| `led` | GPIO2（外付け） | GP15（外付け） | 2 |
-| `lcd-cs` | GPIO10 | GP17 | 10 |
-| `lcd-dc` | GPIO14 | GP20 | 11 |
-| `lcd-rst` | GPIO15 | GP21 | 12 |
+| 役割名 | ESP32-S3 (DevKitC-1) | ESP32-P4 (M5Stack Tab5) | Raspberry Pi Pico WH | ホスト (mock) |
+|---|---|---|---|---|
+| `led` | GPIO2（外付け） | G16（外付け、M5-Bus pin 2） | GP15（外付け） | 2 |
+| `lcd-cs` | GPIO10 | G48（M5-Bus pin 22） | GP17 | 10 |
+| `lcd-dc` | GPIO14 | G47（M5-Bus pin 23） | GP20 | 11 |
+| `lcd-rst` | GPIO15 | G45（M5-Bus pin 8） | GP21 | 12 |
 
-`led` に外付けを充てるのは、どちらのボードもオンボード LED が素の GPIO ではないため
-（Pico W/WH は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812）。実機の配線は
-Phase 4 でオーナーに確認する。
+`led` に外付けを充てるのは、どのボードもオンボード LED が素の GPIO ではないため
+（Pico W/WH は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812、**Tab5 はそもそも
+ユーザーが振れる LED を持たない**）。実機の配線は Phase 4 でオーナーに確認する。
+
+Tab5 には、`led` を LCD のバックライト (G22) に向ける `led-backlight` ビルドが
+ある（既定では無効。docs/TODO.md §1.4）。部品なしで目視するためのもので、
+**トレースは既定ビルドと同一**（役割名で引いた番号は §9 により `role:led` に
+正規化される）。上の表はあくまで既定の割り当てを示す。
+
+ゲストに開放しない GPIO（`gpio_reserved`）もポートごとに違う:
+
+| ボード | 塞いでいる番号 | 理由 |
+|---|---|---|
+| ESP32-S3 | 22..=25 / 26..=32 / 43, 44 | 欠番 / SPI フラッシュ・PSRAM / トレース用 UART0 |
+| ESP32-P4 (Tab5) | 8..=15 / 17, 52 / 20, 21, 34 / 22 / 23 / 26..=30 / 31, 32 / 36 / 37, 38 / 39..=44 | ESP32-C6 (Wi-Fi) の SDIO2 と RESET・IO2 / M5-Bus の PB_IN・PB_OUT（電源ボタン系と推定、未確認）/ RS485 / LCD バックライト / TP_INT / 音声 I2S / 内部 I2C（PI4IOE5V6408 が LCD_RST・TP_RST・電源制御を握っている）/ CAM_MCLK / トレース用 UART0 / microSD |
+| RP2040 | 0, 1 / 23, 24, 25, 29 | トレース用 UART0 / Pico W(H) では CYW43439（無線とオンボード LED）に繋がっている |
+
+P4 のフラッシュと PSRAM は GPIO 空間の外の専用 MSPI ピンに出ており、GPIO 0..=54 に
+欠番も無いので、S3 のようにフラッシュ由来で塞ぐ番号は無い。**Tab5 で塞いでいるのは
+すべてボード側の都合**。
+
+> **未確認 (1)**: PORT.A の SDA/SCL。Tab5 の PinMap は色と GPIO 番号（Yellow=G53,
+> White=G54）までで、どちらが SDA かを書いていない。ここでは M5Stack の
+> PORT.A の通例（Yellow=SCL, White=SDA）に従って SCL=G53 / SDA=G54 としているが、
+> 逆だとする二次情報もある。実機で確定させる（docs/TODO.md §1.1）。
+>
+> **調査済み（G19 = MISO で確定）**: esp-bsp の `m5stack_tab5.h` は
+> `BSP_USB_NEG = GPIO_NUM_19` / `BSP_USB_POS = GPIO_NUM_20` と定義していて、
+> 一見この表と矛盾する。**が、これは ESP32-S3 の値の写し込みで、P4 には当たらない**:
+>
+> 1. `BSP_USB_POS` は esp-bsp の**全ボードのヘッダと生成 API ドキュメントにしか
+>    現れず、どの `.c` からも参照されていない**（Tab5 の `src/bsp_usb.c` は
+>    IDF の USB Host ライブラリを使うだけ）
+> 2. 19/20 は **ESP32-S3 の `USB_FS_DM` / `USB_FS_DP` そのもの**で、S3 系の
+>    BSP（esp-box, m5stack_core_s3, esp32_s3_usb_otg）と同じ値が並んでいる
+> 3. **ESP32-P4 の `USB_FS_DM` / `USB_FS_DP` は GPIO26 / GPIO27** であり、
+>    どの P4 ボードでも 19/20 にはなり得ない（26/27 は別の理由で予約済み）
+>
+> よって G19 は公式 PinMap のとおり M5-Bus pin 9 の MISO として扱う。
+> この矛盾を再び蒸し返さないために記録しておく。
 
 **GPIO 番号がボードごとに異なる**ため、目標アプリの「同一バイナリで同一結果」を実現するには、ゲストがピン番号をハードコードしない仕組みが要る。v0.1 では次のいずれかとする（未決、§10 参照）:
 
@@ -368,6 +421,105 @@ Phase 4 でオーナーに確認する。
 3. トラップ後の挙動（再起動 / 停止 / `run` 再呼び出し）。
 4. `log` の `string` に UTF-8 検証を入れるか（現状: 入れない）。
 5. `spi.transfer` を v0.1 に残すか（目標アプリでは不要。ILI9341 の ID 読み出しに使える程度）。
+
+---
+
+## 11. 層の分割: `wasmicon:hal` と `wasmicon:device`（2026-09-11 承認）
+
+### 11.1 なぜ分けるか
+
+§1 の HAL（gpio / i2c / spi）は **L1 = チップの足を貸す**層で、デバイス固有の
+ロジックはゲストが持つ（ILI9341 のコマンド列も SHT31 の手順もゲスト側）。
+
+一方 **MIPI-DSI のパネルは L1 では表現できない**。高速差動シリアルであり、
+gpio/i2c/spi のどれにも当てはまらない。ここを扱うには、ポートがドライバを持つ
+**L2 = 機能を貸す**層が要る。
+
+**境界の基準（これが判断の唯一の根拠）:**
+
+> **ポートにデバイス固有のロジックを置く必要があるものは `device`。置かずに済むものは `hal`。**
+
+| | `wasmicon:hal` | `wasmicon:device` |
+|---|---|---|
+| 層 | L1（足を貸す） | L2（機能を貸す） |
+| ドライバの所有者 | ゲスト | ポート |
+| 例 | gpio / i2c / spi / time / log / board | display |
+| トレース一致の要求 | **する**（§9） | **しない**（下記 §11.4） |
+
+### 11.2 パッケージ構成
+
+world を hal に置いたまま device を import させると、device が hal の
+`error-code` を `use` した時点で**依存が循環する**（`wasm-tools` で確認済み）。
+そこで world を独立させる:
+
+```
+wit/                        package wasmicon:app@0.1.0   — world だけ
+wit/deps/hal/               package wasmicon:hal@0.1.0   — L1（world を持たない）
+wit/deps/device/            package wasmicon:device@0.1.0 — L2（hal の型を use する）
+```
+
+依存は `app → hal, device` と `device → hal` の一方向のみ。
+
+### 11.3 world は 2 つ。任意性はここで表現する
+
+`ports/common` は §6.4 の**完全一致リンク**なので、display を持たないボードで
+display を import するゲストはリンクに失敗する。これは関数単位で驚くべきでは
+なく、**world 単位の選択**として表明する:
+
+```wit
+world app { /* L1 のみ */ }
+world app-display { include app; import wasmicon:device/display@0.1.0; }
+```
+
+ポートは自分が提供する world に対応する import 表だけを登録する。
+
+### 11.4 決定性の扱い
+
+**`device` は §9 のトレース一致要求の対象外とする。** `time` と同じ扱い。
+
+理由は、解像度をゲストが問い合わせて適応する方針（2026-09-11 承認）を採るため。
+240×320 と 1280×720 では後続の描画呼び出しの中身そのものが変わり、正規化で
+吸収できない。`pin-by-role` のように番号だけを正規化する手は使えない。
+
+**したがってクロスボードのピクセル検証は L1 の SPI 経路で行う。** ILI9341 を
+複数のマイコンから駆動して結果が一致すれば十分とする（2026-09-11 承認）。
+**ゲストが raw SPI で ILI9341 を叩く現在の経路は維持する**。`device:display` は
+「L1 では表現できないパネル」専用であり、SPI パネルの置き換えではない。
+
+**device の呼び出しはトレースに出す**（2026-09-11 承認）。`time` のように
+出力ごと省くのではなく、§9 の書式で出したうえで **`verify/diff-traces.sh` 側で
+落とす**。実機で display を直すときにトレースが見えないのは痛いという判断。
+落とす処理は、既にある「`[wasm]` 行を落とす」のと同じ形で足す。
+
+### 11.5 lowering への影響
+
+- §3.1 のモジュール名 `<ns>:<pkg>/<iface>@<ver>` はそのまま使える。
+  device は `wasmicon:device/display@0.1.0` になる。**規則の変更は無い**
+- §4 の型 lowering、§5 の resource / ハンドル、§7 のステータス（discriminant + 1）も
+  そのまま適用する。`error-code` は hal のものを共有する
+- §2 のサブセットは device にも同じく適用する。`record` / `tuple` が無いので、
+  面の情報は `width()` / `height()` / `format()` のように個別のアクセサにする
+
+### 11.6 device の import 一覧（正規表）
+
+§7 が hal（L1）の正規表であるのと同じ位置づけ。群が違うので表も分ける。
+`sig` 表記は §7 と同じ（`params:results`、`i`=i32）。
+
+| モジュール | フィールド | sig |
+|---|---|---|
+| `wasmicon:device/display@0.1.0` | `[static]surface.open` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.width` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.height` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.format` | `ii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.blit` | `iiiiiii:i` |
+| `wasmicon:device/display@0.1.0` | `[method]surface.flush` | `i:i` |
+| `wasmicon:device/display@0.1.0` | `[resource-drop]surface` | `i:` |
+
+`blit` の `iiiiiii` は self, x, y, w, h と `list<u8>` の (ptr, len)。
+`width` などの `ii` は self と out ポインタ（§4.4）。
+
+この表は `tools/wasmicon-gen/tests/abi_spec.rs` が転記して検査している。
+**表を変えたらテストも変える。** 逆も同じ。
 
 ---
 

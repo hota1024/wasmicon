@@ -1,0 +1,6 @@
+[toolchain]
+# ESP32-P4 は RISC-V なので upstream の stable でよい。
+# Xtensa の ESP32-S3 (channel = "esp") と違い espup は要らない。
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["riscv32imafc-unknown-none-elf"]

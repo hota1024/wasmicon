@@ -1,19 +1,34 @@
-package wasmicon:hal@0.1.0;
+package wasmicon:app@0.1.0;
 
 /// Wasmicon 上で動くアプリケーションの world。
 /// Wasmicon は Component Model を使わないため、この world は
 /// 「ゲストモジュールが import してよい関数の集合」と「ゲストが export すべき関数」を
 /// 記述するための IDL としてのみ使う。
+///
+/// world を `wasmicon:hal` から独立させてあるのは、`wasmicon:device` が
+/// `wasmicon:hal` の型を `use` するため（abi-spec §11.2）。
+/// hal に world を置いたまま device を import すると依存が循環する。
 world app {
-    import types;
-    import gpio;
-    import i2c;
-    import spi;
-    import time;
-    import log;
-    import board;
+    import wasmicon:hal/types@0.1.0;
+    import wasmicon:hal/gpio@0.1.0;
+    import wasmicon:hal/i2c@0.1.0;
+    import wasmicon:hal/spi@0.1.0;
+    import wasmicon:hal/time@0.1.0;
+    import wasmicon:hal/log@0.1.0;
+    import wasmicon:hal/board@0.1.0;
 
     /// エントリポイント。ホストがインスタンス化後に 1 回呼ぶ。
     /// 戻ると、ホストはインスタンスを破棄してよい。
     export run: func();
+}
+
+/// L1 + display。パネルを持つボード向け（abi-spec §11.3）。
+///
+/// display の有無を関数単位ではなく **world 単位の選択**として表明する。
+/// `ports/common` は §6.4 の完全一致リンクなので、display を持たないボードで
+/// この world のゲストを動かすとリンクエラーになる。それが正しい振る舞い。
+world app-display {
+    include app;
+
+    import wasmicon:device/display@0.1.0;
 }
