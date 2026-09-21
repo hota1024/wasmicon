@@ -47,8 +47,15 @@ use boards::{Serial, DEF};
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
+#[cfg(not(feature = "guest-as"))]
 static GUEST: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
+
+/// AssemblyScript 版（feature `guest-as`）。
+/// `cd apps/blink-as && npm run build` を先に実行しておく。
+/// **同じ host call 列を出すはず**で、それを実機で確かめるのが Phase 4。
+#[cfg(feature = "guest-as")]
+static GUEST: &[u8] = include_bytes!("../../../apps/blink-as/build/blink_as.wasm");
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// P4 は L2MEM 768 KB、さらに Tab5 の ESP32-P4NRW32 は 32 MB の PSRAM を積んで
@@ -125,6 +132,15 @@ fn run(
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;
     let mut inst = instantiate(m, v, &MCU_CONFIG, &mut arena, hal)?;
+
+    // **`start` を先に呼ぶ（abi-spec §3.3）。** AssemblyScript はグローバルの
+    // 初期化をここで行うので、飛ばすと `out32` などが未初期化のまま
+    // `Index out of range` で abort する。Rust 版は start セクションを持たない
+    // ため、抜けていても気づけない。
+    if let Some(start) = inst.module.start {
+        invoke(&mut inst, &mut exec, hal, start, &[], &mut [])?;
+    }
+
     let entry = inst
         .export_func("run")
         .ok_or(wasmicon_core::Error::Unlinkable("export run が無い"))?;

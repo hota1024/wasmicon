@@ -400,8 +400,13 @@ ESP32-P4 の分（Phase 4 / 5 / 6 と同じことを 3 ボード目にも通す�
 **2026-09-21 に `blink-rs` が完走し、host 版とトレース差分ゼロを確認した（§1.1.5）**:
 
 - [x] ESP32-P4 で `blink-rs` が動き、トレースが host 版と一致（20 行）
-- [ ] ESP32-P4 で `blink-as` が動き、トレースが host 版と一致
-      （Rust 版と同じ経路なので通る見込みだが未実行）
+- [x] ESP32-P4 で `blink-as` が動き、トレースが host 版と一致（20 行）。
+      **実機で Rust 版と AS 版も 20 行一致**。ゲストの切り替えは
+      `cargo build --release --features guest-as`
+- [x] **`start` セクションの呼び出しが `ports/esp32p4` から抜けていたのを修正**。
+      Rust 版は start を持たないので blink-rs では気づけず、AS 版で
+      `Index out of range`（`~lib/typedarray.ts:878`、`out32` が未初期化）
+      として露見した。**AS 版は「Rust 版で通った」だけでは代替できない**
 - [ ] ESP32-P4 で sensor-display の表示が出る（Rust / AS）
 - [ ] 同一 `.wasm` を 3 ボードで走らせ、`time` を除くトレースが完全一致
   （`sh verify/diff-traces.sh esp32s3.log esp32p4.log` を追加で回す）
