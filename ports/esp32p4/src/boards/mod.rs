@@ -43,6 +43,10 @@ pub type Trace = tab5::TraceOut;
 #[cfg(feature = "tab5")]
 pub type I2cBus = esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>;
 
+/// このビルドの SPI バスの型。
+#[cfg(feature = "tab5")]
+pub type SpiBus = esp_hal::spi::master::Spi<'static, esp_hal::Blocking>;
+
 // ボードはちょうど 1 つ選ぶ。Cargo の feature は加算的なので、
 // 「選ばれていない」と「複数選ばれた」の両方をここで弾く。
 //

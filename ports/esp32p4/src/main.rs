@@ -46,16 +46,24 @@ use boards::{Serial, DEF};
 // （ビルドは通るので、実機に焼くまで気づかない）。
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
-#[cfg(not(feature = "guest-as"))]
+/// ゲスト。feature で 2 軸（言語 × アプリ）に切り替わる。既定は blink-rs。
+/// 組み合わせとビルド手順は `Cargo.toml` の feature のコメントを参照。
+/// **同じアプリなら Rust 版と AS 版が同じ host call 列を出すはず**で、
+/// それを実機で確かめるのが Phase 4。
+#[cfg(not(any(feature = "guest-as", feature = "guest-sensor")))]
 static GUEST: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
 
-/// AssemblyScript 版（feature `guest-as`）。
-/// `cd apps/blink-as && npm run build` を先に実行しておく。
-/// **同じ host call 列を出すはず**で、それを実機で確かめるのが Phase 4。
-#[cfg(feature = "guest-as")]
+#[cfg(all(feature = "guest-as", not(feature = "guest-sensor")))]
 static GUEST: &[u8] = include_bytes!("../../../apps/blink-as/build/blink_as.wasm");
+
+#[cfg(all(not(feature = "guest-as"), feature = "guest-sensor"))]
+static GUEST: &[u8] =
+    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/sensor_display_rs.wasm");
+
+#[cfg(all(feature = "guest-as", feature = "guest-sensor"))]
+static GUEST: &[u8] =
+    include_bytes!("../../../apps/sensor-display-as/build/sensor_display_as.wasm");
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// P4 は L2MEM 768 KB、さらに Tab5 の ESP32-P4NRW32 は 32 MB の PSRAM を積んで
@@ -96,7 +104,7 @@ fn main() -> ! {
 
     // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX を排他的に使う。UART が占有する
     // ピンは、ボード定義の `reserved` でゲストから閉じてある。
-    let board = unsafe { EspBoard::new(serial, hw.i2c_porta) };
+    let board = unsafe { EspBoard::new(serial, hw.i2c_porta, hw.spi_bus) };
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
 
     // SAFETY: 単一のタスクからしか触らないので、可変静的への参照はここでしか作らない。

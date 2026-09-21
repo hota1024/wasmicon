@@ -11,7 +11,11 @@ use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::{Board, BoardResult};
 
-use crate::boards::{I2cBus, Serial, DEF};
+use esp_hal::spi::master::Config as SpiConfig;
+use esp_hal::spi::Mode as HalSpiMode;
+use esp_hal::time::Rate;
+
+use crate::boards::{I2cBus, Serial, SpiBus, DEF};
 use crate::chip::{self, Gpio};
 
 /// ESP32-P4 のボード。どのボードかは feature で選ぶ（`crate::boards`）。
@@ -22,16 +26,24 @@ pub struct EspBoard<S: Serial> {
     /// **内部 I2C はここに入れない。** 電源とタッチとコーデックが同じ線に
     /// いるので、ゲストに触らせない（abi-spec §8、docs/TODO.md §1.1.5）。
     i2c: I2cBus,
+    /// ゲストに開放する SPI バス。Tab5 では M5-Bus の SPI2。
+    /// CS / DC / RST は役割名で引く GPIO なので、ここには含めない。
+    spi: SpiBus,
 }
 
 impl<S: Serial> EspBoard<S> {
     /// # Safety
     /// GPIO と IO_MUX をこのボードが排他的に使うこと。
     #[must_use]
-    pub unsafe fn new(serial: S, i2c: I2cBus) -> Self {
+    pub unsafe fn new(serial: S, i2c: I2cBus, spi: SpiBus) -> Self {
         // SAFETY: 呼び出し側の契約をそのまま chip::Gpio に渡す。
         let gpio = unsafe { Gpio::steal() };
-        EspBoard { serial, gpio, i2c }
+        EspBoard {
+            serial,
+            gpio,
+            i2c,
+            spi,
+        }
     }
 
     /// シリアルへの参照。失敗の理由を出すのに使う。
@@ -117,15 +129,48 @@ impl<S: Serial> Board for EspBoard<S> {
 
     fn i2c_close(&mut self, _index: u32) {}
 
-    fn spi_open(&mut self, _index: u32, _frequency_hz: u32, _mode: SpiMode) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+    // --- SPI: index 0 = ボードが公開する外部バス（Tab5 は M5-Bus の SPI2）---
+
+    fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
+        // index 0 だけ。ボードが持つバスは 1 本（abi-spec §8）。
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        // I2C と違い、SPI は周波数とモードを `open` で指定できる（abi-spec §7）。
+        let cfg = SpiConfig::default()
+            .with_frequency(Rate::from_hz(frequency_hz))
+            .with_mode(match mode {
+                SpiMode::Mode0 => HalSpiMode::_0,
+                SpiMode::Mode1 => HalSpiMode::_1,
+                SpiMode::Mode2 => HalSpiMode::_2,
+                SpiMode::Mode3 => HalSpiMode::_3,
+            });
+        // 分周器で作れない周波数は `ConfigError` になる。
+        self.spi
+            .apply_config(&cfg)
+            .map_err(|_| ErrorCode::InvalidArgument)
     }
-    fn spi_write(&mut self, _index: u32, _data: &[u8]) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+
+    fn spi_write(&mut self, index: u32, data: &[u8]) -> BoardResult<()> {
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        self.spi.write(data).map_err(map_spi_err)
     }
-    fn spi_transfer(&mut self, _index: u32, _data: &[u8], _buf: &mut [u8]) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+
+    fn spi_transfer(&mut self, index: u32, data: &[u8], buf: &mut [u8]) -> BoardResult<usize> {
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        // esp-hal の `transfer` は**その場で入れ替える**（送った分だけ受け取る）。
+        // WIT は送信元と受信先が別なので、一度 `buf` へ写してから渡す。
+        // 長さが違うときは短い方に合わせる（`ports/host` と同じ規則）。
+        let n = data.len().min(buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        self.spi.transfer(&mut buf[..n]).map_err(map_spi_err)?;
+        Ok(n)
     }
+
     fn spi_close(&mut self, _index: u32) {}
 
     // --- 時間 ---
@@ -165,6 +210,18 @@ fn addr7(address: u16) -> BoardResult<u8> {
         .ok()
         .filter(|a| *a < 0x80)
         .ok_or(ErrorCode::InvalidArgument)
+}
+
+/// esp-hal の SPI エラーを abi-spec §7 のコードへ落とす。
+///
+/// SPI は I2C と違って ACK が無いので、失敗はバスの使い方か容量の問題に限られる。
+fn map_spi_err(e: esp_hal::spi::Error) -> ErrorCode {
+    use esp_hal::spi::Error as E;
+    match e {
+        E::FifoSizeExeeded | E::MaxDmaTransferSizeExceeded => ErrorCode::OutOfMemory,
+        E::Unsupported => ErrorCode::Unsupported,
+        _ => ErrorCode::Io,
+    }
 }
 
 /// esp-hal の I2C エラーを abi-spec §7 のコードへ落とす。

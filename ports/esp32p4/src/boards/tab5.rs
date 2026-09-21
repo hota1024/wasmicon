@@ -9,6 +9,7 @@
 
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::Peripherals;
+use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_hal::Blocking;
 
@@ -132,6 +133,15 @@ pub struct Hw {
     /// PORT.A (G54=SDA / G53=SCL)。外部ユニット用。ゲストの `i2c.bus` index 0。
     /// SDA/SCL の極性は未確認（docs/TODO.md §1.1）。
     pub i2c_porta: I2c<'static, Blocking>,
+    /// M5-Bus の SPI2 (SCK=G5 / MOSI=G18 / MISO=G19)。ゲストの `spi.bus` index 0。
+    /// abi-spec §8 の表のとおり。CS / DC / RST は役割名で引く GPIO
+    /// （`lcd-cs` = G48 / `lcd-dc` = G47 / `lcd-rst` = G45）で、
+    /// **ゲストが自分で叩く**。ここでは握らない。
+    ///
+    /// **バスのピンは `reserved` に入れていない。** PORT.A の I2C と同じ扱いで、
+    /// 外部向けのピンは開けたままにしてある。ゲストが同じ番号を素の GPIO として
+    /// 開くと競合するが、それは I2C でも同じ（docs/TODO.md §1.2）。
+    pub spi_bus: Spi<'static, Blocking>,
 }
 
 /// PI4IOE5V6408 のレジスタ（esp-bsp の
@@ -222,9 +232,21 @@ pub fn open(p: Peripherals) -> Hw {
         b"lcd: power on failed\r\n"
     });
 
+    // M5-Bus の SPI2。周波数とモードは `spi.bus.open` で上書きされるので、
+    // ここは既定のまま作るだけでよい（`apply_config` で差し替える）。
+    let spi_bus = Spi::new(p.SPI2, SpiConfig::default())
+        .expect("SPI2 の初期化に失敗")
+        .with_sck(p.GPIO5)
+        .with_mosi(p.GPIO18)
+        .with_miso(p.GPIO19);
+
     // 内部バスは `Hw` に入れない。今はここで LCD の電源を入れるだけで、
     // ゲストにも渡さないため。display を実装するときに持ち回る形へ変える。
-    Hw { serial, i2c_porta }
+    Hw {
+        serial,
+        i2c_porta,
+        spi_bus,
+    }
 }
 
 // パニック経路の出力はここに持たない。**`chip::early_write` を使う。**

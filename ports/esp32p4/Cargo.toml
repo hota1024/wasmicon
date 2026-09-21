@@ -23,16 +23,17 @@ trace = []
 # --- ボード（ちょうど 1 つ。src/boards/mod.rs が個数を検査する）---
 tab5 = []
 
-# 埋め込むゲストを AssemblyScript 版に差し替える。既定は Rust 版。
+# 埋め込むゲストの選択。2 軸が直交する（言語 × アプリ）。既定は blink-rs。
 #
-# Phase 4 の完了条件は「Rust 版と AS 版が同じ host call 列を出す」ことなので、
-# 両方を焼いて `verify/diff-traces.sh` で突き合わせる:
+#     cargo build --release                                     # blink-rs
+#     cargo build --release --features guest-as                 # blink-as
+#     cargo build --release --features guest-sensor             # sensor-display-rs
+#     cargo build --release --features guest-as,guest-sensor    # sensor-display-as
 #
-#     cargo build --release                      # blink-rs
-#     cargo build --release --features guest-as  # blink-as
-#
-# AS 版は先に `cd apps/blink-as && npm run build` でビルドしておくこと。
+# Rust 版は `cd apps && cargo build --release`、
+# AS 版は `cd apps/<app>-as && npm run build` を先に実行しておくこと。
 guest-as = []
+guest-sensor = []
 
 # `led` 役割を Tab5 の LCD バックライト (G22) に向けるビルド。既定では無効。
 # トレースは変わらない（`role:led` に正規化されるため）。

@@ -80,10 +80,23 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**2026-09-21 に ESP32-P4 / M5Stack Tab5 で blink が実機で完走した。**
-`verify/diff-traces.sh` でホストの出力と**差分ゼロ**（20 行一致）を確認済み。
-同じ `.wasm` が PC と実機で同一の host call 列を出す。GPIO のレジスタ直叩きも
-含めて動作している。RP2040 / ESP32-S3 は未着手。
+**2026-09-21 に ESP32-P4 / M5Stack Tab5 で blink と sensor-display が実機で完走した。**
+`verify/diff-traces.sh` でホストの出力と**差分ゼロ**を確認済み。
+
+| ゲスト | 一致行数 |
+|---|---|
+| blink-rs（host vs Tab5） | 20 |
+| blink-as（host vs Tab5） | 20 |
+| blink（Tab5 上で Rust vs AS） | 20 |
+| sensor-display-rs（host vs Tab5） | **1078** |
+
+sensor-display は SHT31 も ILI9341 も繋がない状態での実行で、センサー無応答の
+経路を通る。意味があるのは中身で、**254 本の `spi.bus.write` が `crc32=` まで
+一致**する = **送っているピクセルがホストとビット一致**している。f32 を使う
+温度バーの計算も一致した。GPIO / I2C / SPI のレジスタ直叩きが実機で動いている。
+
+RP2040 / ESP32-S3 は未着手なので、**ボード間**の一致（Phase 6 の本来の対象）は
+まだ取れていない。
 
 トレースは UART0 (G37) から 3.3V USB シリアル変換（CP2102N）経由で取り込む。
 そこに至るまでに **esp-hal 1.2 が新しい P4 を前提にしている**ことに起因する
