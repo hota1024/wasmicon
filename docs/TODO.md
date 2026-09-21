@@ -413,15 +413,16 @@ ESP32-P4 の分（Phase 4 / 5 / 6 と同じことを 3 ボード目にも通す�
       Rust 版は start を持たないので blink-rs では気づけず、AS 版で
       `Index out of range`（`~lib/typedarray.ts:878`、`out32` が未初期化）
       として露見した。**AS 版は「Rust 版で通った」だけでは代替できない**
-- [x] **ESP32-P4 で sensor-display が完走し、host と 1078 行一致**（2026-09-21、
-      Rust 版）。SHT31 も ILI9341 も繋いでいない状態での実行で、**センサー無応答の
-      経路**を通る（実機は NACK、host は replay 無しで同じくステータス 5）。
+- [x] **ESP32-P4 で sensor-display が Rust / AS とも完走し、host と 1078 行一致**
+      （2026-09-21）。実機上で Rust 版と AS 版も 1078 行一致。
+      SHT31 も ILI9341 も繋いでいない状態での実行で、**センサー無応答の経路**を
+      通る（実機は NACK、host は replay 無しで同じくステータス 5）。
       意味があるのは中身で、**254 本の `spi.bus.write` が `crc32=` まで一致**する。
       つまり**送っているピクセルがホストとビット一致**している。f32 を使う
       温度バーの計算も一致し、63KB に減ったスタックでも足りている
 - [ ] ESP32-P4 で sensor-display の**表示が実際に出る**（Rust / AS）。
-      上は「同じバイト列を送っている」ところまで。ILI9341 を M5-Bus に繋いで
-      目視するのが残り。AS 版も未実行
+      上は「同じバイト列を送っている」ところまで。**ILI9341 を M5-Bus に繋いで
+      目視するのが残り**（SCK=G5 / MOSI=G18 / MISO=G19、CS=G48 / DC=G47 / RST=G45）
 - [ ] 同一 `.wasm` を 3 ボードで走らせ、`time` を除くトレースが完全一致
   （`sh verify/diff-traces.sh esp32s3.log esp32p4.log` を追加で回す）
 - [x] **P4 の f32 は host (AArch64) と一致した**（2026-09-21）。sensor-display の

@@ -89,6 +89,8 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 | blink-as（host vs Tab5） | 20 |
 | blink（Tab5 上で Rust vs AS） | 20 |
 | sensor-display-rs（host vs Tab5） | **1078** |
+| sensor-display-as（host vs Tab5） | **1078** |
+| sensor-display（Tab5 上で Rust vs AS） | **1078** |
 
 sensor-display は SHT31 も ILI9341 も繋がない状態での実行で、センサー無応答の
 経路を通る。意味があるのは中身で、**254 本の `spi.bus.write` が `crc32=` まで
