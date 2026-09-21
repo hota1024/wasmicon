@@ -68,12 +68,12 @@ const RESERVED: &[(u32, u32)] = &[
 /// `led-backlight` feature を有効にすると **G22（LCD のバックライト LEDA）**に
 /// 向ける。副作用として G22 を `reserved` から外す。
 ///
-/// **現状このビルドでは何も光らない。** Tab5 のバックライトは G22 だけでは
-/// 点かず、**PI4IOE5V6408（内部 I2C, 0x43）のピン 4 = `BSP_LCD_EN` で
-/// LCD の電源を入れる**必要がある（esp-bsp の `bsp_feature_enable`
-/// `BSP_FEATURE_LCD` がやっていること）。内部 I2C (G31/G32) は `reserved` で、
-/// I2C 自体も未実装なので、**エキスパンダを叩けるようになるまでこの feature は
-/// 目視確認には使えない**。2026-09-11 に実機で確認済み（docs/TODO.md §1.1.5）。
+/// **G22 だけでは光らない。** Tab5 のバックライトは
+/// **PI4IOE5V6408（内部 I2C, 0x43）のピン 4 = `BSP_LCD_EN` で LCD の電源を
+/// 入れる**必要がある（esp-bsp の `bsp_feature_enable` `BSP_FEATURE_LCD` が
+/// やっていること）。2026-09-11 に実機で確認済み（docs/TODO.md §1.1.5）。
+/// 電源投入は下の `power_on_lcd` が `open` の中で行うので、この feature 単体で
+/// 目視できる。内部 I2C (G31/G32) は `reserved` のままでゲストには渡さない。
 ///
 /// **トレースは変わらない。** `pin-by-role` で引いた番号は `wasmicon-port` の
 /// `write_pin` が `role:led` に正規化するため（abi-spec §9）、どちらのビルドでも
@@ -198,18 +198,16 @@ fn power_on_lcd(i2c: &mut I2c<'static, Blocking>) -> I2cResult {
 }
 
 pub fn open(p: Peripherals) -> Hw {
-    let out = TraceOut(
+    // 以前ここでホストの接続待ちに 2 秒入れていたが外した。UART は受け手が
+    // いなくても送信が詰まらないので待つ理由が無い。**タイマーに依存する待ちを
+    // 起動経路の先頭に置くと、タイマーが動いていなかった場合にそこで全てが
+    // 止まる**（切り分けの邪魔になる）。
+    let mut serial = TraceOut(
         Uart::new(p.UART0, UartConfig::default())
             .expect("UART0 の初期化に失敗")
             .with_tx(p.GPIO37)
             .with_rx(p.GPIO38),
     );
-
-    // 以前ここで 2 秒待っていたが外した。`Serial::write` に上限を付けたので
-    // ホスト待ちで止まることは無くなり、待つ理由が無い。
-    // **タイマーに依存する待ちを起動経路の先頭に置くと、タイマーが動いて
-    // いなかった場合にそこで全てが止まる**（切り分けの邪魔になる）。
-    let mut serial = out;
 
     let cfg = I2cConfig::default();
     let mut i2c_internal = I2c::new(p.I2C0, cfg)

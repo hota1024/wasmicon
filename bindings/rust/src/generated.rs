@@ -369,7 +369,9 @@ pub mod board {
 ///
 /// 解像度はボードごとに違う。ゲストは `width` / `height` を問い合わせて適応する。
 /// そのため **device の呼び出しはボード間で一致しない**。§9 のトレース一致要求の
-/// 対象外であり、`verify/diff-traces.sh` が比較時に落とす（§11.4）。
+/// 対象外とする（§11.4）。呼び出し自体はトレースに出し、比較時に
+/// `verify/diff-traces.sh` 側で落とす方針だが、**その処理はまだ入っていない**
+/// （docs/TODO.md）。
 pub mod display {
     #[link(wasm_import_module = "wasmicon:device/display@0.1.0")]
     unsafe extern "C" {

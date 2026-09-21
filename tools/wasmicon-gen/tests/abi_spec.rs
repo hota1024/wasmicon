@@ -101,7 +101,7 @@ const SPEC_SECTION_11: &[(&str, &str, &str)] = &[
 ];
 
 #[test]
-fn import_table_matches_abi_spec_section_7() {
+fn import_table_matches_abi_spec_sections_7_and_11() {
     let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("wit/ を読めない");
 
     let mut expected: Vec<String> = SPEC_SECTION_7

@@ -28,6 +28,20 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
     // 上位集合（= app-display）から採る。ポートは `Group` で登録する群を選ぶ。
     // app-display は `include app` なので、hal の並び順は app と同じまま後ろに
     // device が付く。HostFn の順序が動かないのはこのため。
+    //
+    // **world が増えたら黙って無視せずに落とす。** import は下で選ぶ 1 つの
+    // world からしか採らないので、上位集合でない world が足されるとその import が
+    // `IMPORTS` に入らず、ゲストは理由の分からないリンクエラーになる。
+    if let Some(unknown) = pkg
+        .worlds
+        .keys()
+        .find(|n| n.as_str() != "app" && n.as_str() != "app-display")
+    {
+        bail!(
+            "未知の world {unknown}。import は app-display（無ければ app）からしか \
+             採らない。world を足すならここも直すこと（abi-spec §11.3）"
+        );
+    }
     let world_id = *pkg
         .worlds
         .get("app-display")

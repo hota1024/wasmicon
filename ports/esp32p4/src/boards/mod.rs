@@ -28,9 +28,10 @@ pub use tab5::{Hw, DEF};
 
 /// トレースとログを出す先。**どこへ出すかはボードが決める**。
 ///
-/// Tab5 は USB-Serial-JTAG（USB-C 1 本で取れる）、RP2040 / ESP32-S3 ポートは
-/// UART を使っている。トレースの**内容**は同じなので `verify/diff-traces.sh`
-/// での突き合わせには影響しない。
+/// Tab5 は UART0（一度 USB-Serial-JTAG に変えたが、この個体で出力が取れず
+/// 戻した。`tab5::TraceOut` の注記を参照）。RP2040 / ESP32-S3 ポートも UART な
+/// ので 3 ポートとも経路が揃っている。トレースの**内容**は同じなので
+/// `verify/diff-traces.sh` での突き合わせには影響しない。
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
 }

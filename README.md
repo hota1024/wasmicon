@@ -16,11 +16,13 @@
 **残っているのは実機が要る部分**（→ [`docs/TODO.md`](docs/TODO.md)）。
 
 ボードは ESP32-S3 / RP2040 に加えて **ESP32-P4** を足してある（`ports/esp32p4`）。
-GPIO / time / log までは 3 ポートとも同じ形で、I2C / SPI は 3 ポートとも未実装。
+GPIO / time / log は 3 ポートとも同じ形。**I2C / SPI は ESP32-P4 だけ実装済み**で、
+RP2040 / ESP32-S3 は `unsupported` を返す。
 
-実機は 2026-09-11 に M5Stack Tab5 へ書き込みまで到達したが、**その個体が
-ESP32-P4 v1.0 でブートローダに弾かれ、ランタイムはまだ一度も実機で動いていない**
-（→ [`docs/TODO.md`](docs/TODO.md) §1.1.5）。
+**2026-09-21 に M5Stack Tab5 実機で blink と sensor-display が完走した**
+（Rust 版 / AS 版とも、ホストの出力と `verify/diff-traces.sh` で差分ゼロ）。
+実機の状況は [`docs/verification-report.md`](docs/verification-report.md) §4.1、
+残っているものは [`docs/TODO.md`](docs/TODO.md) が正。
 
 P4 ポートだけは**チップ層とボード定義を分けてある**。同じ P4 でもボードごとに
 GPIO の意味が入れ替わる（`G23` は P4-EYE ではオンボード LED、Tab5 では TP_INT、

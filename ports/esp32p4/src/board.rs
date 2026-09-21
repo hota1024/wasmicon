@@ -11,6 +11,7 @@ use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::{Board, BoardResult};
 
+use esp_hal::i2c::master::Config as I2cConfig;
 use esp_hal::spi::master::Config as SpiConfig;
 use esp_hal::spi::Mode as HalSpiMode;
 use esp_hal::time::Rate;
@@ -82,16 +83,25 @@ impl<S: Serial> Board for EspBoard<S> {
         let _ = self.gpio.configure(index, PinMode::Input);
     }
 
-    // --- I2C: index 0 = ボードが公開する外部バス。SPI は未実装 ---
+    // --- I2C: index 0 = ボードが公開する外部バス（Tab5 は PORT.A）---
 
-    fn i2c_open(&mut self, index: u32, _speed: Speed) -> BoardResult<()> {
+    fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
         // index 0 だけ。ボードが持つバスは 1 本（abi-spec §8）。
-        // 速度は今のところ `open` 時の設定を変えない（既定のまま）。
-        if index == 0 {
-            Ok(())
-        } else {
-            Err(ErrorCode::InvalidArgument)
+        if index != 0 {
+            return Err(ErrorCode::InvalidArgument);
         }
+        // SPI と同じく `open` の指定をそのまま反映する。黙って既定の 100 kHz で
+        // 動かすと、`fast` / `fast-plus` を要求したゲストが成功を受け取りながら
+        // 別の速度で通信することになり、理由の分からない結果になる。
+        let cfg = I2cConfig::default().with_frequency(match speed {
+            Speed::Standard => Rate::from_khz(100),
+            Speed::Fast => Rate::from_khz(400),
+            Speed::FastPlus => Rate::from_khz(1000),
+        });
+        // 分周器で作れない周波数は `ConfigError` になる。
+        self.i2c
+            .apply_config(&cfg)
+            .map_err(|_| ErrorCode::InvalidArgument)
     }
 
     fn i2c_write(&mut self, index: u32, address: u16, data: &[u8]) -> BoardResult<()> {
