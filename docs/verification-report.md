@@ -119,7 +119,7 @@ f64 を速くする DCP は使っていない（`rp235x-hal` の `dcp-fast-f64` 
 - `rp2040`: thumbv6m のビルド
 - `differential`: wasmtime との差分テスト 4 件
 
-2026-09-11 に `rp2350` ジョブ（thumbv8m.main-none-eabihf のビルド）を足した。
+2026-09-22 に `rp2350` ジョブ（thumbv8m.main-none-eabihf のビルド）を足した。
 手元では fmt / clippy / build とも通っているが、**CI で回したのはまだ見ていない**。
 
 **wasmtime との一致は x86_64 Linux でも確認できた**（手元は AArch64 macOS）。
