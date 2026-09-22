@@ -1,5 +1,8 @@
 #!/bin/sh
-# ランタイムコアのコードサイズを RP2040 のターゲットで測る（docs/handoff.md §5 Phase 2）。
+# ランタイムコアのコードサイズをマイコンのターゲットで測る（docs/handoff.md §5 Phase 2）。
+#
+# 既定は RP2040 の thumbv6m-none-eabi。引数でターゲットを渡せる:
+#   sh tools/measure-size.sh thumbv8m.main-none-eabihf   # RP2350
 #
 # LTO を切って測る。rlib のままだと LTO 有効時は LLVM ビットコードになり
 # セクションサイズが取れないため。実際のファームウェアではリンク時に
@@ -7,7 +10,7 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-target=thumbv6m-none-eabi
+target=${1:-thumbv6m-none-eabi}
 size=$(ls "$HOME"/.rustup/toolchains/stable-*/lib/rustlib/*/bin/llvm-size 2>/dev/null | head -1)
 if [ -z "$size" ]; then
     echo "llvm-size が無い。rustup component add llvm-tools" >&2

@@ -1,6 +1,6 @@
 # Wasmicon
 
-マイコン (ESP32-S3 / RP2040) 向け WebAssembly 実行環境。自作 Core Wasm ランタイム + WIT 定義の HAL + Rust/AssemblyScript バインディング。
+マイコン (ESP32-S3 / RP2040 / RP2350) 向け WebAssembly 実行環境。自作 Core Wasm ランタイム + WIT 定義の HAL + Rust/AssemblyScript バインディング。
 
 ## まず読むもの
 

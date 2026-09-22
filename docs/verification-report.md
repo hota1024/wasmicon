@@ -72,7 +72,7 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 `spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが
 同一」を意味する。
 
-失敗経路も検査しているのは、実機では `ports/rp2040` / `ports/esp32s3` の SPI が
+失敗経路も検査しているのは、実機では `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の SPI が
 まだ `unsupported` を返すため。成功経路だけ揃えても実機に持って行った瞬間に
 比較が意味を失う。
 
@@ -80,12 +80,13 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**両ポートともビルドが通るところまでで、一度も焼いていない。**
+**3 ポートともビルドが通るところまでで、一度も焼いていない。**
 
-- GPIO はどちらもレジスタ直叩き（RP2040 は SIO / IO_BANK0 / PADS_BANK0、
+- GPIO はいずれもレジスタ直叩き（RP2040 / RP2350 は SIO / IO_BANK0 / PADS_BANK0、
   ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
-  実機で最初に起きることとして「blink が光らない」を想定すべき
-- `ports/rp2040` / `ports/esp32s3` の I2C / SPI は `unsupported` を返す。
+  実機で最初に起きることとして「blink が光らない」を想定すべき。
+  RP2350 は加えてパッドの `ISO`（リセット値 1）を落とし損ねると無反応になる
+- `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の I2C / SPI は `unsupported` を返す。
   sensor-display は実機では動かない
 - abi-spec §8 の配線（役割名 → ピン番号）はオーナー未確認
 
@@ -93,8 +94,12 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 sensor-display が唯一 f32 を使う温度バーの計算は、**ホスト 1 プラットフォーム
 での一致しか確認していない**。RP2040 は `compiler_builtins` のソフトフロート、
-ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）なので、
+ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）なので、
 ここが Phase 6 の本来の実測対象。
+
+RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）でビルドしている。
+f64 を速くする DCP は使っていない（`rp235x-hal` の `dcp-fast-f64` を入れると
+`__aeabi_dadd` / `__aeabi_dmul` が差し替わるが、結果の一致を確かめていない）。
 
 ### 4.3 記録済み I2C 応答
 
@@ -114,6 +119,9 @@ ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存�
 - `rp2040`: thumbv6m のビルド
 - `differential`: wasmtime との差分テスト 4 件
 
+2026-09-11 に `rp2350` ジョブ（thumbv8m.main-none-eabihf のビルド）を足した。
+手元では fmt / clippy / build とも通っているが、**CI で回したのはまだ見ていない**。
+
 **wasmtime との一致は x86_64 Linux でも確認できた**（手元は AArch64 macOS）。
 インタプリタの一致がホストのアーキテクチャに依存しないことの傍証にはなるが、
 RP2040 / Xtensa のソフトフロートを跨いだ一致は依然として未検証（§4.2）。
@@ -125,13 +133,15 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
 
 ## 5. 実機で検証するときの手順
 
-1. `ports/rp2040` / `ports/esp32s3` の I2C / SPI を実装する
+1. `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の I2C / SPI を実装する
 2. abi-spec §8 の配線を確認し、役割名の表を実機に合わせる
 3. 焼く
    - RP2040: ELF を `picotool load`、または `elf2uf2-rs` で UF2 にして BOOTSEL
+   - RP2350: ELF を `picotool load -u -v -x -t elf`（RP2350 は picotool 2.0 以降が要る。
+     `elf2uf2-rs` は RP2040 用で使えない）
    - ESP32-S3: `ports/esp32s3/build.sh run --release`（espflash）
-4. シリアル（どちらも 115200 8N1）を捕まえてファイルに落とす
-   - RP2040: UART0 (GP0=TX, GP1=RX)
+4. シリアル（いずれも 115200 8N1）を捕まえてファイルに落とす
+   - RP2040 / RP2350: UART0 (GP0=TX, GP1=RX)
    - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 では USB シリアルに直結)
 5. 突き合わせる: `sh verify/diff-traces.sh pico.log esp32s3.log`
    - バナーとゲストの `[wasm]` 行は自動で落とす

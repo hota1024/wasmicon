@@ -202,7 +202,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 ### 6.2 メモリ
 
 - `memory` を 1 つ定義し `"memory"` として export する。import memory は不可。
-- 最小ページ数はプラットフォームの上限以下でなければならない。上限は **ポートが決める**。参考値: RP2040 = 2 ページ (128 KiB)、ESP32-S3 (PSRAM なし) = 4 ページ (256 KiB)。
+- 最小ページ数はプラットフォームの上限以下でなければならない。上限は **ポートが決める**。参考値: RP2040 = 2 ページ (128 KiB)、RP2350 = 4 ページ (256 KiB)、ESP32-S3 (PSRAM なし) = 4 ページ (256 KiB)。
 - `memory.grow` は上限までは成功し、超えると `-1` を返す（トラップしない）。
 - データセグメントは受動・能動とも可。
 
@@ -304,26 +304,29 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 `index` の解釈と SDA/SCL/SCK/MOSI/MISO のピン割り当てはポート層のボード設定で決める。ゲストからは `index` だけが見える。目標アプリ向けの初期割り当て案:
 
-| 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH |
-|---|---|---|---|
-| I2C バス (SHT31) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 |
-| SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
-| ILI9341 CS | `gpio.pin` | GPIO10 | GP17 |
-| ILI9341 DC | `gpio.pin` | GPIO14 | GP20 |
-| ILI9341 RST | `gpio.pin` | GPIO15 | GP21 |
+| 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
+|---|---|---|---|---|
+| I2C バス (SHT31) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
+| SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
+| ILI9341 CS | `gpio.pin` | GPIO10 | GP17 | GP17 |
+| ILI9341 DC | `gpio.pin` | GPIO14 | GP20 | GP20 |
+| ILI9341 RST | `gpio.pin` | GPIO15 | GP21 | GP21 |
+
+Pico 2 / Pico 2 W は Pico / Pico WH とヘッダのピン配置が同じなので、GP 番号も同じにしてある。
 
 `board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応。ポート層の `board` 設定に置く:
 
-| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | ホスト (mock) |
-|---|---|---|---|
-| `led` | GPIO2（外付け） | GP15（外付け） | 2 |
-| `lcd-cs` | GPIO10 | GP17 | 10 |
-| `lcd-dc` | GPIO14 | GP20 | 11 |
-| `lcd-rst` | GPIO15 | GP21 | 12 |
+| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W | ホスト (mock) |
+|---|---|---|---|---|
+| `led` | GPIO2（外付け） | GP15（外付け） | GP15（外付け） | 2 |
+| `lcd-cs` | GPIO10 | GP17 | GP17 | 10 |
+| `lcd-dc` | GPIO14 | GP20 | GP20 | 11 |
+| `lcd-rst` | GPIO15 | GP21 | GP21 | 12 |
 
-`led` に外付けを充てるのは、どちらのボードもオンボード LED が素の GPIO ではないため
-（Pico W/WH は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812）。実機の配線は
-Phase 4 でオーナーに確認する。
+`led` に外付けを充てるのは、どのボードもオンボード LED が素の GPIO ではないため
+（Pico W/WH と Pico 2 W は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812）。
+Pico 2（無線なし）のオンボード LED は GP25 だが、Pico 2 W と同じ配線で
+動かせるよう外付けに揃えている。実機の配線は Phase 4 でオーナーに確認する。
 
 **GPIO 番号がボードごとに異なる**ため、目標アプリの「同一バイナリで同一結果」を実現するには、ゲストがピン番号をハードコードしない仕組みが要る。v0.1 では次のいずれかとする（未決、§10 参照）:
 

@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-09-10
+最終更新: 2026-09-11
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -10,19 +10,22 @@
 
 ## 1. 実機が要るもの
 
-実機（ESP32-S3 DevKitC-1 / Raspberry Pi Pico WH）が手元に来るまで進められない。
+実機（ESP32-S3 DevKitC-1 / Raspberry Pi Pico WH / Raspberry Pi Pico 2 (W)）が手元に来るまで進められない。
 
 ### 1.1 オーナーに聞くこと
 
 - [ ] **実機の配線**。`docs/abi-spec.md` §8 の表（I2C/SPI のピン、役割名 → GPIO 番号）が実機と合っているか
-- [ ] **シリアルの接続方法**。RP2040 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
+- [ ] **シリアルの接続方法**。RP2040 / RP2350 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
 - [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 を前提にしている
 - [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
-- [ ] **`led` に外付け LED を充てている**。どちらのボードもオンボード LED が素の GPIO ではないため（Pico W/WH は CYW43439、DevKitC-1 は WS2812）
+- [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
+- [ ] **RP2350 ボードの品種**。`ports/rp2350` は Pico 2 / Pico 2 W（RP2350A、GP0..GP29）を前提にしている。RP2350B（GP0..GP47）のボードを使うなら `NUM_GPIO` を 48 にする
+- [ ] **RP2350 を Arm だけで見るか**。`ports/rp2350` は Cortex-M33（`thumbv8m.main-none-eabihf`）のみ。RISC-V (Hazard3) でも同じトレースが出るかは v0.1 の検証範囲に入れていない
 
 ### 1.2 実装
 
 - [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。これが無いと sensor-display は実機で動かない
+- [ ] **`ports/rp2350` の I2C / SPI**。同上
 - [ ] **`ports/esp32s3` の I2C / SPI**。同上
 
 ### 1.3 検証（Phase 4 / 5 / 6 の完了条件）
@@ -32,16 +35,25 @@
 - [ ] 同一 `.wasm` を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致（Phase 6）
   - 手順は `docs/verification-report.md` §5
   - 突き合わせは `sh verify/diff-traces.sh a.log b.log`
-- [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
+- [ ] **RP2350 も同じ 3 点を通す**。Phase 4/5/6 の完了条件そのものは ESP32-S3 と Pico WH の
+  2 ボードで定義されている（`docs/handoff.md` §5）。`ports/rp2350` は 3 つ目のポートなので、
+  完了条件は変えずに同じ検証を追加で回す
+- [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
+  - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
+  - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
 - [ ] `verify/sht31-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
 - [ ] 結果を `docs/verification-report.md` に反映する
 
 ### 1.4 実機で最初に疑うところ
 
-**両ポートの GPIO はレジスタ直叩きで、一度も観測していない。**
+**3 ポートとも GPIO はレジスタ直叩きで、一度も観測していない。**
 「blink が光らない」を最初の期待値として想定すること。
 
 - RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）
+- RP2350: 同上。加えて **PADS_BANK0 の `ISO`（アイソレーションラッチ）のリセット値が 1**。
+  落とし忘れるとパッドが切り離されたままで、レジスタは正しく見えるのに GPIO が無反応になる。
+  `gpio_configure` は PADS へ書くたびに `iso().clear_bit()` している（`write()` はリセット値から
+  始まるので、書き残すと再びアイソレートされる）
 - ESP32-S3: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの out_sel=128）
 
 ---

@@ -268,7 +268,7 @@ fn sensor_display_rs_and_as_agree() {
 /// 失敗経路でも Rust 版と AS 版が一致すること。
 ///
 /// Phase 5 の一致検査はハッピーパスしか通らないが、実機では
-/// `ports/rp2040` / `ports/esp32s3` の SPI がまだ `unsupported` を返す。
+/// `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の SPI がまだ `unsupported` を返す。
 /// そこで両言語が食い違うと、実機に持って行った瞬間に比較が意味を失う。
 #[test]
 fn sensor_display_agrees_when_spi_is_unsupported() {

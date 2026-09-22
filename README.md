@@ -1,6 +1,6 @@
 # Wasmicon
 
-マイコン（ESP32-S3 / RP2040）向けの WebAssembly 実行環境。
+マイコン（ESP32-S3 / RP2040 / RP2350）向けの WebAssembly 実行環境。
 
 - **Runtime**: 自作の Core Wasm インタプリタ。`no_std`、依存クレートゼロ、`alloc` 不使用
 - **HAL**: GPIO / I2C / SPI / time / log / board を WIT で定義。**Component Model は使わない**。
@@ -12,7 +12,8 @@
 
 ## 現在地
 
-全 6 フェーズのソフトウェア側が完了し、CI は 4 ジョブとも green。
+全 6 フェーズのソフトウェア側が完了し、CI の 4 ジョブは green。
+（5 つ目の `rp2350` ジョブは 2026-09-11 に追加。手元では通っているが CI での初回実行はまだ）
 **残っているのは実機が要る部分**（→ [`docs/TODO.md`](docs/TODO.md)）。
 
 | 検証 | 状態 |
@@ -24,7 +25,9 @@
 
 詳細は [`docs/verification-report.md`](docs/verification-report.md)。
 
-コアのコードサイズは thumbv6m-none-eabi 向けで **49.4 KiB**（`sh tools/measure-size.sh`）。
+コアのコードサイズは thumbv6m-none-eabi（RP2040）向けで **49.5 KiB**、
+thumbv8m.main-none-eabihf（RP2350）向けで **46.0 KiB**
+（`sh tools/measure-size.sh [ターゲット]`）。
 
 ## 構成
 
@@ -35,6 +38,7 @@ runtime/              wasmicon-core。no_std / 依存ゼロ / alloc 不使用の
 ports/common/         ポート共通の HAL。ボード固有の操作だけ Board トレイトに切り出す
 ports/host/           PC 用。mock HAL + トレース。CI はここで回す
 ports/rp2040/         Raspberry Pi Pico WH（別 workspace）
+ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W（別 workspace、Cortex-M33）
 ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
 bindings/rust/        ゲスト向け Rust バインディング
 bindings/assemblyscript/  同 AssemblyScript
@@ -43,7 +47,7 @@ verify/               検証の道具。wasmtime との差分テスト、トレ�
 docs/                 仕様・設計・検証レポート・残作業
 ```
 
-`ports/rp2040` / `ports/esp32s3` / `apps` / `verify/differential` は
+`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `apps` / `verify/differential` は
 ターゲットも toolchain も profile も違うので**別 workspace**にしてある。
 
 ## ビルドと検証
@@ -70,6 +74,7 @@ npm ci
 
 # 実機向け
 (cd ports/rp2040 && cargo build --release)
+(cd ports/rp2350 && cargo build --release)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
 
 # wasmtime との差分テスト（インタプリタの正しさ）
@@ -83,6 +88,7 @@ wasm-tools component wit wit/                              # WIT の構文検証
 wasm-tools json-from-wast <file>.wast -o out/<file>.json   # spec テストの変換（旧 wast2json）
 wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
 rustup target add thumbv6m-none-eabi                       # RP2040
+rustup target add thumbv8m.main-none-eabihf                # RP2350
 espup install                                              # ESP32-S3（Xtensa フォーク）
 sh tools/measure-size.sh                                   # コアのコードサイズ
 ```

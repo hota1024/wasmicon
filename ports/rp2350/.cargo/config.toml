@@ -1,0 +1,12 @@
+# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
+# ビルドは `cd ports/rp2350 && cargo build --release`。
+[build]
+# RP2350 の Cortex-M33。hard-float ABI（f32 は FPU で回る）。
+target = "thumbv8m.main-none-eabihf"
+
+[target.thumbv8m.main-none-eabihf]
+rustflags = [
+    "-Clink-arg=--nmagic",
+    "-Clink-arg=-Tlink.x",
+    "-Ctarget-cpu=cortex-m33",
+]

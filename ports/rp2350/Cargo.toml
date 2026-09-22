@@ -1,0 +1,37 @@
+# RP2350 (Raspberry Pi Pico 2 / Pico 2 W) 用ポート。
+# root workspace とはターゲットも toolchain も profile も違うので別 workspace。
+#
+# Arm (Cortex-M33) 側だけを対象にする。RP2350 は RISC-V (Hazard3) でも動くが、
+# 同じチップで 2 つの命令セットを見ることは v0.1 の検証範囲に無い。
+[workspace]
+
+[package]
+name = "wasmicon-rp2350"
+description = "Wasmicon の RP2350 ポート"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[features]
+# docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+default = ["trace"]
+trace = []
+
+[dependencies]
+wasmicon-core = { path = "../../runtime" }
+wasmicon-port = { path = "../common" }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+# dcp-fast-f64 は入れない。__aeabi_dadd / __aeabi_dmul を DCP 版に差し替える
+# 機能で、f64 の結果がボード間で一致する保証を自分で確かめていないため
+# （docs/TODO.md §1.3 の「ボード間の浮動小数の一致」が未検証のうちは触らない）。
+rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
+panic-halt = "1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+# デバッグ情報は残す（probe-rs で追える）。フラッシュには載らない。
+debug = true
