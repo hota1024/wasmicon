@@ -172,6 +172,21 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
 | 書き込み | `picotool` 2.3.1、`picotool load -u -v -t elf` → `picotool reboot -f` |
 | ビルド | `cargo build --release --features guest-lcd-demo`（`trace` 有効） |
 
+### 再現手順
+
+比較相手の `host.log` は host ポートで作る（`pico.log` は UART をそのまま落としたもの。
+バナーとログ行が混ざっていてよい）。
+
+```bash
+(cd apps && cargo build --release)
+cargo run -q -p wasmicon-host -- --trace \
+  apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm > host.log
+sh verify/diff-traces.sh pico.log host.log
+```
+
+host 側だけなら CI が毎回見ている（`cargo test -p wasmicon-host --test apps`
+の `lcd_demo_rs_runs_on_host`）。実機側のログは手元にしかない。
+
 ### 結果
 
 - **host call のトレースが host ポートと完全一致**。`sh verify/diff-traces.sh pico.log host.log`

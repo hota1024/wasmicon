@@ -24,7 +24,8 @@ Rust 版のみ。AssemblyScript の対になるものは用意していない
 
 ## 配線（Raspberry Pi Pico 2 W）
 
-`docs/abi-spec.md` §8 の既定のまま。**この配線は実機で確認していない。**
+`docs/abi-spec.md` §8 の既定のまま。**この配線は 2026-09-26 に Pico 2 W 実機で
+確認済み**（`docs/verification-report.md` §6）。
 違うピンに繋ぎたいときは `ports/rp2350/src/board.rs` の `ROLES` と
 `SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` を直す（abi-spec §8 の表も合わせる）。
 

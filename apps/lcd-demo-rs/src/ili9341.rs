@@ -28,6 +28,13 @@ const TEXT_BYTES: usize = MAX_TEXT * 8 * 8 * 2;
 
 type Result<T> = core::result::Result<T, ErrorCode>;
 
+/// `start + len` が `limit` に収まるか。**u32 に広げてから足す。**
+/// u16 のまま足すと折り返して、画面外の座標が境界検査を通ってしまう
+/// （リリースビルドの Wasm 算術は wrapping）。
+fn in_bounds(start: u16, len: u16, limit: u16) -> bool {
+    u32::from(start) + u32::from(len) <= u32::from(limit)
+}
+
 /// 繋がった ILI9341。
 pub struct Display<'a> {
     spi: &'a Bus,
@@ -106,7 +113,9 @@ impl<'a> Display<'a> {
             return Ok(());
         }
         // 画面外は描かない（`apps/README.md` §2）。row バッファの範囲外書き込みも防ぐ。
-        if x + w > WIDTH || y + h > HEIGHT {
+        // u32 に広げてから足す。u16 のままだと `x + w` が折り返して
+        // 画面外がこの検査をすり抜け、`window` が x0 > x1 の矩形を送ってしまう。
+        if !in_bounds(x, w, WIDTH) || !in_bounds(y, h, HEIGHT) {
             return Err(ErrorCode::InvalidArgument);
         }
         self.window(x, y, w, h)?;
@@ -144,7 +153,7 @@ impl<'a> Display<'a> {
         }
         let len = text.len();
         let w = (len * 8) as u16;
-        if x + w > WIDTH || y + 8 > HEIGHT {
+        if !in_bounds(x, w, WIDTH) || !in_bounds(y, 8, HEIGHT) {
             return Err(ErrorCode::InvalidArgument);
         }
         self.window(x, y, w, 8)?;

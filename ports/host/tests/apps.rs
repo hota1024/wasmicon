@@ -187,6 +187,61 @@ fn assert_traces_equal(rs: &str, as_: &str) {
     assert_eq!(a.len(), b.len(), "トレースの行数が違う");
 }
 
+/// `lcd-demo-rs`（SPI と GPIO だけのデモ）が host で走り切るか。
+///
+/// 実機の記録（docs/verification-report.md §6）はこのトレースと突き合わせたもの。
+/// CI で走らせておかないと、比較の基準側が黙って変わっても気付けない。
+#[test]
+fn lcd_demo_rs_runs_on_host() {
+    let wasm = build_rust_app("lcd-demo-rs");
+    assert_within_feature_set(&wasm, "lcd-demo-rs");
+    let trace = run(&wasm, "lcd-demo-rs");
+
+    // 役割名で 3 本引く（abi-spec §8、§9 の正規化つき）。
+    for role in ["lcd-cs", "lcd-dc", "lcd-rst"] {
+        assert!(
+            trace.contains(&format!("pin-by-role(\"{role}\")\n< 0 [role:{role}]")),
+            "{role} を引いていない:\n{trace}"
+        );
+    }
+    // センサーを要らなくするために作ったアプリなので、I2C は一度も触らない。
+    assert!(!trace.contains("i2c@0.1.0"), "i2c を触っている:\n{trace}");
+    // 背景は 240 行を 1 行ずつ送る（全画面フレームバッファを持たない）。
+    assert!(
+        trace
+            .matches("wasmicon:hal/spi@0.1.0/[method]bus.write")
+            .count()
+            > 240,
+        "行単位で送られていない:\n{trace}"
+    );
+    // 最後まで走り切る。途中で諦めると done が出ない（Level::Info = 2）。
+    assert!(
+        trace.contains(r#"log(2, "lcd-demo done")"#),
+        "最後まで走っていない:\n{trace}"
+    );
+    // 解放順は apps/README.md §4 の spi → rst → dc → cs。
+    let at = |needle: &str| {
+        trace
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} が無い:\n{trace}"))
+    };
+    let order = [
+        "wasmicon:hal/spi@0.1.0/[resource-drop]bus(1)",
+        "wasmicon:hal/gpio@0.1.0/[resource-drop]pin(3)",
+        "wasmicon:hal/gpio@0.1.0/[resource-drop]pin(2)",
+        "wasmicon:hal/gpio@0.1.0/[resource-drop]pin(1)",
+    ];
+    for pair in order.windows(2) {
+        assert!(
+            at(pair[0]) < at(pair[1]),
+            "解放順が apps/README.md §4 と違う（{} が {} より後）:\n{trace}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert_no_host_errors(&trace, "lcd-demo-rs");
+}
+
 /// 記録済みの SHT31 応答（`verify/sht31-replay.txt`）。
 fn sht31_replay() -> Vec<Vec<u8>> {
     let path = repo_root().join("verify/sht31-replay.txt");
