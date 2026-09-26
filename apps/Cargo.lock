@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcd-demo-rs"
+version = "0.1.0"
+dependencies = [
+ "wasmicon-hal",
+]
+
+[[package]]
 name = "sensor-display-rs"
 version = "0.1.0"
 dependencies = [
