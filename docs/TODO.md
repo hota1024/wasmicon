@@ -82,6 +82,43 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
   - #4 `log` の UTF-8 検証 → しない（実装済み）
   - #5 `spi.transfer` を v0.1 に残すか → 残している（実装済み）
 
+### 2.1 SPI 実装から出た未決（`/code-review xhigh` の指摘、2026-09-26）
+
+いずれも `ports/rp2350` に SPI を入れたときに生まれたもの。**1 と 2 は import の
+エラーステータスに関わるので、ABI の変更にあたる**（`docs/handoff.md` §2-3）。
+実装せずここに置いてある。
+
+- [ ] **`spi.bus.open` の失敗条件を全ポートで揃えるか。** `ports/rp2350` は
+      `frequency-hz == 0` で `invalid-argument`、`index == 1` で `unsupported` を
+      返すが、`ports/host` の mock はどちらも成功を返し、`ports/common` は
+      周波数を検査しない。**同じ `.wasm` が host と実機で違うトレースを出す**ので、
+      「同一バイナリが 2 ボードで同じトレースを出す」（handoff §5 Phase 6）に
+      抵触する。`lcd-demo-rs` も `sensor-display` も踏まないが、踏めば食い違う
+      - 揃えるなら検査は `ports/common` に置く（全ポートが同じ判定になる）
+      - `wit/spi.wit` は「frequency-hz はホストが対応できる最も近い値に丸められる」
+        と書いていて 0 を失敗と定めていない。`docs/abi-spec.md` も長さ 0 の転送
+        だけを `invalid-argument` としている。**どちらに寄せるかはオーナーの判断**
+- [ ] **SPI の待ちループに上限を設けるか。** `ports/rp2350` の `spi_drain` の
+      `BSY` 待ち、RESETS 完了待ち、`spi_write` / `spi_transfer` の `TNF` / `RNE`
+      待ちはいずれも無制限に回る。クロックが止まる・ペリフェラルが固まると、
+      UART に最後のトレース 1 行を残して無言で停止する。これは
+      `ports/rp2350/src/main.rs` と §1.4 が「診断可能にする」と言っている
+      失敗の形そのもの
+      - `types.error-code` に `timeout` は既にあるので型は足りている。
+        ただし**今まで返らなかった状態を返すようになる**ので ABI の変更
+- [ ] **ゲストの `ili9341.rs` の重複を解消するか。** `apps/sensor-display-rs` と
+      `apps/lcd-demo-rs` に 179 行の写しがある（元は module コメント以外同一）。
+      意図的に分けたが、**実際に挙動が分岐した**: 境界検査の u16 折り返しバグ
+      （`594a63b` で `lcd-demo-rs` 側だけ修正）は両方にあり、今は振る舞いが違う
+      - `sensor-display` 側も直せる。画面内の座標では送るバイト列が変わらない
+        ので CRC は動かない。ただし `apps/README.md` §4 の規則どおり
+        **AssemblyScript 版も同時に直す**必要がある（片方だけだと
+        `sensor_display_rs_and_as_agree` が落ちる）
+      - 共有クレートに切り出すならフォント表をパラメータにする。
+        `apps/` の workspace メンバーが 1 つ増える
+      - 分けたままにするなら、片方を直したらもう片方も見ることを
+        `apps/README.md` に書く（AS 版も含めて 3 箇所になる）
+
 ---
 
 ## 3. 分かっている制限（今は困っていない）
@@ -90,6 +127,12 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
 
 - **`spi.transfer` と `i2c.write-read` は 128 バイトまで**（`ports/common` の `SCRATCH`）。送信元と受信先がどちらもゲストメモリにあり範囲が重なりうるので、送信側を一度写している。超えると `unsupported`。v0.1 の用途（SHT31 の 6 バイト、ILI9341 の ID 読み）には十分
 - **`draw_text` は 12 文字まで**（`apps/README.md` §2）。超えると描かずに失敗を返す
+- **`fill_rect` は行ごとに `dc` を high に上げ直している。** CS low の 1 トランザクション
+  内で `dc` は RAMWR の後に 1 回上げれば足りるので、2 回目以降は無駄な host call。
+  `lcd-demo-rs` では 7,176 回のうち約 2,659 回がこれで、トレースを出すビルドの
+  実行時間がほぼ倍になっている。**直すとトレースが変わる**ので、
+  `docs/verification-report.md` §6 と `README.md` に記録した 14,352 行という
+  数値も取り直しになる（`apps/README.md` §2 の送信手順そのものは変わらない）
 - **テキスト形式の Wasm を読めない**。spec テストの `(module quote ...)` 538 件はこれでスキップしている（スキップ 548 件の内訳はランナーが実行時に出す）
 - **複数モジュールのリンクをしない**。`linking.wast` / `imports.wast` 系は対象外
 - **`panic` の理由を実機のシリアルに出せない**。シリアルはボードが持っていて panic handler から届かない。ランタイム由来の失敗は `main` が捕まえて出すので、ここに来るのはポート自身のバグに限られる
