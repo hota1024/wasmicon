@@ -16,6 +16,9 @@ rust-version = "1.85"
 # docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
 default = ["trace"]
 trace = []
+# 埋め込むゲストを blink から ILI9341 のデモに差し替える
+# （apps/lcd-demo-rs/README.md）。
+guest-lcd-demo = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }

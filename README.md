@@ -12,16 +12,20 @@
 
 ## 現在地
 
-全 6 フェーズのソフトウェア側が完了し、CI の 4 ジョブは green。
-（5 つ目の `rp2350` ジョブは 2026-09-22 に追加。手元では通っているが CI での初回実行はまだ）
-**残っているのは実機が要る部分**（→ [`docs/TODO.md`](docs/TODO.md)）。
+全 6 フェーズのソフトウェア側が完了し、CI は green。
+
+**Raspberry Pi Pico 2 W では実機で動いた**（2026-09-26）。`apps/lcd-demo-rs` を
+走らせ、host call のトレースが host ポートと 14,352 行完全一致し、ILI9341 に
+絵が出た（[`docs/verification-report.md`](docs/verification-report.md) §6）。
+残っているのは I2C の実装と 2 ボード目（→ [`docs/TODO.md`](docs/TODO.md)）。
 
 | 検証 | 状態 |
 |---|---|
 | Wasm 仕様適合（spec testsuite コア 74 ファイル / 22507 コマンド） | 達成 |
 | インタプリタの正しさ（wasmtime との差分、4 ゲスト） | 達成 |
 | Rust 版と AS 版が同じ host call 列を出す（成功経路 + 失敗経路） | 達成 |
-| 同一バイナリが 2 ボードで同じトレースを出す | **未達（実機が必要）** |
+| RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
+| 同一バイナリが 2 ボードで同じトレースを出す | **未達（2 ボード目が必要）** |
 
 詳細は [`docs/verification-report.md`](docs/verification-report.md)。
 
@@ -43,6 +47,7 @@ ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
 bindings/rust/        ゲスト向け Rust バインディング
 bindings/assemblyscript/  同 AssemblyScript
 apps/                 ゲスト（別 workspace）。blink と sensor-display の Rust / AS 版
+                      lcd-demo-rs は ILI9341 だけを使うデモ（センサー不要）
 verify/               検証の道具。wasmtime との差分テスト、トレース diff
 docs/                 仕様・設計・検証レポート・残作業
 ```
@@ -75,6 +80,8 @@ npm ci
 # 実機向け
 (cd ports/rp2040 && cargo build --release)
 (cd ports/rp2350 && cargo build --release)
+# Pico 2 (W) + ILI9341 のデモを焼く場合（配線は apps/lcd-demo-rs/README.md）
+(cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
 
 # wasmtime との差分テスト（インタプリタの正しさ）
@@ -103,6 +110,7 @@ sh tools/measure-size.sh                                   # コアのコード�
 | [`docs/design-notes.md`](docs/design-notes.md) | 背景・方針・技術選定の理由 |
 | [`docs/handoff.md`](docs/handoff.md) | 確定した決定事項、フェーズと完了条件、落とし穴。**コードのコメントが節番号で参照している** |
 | [`apps/README.md`](apps/README.md) | Rust 版と AS 版で描画を揃えるための共通仕様 |
+| [`apps/lcd-demo-rs/README.md`](apps/lcd-demo-rs/README.md) | Pico 2 (W) + ILI9341 のデモ。配線・書き込み・つまずきどころ |
 
 開発は `main` で続ける。`v2` ブランチは `main` に取り込まれて消えた。
 旧実装（wasm decoder / llvm 試行、2024 年の試作）も潰していない。マージコミット

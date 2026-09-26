@@ -9,8 +9,11 @@
 //! 有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので
 //! IEEE 準拠。f64 はソフトフロートのまま（DCP は使わない。Cargo.toml 参照）。
 //!
-//! **実機で動作確認していない**（docs/TODO.md §1.1 の配線とシリアル接続が未確認）。
-//! ビルドが通ることまでを確認した段階。
+//! SPI0 は実装済み。I2C はまだ `unsupported`。
+//!
+//! **Pico 2 W 実機で確認済み**（2026-09-26）。`lcd-demo-rs` を走らせ、トレースが
+//! host ポートと完全一致し、ILI9341 に絵が出た（docs/verification-report.md §6）。
+//! `led` の役割名と I2C の配線は未確認のまま（docs/TODO.md §1.1）。
 
 #![no_std]
 #![no_main]
@@ -40,8 +43,14 @@ pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 const XTAL_HZ: u32 = 12_000_000;
 
 /// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
+///
+/// 既定は blink。`--features guest-lcd-demo` で ILI9341 のデモに差し替わる。
+#[cfg(not(feature = "guest-lcd-demo"))]
 static GUEST: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
+#[cfg(feature = "guest-lcd-demo")]
+static GUEST: &[u8] =
+    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm");
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// RP2350 の SRAM は 520 KB（512 KB + 4 KB × 2）なので、線形メモリ
@@ -130,10 +139,12 @@ fn main() -> ! {
     let mut serial = Uart(uart);
     serial.write(b"wasmicon rp2350\r\n");
 
-    // SAFETY: Pico2Board がこれ以降 SIO / IO_BANK0 / PADS_BANK0 / TIMER0 を
-    // 排他的に使う。上で取った Pins は UART の GP0/GP1 だけで、役割名に
-    // 割り当てた GPIO とは重ねていない。
-    let board = unsafe { Pico2Board::new(serial) };
+    // SAFETY: Pico2Board がこれ以降 SIO / IO_BANK0 / PADS_BANK0 / TIMER0 /
+    // SPI0 を排他的に使う。上で取った Pins は UART の GP0/GP1 だけで、
+    // 役割名に割り当てた GPIO とも SPI0 のピンとも重ねていない。
+    //
+    // clk_peri は SPI の分周に要る。決め打ちにせず実際の値を渡す。
+    let board = unsafe { Pico2Board::new(serial, clocks.peripheral_clock.freq().to_Hz()) };
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
 
     // SAFETY: シングルコアで割り込みからも触らないので、可変静的への参照は

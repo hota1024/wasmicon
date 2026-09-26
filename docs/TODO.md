@@ -10,26 +10,38 @@
 
 ## 1. 実機が要るもの
 
-実機（ESP32-S3 DevKitC-1 / Raspberry Pi Pico WH / Raspberry Pi Pico 2 (W)）が手元に来るまで進められない。
+**Raspberry Pi Pico 2 W は手元にある**（2026-09-26 に `lcd-demo-rs` で動作確認済み）。
+ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未入手。
 
 ### 1.1 オーナーに聞くこと
 
 - [ ] **実機の配線**。`docs/abi-spec.md` §8 の表（I2C/SPI のピン、役割名 → GPIO 番号）が実機と合っているか
+      - RP2350 の LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、SCK=GP18 / MOSI=GP19）は
+        2026-09-26 に実機で確認済み。**残るのは `led`、I2C (SDA=GP4 / SCL=GP5)、
+        および RP2040 / ESP32-S3 の全て**
 - [ ] **シリアルの接続方法**。RP2040 / RP2350 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
+      - RP2350 は UART0 + USB シリアル変換 (CP2102N) で 2026-09-26 に確認済み
 - [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 を前提にしている
 - [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
 - [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
-- [ ] **RP2350 ボードの品種**。`ports/rp2350` は Pico 2 / Pico 2 W（RP2350A、GP0..GP29）を前提にしている。RP2350B（GP0..GP47）のボードを使うなら `NUM_GPIO` を 48 にする
+- [x] **RP2350 ボードの品種** → **Pico 2 W**（RP2350A、GP0..GP29）で確定。`NUM_GPIO` は 30 のままでよい
 - [ ] **RP2350 を Arm だけで見るか**。`ports/rp2350` は Cortex-M33（`thumbv8m.main-none-eabihf`）のみ。RISC-V (Hazard3) でも同じトレースが出るかは v0.1 の検証範囲に入れていない
 
 ### 1.2 実装
 
 - [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。これが無いと sensor-display は実機で動かない
-- [ ] **`ports/rp2350` の I2C / SPI**。同上
+- [x] **`ports/rp2350` の SPI**。SPI0 (PL022) をレジスタ直叩きで実装した。
+      **2026-09-26 に実機で確認済み**（`docs/verification-report.md` §6）。
+      rp2040 / esp32s3 に足すときは、周波数の丸め（要求値を超えない最大）と
+      「送信後 `BSY` が落ちるまで戻らない」を揃えること
+- [ ] **`ports/rp2350` の I2C**。まだ `unsupported`
 - [ ] **`ports/esp32s3` の I2C / SPI**。同上
 
 ### 1.3 検証（Phase 4 / 5 / 6 の完了条件）
 
+- [x] **`lcd-demo-rs` が Pico 2 W で表示される**（2026-09-26 達成。詳細は
+      `docs/verification-report.md` §6）。トレースが host ポートと 14,352 行完全一致し、
+      画面にも絵が出た。**残るのは I2C 側**
 - [ ] 両ボードで `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致（Phase 4）
 - [ ] 4 通り（Rust/AS × 2 ボード）で表示が出る（Phase 5）
 - [ ] 同一 `.wasm` を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致（Phase 6）
@@ -46,7 +58,10 @@
 
 ### 1.4 実機で最初に疑うところ
 
-**3 ポートとも GPIO はレジスタ直叩きで、一度も観測していない。**
+**RP2350 は観測済み**（2026-09-26）。`lcd-demo-rs` を Pico 2 W で走らせ、GPIO
+（`pin.open` / `pin.write`）と SPI0 が全て成功し、host call のトレースが host
+ポートと完全一致した（14,352 行、`spi.write` の CRC-32 3,272 件を含む）。
+以下の懸念は RP2350 では解消済み。**RP2040 と ESP32-S3 は未観測のまま**で、
 「blink が光らない」を最初の期待値として想定すること。
 
 - RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）

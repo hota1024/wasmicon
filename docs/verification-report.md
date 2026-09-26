@@ -17,11 +17,12 @@ docs/handoff.md §5 Phase 6 の成果物。**何がどこまで検証された�
 | ランタイムの Wasm 仕様適合（spec testsuite） | **達成** |
 | インタプリタの正しさ（wasmtime との差分） | **達成** |
 | Rust 版と AS 版が同じ host call 列を出す | **達成**（host 上、成功経路と失敗経路） |
-| 同一バイナリが 2 ボードで同じトレースを出す | **未達（実機が必要）** |
-| 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達（実機が必要）** |
+| RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | **達成**（2026-09-26、`lcd-demo-rs`。§6） |
+| 同一バイナリが 2 ボードで同じトレースを出す | **未達**（RP2350 と host は一致。2 ボード目が無い） |
+| 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達**（I2C が未実装で sensor-display が動かない） |
 
-**Phase 6 の完了条件は満たしていない。** 満たすには実機が要る。
-ソフトウェア側で確かめられることは全て確かめた、という段階。
+**Phase 6 の完了条件は満たしていない。** 満たすには 2 ボード目（ESP32-S3 か
+Pico WH）と I2C の実装が要る。RP2350 については、実機で動くところまで来た（§6）。
 
 ---
 
@@ -80,15 +81,17 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 
 ### 4.1 実機での動作
 
-**3 ポートともビルドが通るところまでで、一度も焼いていない。**
+**RP2350 は観測済み（§6）。RP2040 と ESP32-S3 はビルドが通るところまでで、
+一度も焼いていない。**
 
-- GPIO はいずれもレジスタ直叩き（RP2040 / RP2350 は SIO / IO_BANK0 / PADS_BANK0、
-  ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
-  実機で最初に起きることとして「blink が光らない」を想定すべき。
-  RP2350 は加えてパッドの `ISO`（リセット値 1）を落とし損ねると無反応になる
-- `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の I2C / SPI は `unsupported` を返す。
-  sensor-display は実機では動かない
-- abi-spec §8 の配線（役割名 → ピン番号）はオーナー未確認
+- RP2040 / ESP32-S3 の GPIO はレジスタ直叩き（RP2040 は SIO / IO_BANK0 /
+  PADS_BANK0、ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
+  実機で最初に起きることとして「blink が光らない」を想定すべき
+- `ports/rp2040` / `ports/esp32s3` の I2C / SPI と、`ports/rp2350` の I2C は
+  `unsupported` を返す。**sensor-display はどのボードでも動かない**
+- abi-spec §8 の配線は RP2350 の SPI / LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、
+  SCK=GP18 / MOSI=GP19）だけ実機で確認できた（§6）。**`led` と I2C の配線、
+  および他の 2 ボードは依然オーナー未確認**
 
 ### 4.2 ボード間の浮動小数の一致
 
@@ -148,3 +151,51 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
    - `time` はトレースに出ず、役割名で引いた GPIO 番号は `role:led` に
      正規化済みなので、追加の加工は要らない
 6. 実機の SHT31 応答を記録して `verify/sht31-replay.txt` を差し替える
+
+---
+
+## 6. RP2350 実機の実測（2026-09-26）
+
+`ports/rp2350` を初めて実機で動かした記録。**Phase 6 の完了条件そのものではない**
+（あれは 2 ボードで定義されている。handoff §5）。Phase 5 の「表示が出る」のうち、
+ディスプレイ側だけを SHT31 を待たずに切り分けたもの。
+
+### 条件
+
+| | |
+|---|---|
+| ボード | Raspberry Pi Pico 2 W |
+| ゲスト | `apps/lcd-demo-rs`（Rust）。SPI と GPIO のみ、I2C を使わない |
+| 配線 | abi-spec §8 の既定（CS=GP17 / DC=GP20 / RST=GP21 / SCK=GP18 / MOSI=GP19、MISO 未接続） |
+| SPI | 要求 16 MHz → 実際 15 MHz（`clk_peri` 150 MHz、切り下げ規則は `spi_divisors`） |
+| シリアル | UART0 (GP0/GP1) 115200 8N1、CP2102N 経由 |
+| 書き込み | `picotool` 2.3.1、`picotool load -u -v -t elf` → `picotool reboot -f` |
+| ビルド | `cargo build --release --features guest-lcd-demo`（`trace` 有効） |
+
+### 結果
+
+- **host call のトレースが host ポートと完全一致**。`sh verify/diff-traces.sh pico.log host.log`
+  → `一致: 14352 行`。`spi.write` の CRC-32 **3,272 件を含めて全て同じ**なので、
+  ILI9341 に出たバイト列は host モデルの予測とビット単位で一致している
+- 失敗ステータスは 1 件も無い（`pin.open` × 3、`spi.bus.open`、以降の
+  `pin.write` / `spi.write` すべて `< 0`）
+- ハンドルは `spi` → `rst` → `dc` → `cs` の順で解放された（`apps/README.md` §4）
+- **画面に絵が出た。** カラーバーの左端が赤（MADCTL の BGR ビットが正しい）、
+  文字が読める（`draw_text` の経路と DC の配線が正しい）
+
+これで、懸念していた RP2350 固有の 2 点が実機で潰れた:
+
+- **PADS_BANK0 の `ISO`**（リセット値 1）。落とし損ねていれば `pin.write` は
+  成功を返すのに GPIO が無反応になっていた
+- **SPI0 の RESETS 解除**。忘れていれば `spi.bus.open` 以降のレジスタ書き込みが
+  素通りしていた
+
+### この実測が言っていないこと
+
+- **浮動小数の一致（§4.2）は 1 ミリも進んでいない。** `lcd-demo-rs` は f32 を
+  使わない。あれは sensor-display の温度バーの話で、I2C が要る
+- **グレーのランプの見え方は未確認。** RGB565 のビット位置は「左端が赤」で
+  R と B の入れ替わりが無いことしか見ていない
+- **2 ボード間の一致（Phase 6）は未達。** 突き合わせた相手は host の mock HAL で、
+  2 枚目の実機ではない
+- **`led` の役割名（外付け LED）は未検証。** `lcd-demo-rs` は LED を触らない

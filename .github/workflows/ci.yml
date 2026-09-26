@@ -84,6 +84,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
+      # ILI9341 のデモを埋め込む構成（apps/lcd-demo-rs/README.md）も壊さない
+      - run: cargo build --release --features guest-lcd-demo
 
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
   # ローカルで `ports/esp32s3/build.sh build --release` を使う。

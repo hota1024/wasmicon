@@ -11,6 +11,12 @@
 //!   明示的に `iso().clear_bit()` する必要がある
 //! - FUNCSEL が型付きの enum なので `funcsel().sio()` で書ける（`unsafe` 不要）
 //! - タイマは `TIMER0`（RP2350 には TIMER0 / TIMER1 の 2 つある）
+//!
+//! SPI は SPI0（PL022）をレジスタ直叩きで使う。`rp235x-hal` の `Spi` は
+//! 型付きピンを要求するが、ボードは `Peripherals::steal()` で動くので
+//! 所有権を渡せない。GPIO と同じ書き方に揃えてある。
+//! GPIO と SPI は Pico 2 W 実機で確認済み（docs/verification-report.md §6）。
+//! I2C はまだ `unsupported`。
 
 use rp235x_hal::pac;
 use wasmicon_core::generated::ErrorCode;
@@ -42,6 +48,18 @@ const ROLES: &[(&str, u32)] = &[("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("l
 /// 繋がっている。どちらでも同じ物が動くよう、両方まとめて閉じておく。
 const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 
+/// SPI0 に割り当てるピン（abi-spec §8）。RP2350 ではこの 3 本の FUNCSEL=1 が
+/// SPI0 に繋がる。CS はここに含めない。ゲストが `lcd-cs` の GPIO を直接振る
+/// （`wit/spi.wit` の設計）。
+///
+/// `RESERVED` には入れていない。入れると GPIO の開放可否が host の mock や
+/// 他のポートと食い違い、トレースの突き合わせ（handoff §5 Phase 6）が
+/// ボードごとに別物になるため。SPI を開いたまま同じ番号を `gpio` で開けば
+/// FUNCSEL が SIO に戻って SPI は黙って止まるが、それはゲスト側の誤りとする。
+const SPI0_SCK: usize = 18;
+const SPI0_MOSI: usize = 19;
+const SPI0_MISO: usize = 16;
+
 /// トレースとログを出す先。
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
@@ -50,6 +68,9 @@ pub trait Serial {
 /// Pico 2 のボード。
 pub struct Pico2Board<S: Serial> {
     serial: S,
+    /// `clk_peri` の周波数。SPI の分周器を決めるのに要る。
+    /// 起動時に決まった実際の値を受け取る（150 MHz を決め打ちにしない）。
+    peri_clock_hz: u32,
     /// オープンドレインとして開いているピン。
     ///
     /// RP2350 のパッドにもオープンドレイン制御は無い（`OD` は出力ディセーブル）
@@ -60,12 +81,16 @@ pub struct Pico2Board<S: Serial> {
 
 impl<S: Serial> Pico2Board<S> {
     /// # Safety
-    /// SIO / IO_BANK0 / PADS_BANK0 / TIMER0 をこのボードが排他的に使うこと。
-    /// 呼び出し側は同じペリフェラルを他で触らない責任を負う。
+    /// SIO / IO_BANK0 / PADS_BANK0 / TIMER0 / SPI0、および RESETS の SPI0 ビットを
+    /// このボードが排他的に使うこと。呼び出し側は同じペリフェラルを他で触らない
+    /// 責任を負う。
+    ///
+    /// `peri_clock_hz` には `clocks.peripheral_clock.freq()` を渡す。
     #[must_use]
-    pub unsafe fn new(serial: S) -> Self {
+    pub unsafe fn new(serial: S, peri_clock_hz: u32) -> Self {
         Pico2Board {
             serial,
+            peri_clock_hz,
             open_drain: 0,
         }
     }
@@ -84,6 +109,67 @@ impl<S: Serial> Pico2Board<S> {
         // SAFETY: 同上。TIMER0 は読み出しのみ。
         unsafe { pac::Peripherals::steal().TIMER0 }
     }
+
+    fn spi0() -> pac::SPI0 {
+        // SAFETY: 同上。SPI0 はこのボードだけが触る。
+        unsafe { pac::Peripherals::steal().SPI0 }
+    }
+
+    /// 送信が完全に終わるまで待ち、受信 FIFO を空にする。
+    ///
+    /// **`spi.write` / `spi.transfer` から戻る前に必ず通すこと。** ゲストは
+    /// 戻った直後に DC や CS を動かす。最後のバイトがまだシフトレジスタに
+    /// 残っている状態でそれをやると、ILI9341 はコマンドとデータを取り違える
+    /// （レジスタの設定は正しいのに画面が壊れる、という形で出る）。
+    fn spi_drain(spi: &pac::SPI0) {
+        while spi.sspsr().read().bsy().bit_is_set() {
+            core::hint::spin_loop();
+        }
+        while spi.sspsr().read().rne().bit_is_set() {
+            let _ = spi.sspdr().read().bits();
+        }
+        // 読み捨てている間に立った受信オーバーランを落とす
+        // （SSPICR は 1 を書いてクリアするレジスタ）。
+        spi.sspicr().write(|w| w.roric().clear_bit_by_one());
+    }
+}
+
+/// PL022 の分周器 `(cpsdvsr, scr)` を決める。出力は
+/// `clk_peri / (cpsdvsr × (1 + scr))`。`cpsdvsr` は 2..=254 の偶数、
+/// `scr` は 0..=255。
+///
+/// **要求値を超えない範囲で最も速い組み合わせ**を選ぶ。`wit/spi.wit` は
+/// 「最も近い値に丸める」としているが、切り上げるとディスプレイの上限を
+/// 越えうるので切り下げる方に倒している（例: `clk_peri` 150 MHz で
+/// 24 MHz を頼むと 18.75 MHz になる）。rp2040 ポートに SPI を足すときも
+/// 同じ規則にすること。
+///
+/// `cpsdvsr` を小さいほうから試し、`scr`（総分周 1..=256）で要求値以下に
+/// 収まった最初の組を採る。`cpsdvsr` が小さいほど刻みが細かいので、これで
+/// 「要求値以下で最大」になる。rp235x-hal の `set_baudrate` は先に
+/// `cpsdvsr` を当て推量で決めるので、その境目（150 MHz で 100 kHz を
+/// 頼むなど）では要求値を上回ることがある。ここでは総当たりにしてある。
+///
+/// 出せる範囲の外は端に丸める。上は `clk_peri / 2`、下は
+/// `clk_peri / (254 × 256)`。
+fn spi_divisors(clk_hz: u32, want_hz: u32) -> (u8, u8) {
+    // 分母に来るので 0 は弾く（呼び出し側でも検査している）。
+    let want = u64::from(want_hz.max(1));
+    let clk = u64::from(clk_hz);
+
+    let mut cpsdvsr: u32 = 2;
+    while cpsdvsr <= 254 {
+        let mut div: u32 = 1;
+        while div <= 256 {
+            if clk / (u64::from(cpsdvsr) * u64::from(div)) <= want {
+                return (cpsdvsr as u8, (div - 1) as u8);
+            }
+            div += 1;
+        }
+        cpsdvsr += 2;
+    }
+    // 要求が下限より低い。最も遅い組み合わせに張り付ける。
+    (254, 255)
 }
 
 impl<S: Serial> Board for Pico2Board<S> {
@@ -214,7 +300,7 @@ impl<S: Serial> Board for Pico2Board<S> {
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C / SPI は Phase 5 で実装する（docs/TODO.md §1.2） ---
+    // --- I2C は Phase 5 で実装する（docs/TODO.md §1.2） ---
 
     fn i2c_open(&mut self, _index: u32, _speed: Speed) -> BoardResult<()> {
         Err(ErrorCode::Unsupported)
@@ -236,16 +322,136 @@ impl<S: Serial> Board for Pico2Board<S> {
     }
     fn i2c_close(&mut self, _index: u32) {}
 
-    fn spi_open(&mut self, _index: u32, _frequency_hz: u32, _mode: SpiMode) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+    // --- SPI。index 0 = SPI0 (SCK=GP18, MOSI=GP19, MISO=GP16) ---
+
+    fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
+        // spi1 もヘッダに出ているが、v0.1 で割り当てているのは spi0 だけ
+        // （abi-spec §8）。Hal 側で index < MAX_SPI は検査済み。
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        if frequency_hz == 0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        // SAFETY: Pico2Board::new の契約により、これらのペリフェラルは排他。
+        let p = unsafe { pac::Peripherals::steal() };
+
+        // SPI0 はリセットが掛かったまま起動する。解除して完了を待つ。
+        // GPIO と違いここでしか解除していないので、忘れるとレジスタへの
+        // 書き込みが素通りする。
+        p.RESETS.reset().modify(|_, w| w.spi0().clear_bit());
+        while p.RESETS.reset_done().read().spi0().bit_is_clear() {
+            core::hint::spin_loop();
+        }
+
+        // SCK / MOSI / MISO をパッドに出す。GPIO と同じく `write()` は
+        // リセット値（ISO=1, PDE=1）から始まるので、ISO を落とし忘れると
+        // パッドが切り離されたままになる。
+        for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
+            p.PADS_BANK0.gpio(n).write(|w| {
+                // 出力側でも入力バッファは有効にしておく（PL022 は MISO を
+                // 読むだけだが、rp235x-hal も 3 本まとめて立てている）。
+                w.ie().set_bit();
+                w.od().clear_bit();
+                w.pue().clear_bit();
+                w.pde().clear_bit();
+                w.iso().clear_bit();
+                w
+            });
+            p.IO_BANK0.gpio(n).gpio_ctrl().write(|w| w.funcsel().spi());
+        }
+
+        let (cpsdvsr, scr) = spi_divisors(self.peri_clock_hz, frequency_hz);
+        let (spo, sph) = match mode {
+            SpiMode::Mode0 => (false, false),
+            SpiMode::Mode1 => (false, true),
+            SpiMode::Mode2 => (true, false),
+            SpiMode::Mode3 => (true, true),
+        };
+
+        let spi = p.SPI0;
+        // 設定の前に必ず落とす（SSE=1 のまま CR0 を触ると挙動が未定義）。
+        spi.sspcr1().write(|w| w);
+        // SAFETY: cpsdvsr / scr は spi_divisors が範囲内に収めている。
+        spi.sspcpsr()
+            .write(|w| unsafe { w.cpsdvsr().bits(cpsdvsr) });
+        spi.sspcr0().write(|w| {
+            // SAFETY: 7 は DSS（4 bit）の範囲内。8 bit フレームを表す。
+            unsafe { w.dss().bits(7) };
+            w.frf().motorola();
+            w.spo().bit(spo);
+            w.sph().bit(sph);
+            // SAFETY: scr は u8 なので SCR（8 bit）に収まる。
+            unsafe { w.scr().bits(scr) };
+            w
+        });
+        // マスターとして有効にする。ビット順は MSB first 固定（PL022 の
+        // Motorola フォーマットはこれしかない。wit/spi.wit の前提と一致）。
+        spi.sspcr1().write(|w| w.ms().clear_bit().sse().set_bit());
+
+        // 前の設定で残った受信があれば捨てる。
+        Self::spi_drain(&spi);
+        Ok(())
     }
-    fn spi_write(&mut self, _index: u32, _data: &[u8]) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+
+    fn spi_write(&mut self, index: u32, data: &[u8]) -> BoardResult<()> {
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        let spi = Self::spi0();
+        for &b in data {
+            while spi.sspsr().read().tnf().bit_is_clear() {
+                core::hint::spin_loop();
+            }
+            // SAFETY: 8 bit フレームなので DATA（16 bit）に収まる。
+            spi.sspdr()
+                .write(|w| unsafe { w.data().bits(u16::from(b)) });
+            // 受信は捨てるが、FIFO（16 段）を溢れさせないよう都度抜く。
+            while spi.sspsr().read().rne().bit_is_set() {
+                let _ = spi.sspdr().read().bits();
+            }
+        }
+        Self::spi_drain(&spi);
+        Ok(())
     }
-    fn spi_transfer(&mut self, _index: u32, _data: &[u8], _buf: &mut [u8]) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+
+    fn spi_transfer(&mut self, index: u32, data: &[u8], buf: &mut [u8]) -> BoardResult<usize> {
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        let spi = Self::spi0();
+        let n = data.len().min(buf.len());
+        // 全二重なので 1 バイト送って 1 バイト受ける、を繰り返す。FIFO に
+        // 詰めてから読むほうが速いが、受信の取りこぼしを考えなくて済む
+        // この形にしてある（v0.1 の転送は最大 128 バイト）。
+        for i in 0..n {
+            while spi.sspsr().read().tnf().bit_is_clear() {
+                core::hint::spin_loop();
+            }
+            // SAFETY: 8 bit フレームなので DATA（16 bit）に収まる。
+            spi.sspdr()
+                .write(|w| unsafe { w.data().bits(u16::from(data[i])) });
+            while spi.sspsr().read().rne().bit_is_clear() {
+                core::hint::spin_loop();
+            }
+            buf[i] = spi.sspdr().read().data().bits() as u8;
+        }
+        Self::spi_drain(&spi);
+        Ok(n)
     }
-    fn spi_close(&mut self, _index: u32) {}
+
+    fn spi_close(&mut self, index: u32) {
+        if index != 0 {
+            return;
+        }
+        let spi = Self::spi0();
+        Self::spi_drain(&spi);
+        spi.sspcr1().write(|w| w.sse().clear_bit());
+        // gpio_release と同じく入力・プル無しに戻す（FUNCSEL も SIO に戻る）。
+        for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
+            let _ = self.gpio_configure(n as u32, PinMode::Input);
+        }
+    }
 
     // --- 時間。TIMER0 は 1 MHz なのでそのままマイクロ秒。 ---
 
