@@ -1,4 +1,4 @@
-// SHT31 を読んで ILI9341 に表示する（AssemblyScript）。
+// SHT40（SHT4x）を読んで ILI9341 に表示する（AssemblyScript）。
 //
 // 描画の詳細は apps/README.md が正。sensor-display-rs と同じ
 // host call 列・同じピクセル出力を出さなければならない。
@@ -14,7 +14,7 @@ import {
   log,
 } from "../../../bindings/assemblyscript/assembly/index";
 import { Display, HEIGHT, MAX_TEXT, WIDTH } from "./ili9341";
-import { humidityCenti, read, tempCenti } from "./sht31";
+import { humidityCenti, read, tempCenti } from "./sht4x";
 
 /// 背景色（黒）。
 const BG: u16 = 0x0000;

@@ -1,4 +1,7 @@
-//! SHT31 / SHT30 の読み出し。`apps/README.md` §1 が正。
+//! SHT40（SHT4x）の読み出し。`apps/README.md` §1 が正。
+//!
+//! `sensor-display-as` の `sht4x.ts` と**同じ host call 列・同じ値**を出す。
+//! 片方だけ変えると `sensor_display_rs_and_as_agree` が落ちる。
 
 use wasmicon_hal::i2c::Bus;
 use wasmicon_hal::time;
@@ -6,11 +9,11 @@ use wasmicon_hal::time;
 /// I2C アドレス。
 pub const ADDRESS: u16 = 0x44;
 
-/// 単発計測（高精度・クロックストレッチなし）。
-const MEASURE: [u8; 2] = [0x24, 0x00];
+/// 単発計測（高精度）。SHT4x は 1 バイトコマンド。
+const MEASURE: [u8; 1] = [0xFD];
 
-/// 計測が終わるまでの待ち時間。
-const MEASURE_MS: u32 = 15;
+/// 計測が終わるまでの待ち時間。データシートの高精度計測は最大 8.3 ms。
+const MEASURE_MS: u32 = 10;
 
 /// CRC-8。多項式 0x31、初期値 0xFF、反転なし。
 #[must_use]
@@ -76,7 +79,20 @@ pub fn temp_centi(raw_t: u16) -> i32 {
 }
 
 /// 相対湿度（％ ×100）。
+///
+/// SHT4x の式は raw=0 で -600、raw=65535 で 11900 を返すので、データシートの
+/// とおり 0..10000 に収める。`clamp` や `min` / `max` を使わず `if` で書くのは
+/// AssemblyScript 版と同じ命令列にするため（`apps/README.md` §1）。
+/// `lib.rs` の `bar_px` と同じ理由で clippy の勧めには従わない。
+#[allow(clippy::manual_clamp)]
 #[must_use]
 pub fn humidity_centi(raw_h: u16) -> i32 {
-    (10000 * i32::from(raw_h)) / 65535
+    let mut v = -600 + (12500 * i32::from(raw_h)) / 65535;
+    if v < 0 {
+        v = 0;
+    }
+    if v > 10000 {
+        v = 10000;
+    }
+    v
 }

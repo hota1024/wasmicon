@@ -26,7 +26,7 @@
 - **Runtime**: 自作の Core Wasm インタプリタ（既存の wasm3 / WAMR / wasmi は使わない）
 - **HAL**: GPIO / I2C / SPI / time / log を WIT で定義。**Component Model は使わない**。WIT は IDL としてのみ使い、`abi-spec.md` の規則で Core Wasm の import に落とす
 - **Bindings**: Rust と AssemblyScript。WIT から生成する
-- **ゴール**: I2C 温湿度センサー (SHT31) を読んで SPI ディスプレイ (ILI9341) に描くアプリを Rust と AS で書き、**同一 Wasm バイナリ**を ESP32-S3 と Pico WH で動かして host call トレースが一致することを検証する
+- **ゴール**: I2C 温湿度センサー (SHT40) を読んで SPI ディスプレイ (ILI9341) に描くアプリを Rust と AS で書き、**同一 Wasm バイナリ**を ESP32-S3 と Pico WH で動かして host call トレースが一致することを検証する
 
 ---
 
@@ -47,7 +47,13 @@
 6. **ゲスト export** は `run: func()` と `memory`。`_start` / `_initialize` は使わない。
 7. **対応機能セット**: MVP + sign-ext + nontrapping-fptoint + bulk-memory（memory.* のみ）+ multi-value + mutable-globals。SIMD / threads / EH / tail-call / GC / reference-types 拡張は非対応。
 8. **SPI の CS/DC はゲストが gpio で制御**する。SPI インターフェースは CS を扱わない。
-9. **センサーは SHT31/SHT30**、ディスプレイは ILI9341。
+9. **センサーは SHT4x（SHT40）**、ディスプレイは ILI9341。
+   当初は SHT31/SHT30 としていたが、**2026-09-26 にオーナー承認のうえ差し替えた**
+   （手元にあるのが SHT40 で SHT31 は入手しない）。アドレス `0x44`・6 バイトの
+   フレーム・CRC-8・温度換算は SHT31 と同一で、コマンドが `0x2400`（2 バイト）→
+   `0xFD`（1 バイト）に、湿度換算が `100·raw/65535` → `-6 + 125·raw/65535`
+   （0..100% にクランプ）に変わった。詳細は `apps/README.md` §1。
+   f32 の題材（温度バー）は温度換算が同じなので影響を受けていない。
 10. **決定性検証の定義**: `time` を除く全 host call とその結果のトレース（abi-spec §9 の形式）が両ボードで一致すること。
 11. **ランタイム実装言語は Rust `no_std`**（2026-09-10 オーナー決定）。依存クレートゼロ、`alloc` 不使用、arena はポートから注入。design-notes §4 の C11 推奨を上書きする。ABI・WIT・フェーズ構成はこの変更の影響を受けない。
 12. **フルスクラッチ実装**。wasm3 / WAMR / wasmi のコードは取り込まない（アルゴリズムを参考にするのは可、コード流用は不可）。コアは Claude Code が書く（2026-09-10 オーナー決定）。
@@ -145,19 +151,19 @@
 
 ### Phase 5: センサー + ディスプレイアプリ
 
-- SHT31: 0x44、単発計測コマンド `0x2400`（高精度・クロックストレッチなし）、15 ms 待ち、6 バイト読み（T MSB, T LSB, CRC, RH MSB, RH LSB, CRC）。CRC-8（poly 0x31, init 0xFF）をゲストで検証。温度 = -45 + 175·raw/65535、湿度 = 100·raw/65535。**表示は固定小数（×100 の整数）で計算し、浮動小数点を使うのはあえて 1 箇所（f32 変換）に限定**して決定性検証の題材にする。
+- SHT40 (SHT4x): 0x44、単発計測コマンド `0xFD`（1 バイト、高精度）、10 ms 待ち、6 バイト読み（T MSB, T LSB, CRC, RH MSB, RH LSB, CRC）。CRC-8（poly 0x31, init 0xFF）をゲストで検証。温度 = -45 + 175·raw/65535、湿度 = -6 + 125·raw/65535（0..100% にクランプ）。**当初は SHT31 で、2026-09-26 にオーナー承認のうえ差し替えた（§2-9）。細部は `apps/README.md` §1 が正。****表示は固定小数（×100 の整数）で計算し、浮動小数点を使うのはあえて 1 箇所（f32 変換）に限定**して決定性検証の題材にする。
 - ILI9341: 初期化シーケンスは一般的なもの（SWRESET, SLPOUT, PIXFMT=0x55 (RGB565), MADCTL, DISPON）。描画は「矩形塗り」と「8×8 ビットマップフォントでの文字列描画」の 2 プリミティブのみ。行単位（最大 320×8×2 = 5 KB）のバッファを `spi.write` で送る。全画面フレームバッファは持たない（RP2040 に載らない）。
 - Rust 版と AS 版は**同じ描画結果**になるよう、フォントと座標を共通仕様にする（`apps/README.md` に書く）。→ **書いた**（137 行）。片方を変えたらもう片方も変える。
 - **完了条件**: 4 通り（Rust/AS × ESP32-S3/Pico）で表示が出る。→ **ソフト側は達成、実機は未確認（2026-09-10）**。
   - `ports/host` で両ゲストを走らせ、**トレース全文（1215 行）が完全一致**することをテストで検査する（`ports/host/tests/apps.rs`）。abi-spec §9 により `time` はトレースに出ないので、全文一致がそのまま §2-10 の「`time` を除く全 host call と結果が一致」になる。`spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが同一」を意味する
   - ただしこれは **host（1 プラットフォーム）上での一致**。RP2040 のソフトフロートと Xtensa の f32 FPU を跨いだ一致は Phase 6 の実測対象で、まだ確かめていない
-  - センサーは `verify/sht31-replay.txt` の記録済み応答を `WASMICON_I2C_REPLAY` で流し込む。実機から記録したものへの差し替えは Phase 6
+  - センサーは `verify/sht4x-replay.txt` の記録済み応答を `WASMICON_I2C_REPLAY` で流し込む。実機から記録したものへの差し替えは Phase 6
   - 実機の I2C / SPI は `ports/rp2040` / `ports/esp32s3` でまだ `unsupported` を返す。ここを実装しないと実機では動かない
 
 ### Phase 6: クロスボード検証
 
-- `verify/` に、(1) 記録済み SHT31 応答を返す mock I2C モード（ポート層の `WASMICON_I2C_REPLAY`）、(2) 2 ボードのトレースを diff するスクリプト、(3) `ports/host` + wasmtime での差分テスト（インタプリタの正しさ）。→ **3 つとも作った（2026-09-10）**。
-  - (1) `WASMICON_I2C_REPLAY` + `verify/sht31-replay.txt`。応答は**合成データ**で、実機から記録したものへの差し替えが残る
+- `verify/` に、(1) 記録済み SHT4x 応答を返す mock I2C モード（ポート層の `WASMICON_I2C_REPLAY`）、(2) 2 ボードのトレースを diff するスクリプト、(3) `ports/host` + wasmtime での差分テスト（インタプリタの正しさ）。→ **3 つとも作った（2026-09-10）**。
+  - (1) `WASMICON_I2C_REPLAY` + `verify/sht4x-replay.txt`。応答は**合成データ**で、実機から記録したものへの差し替えが残る
   - (2) `verify/diff-traces.sh`。シリアルのバナーとゲストの `[wasm]` 行を落として `> ` / `< ` の行だけを突き合わせる。`--self-test` で正規化の正しさを検査できる
   - (3) `verify/differential/`。**HAL を共有**して同じ `.wasm` を wasmtime 45 と自作インタプリタで走らせる。`Resolver::call` がエンジンに依存しないので、差が出たらそれはインタプリタのバグ。4 ゲスト全部で完全一致
 - **完了条件**: 同一 `.wasm`（Rust 版、AS 版それぞれ）を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致。結果を `docs/verification-report.md` にまとめる。→ **未達（実機が必要）**。ソフトウェア側で確かめられることは全て確かめた。詳細は `docs/verification-report.md`。
@@ -207,7 +213,9 @@
 - ~~Phase 1 着手前: §3 のデフォルト #1（実装言語）と #7（分担）の承認~~ → 2026-09-10 に回答済み。§2-11 / §2-12
 - ~~Phase 1 着手前: §3 #9（Cargo workspace の分割）~~ → 2026-09-10 に承認済み
 - ~~Phase 4 着手前: §3 #8（ポート層を全 Rust にする）の承認~~ → 「Phase 4 へ進んで」の指示をもって承認とみなし、3 ポートとも実装済み
-- 実機の配線（abi-spec §8）、シリアルの接続方法、SHT31 / ILI9341 の型番 → **未回答**（`docs/TODO.md` §1.1）
+- ~~センサーの型番~~ → 2026-09-26 に **SHT40 (SHT4x)** で回答。§2-9 を差し替えた
+- ~~ILI9341 の型番、RP2350 ボードの品種、Pico 2 W の LCD 配線とシリアル~~ → 2026-09-26 に実機で確認済み（`docs/verification-report.md` §6）
+- 残りの配線（`led`、I2C）と RP2040 / ESP32-S3 の全て → **未回答**（`docs/TODO.md` §1.1）
 
 ---
 

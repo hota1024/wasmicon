@@ -1,4 +1,4 @@
-//! SHT31 を読んで ILI9341 に表示する。
+//! SHT40（SHT4x）を読んで ILI9341 に表示する。
 //!
 //! 描画の詳細は `apps/README.md` が正。`sensor-display-as` と同じ
 //! host call 列・同じピクセル出力を出さなければならない。
@@ -10,7 +10,7 @@
 
 mod font;
 mod ili9341;
-mod sht31;
+mod sht4x;
 
 use wasmicon_hal::gpio::{Pin, PinMode};
 use wasmicon_hal::i2c::{Bus as I2cBus, Speed};
@@ -79,20 +79,20 @@ pub extern "C" fn run() {
         return;
     }
 
-    let reading = match sht31::read(&i2c) {
+    let reading = match sht4x::read(&i2c) {
         Ok(r) => r,
-        Err(sht31::Error::Crc) => {
+        Err(sht4x::Error::Crc) => {
             log::error("sensor crc failed");
             return;
         }
-        Err(sht31::Error::Io) => {
+        Err(sht4x::Error::Io) => {
             log::error("sensor read failed");
             return;
         }
     };
 
-    let temp = sht31::temp_centi(reading.raw_t);
-    let humidity = sht31::humidity_centi(reading.raw_h);
+    let temp = sht4x::temp_centi(reading.raw_t);
+    let humidity = sht4x::humidity_centi(reading.raw_h);
 
     let mut buf = [0u8; ili9341::MAX_TEXT];
     let n = format_row(b'T', temp, b'C', &mut buf);

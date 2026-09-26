@@ -242,14 +242,14 @@ fn lcd_demo_rs_runs_on_host() {
     assert_no_host_errors(&trace, "lcd-demo-rs");
 }
 
-/// 記録済みの SHT31 応答（`verify/sht31-replay.txt`）。
-fn sht31_replay() -> Vec<Vec<u8>> {
-    let path = repo_root().join("verify/sht31-replay.txt");
+/// 記録済みの SHT40 応答（`verify/sht4x-replay.txt`）。
+fn sht4x_replay() -> Vec<Vec<u8>> {
+    let path = repo_root().join("verify/sht4x-replay.txt");
     wasmicon_host::load_i2c_replay(&path).expect("記録済み応答を読めない")
 }
 
 fn run_with_sensor(wasm: &[u8], label: &str) -> String {
-    match wasmicon_host::run_wasm_with(wasm, true, sht31_replay()) {
+    match wasmicon_host::run_wasm_with(wasm, true, sht4x_replay()) {
         Ok(out) => out.trace,
         Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
     }
@@ -268,14 +268,14 @@ fn sensor_display_rs_runs_on_host() {
             "{role} を引いていない:\n{trace}"
         );
     }
-    // SHT31 の単発計測コマンドを書いて 6 バイト読んでいる。
+    // SHT4x の単発計測コマンド（1 バイト）を書いて 6 バイト読んでいる。
     assert!(
-        trace.contains("[method]bus.write(1, 68, 0x2400)"),
-        "SHT31 の計測コマンドが違う:\n{trace}"
+        trace.contains("[method]bus.write(1, 68, 0xfd)"),
+        "SHT4x の計測コマンドが違う:\n{trace}"
     );
     assert!(
         trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
-        "SHT31 の読み出しが違う:\n{trace}"
+        "SHT4x の読み出しが違う:\n{trace}"
     );
     // 背景は 240 行を 1 行ずつ送る（全画面フレームバッファを持たない）。
     assert!(
@@ -295,7 +295,7 @@ fn sensor_display_as_runs_on_host() {
     let trace = run_with_sensor(&wasm, "sensor-display-as");
     assert!(
         trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
-        "SHT31 の読み出しが違う:\n{trace}"
+        "SHT4x の読み出しが違う:\n{trace}"
     );
     assert_no_host_errors(&trace, "sensor-display-as");
 }
@@ -329,7 +329,7 @@ fn sensor_display_rs_and_as_agree() {
 fn sensor_display_agrees_when_spi_is_unsupported() {
     let opts = || wasmicon_host::Options {
         trace: true,
-        i2c_replay: sht31_replay(),
+        i2c_replay: sht4x_replay(),
         spi_unsupported: true,
     };
     let go = |wasm: &[u8], label: &str| -> String {

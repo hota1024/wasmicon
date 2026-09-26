@@ -1,6 +1,6 @@
 [package]
 name = "sensor-display-rs"
-description = "SHT31 を読んで ILI9341 に表示する。sensor-display-as と同じ出力を出す"
+description = "SHT40 を読んで ILI9341 に表示する。sensor-display-as と同じ出力を出す"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

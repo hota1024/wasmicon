@@ -306,7 +306,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 | 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
 |---|---|---|---|---|
-| I2C バス (SHT31) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
+| I2C バス (SHT40) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
 | SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
 | ILI9341 CS | `gpio.pin` | GPIO10 | GP17 | GP17 |
 | ILI9341 DC | `gpio.pin` | GPIO14 | GP20 | GP20 |

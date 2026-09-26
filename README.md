@@ -6,7 +6,7 @@
 - **HAL**: GPIO / I2C / SPI / time / log / board を WIT で定義。**Component Model は使わない**。
   WIT は IDL としてのみ使い、`docs/abi-spec.md` の規則で Core Wasm の import に落とす
 - **Bindings**: Rust と AssemblyScript。WIT から生成する
-- **ゴール**: I2C 温湿度センサー（SHT31）を読んで SPI ディスプレイ（ILI9341）に描くアプリを
+- **ゴール**: I2C 温湿度センサー（SHT40）を読んで SPI ディスプレイ（ILI9341）に描くアプリを
   Rust と AS で書き、**同一の Wasm バイナリ**を ESP32-S3 と Pico WH で動かして
   host call トレースが一致することを検証する
 

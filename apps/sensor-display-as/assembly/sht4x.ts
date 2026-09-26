@@ -1,12 +1,15 @@
-// SHT31 / SHT30 の読み出し。apps/README.md §1 が正。
+// SHT40（SHT4x）の読み出し。apps/README.md §1 が正。
+//
+// sensor-display-rs の sht4x.rs と同じ host call 列・同じ値を出す。
+// 片方だけ変えると sensor_display_rs_and_as_agree が落ちる。
 
 import { I2cBus, time } from "../../../bindings/assemblyscript/assembly/index";
 
 /// I2C アドレス。
 export const ADDRESS: u16 = 0x44;
 
-/// 計測が終わるまでの待ち時間。
-const MEASURE_MS: u32 = 15;
+/// 計測が終わるまでの待ち時間。データシートの高精度計測は最大 8.3 ms。
+const MEASURE_MS: u32 = 10;
 
 /// CRC-8。多項式 0x31、初期値 0xFF、反転なし。
 export function crc8(data: Uint8Array, from: i32, len: i32): u8 {
@@ -28,14 +31,14 @@ export class Reading {
   rawH: u16 = 0;
 }
 
-const MEASURE = new Uint8Array(2);
+const MEASURE = new Uint8Array(1);
 const FRAME = new Uint8Array(6);
 
 /// 1 回測って読む。
 export function read(bus: I2cBus): Reading {
   const r = new Reading();
-  MEASURE[0] = 0x24;
-  MEASURE[1] = 0x00;
+  // SHT4x は 1 バイトコマンド（高精度計測）。
+  MEASURE[0] = 0xfd;
   if (bus.write(ADDRESS, MEASURE) != 0) return r;
   time.sleepMs(MEASURE_MS);
 
@@ -56,6 +59,13 @@ export function tempCenti(rawT: u16): i32 {
 }
 
 /// 相対湿度（％ ×100）。
+///
+/// SHT4x の式は raw=0 で -600、raw=65535 で 11900 を返すので、データシートの
+/// とおり 0..10000 に収める。min / max を使わず if で書くのは Rust 版と
+/// 同じ命令列にするため（apps/README.md §1）。
 export function humidityCenti(rawH: u16): i32 {
-  return (10000 * <i32>rawH) / 65535;
+  let v = -600 + (12500 * <i32>rawH) / 65535;
+  if (v < 0) v = 0;
+  if (v > 10000) v = 10000;
+  return v;
 }

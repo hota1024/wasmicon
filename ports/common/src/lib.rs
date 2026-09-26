@@ -35,7 +35,7 @@ const HOST_ENV_ABORT: u32 = 0xffff;
 ///
 /// `spi.transfer` と `i2c.write-read` は送信元と受信先がどちらもゲストの
 /// 線形メモリにあり、範囲が重なりうる。借用を分けられないので送信側を
-/// 一度ここへ写す。v0.1 の用途（SHT31 の 6 バイト、ILI9341 の ID 読み）には
+/// 一度ここへ写す。v0.1 の用途（SHT40 の 6 バイト、ILI9341 の ID 読み）には
 /// 十分で、これを超える転送は `unsupported` を返す。
 pub const SCRATCH: usize = 128;
 
