@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-09-22
+最終更新: 2026-09-26
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -19,8 +19,16 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
       - RP2350 の LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、SCK=GP18 / MOSI=GP19）は
         2026-09-26 に実機で確認済み。**残るのは `led`、I2C (SDA=GP4 / SCL=GP5)、
         および RP2040 / ESP32-S3 の全て**
+      - ESP32-S3 の LCD 側（CS=GPIO10 / DC=GPIO14 / RST=GPIO15、SCK=GPIO12 /
+        MOSI=GPIO11）は 2026-09-26 に実機で確認済み。配線表は
+        `apps/lcd-demo-rs/README.md`。**残るのは `led` と I2C
+        (SDA=GPIO8 / SCL=GPIO9)**
 - [ ] **シリアルの接続方法**。RP2040 / RP2350 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
       - RP2350 は UART0 + USB シリアル変換 (CP2102N) で 2026-09-26 に確認済み
+      - ESP32-S3 も UART0 (GPIO43/44) で 2026-09-26 に確認済み。**手元のボードは
+        `USB-UART` 側のブリッジが CH343 (VID 0x1A86 / PID 0x55D3) で、macOS では
+        `/dev/cu.usbmodem*` として見える**（CP2102N ではないので `usbserial` を
+        探すと見つからない）。書き込みは `USB-OTG` 側（USB-Serial-JTAG）からも通る
 - [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 を前提にしている
 - [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
 - [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
@@ -32,10 +40,16 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
 - [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。これが無いと sensor-display は実機で動かない
 - [x] **`ports/rp2350` の SPI**。SPI0 (PL022) をレジスタ直叩きで実装した。
       **2026-09-26 に実機で確認済み**（`docs/verification-report.md` §6）。
-      rp2040 / esp32s3 に足すときは、周波数の丸め（要求値を超えない最大）と
+      rp2040 に足すときは、周波数の丸め（要求値を超えない最大）と
       「送信後 `BSY` が落ちるまで戻らない」を揃えること
+      （esp32s3 はこの 2 点を `esp-hal` のドライバが満たしている）
 - [ ] **`ports/rp2350` の I2C**。まだ `unsupported`
-- [ ] **`ports/esp32s3` の I2C / SPI**。同上
+- [x] **`ports/esp32s3` の SPI**。SPI2 (FSPI) を `esp-hal` の `spi::master`
+      ドライバで実装した（GPIO と違いレジスタ直叩きにしていない）。rp2350 と
+      揃えた点は `ports/esp32s3/src/board.rs` の module コメント。
+      **2026-09-26 に実機で確認済み**（トレース 14,352 行完全一致 + ILI9341 に
+      絵が出た。`docs/verification-report.md` §7）
+- [ ] **`ports/esp32s3` の I2C**。まだ `unsupported`
 
 ### 1.3 検証（Phase 4 / 5 / 6 の完了条件）
 
@@ -43,8 +57,14 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
       `docs/verification-report.md` §6）。トレースが host ポートと 14,352 行完全一致し、
       画面にも絵が出た。**残るのは I2C 側**
 - [ ] 両ボードで `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致（Phase 4）
+- [x] **`lcd-demo-rs` が ESP32-S3 で表示される**（2026-09-26 達成。
+      `docs/verification-report.md` §7）。トレースが host と 14,352 行完全一致し、
+      画面にも絵が出た。**残るのは I2C 側**
 - [ ] 4 通り（Rust/AS × 2 ボード）で表示が出る（Phase 5）
-- [ ] 同一 `.wasm` を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致（Phase 6）
+- [x] 同一 `.wasm` を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致（Phase 6）
+      → **2026-09-26 に RP2350 と ESP32-S3 で達成**（どちらも host リファレンスと
+      14,352 行完全一致、`spi.write` の CRC-32 3,272 件を含む。
+      `docs/verification-report.md` §6 / §7）。**表示の一致は別途**（上の項目）
   - 手順は `docs/verification-report.md` §5
   - 突き合わせは `sh verify/diff-traces.sh a.log b.log`
 - [ ] **RP2350 も同じ 3 点を通す**。Phase 4/5/6 の完了条件そのものは ESP32-S3 と Pico WH の
@@ -69,13 +89,39 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
   落とし忘れるとパッドが切り離されたままで、レジスタは正しく見えるのに GPIO が無反応になる。
   `gpio_configure` は PADS へ書くたびに `iso().clear_bit()` している（`write()` はリセット値から
   始まるので、書き残すと再びアイソレートされる）
-- ESP32-S3: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの out_sel=128）
+- ESP32-S3: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの **out_sel=256**）。
+  **ここは 2026-09-26 に実機で踏んだ。** `out_sel` を 128（ESP32 / S2 / C3 の値）
+  にしていたため、`GPIO_OUT` / `GPIO_ENABLE` は正しく読めるのにピンが
+  一切動かなかった。症状は「host call のトレースは host と 14,352 行完全一致
+  するのに ILI9341 が真白」。`docs/verification-report.md` §7
+- ESP32-S3: SPI2 は `esp-hal` のドライバ任せなので信号番号を自前で持たない。
+  上のような取り違えは起きない
+- ESP32-S3: **ネイティブスタックは `ARENA` の残り**。`esp-hal` の
+  リンカスクリプトは `.stack` を dram_seg の余りに置くので、`ARENA` を
+  300 KB にしている今は 17.4 KiB しかない（`.bss` 315,496 B の直後、
+  dram_seg の端 0x3FCDB700 まで）。インタプリタは呼び出しフレームを arena の
+  配列に積むのでネイティブ再帰はしないが、`ARENA` を増やすとここが削れる。
+  溢れると panic handler（理由を出せない）に入って無言で止まるので、
+  「トレースが途中で切れて何も出ない」はこれを疑う
 
 ---
 
 ## 2. 実機なしで判断できること
 
 - [ ] **toolchain を固定するか**。`rust-toolchain.toml` は `channel = "stable"` の浮動。clippy の新しい lint や rustfmt の出力変化で CI が突然落ちる（初回 CI がまさにそれ: 手元 1.97.1 / CI 1.98.0）。特に「生成物 diff ゼロ」の検査は rustfmt の出力に依存するので、手元で通って CI で落ちる形で効く。固定すると手動でのバージョン上げが要る
+- [ ] **`abi-spec.md` §8 の表に `lcd-rst` の外部プルアップを明記するか。**
+      `pin.drop` は §5.2 どおりピンを入力・プル無しに戻すので、**デモが描き
+      終わると LCD の `RESET` が浮く**。モジュール側にプルアップが無いと
+      パネルがリセットして画面が白に戻る（2026-09-26 に ESP32-S3 実機で観測。
+      `docs/verification-report.md` §7「原因 3」）
+      - **バグではなく §5.2 の帰結で、ポート固有でもない。** `ports/rp2350` でも
+        同じ条件が揃えば起きる。線のアイドルレベルは外部回路が決めるべきもの
+      - 実務上は `RESET` に 10 kΩ のプルアップを入れれば済む。**コード変更ゼロで、
+        `.wasm` のハッシュも記録済みのトレースも動かない**のでこれを推す
+      - 代わりにゲスト側でハンドルを解放せず終わる手もあるが、**`.wasm` が
+        変わって 14,352 行の記録が取り直しになる**
+      - 「`run()` を抜けたあとに絵が残ることは仕様に含めない」と決めて
+        記録だけする、でも筋は通る
 - [ ] **`docs/abi-spec.md` §10 の未決 2〜5 を確定にするか**。いずれも既定のまま実装済みで動いている
   - #2 `sleep-ms` 中の挙動 → 各ポートの HAL に委ねる（実装済み）
   - #3 トラップ後の挙動 → ログを出して停止、再起動しない（実装済み）
@@ -98,6 +144,11 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
       - `wit/spi.wit` は「frequency-hz はホストが対応できる最も近い値に丸められる」
         と書いていて 0 を失敗と定めていない。`docs/abi-spec.md` も長さ 0 の転送
         だけを `invalid-argument` としている。**どちらに寄せるかはオーナーの判断**
+      - `ports/esp32s3` も rp2350 と同じ判定（`index != 0` → `unsupported`、
+        `frequency-hz == 0` → `invalid-argument`）にした。**ただし下限未満の
+        要求だけは揃っていない**: rp2350 は最も遅い分周に張り付けて成功を返し、
+        esp32s3 は `esp-hal` が範囲外を弾くので `unsupported` を返す
+        （APB 80 MHz のとき 78.125 kHz 未満）。どちらのデモも踏まない
 - [ ] **SPI の待ちループに上限を設けるか。** `ports/rp2350` の `spi_drain` の
       `BSY` 待ち、RESETS 完了待ち、`spi_write` / `spi_transfer` の `TNF` / `RNE`
       待ちはいずれも無制限に回る。クロックが止まる・ペリフェラルが固まると、
