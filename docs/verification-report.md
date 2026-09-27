@@ -20,11 +20,11 @@ docs/handoff.md §5 Phase 6 の成果物。**何がどこまで検証された�
 | RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | **達成**（2026-09-26、`lcd-demo-rs`。§6） |
 | ESP32-S3 実機で host call のトレースが一致する | **達成**（2026-09-26、14,352 行完全一致。§7） |
 | ESP32-S3 実機で ILI9341 に絵が出る | **達成**（2026-09-26。§7） |
-| 同一バイナリが 2 ボードで同じトレースを出す | **未達**（RP2350 と host は一致。2 ボード目が無い） |
+| 同一バイナリが 2 ボードで同じトレースを出す | **達成**（2026-09-26、RP2350 と ESP32-S3。§6 / §7） |
 | 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達**（I2C が未実装で sensor-display が動かない） |
 
-**Phase 6 の完了条件は満たしていない。** 満たすには 2 ボード目（ESP32-S3 か
-Pico WH）と I2C の実装が要る。RP2350 については、実機で動くところまで来た（§6）。
+**Phase 6 の「同一バイナリが 2 ボードで同じトレースを出す」は満たした。**
+残っているのは 4 通りの表示（I2C の実装が要る。`docs/TODO.md` §1.3）。
 
 2026-09-26 に `ports/esp32s3` の SPI2 を実装し、RP2350 と**同じ
 `lcd_demo_rs.wasm`**（SHA-256 `fc470947…`）を実機で走らせた。**host call の
@@ -85,20 +85,20 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 `spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが
 同一」を意味する。
 
-失敗経路も検査しているのは、実機では `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の SPI が
-まだ `unsupported` を返すため。成功経路だけ揃えても実機に持って行った瞬間に
-比較が意味を失う。
+失敗経路も検査しているのは、`ports/rp2040` の SPI と 3 ポートの I2C が
+まだ `unsupported` を返すため（SPI は rp2350 / esp32s3 とも実装済み）。
+成功経路だけ揃えても実機に持って行った瞬間に比較が意味を失う。
 
 ## 4. まだ検証されていないこと
 
 ### 4.1 実機での動作
 
-**RP2350 は観測済み（§6）。RP2040 と ESP32-S3 はビルドが通るところまでで、
+**RP2350（§6）と ESP32-S3（§7）は観測済み。RP2040 はビルドが通るところまでで、
 一度も焼いていない。**
 
-- RP2040 / ESP32-S3 の GPIO はレジスタ直叩き（RP2040 は SIO / IO_BANK0 /
-  PADS_BANK0、ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
-  実機で最初に起きることとして「blink が光らない」を想定すべき
+- RP2040 の GPIO はレジスタ直叩き（SIO / IO_BANK0 / PADS_BANK0）で、
+  型は通ったが一つも観測していない。実機で最初に起きることとして
+  「blink が光らない」を想定すべき
 - `ports/rp2040` の I2C / SPI と、`ports/rp2350` / `ports/esp32s3` の I2C は
   `unsupported` を返す。**sensor-display はどのボードでも動かない**
 - `ports/esp32s3` の SPI2 と GPIO は実機で動いた（§7）。ただし
@@ -162,8 +162,11 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
    - ESP32-S3: `sh ports/esp32s3/build.sh run --release`（espflash）
 4. シリアル（いずれも 115200 8N1）を捕まえてファイルに落とす
    - RP2040 / RP2350: UART0 (GP0=TX, GP1=RX)
-   - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 の `UART` ポートが CP2102N 経由で
-     直結。`espflash flash --monitor` の出力をそのまま落とせる)
+   - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 の `USB-UART` ポートが USB-シリアル
+     ブリッジ経由で直結。`espflash flash --monitor` の出力をそのまま落とせる)。
+     **ブリッジの型番は個体差がある**（公式の回路図は CP2102N だが、手元の
+     ボードは CH343 で macOS では `/dev/cu.usbmodem*` に見える。§7 の条件表）。
+     デバイス名を決め打ちせず `ls /dev/cu.usb*` で確かめること
 5. 突き合わせる: `sh verify/diff-traces.sh pico.log esp32s3.log`
    - バナーとゲストの `[wasm]` 行は自動で落とす
    - `time` はトレースに出ず、役割名で引いた GPIO 番号は `role:led` に
@@ -266,8 +269,10 @@ host 側だけなら CI が毎回見ている（`cargo test -p wasmicon-host --t
 
 ## 7. ESP32-S3 実機の実測（2026-09-26）
 
-`ports/esp32s3` を初めて実機で動かした記録。**host call のトレースは完全一致したが、
-画面には何も出ていない。** この 2 つは別の話なので分けて書く。
+`ports/esp32s3` を初めて実機で動かした記録。**トレースの一致と画面が出ることは
+別の話**なので分けて書く。結論はどちらも達成だが、**トレースは一発で完全一致した
+のに画面は真白**で、そこから 3 つの原因（うち 1 つは実バグ）を潰した。
+その経緯も残してある — 同じ形の失敗は他のポートでも起きる。
 
 ### 条件
 
@@ -346,10 +351,11 @@ GPIO14 を 1 Hz で振っている間に受信バイト数を数えた（UART �
 つまり修正前は**ピンがパッドで動いていなかった**。
 
 `ports/esp32s3/src/board.rs` の `SIG_GPIO_OUT`（`GPIO_FUNCn_OUT_SEL` に入れる
-「GPIO 出力」信号の番号）を **128 → 256** に直した。128 は ESP32 / S2 / C3 の値で、
-**ESP32-S3 は信号マップが 256 本あるぶんズレる**（`esp-metadata-generated` の
-`OutputSignal::GPIO` が 256）。128 を書くと別のペリフェラルの出力信号がパッドに
-繋がるので、`GPIO_OUT` / `GPIO_ENABLE` を読み返すと正しく見えるのにピンは動かない。
+「GPIO 出力」信号の番号）を **128 → 256** に直した。**この番号はチップごとに
+違う**（`esp-metadata-generated` の `OutputSignal::GPIO`）: ESP32 / S2 / S3 は
+256、C3 / C6 など RISC-V 勢は信号マップが 128 本ぶん短いので 128。S3 で 128 を
+書くと `I2S0O_SD1` の出力がパッドに繋がるので、`GPIO_OUT` / `GPIO_ENABLE` を
+読み返すと正しく見えるのにピンは動かない。
 
 **この失敗の形が厄介な点:** `pin.open` / `pin.write` はすべて成功を返し、
 host call のトレースは host と完全一致する。`gpio_write` は `GPIO_ENABLE` を

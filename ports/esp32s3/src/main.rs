@@ -7,11 +7,11 @@
 //!
 //! SPI2 は実装済み。I2C はまだ `unsupported`。
 //!
-//! **実機で動作確認していない**（docs/TODO.md §1.1 の配線とシリアル接続が未確認）。
-//! ビルドが通ることまでを確認した段階。`ports/rp2350` と同じゲスト
-//! （`--features guest-lcd-demo` で埋め込む `lcd_demo_rs.wasm`）を焼けるように
-//! してあるので、可搬性の検証はそのバイナリのトレースを突き合わせて行う
-//! （手順は docs/verification-report.md §5.1）。
+//! **DevKitC-1 実機で確認済み**（2026-09-26）。`ports/rp2350` と同じゲスト
+//! （`--features guest-lcd-demo` で埋め込む `lcd_demo_rs.wasm`、SHA-256
+//! `fc470947…`）を走らせ、トレースが host ポートと 14,352 行完全一致し、
+//! ILI9341 に絵が出た（docs/verification-report.md §7。手順は §5.1）。
+//! `led` の役割名と I2C の配線は未確認のまま（docs/TODO.md §1.1）。
 //!
 //! ビルドには espup が入れる Xtensa の GCC が要る:
 //! `. ~/export-esp.sh && cargo build --release`

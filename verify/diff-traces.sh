@@ -87,6 +87,23 @@ SAMPLE
         exit 1
     fi
 
+    # NUL が混ざっても全行取れること（2026-09-26 に踏んだ形。上の `normalize` の
+    # コメント参照）。heredoc には NUL を置けないので printf で組む。
+    #
+    # **このケースが守っているのは `tr` の `\000` だけ。** それを落とすと NUL が
+    # grep に渡ってバイナリ判定になり、ここが落ちる。一方 `grep -a` だけを
+    # 落としても通る（NUL は `tr` で消えているので grep はバイナリと見ない）。
+    # `-a` は NUL 以外のノイズでもバイナリ判定する grep 実装への保険なので、
+    # ここでは検出できないが外さないこと。
+    printf 'wasmicon esp32s3\r\n\000\000[wasm] blink start\r\n' > "$work/nul.log"
+    printf '> wasmicon:hal/log@0.1.0/log(2, "blink start")\r\n<\r\n' >> "$work/nul.log"
+    printf '\000> wasmicon:hal/gpio@0.1.0/[static]pin.open(role:led, 3)\r\n< 0 [1]\r\n' >> "$work/nul.log"
+    normalize "$work/nul.log" > "$work/nul.trace"
+    if ! diff -u "$work/a.trace" "$work/nul.trace" > /dev/null; then
+        echo "self-test 失敗: NUL で行を落としている（normalize の tr -d に \\000 が要る）" >&2
+        exit 1
+    fi
+
     echo "self-test OK"
     exit 0
 }

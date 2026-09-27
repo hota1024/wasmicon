@@ -52,9 +52,10 @@ const FUN_DRV_DEFAULT: u8 = 2;
 
 /// GPIO マトリクスの「GPIO 出力」信号（`GPIO_FUNCn_OUT_SEL`）。
 ///
-/// **ESP32-S3 では 256。128 ではない。** 128 は ESP32 / S2 / C3 の値で、
-/// S3 は信号マップが 256 本あるぶんズレる（`esp-metadata-generated` の
-/// `OutputSignal::GPIO`）。**128 を書くと別の信号がパッドに繋がるので、
+/// **ESP32-S3 では 256。128 ではない。** チップごとに違う値なので決め打ちで
+/// 写してはいけない（`esp-metadata-generated` の `OutputSignal::GPIO`）:
+/// ESP32 / S2 / S3 は 256、C3 / C6 など RISC-V 勢は信号マップが 128 本ぶん
+/// 短いので 128。**S3 で 128 を書くと `I2S0O_SD1` がパッドに繋がるので、
 /// `GPIO_OUT` / `GPIO_ENABLE` は正しく読めるのにピンが一切動かない。**
 /// 2026-09-26 に実機で踏んだ: host call のトレースは host と 14,352 行
 /// 完全一致するのに ILI9341 が真白のまま、という形で出た
@@ -156,6 +157,8 @@ impl<S: Serial> Board for EspBoard<S> {
         // 任せず明示する**（SVD のリセット値に依存させない）。2 = 20 mA で、
         // これは ESP32-S3 のパッドの既定でもある。
         m.gpio(n).write(|w| {
+            // SAFETY: MCU_SEL_GPIO (1) は MCU_SEL（3 bit）、FUN_DRV_DEFAULT (2) は
+            // FUN_DRV（2 bit）の範囲内。
             unsafe { w.mcu_sel().bits(MCU_SEL_GPIO) };
             unsafe { w.fun_drv().bits(FUN_DRV_DEFAULT) };
             w.fun_ie()

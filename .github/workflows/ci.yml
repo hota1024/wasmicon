@@ -84,13 +84,17 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
-      # ILI9341 のデモを埋め込む構成（apps/lcd-demo-rs/README.md）も壊さない
-      - run: cargo build --release --features guest-lcd-demo
+      # ILI9341 のデモを埋め込む構成（apps/lcd-demo-rs/README.md）も壊さない。
+      # build ではなく clippy にしてあるのは、この feature でしか出ない警告を
+      # 素通りさせないため（既定の feature 側は上の build がリンクまで見ている）。
+      - run: cargo clippy --release --features guest-lcd-demo -- -D warnings
 
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
-  # ローカルで次の 2 つを見る（rp2350 ジョブと同じ組み合わせ）:
+  # ローカルで次の 3 つを見る（rp2350 ジョブと同じ組み合わせ + 切り分け feature）:
   #   sh ports/esp32s3/build.sh clippy --release -- -D warnings
   #   sh ports/esp32s3/build.sh clippy --release --features guest-lcd-demo -- -D warnings
+  #   sh ports/esp32s3/build.sh clippy --release --features hw-probe -- -D warnings
+  # 3 つ目は src/probe.rs（切り分け専用）が腐るのを防ぐためだけのもの。
 
   # wasmtime との差分テスト（docs/handoff.md §5 Phase 6 の (3)）。
   # wasmtime は依存が大きいので別 workspace・別ジョブにしてある。
