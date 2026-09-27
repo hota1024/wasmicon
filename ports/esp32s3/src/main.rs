@@ -5,8 +5,13 @@
 //! トレースは UART0 (GPIO43=TX, GPIO44=RX) 115200 8N1 に出す。
 //! DevKitC-1 では UART0 が USB シリアル変換に繋がっている。
 //!
-//! **実機で動作確認していない**（docs/handoff.md §8 の配線とシリアル接続が未確認）。
-//! ビルドが通ることまでを確認した段階。
+//! SPI2 は実装済み。I2C はまだ `unsupported`。
+//!
+//! **実機で動作確認していない**（docs/TODO.md §1.1 の配線とシリアル接続が未確認）。
+//! ビルドが通ることまでを確認した段階。`ports/rp2350` と同じゲスト
+//! （`--features guest-lcd-demo` で埋め込む `lcd_demo_rs.wasm`）を焼けるように
+//! してあるので、可搬性の検証はそのバイナリのトレースを突き合わせて行う
+//! （手順は docs/verification-report.md §5.1）。
 //!
 //! ビルドには espup が入れる Xtensa の GCC が要る:
 //! `. ~/export-esp.sh && cargo build --release`
@@ -15,6 +20,8 @@
 #![no_main]
 
 mod board;
+#[cfg(feature = "hw-probe")]
+mod probe;
 
 use esp_hal::uart::{Config as UartConfig, Uart};
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
@@ -22,9 +29,22 @@ use wasmicon_port::Hal;
 
 use board::{EspBoard, Serial};
 
+// ESP-IDF の 2 段目ブートローダが読む app descriptor をフラッシュの先頭付近に置く。
+// 中身はバージョンとビルド日時で、ランタイムからは使わない。espflash 4.5 以降は
+// これが無い ELF を受け付けない（RP2350 の `IMAGE_DEF` に当たるもの）。
+esp_bootloader_esp_idf::esp_app_desc!();
+
 /// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
+///
+/// 既定は blink。`--features guest-lcd-demo` で ILI9341 のデモに差し替わる。
+/// **`ports/rp2350` と同じファイルを取り込む。** 2 ボードで同一バイナリを
+/// 走らせるのが目的なので、ボードごとに別のゲストを作らない。
+#[cfg(not(feature = "guest-lcd-demo"))]
 static GUEST: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
+#[cfg(feature = "guest-lcd-demo")]
+static GUEST: &[u8] =
+    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm");
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// ESP32-S3 は PSRAM 無しで SRAM 512 KB。線形メモリ 4 ページ（256 KB）が
@@ -66,9 +86,18 @@ fn main() -> ! {
     let mut serial = SerialPort(uart);
     serial.write(b"wasmicon esp32s3\r\n");
 
-    // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX を排他的に使う。UART は
-    // GPIO43/44 を占有するが、役割名に割り当てた GPIO とは重ねていない。
-    let board = unsafe { EspBoard::new(serial) };
+    // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX / SPI2 と SPI2 のピンを排他的に
+    // 使う。UART は GPIO43/44 を占有するが、役割名に割り当てた GPIO とも
+    // SPI2 のピン (GPIO11/12/13) とも重ねていない。
+    // hw-probe のときだけ可変で借りる。
+    #[cfg_attr(not(feature = "hw-probe"), allow(unused_mut))]
+    let mut board = unsafe { EspBoard::new(serial) };
+
+    // ポート層がパッドまで届いているかの切り分け（src/probe.rs）。
+    // ゲストはこの後そのまま走るので、済んだら feature を外すだけでよい。
+    #[cfg(feature = "hw-probe")]
+    probe::run(&mut board);
+
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
 
     // SAFETY: 単一のタスクからしか触らないので、可変静的への参照はここでしか作らない。

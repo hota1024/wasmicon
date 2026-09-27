@@ -14,11 +14,23 @@ rust-version = "1.85"
 # docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
 default = ["trace"]
 trace = []
+# 埋め込むゲストを blink から ILI9341 のデモに差し替える
+# （apps/lcd-demo-rs/README.md）。
+guest-lcd-demo = []
+# 実機の切り分け用。ゲストの前にポート層を直接叩いて ILI9341 の ID を読む
+# （src/probe.rs）。切り分け専用なので既定では入れない。
+hw-probe = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }
 wasmicon-port = { path = "../common" }
 esp-hal = { version = "1.1", features = ["esp32s3", "unstable"] }
+# ESP-IDF の 2 段目ブートローダが要求する app descriptor（`esp_app_desc!`）のため。
+# これが無いと espflash 4.5 が「App Descriptor missing」で書き込みを拒否する。
+# パーティションテーブルの検査は使わないので default-features は切る。
+esp-bootloader-esp-idf = { version = "0.6", default-features = false, features = [
+    "esp32s3",
+] }
 # 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
 # panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
 
