@@ -78,8 +78,8 @@ GND は 8 本ある（3 / 8 / 13 / 18 / 23 / 28 / 33 / 38）。
 
 ### ESP32-S3 DevKitC-1
 
-`docs/abi-spec.md` §8 の既定のまま。**この配線は実機で確認していない**
-（`docs/TODO.md` §1.1）。違うピンに繋ぎたいときは
+`docs/abi-spec.md` §8 の既定のまま。**この配線は 2026-09-26 に DevKitC-1 実機で
+確認済み**（`docs/verification-report.md` §7）。違うピンに繋ぎたいときは
 `ports/esp32s3/src/board.rs` の `ROLES` と
 `SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` を直す（abi-spec §8 の表も合わせる）。
 
@@ -109,10 +109,16 @@ GND は 8 本ある（3 / 8 / 13 / 18 / 23 / 28 / 33 / 38）。
 別のピンから取れる。Pico と違って 1 本しかないという制約は無い。
 
 シリアル（トレースとログ）は **UART0: GPIO43=TX / GPIO44=RX、115200 8N1**。
-**DevKitC-1 では `UART` と書かれた USB-C ポートが CP2102N 経由でここに直結
-している**ので、そのケーブル 1 本で書き込みとトレースの取り込みが両方できる
-（USB-シリアル変換を別に用意しなくてよい）。もう一方の `USB` ポートは
-native USB で、このファームウェアは何も出さない。
+**DevKitC-1 では `USB-UART` と書かれた USB-C ポートが USB-シリアルブリッジ経由で
+ここに直結している**ので、そのケーブル 1 本で書き込みとトレースの取り込みが
+両方できる（USB-シリアル変換を別に用意しなくてよい）。もう一方の `USB-OTG`
+ポートは native USB で、このファームウェアは何も出さない（書き込みだけなら
+USB-Serial-JTAG 経由で通る）。
+
+**ブリッジの型番は個体差がある。** 公式の回路図は CP2102N（macOS では
+`/dev/cu.usbserial-*`）だが、手元のボードは **CH343**（VID 0x1A86 / PID 0x55D3）で
+**`/dev/cu.usbmodem*`** に見えた。`usbserial` を決め打ちで探すと見つからないので、
+`ls /dev/cu.usb*` で確かめること。
 
 - **どちらのボードでも `LED`（バックライト）は 3.3 V に繋ぐ。** 繋がないと
   描けていても真っ暗にしか見えない
@@ -152,8 +158,9 @@ sh ports/esp32s3/build.sh run --release --features guest-lcd-demo
 `run` は `.cargo/config.toml` の runner（`espflash flash --monitor`）を呼ぶので、
 書き込みと monitor が続けて走る。焼くだけなら `build`。
 
-`espflash` が繋ぐ先は DevKitC-1 の **`UART` ポート**。複数の USB シリアルが
-見えているときは環境変数で指定する（`ESPFLASH_PORT=/dev/cu.usbserial-XXXX`）。
+`espflash` が繋ぐ先は DevKitC-1 の **`USB-UART` ポート**。複数の USB シリアルが
+見えているときは環境変数で指定する（`ESPFLASH_PORT=$(ls /dev/cu.usb*)` の
+該当するもの。**ブリッジの型番で名前が変わる** — 上の「配線」参照）。
 
 #### トレースをファイルに落とす
 
@@ -171,8 +178,13 @@ espflash flash --non-interactive \
 
 # 2. 115200 8N1 で開いてから、基板の EN ボタンを押す
 #    （バナー `wasmicon esp32s3` から取り込めるようにするため）
-cat /dev/cu.usbserial-XXXX | tee esp32s3.log
+#    デバイス名はブリッジの型番で変わる。ls /dev/cu.usb* で確かめる
+cat /dev/cu.usbmodemXXXX | tee esp32s3.log
 ```
+
+**取り込んだログに NUL が混ざっていても `verify/diff-traces.sh` は落とす。**
+リセットや電源投入の瞬間にライン・ノイズで出るもので、放っておくと `grep` が
+ファイルをバイナリと判断して 1 行しか返さない（スクリプト側で対処済み）。
 
 ### トレースを切ると速い
 
@@ -221,8 +233,8 @@ drop する」とも定めているので、解放は必ず起きる。
 
 ## 動かないとき
 
-この構成は Pico 2 W 実機で動くことを確認してある
-（`docs/verification-report.md` §6）。それでも出ないときに疑う順:
+この構成は Pico 2 W と ESP32-S3 DevKitC-1 の両方の実機で動くことを確認してある
+（`docs/verification-report.md` §6 / §7）。それでも出ないときに疑う順:
 
 1. **UART に何も出ない** — 配線（TX/RX の向き、GND）と 115200 8N1、
    焼けているか。バナー `wasmicon rp2350` が最初に出る
@@ -238,19 +250,28 @@ drop する」とも定めているので、解放は必ず起きる。
 
 ### ESP32-S3 でだけ出ないとき
 
-`ports/esp32s3` は**まだ実機で一度も動かしていない**（`docs/TODO.md` §1.1）。
-RP2350 で潰した懸念とは別に、次を疑う:
+`ports/esp32s3` も実機で動くところまで来ている（`docs/verification-report.md` §7）。
+**§7 で実際に踏んだ順**に並べてある:
 
 1. **バナー `wasmicon esp32s3` も出ない** — UART の口を間違えている。
-   DevKitC-1 の USB-C は 2 つあり、トレースが出るのは **`UART` 側**
-   （CP2102N → GPIO43/44）。`USB` 側は native USB で、このポートは何も出さない
+   DevKitC-1 の USB-C は 2 つあり、トレースが出るのは **`USB-UART` 側**
+   （USB-シリアルブリッジ → GPIO43/44）。`USB-OTG` 側は native USB で、
+   このファームウェアは何も出さない。デバイス名はブリッジの型番で変わるので
+   `ls /dev/cu.usb*` で確かめる
 2. **`spi open failed`** — `spi_open` が `unsupported` を返している。
    要求周波数が出せる範囲の外（APB 80 MHz のとき 78.125 kHz 未満、
    または 80 MHz 超）のときだけそうなる。`SPI_HZ` は 16 MHz なので通常は起きない
-3. **トレースは流れるのに画面が真っ暗、または化ける** — GPIO マトリクスの
-   配線。`ports/esp32s3/src/board.rs` の `SPI2_SCK` / `SPI2_MOSI` は
-   GPIO12 / GPIO11 で、これは SPI2 (FSPI) の IO_MUX 既定ピンでもある。
-   配線を変えたいなら定数と abi-spec §8 の表の両方を直す
+3. **トレースが host と完全一致するのに画面が真白** — §7 で実際に 2 段踏んだ形。
+   **トレースはここを一切教えてくれない**（host call は全部成功を返す）。
+   切り分けはゲストを通さずポート層を直接叩く
+   `sh ports/esp32s3/build.sh run --release --features hw-probe`
+   （`ports/esp32s3/src/probe.rs`）で行う
+   - まず `ports/esp32s3/src/board.rs` の `SIG_GPIO_OUT`。**S3 は 256**
+     （128 は C3 / C6 の値）。間違っていると `GPIO_OUT` / `GPIO_ENABLE` は
+     正しく読めるのにピンがパッドで一切動かない
+   - 次に**ブレッドボードの配線の接触**。§7 では挿し直したら出た
+   - `SPI2_SCK` / `SPI2_MOSI` を GPIO12 / GPIO11 から変えたなら、
+     定数と abi-spec §8 の表の両方を直したか
 4. **途中で止まって最初からやり直す** — 電源。ブレッドボードの 3V3 で
    バックライトまで賄うと足りないことがある（DevKitC-1 の 3V3 は
    オンボードレギュレータ出力）

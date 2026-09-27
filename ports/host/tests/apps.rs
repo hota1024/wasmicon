@@ -187,10 +187,19 @@ fn assert_traces_equal(rs: &str, as_: &str) {
     assert_eq!(a.len(), b.len(), "トレースの行数が違う");
 }
 
+/// 実機の記録と突き合わせた host トレースの大きさ（docs/verification-report.md §6 / §7）。
+///
+/// この 2 つの数は README.md / docs/TODO.md / docs/verification-report.md が
+/// そのまま引用している。**基準側が動いたらここで落ちる**のが狙い。落ちたら
+/// 数字を直すだけでなく、上の 3 つのドキュメントも直すこと。
+const LCD_DEMO_TRACE_LINES: usize = 14_352;
+const LCD_DEMO_SPI_WRITES: usize = 3_272;
+
 /// `lcd-demo-rs`（SPI と GPIO だけのデモ）が host で走り切るか。
 ///
-/// 実機の記録（docs/verification-report.md §6）はこのトレースと突き合わせたもの。
-/// CI で走らせておかないと、比較の基準側が黙って変わっても気付けない。
+/// 実機の記録（docs/verification-report.md §6 / §7）はこのトレースと
+/// 突き合わせたもの。CI で走らせておかないと、比較の基準側が黙って変わっても
+/// 気付けない。
 #[test]
 fn lcd_demo_rs_runs_on_host() {
     let wasm = build_rust_app("lcd-demo-rs");
@@ -213,6 +222,20 @@ fn lcd_demo_rs_runs_on_host() {
             .count()
             > 240,
         "行単位で送られていない:\n{trace}"
+    );
+    // 実機と突き合わせた基準そのもの。ドキュメントが引用している数と一致させる。
+    assert_eq!(
+        trace.lines().count(),
+        LCD_DEMO_TRACE_LINES,
+        "トレースの行数が実機の記録と違う。README.md / docs/TODO.md / \
+         docs/verification-report.md の数字も取り直しになる"
+    );
+    assert_eq!(
+        trace
+            .matches("wasmicon:hal/spi@0.1.0/[method]bus.write")
+            .count(),
+        LCD_DEMO_SPI_WRITES,
+        "spi.write の件数が実機の記録と違う（CRC-32 を突き合わせた件数）"
     );
     // 最後まで走り切る。途中で諦めると done が出ない（Level::Info = 2）。
     assert!(

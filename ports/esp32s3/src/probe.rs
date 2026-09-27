@@ -46,6 +46,11 @@ fn say<S: Serial>(b: &mut EspBoard<S>, s: &str) {
 }
 
 /// `<label>: ok` か `<label>: err=<n>` を出す。
+///
+/// `<n>` は **abi-spec §4.1 のステータス（discriminant + 1）**。`e as u32` では
+/// なく `status()` を通す: `invalid-argument` の discriminant は 0 なので、
+/// 生の値を出すと失敗が `err=0` になって成功と見分けが付かず、トレースに出る
+/// 番号とも 1 ずれる。
 fn say_result<S: Serial>(b: &mut EspBoard<S>, label: &str, r: Result<(), ErrorCode>) {
     let mut raw = [0u8; 64];
     let mut out = Buf::new(&mut raw);
@@ -54,13 +59,10 @@ fn say_result<S: Serial>(b: &mut EspBoard<S>, label: &str, r: Result<(), ErrorCo
         Ok(()) => out.str(": ok"),
         Err(e) => {
             out.str(": err=");
-            out.u32(e as u32);
+            out.u32(e.status());
         }
     }
-    let n = out.as_bytes().len();
-    let mut line = [0u8; 64];
-    line[..n].copy_from_slice(out.as_bytes());
-    b.serial().write(&line[..n]);
+    b.serial().write(out.as_bytes());
     b.serial().write(b"\r\n");
 }
 
@@ -73,10 +75,7 @@ fn say_bytes<S: Serial>(b: &mut EspBoard<S>, label: &str, data: &[u8]) {
         out.byte(b' ');
         out.hex(u32::from(x), 2);
     }
-    let n = out.as_bytes().len();
-    let mut line = [0u8; 96];
-    line[..n].copy_from_slice(out.as_bytes());
-    b.serial().write(&line[..n]);
+    b.serial().write(out.as_bytes());
     b.serial().write(b"\r\n");
 }
 

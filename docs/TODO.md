@@ -90,8 +90,9 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
   `gpio_configure` は PADS へ書くたびに `iso().clear_bit()` している（`write()` はリセット値から
   始まるので、書き残すと再びアイソレートされる）
 - ESP32-S3: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの **out_sel=256**）。
-  **ここは 2026-09-26 に実機で踏んだ。** `out_sel` を 128（ESP32 / S2 / C3 の値）
-  にしていたため、`GPIO_OUT` / `GPIO_ENABLE` は正しく読めるのにピンが
+  **ここは 2026-09-26 に実機で踏んだ。** `out_sel` を 128（C3 / C6 など
+  RISC-V 勢の値。ESP32 / S2 / S3 は 256）にしていたため、
+  `GPIO_OUT` / `GPIO_ENABLE` は正しく読めるのにピンが
   一切動かなかった。症状は「host call のトレースは host と 14,352 行完全一致
   するのに ILI9341 が真白」。`docs/verification-report.md` §7
 - ESP32-S3: SPI2 は `esp-hal` のドライバ任せなので信号番号を自前で持たない。

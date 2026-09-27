@@ -17,7 +17,6 @@
 **Raspberry Pi Pico 2 W では実機で動いた**（2026-09-26）。`apps/lcd-demo-rs` を
 走らせ、host call のトレースが host ポートと 14,352 行完全一致し、ILI9341 に
 絵が出た（[`docs/verification-report.md`](docs/verification-report.md) §6）。
-残っているのは I2C の実装と 2 ボード目（→ [`docs/TODO.md`](docs/TODO.md)）。
 
 **ESP32-S3 実機でも動いた**（2026-09-26）。`ports/esp32s3` に SPI2 を実装し、
 **Pico 2 に焼いたものと同じ `lcd_demo_rs.wasm`**（`fc470947…`）を走らせて、
