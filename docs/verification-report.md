@@ -18,11 +18,23 @@ docs/handoff.md §5 Phase 6 の成果物。**何がどこまで検証された�
 | インタプリタの正しさ（wasmtime との差分） | **達成** |
 | Rust 版と AS 版が同じ host call 列を出す | **達成**（host 上、成功経路と失敗経路） |
 | RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | **達成**（2026-09-26、`lcd-demo-rs`。§6） |
+| ESP32-S3 実機で host call のトレースが一致する | **達成**（2026-09-26、14,352 行完全一致。§7） |
+| ESP32-S3 実機で ILI9341 に絵が出る | **達成**（2026-09-26。§7） |
 | 同一バイナリが 2 ボードで同じトレースを出す | **未達**（RP2350 と host は一致。2 ボード目が無い） |
 | 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達**（I2C が未実装で sensor-display が動かない） |
 
 **Phase 6 の完了条件は満たしていない。** 満たすには 2 ボード目（ESP32-S3 か
 Pico WH）と I2C の実装が要る。RP2350 については、実機で動くところまで来た（§6）。
+
+2026-09-26 に `ports/esp32s3` の SPI2 を実装し、RP2350 と**同じ
+`lcd_demo_rs.wasm`**（SHA-256 `fc470947…`）を実機で走らせた。**host call の
+トレースは 14,352 行完全一致**で、これは RP2350 の実測と同じ数・同じ内容。
+**画面にも絵が出た。** つまり **Phase 6 の「同一バイナリが 2 ボードで同じ
+host call 列を出す」は実機で達成**した（§6 / §7）。
+
+途中で ESP32-S3 のポートに実バグが 1 件あった（`GPIO_FUNCn_OUT_SEL` の値）。
+**トレースが完全一致していても検出できない種類の失敗**だったので、§7 に
+経緯ごと残してある。
 
 ---
 
@@ -87,8 +99,12 @@ docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」
 - RP2040 / ESP32-S3 の GPIO はレジスタ直叩き（RP2040 は SIO / IO_BANK0 /
   PADS_BANK0、ESP32-S3 は GPIO / IO_MUX）。型は通ったが一つも観測していない。
   実機で最初に起きることとして「blink が光らない」を想定すべき
-- `ports/rp2040` / `ports/esp32s3` の I2C / SPI と、`ports/rp2350` の I2C は
+- `ports/rp2040` の I2C / SPI と、`ports/rp2350` / `ports/esp32s3` の I2C は
   `unsupported` を返す。**sensor-display はどのボードでも動かない**
+- `ports/esp32s3` の SPI2 と GPIO は実機で動いた（§7）。ただし
+  **host call の一致は「ゲストが正しいバイト列を HAL に渡した」ことしか言わない。**
+  レジスタへの書き込みがパッドまで届いているかはトレースに現れない。
+  §7 のバグはまさにそこを突いていた
 - abi-spec §8 の配線は RP2350 の SPI / LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、
   SCK=GP18 / MOSI=GP19）だけ実機で確認できた（§6）。**`led` と I2C の配線、
   および他の 2 ボードは依然オーナー未確認**
@@ -137,20 +153,50 @@ rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）�
 ## 5. 実機で検証するときの手順
 
 1. `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の I2C / SPI を実装する
+   （**SPI は rp2350 / esp32s3 とも済み。残りは I2C と rp2040**）
 2. abi-spec §8 の配線を確認し、役割名の表を実機に合わせる
 3. 焼く
    - RP2040: ELF を `picotool load`、または `elf2uf2-rs` で UF2 にして BOOTSEL
    - RP2350: ELF を `picotool load -u -v -x -t elf`（RP2350 は picotool 2.0 以降が要る。
      `elf2uf2-rs` は RP2040 用で使えない）
-   - ESP32-S3: `ports/esp32s3/build.sh run --release`（espflash）
+   - ESP32-S3: `sh ports/esp32s3/build.sh run --release`（espflash）
 4. シリアル（いずれも 115200 8N1）を捕まえてファイルに落とす
    - RP2040 / RP2350: UART0 (GP0=TX, GP1=RX)
-   - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 では USB シリアルに直結)
+   - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 の `UART` ポートが CP2102N 経由で
+     直結。`espflash flash --monitor` の出力をそのまま落とせる)
 5. 突き合わせる: `sh verify/diff-traces.sh pico.log esp32s3.log`
    - バナーとゲストの `[wasm]` 行は自動で落とす
    - `time` はトレースに出ず、役割名で引いた GPIO 番号は `role:led` に
      正規化済みなので、追加の加工は要らない
 6. 実機の SHT31 応答を記録して `verify/sht31-replay.txt` を差し替える
+
+### 5.1 LCD だけで 2 ボードの一致を測る（I2C を待たない経路）
+
+`lcd-demo-rs` は SPI と GPIO だけを使う。SPI は rp2350 と esp32s3 の両方で
+実装済みなので、**I2C を待たずに Phase 6 の「同一バイナリで同一トレース」を
+LCD 側だけ先に測れる**。ゲストを 1 回だけ作り、2 ボードに同じものを焼く:
+
+```bash
+(cd apps && cargo build --release)
+shasum -a 256 apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
+# 期待値（この記録を取った時点）:
+# fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453
+
+(cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
+picotool load -u -v -x -t elf \
+  ports/rp2350/target/thumbv8m.main-none-eabihf/release/wasmicon-rp2350
+# → pico.log を取る
+
+sh ports/esp32s3/build.sh run --release --features guest-lcd-demo | tee esp32s3.log
+# monitor が色や接頭辞を付けて diff-traces.sh が 1 行も取れない場合の取り方は
+# apps/lcd-demo-rs/README.md「トレースをファイルに落とす」
+
+sh verify/diff-traces.sh pico.log esp32s3.log
+```
+
+`lcd-demo-rs` は f32 を使わないので、**これが一致しても §4.2 の浮動小数は
+1 ミリも進まない**。SPI のバイト列（`spi.write` の CRC-32）と GPIO の順序が
+2 ボードで同じであることだけが言える。
 
 ---
 
@@ -214,3 +260,167 @@ host 側だけなら CI が毎回見ている（`cargo test -p wasmicon-host --t
 - **2 ボード間の一致（Phase 6）は未達。** 突き合わせた相手は host の mock HAL で、
   2 枚目の実機ではない
 - **`led` の役割名（外付け LED）は未検証。** `lcd-demo-rs` は LED を触らない
+- **ESP32-S3 については何も言っていない**（§7 で別に測った）
+
+---
+
+## 7. ESP32-S3 実機の実測（2026-09-26）
+
+`ports/esp32s3` を初めて実機で動かした記録。**host call のトレースは完全一致したが、
+画面には何も出ていない。** この 2 つは別の話なので分けて書く。
+
+### 条件
+
+| | |
+|---|---|
+| ボード | ESP32-S3-WROOM-1 搭載ボード（`USB-UART` / `USB-OTG` の 2 ポート）。chip rev v0.2、flash 8 MB、PSRAM なし |
+| ゲスト | `apps/lcd-demo-rs`。**RP2350 に焼いたものと同一ファイル**（SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453`） |
+| 配線 | abi-spec §8 の既定（CS=GPIO10 / DC=GPIO14 / RST=GPIO15 / SCK=GPIO12 / MOSI=GPIO11、MISO 未接続） |
+| SPI | 要求 16 MHz。APB 80 MHz なので 80/5 でちょうど 16 MHz |
+| シリアル | UART0 (GPIO43/44) 115200 8N1 |
+| 書き込み | `espflash` 4.5。`USB-OTG` 側（USB-Serial-JTAG）と `USB-UART` 側の CH343 のどちらからでも通る |
+| ビルド | `sh ports/esp32s3/build.sh build --release --features guest-lcd-demo`（`trace` 有効） |
+
+### 達成: トレースが host と完全一致
+
+```
+sh verify/diff-traces.sh esp32s3.log host.log
+→ 一致: 14352 行
+```
+
+**RP2350 の実測（§6）と同じ 14,352 行**で、`spi.write` の CRC-32 3,272 件を含めて
+全て同じ。失敗ステータスは 1 件も無く、`[wasm] lcd-demo done` まで到達した。
+
+これで **「同一バイナリが 2 ボードで同じ host call 列を出す」は実機で確認できた**
+（両ボードがそれぞれ同じ host リファレンスと完全一致したので、2 ボード間でも一致）。
+
+`spi.bus.open(0, 16000000, 0)` も `pin.open` 3 件もすべて成功している。
+つまり **GPIO / SPI2 のレジスタ操作は成功を返している**。
+
+### 達成: 画面に絵が出た
+
+`lcd-demo-rs` の描画がすべて出た。ただしここに至るまでに 2 つ潰している
+（次節）。**最初の状態は「トレースは完全一致するのに画面は真白」**だった。
+全画面を黒で塗るのが最初の描画なので、SPI が少しでもパネルに届いていれば
+まず黒くなる。真白は「バックライトは点いているが有効なデータが 1 バイトも
+届いていない」形。
+
+**トレースの一致はここを保証しない。** 一致が言うのは「ゲストが正しいバイト列を
+HAL に渡した」ことだけで、レジスタへの書き込みが**パッドまで届いているか**は
+トレースに現れない（成功を返しつつ無反応、という形になりうる。これは
+`docs/TODO.md` §1.4 が ESP32-S3 の最初の懸念として挙げていたもの）。
+
+試したこと:
+
+- **SPI クロックを 16 MHz → 1 MHz に落とした**。トレースは同じく 14,352 行一致、
+  画面は変わらず真白。**信号品質は原因ではない**
+- **ポート層を直接叩く切り分けを入れた**（`ports/esp32s3/src/probe.rs`、
+  `--features hw-probe`）。ゲストもインタプリタも通さず `Board` を呼ぶ。結果:
+
+  ```
+  probe: configure cs: ok / dc: ok / rst: ok
+  probe: spi_open(0, 1MHz, mode0): ok
+  probe: init sequence: ok
+  probe: 0xD3 (want 00 00 93 41) -> 00 00 00 00 00
+  ```
+
+  ID 読み出しは全部ゼロだったが、**`MISO` を繋いでいないので判定材料にならない**。
+
+### 原因 1（ソフト）: `GPIO_FUNCn_OUT_SEL` の値が S3 では違う
+
+USB シリアル変換の `RXD` を `GPIO43` から `GPIO14` に移し、`probe` が
+GPIO14 を 1 Hz で振っている間に受信バイト数を数えた（UART 受信機から見ると
+500 ms の Low は BREAK に見えるので、振れていれば Low 期間ごとに `00` が 1 つ出る）。
+
+| | 20 秒間の受信バイト数 |
+|---|---|
+| `out_sel = 128`（修正前） | **1** |
+| `out_sel = 256`（修正後） | **28** |
+
+同じアダプタで `GPIO43` からは 442,982 バイト取れていたので、アダプタ側は生きている。
+つまり修正前は**ピンがパッドで動いていなかった**。
+
+`ports/esp32s3/src/board.rs` の `SIG_GPIO_OUT`（`GPIO_FUNCn_OUT_SEL` に入れる
+「GPIO 出力」信号の番号）を **128 → 256** に直した。128 は ESP32 / S2 / C3 の値で、
+**ESP32-S3 は信号マップが 256 本あるぶんズレる**（`esp-metadata-generated` の
+`OutputSignal::GPIO` が 256）。128 を書くと別のペリフェラルの出力信号がパッドに
+繋がるので、`GPIO_OUT` / `GPIO_ENABLE` を読み返すと正しく見えるのにピンは動かない。
+
+**この失敗の形が厄介な点:** `pin.open` / `pin.write` はすべて成功を返し、
+host call のトレースは host と完全一致する。`gpio_write` は `GPIO_ENABLE` を
+読んで出力かどうかを検査しているが、それも通る。**トレースだけを見ていると
+「動いている」と読めてしまう。** `docs/TODO.md` §1.4 が ESP32-S3 の最初の
+懸念として「out_sel」を挙げていたのは当たっていた。
+
+SPI2 は `esp-hal` のドライバが信号番号を持っているので影響を受けていない。
+壊れていたのは `lcd-cs` / `lcd-dc` / `lcd-rst` の 3 本で、CS が Low に
+ならなければパネルには 1 バイトも入らない。真白はその形。
+
+### 原因 2（配線）: 接触不良
+
+`out_sel` を直しても画面は真白のままだった。SCK (GPIO12) には 15,770 バイトぶんの
+クロックが出ていて、CS / DC / RST も振れていることを実測できていたので、
+ソフト側は出し切った状態だった。**その後ブレッドボードの配線を挿し直したら
+絵が出た。** 途中で読み取り用アダプタの線が 1 本外れていたことも分かっており、
+他の線も接触が怪しかったと見られる。
+
+ここから得た教訓: **「レジスタは正しい」と「信号が相手に届いている」は別**で、
+後者はトレースからは一切見えない。ブレッドボードで組む場合は最初に配線を
+疑う余地を残しておくこと。
+
+### 原因 3（仕様の帰結）: 描き終わると `RESET` が浮いて絵が消える
+
+絵が出るようになったあと、**デモが描き終わると画面が白に戻る**という症状が残った。
+これはバグではなく `docs/abi-spec.md` §5.2 の帰結で、**ポート固有でもない**。
+
+トレースの最後 4 件がそのまま答えになっている:
+
+```
+[wasm] lcd-demo done
+> spi@0.1.0/[resource-drop]bus(1)     ← SCK / MOSI / MISO が入力に戻る
+> gpio@0.1.0/[resource-drop]pin(3)    ← lcd-rst が入力・プル無しに戻る = RESET が浮く
+> gpio@0.1.0/[resource-drop]pin(2)    ← lcd-dc
+> gpio@0.1.0/[resource-drop]pin(1)    ← lcd-cs
+```
+
+`pin.drop` は §5.2 どおりピンを入力・プル無しに戻す。手元の ILI9341 モジュールは
+`RESET` にプルアップを持っていないので、線が浮いてパネルがリセットし、画面が
+白に戻る。
+
+**確かめ方:** `gpio_release` で入力に戻すのをやめた切り分けビルドを焼いたところ、
+**絵はそのまま残った**。チップの再起動ではないことも別に確認してある（無干渉で
+150 秒観測して、起動は 1 回・トレース 14,352 行・`lcd-demo done` のあと出力なし）。
+
+**対処は外部回路側。** `RESET` に 10 kΩ 程度のプルアップを 3V3 から入れる。
+理由:
+
+- コード変更ゼロ。`.wasm` は `fc470947…` のままで、記録したトレースが生き続ける
+- **リセット入力を浮かせないのは回路としてまっとう。** §5.2 が「入力・プル無しに
+  戻す」と定めている以上、**線のアイドルレベルは外部回路が決めるべき**もので、
+  ホストに保証させる話ではない
+- ILI9341 モジュールの多くは `RESET` にプルアップを持っている。手元の個体は
+  持っていなかった、という整理になる
+
+`ports/rp2350` も `gpio_release` の意味は同じなので、**同じ条件が揃えば Pico 2 W でも
+起きる**。§6 で気づかなかったのは、浮いた線がしきい値を割るかどうかがパッドの
+リーク量とモジュール個体差で決まるため。`docs/TODO.md` §2 に「abi-spec §8 の表に
+`lcd-rst` の外部プルアップを明記するか」をオーナー確認事項として挙げてある。
+
+### 切り分けに使った道具
+
+`ports/esp32s3/src/probe.rs`（`--features hw-probe`）。ゲストもインタプリタも
+通さず `Board` を直接叩き、次を行う:
+
+- ILI9341 の ID 読み出し（`0xD3` / `0x04`）
+- **全画面を 1 色で塗る**（ポート層だけで SPI が生きているかを目で見る）
+- **DC を 1 Hz で振る**（パッドまで届いているかを外から当てて見る）
+
+**トレースが一致しているのに絵が出ない**という状況では、ここが
+「レジスタがパッドまで届いているか」を見られる唯一の場所だった。
+`rp2040` のブリングアップでも同じものが要るはず。
+
+なお **MOSI をソフトだけで読み返す検査は成立しない。** MISO を MOSI と同じ
+ピンに向ければ読み返せるはずだが、ESP32-S3 では GPIO11 が FSPID そのもので
+`with_mosi` が IO_MUX の直結機能を選ぶため、`with_miso` を同じピンに向けると
+`mcu_sel` が GPIO 機能に書き換わって**直結していた出力が切り離される**
+（実際に試すと `ff ff ff ff` が返る）。`probe.rs` にコメントで残してある。

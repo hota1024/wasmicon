@@ -19,13 +19,22 @@
 絵が出た（[`docs/verification-report.md`](docs/verification-report.md) §6）。
 残っているのは I2C の実装と 2 ボード目（→ [`docs/TODO.md`](docs/TODO.md)）。
 
+**ESP32-S3 実機でも動いた**（2026-09-26）。`ports/esp32s3` に SPI2 を実装し、
+**Pico 2 に焼いたものと同じ `lcd_demo_rs.wasm`**（`fc470947…`）を走らせて、
+host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出た
+（[`docs/verification-report.md`](docs/verification-report.md) §7）。
+**これで Phase 6「同一バイナリが 2 ボードで同じトレースを出す」は達成。**
+残っているのは I2C と sensor-display（→ [`docs/TODO.md`](docs/TODO.md)）。
+
 | 検証 | 状態 |
 |---|---|
 | Wasm 仕様適合（spec testsuite コア 74 ファイル / 22507 コマンド） | 達成 |
 | インタプリタの正しさ（wasmtime との差分、4 ゲスト） | 達成 |
 | Rust 版と AS 版が同じ host call 列を出す（成功経路 + 失敗経路） | 達成 |
 | RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
-| 同一バイナリが 2 ボードで同じトレースを出す | **未達（2 ボード目が必要）** |
+| ESP32-S3 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
+| 同一バイナリが 2 ボードで同じトレースを出す | 達成（2026-09-26、RP2350 と ESP32-S3） |
+| 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達（I2C 未実装で sensor-display が動かない）** |
 
 詳細は [`docs/verification-report.md`](docs/verification-report.md)。
 
@@ -80,9 +89,11 @@ npm ci
 # 実機向け
 (cd ports/rp2040 && cargo build --release)
 (cd ports/rp2350 && cargo build --release)
-# Pico 2 (W) + ILI9341 のデモを焼く場合（配線は apps/lcd-demo-rs/README.md）
-(cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
+# ILI9341 のデモを焼く場合（配線と書き込みは apps/lcd-demo-rs/README.md）。
+# rp2350 と esp32s3 が同じ lcd_demo_rs.wasm を埋め込む（rp2040 は SPI 未実装）
+(cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
+sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
 
 # wasmtime との差分テスト（インタプリタの正しさ）
 (cd verify/differential && cargo test)
