@@ -439,3 +439,55 @@ drop する」とも定めているので、解放は必ず起きる。理由:
 `with_mosi` が IO_MUX の直結機能を選ぶため、`with_miso` を同じピンに向けると
 `mcu_sel` が GPIO 機能に書き換わって**直結していた出力が切り離される**
 （実際に試すと `ff ff ff ff` が返る）。`probe.rs` にコメントで残してある。
+
+---
+
+## 8. 2 ボードの直接突き合わせ（2026-09-26）
+
+§6 と §7 はそれぞれのボードを host リファレンスと比べたもの。**§5 手順 5 が言って
+いる board-to-board の突き合わせはこれ。**
+
+```bash
+(cd apps && cargo build --release)      # fc470947... を 1 回だけ作る
+(cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
+sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
+# 同じ .wasm が両方の ELF に入っていることをバイト列で照合してから焼く
+
+sh verify/diff-traces.sh pico.log esp32s3.log
+→ 一致: 14352 行
+```
+
+| | |
+|---|---|
+| ゲスト | `apps/lcd-demo-rs`。SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453` |
+| ボード 1 | Raspberry Pi Pico 2 W（RP2350 A2 / QFN60）。UART0 (GP0) 115200 8N1 |
+| ボード 2 | ESP32-S3-WROOM-1 搭載ボード（chip rev v0.2、flash 8 MB）。UART0 (GPIO43) 115200 8N1 |
+| 結果 | **14,352 行完全一致**（`spi.write` の CRC-32 3,272 件を含む） |
+
+3 通りの突き合わせがすべて一致している（Pico ↔ host、ESP32-S3 ↔ host、
+Pico ↔ ESP32-S3）。**`docs/handoff.md` §5 Phase 6 の (2)「同一バイナリを 2 ボードで
+走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致」は達成。**
+
+同じ `.wasm` が両方の ELF に入っていることは、焼く前に ELF の中からゲストの
+バイト列を検索して確認した（`include_bytes!` なのでそのまま埋まっている）。
+
+### ここで `verify/diff-traces.sh` のバグを踏んだ
+
+最初の突き合わせは「`pico.log` は 1 行、`esp32s3.log` は 14352 行」という不一致に
+なった。**トレースの中身ではなくスクリプト側の問題だった。**
+
+実機のシリアルはリセットや電源投入の瞬間にライン・ノイズで NUL を吐く。
+`pico.log` には **441,254 バイト中 1 個**だけ NUL が混ざっていて、それだけで
+`grep` がファイルをバイナリと判断し、`Binary file matches` の 1 行を返していた。
+実際には 14,352 行ある。
+
+`normalize()` で NUL も落とし、`grep -a` を付けて直した。**完了条件の判定に使う
+スクリプトなので、この壊れ方は原因の誤診に直結する**（今回は偽陰性だったが、
+「2 ボードが一致しない」と読んで実機を疑い始めるところだった）。
+
+**この一致が言っていないこと:**
+
+- **浮動小数の一致（§4.2）は進んでいない。** `lcd-demo-rs` は f32 を使わない
+- **表示が同じであることは、この一致からは出ない。** 一致しているのは host call の
+  列で、パッドまで届いているかは別（§7 の `out_sel` のバグがまさにその例）。
+  表示は両ボードで目視した（§6 / §7）
