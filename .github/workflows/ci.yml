@@ -88,7 +88,9 @@ jobs:
       - run: cargo build --release --features guest-lcd-demo
 
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
-  # ローカルで `ports/esp32s3/build.sh build --release` を使う。
+  # ローカルで次の 2 つを見る（rp2350 ジョブと同じ組み合わせ）:
+  #   sh ports/esp32s3/build.sh clippy --release -- -D warnings
+  #   sh ports/esp32s3/build.sh clippy --release --features guest-lcd-demo -- -D warnings
 
   # wasmtime との差分テスト（docs/handoff.md §5 Phase 6 の (3)）。
   # wasmtime は依存が大きいので別 workspace・別ジョブにしてある。
