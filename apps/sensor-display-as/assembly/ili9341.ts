@@ -17,6 +17,20 @@ const TEXT = new Uint8Array(MAX_TEXT * 8 * 8 * 2);
 /// 引数が不正なときに返す。ErrorCode.InvalidArgument のステータス（discriminant+1）。
 const ERR_INVALID: u32 = 1;
 
+/// `start + len` が `limit` に収まるか。**u32 に広げてから足す。**
+///
+/// AssemblyScript は u16 同士の加算を比較の中でも u16 に丸める
+/// （`i32.add` のあとに `i32.and 0xffff` を出す）ので、u16 のまま足すと
+/// 折り返して画面外の座標が境界検査を通ってしまう。例:
+/// `fillRect(65530, 0, 10, 1, c)` は `65530 + 10 == 4` になって `<= 320` を
+/// 通り、`window` が `x0 > x1` の矩形を送ったうえで `ROW` の範囲外に書く
+/// （`asconfig.json` は `noAssert: true` なので**境界検査が無く、黙って
+/// リニアメモリを壊す**）。Rust 版の `in_bounds()` と同じ形に揃えてある
+/// （`apps/sensor-display-rs/src/ili9341.rs`）。
+function inBounds(start: u16, len: u16, limit: u16): bool {
+  return <u32>start + <u32>len <= <u32>limit;
+}
+
 /// コマンド 1 バイト用。
 const CMD = new Uint8Array(1);
 /// 引数用（最大 4 バイト）。
@@ -106,7 +120,7 @@ export class Display {
   fillRect(x: u16, y: u16, w: u16, h: u16, color: u16): u32 {
     if (w == 0 || h == 0) return 0;
     // 画面外は描かない（apps/README.md §2）。ROW の範囲外書き込みも防ぐ。
-    if (x + w > WIDTH || y + h > HEIGHT) return ERR_INVALID;
+    if (!inBounds(x, w, WIDTH) || !inBounds(y, h, HEIGHT)) return ERR_INVALID;
     let st = this.window(x, y, w, h);
     if (st != 0) return st;
 
@@ -134,7 +148,7 @@ export class Display {
     if (len > MAX_TEXT) return ERR_INVALID;
     const n = len;
     const w = <u16>(n * 8);
-    if (x + w > WIDTH || y + 8 > HEIGHT) return ERR_INVALID;
+    if (!inBounds(x, w, WIDTH) || !inBounds(y, 8, HEIGHT)) return ERR_INVALID;
     let st = this.window(x, y, w, 8);
     if (st != 0) return st;
 
