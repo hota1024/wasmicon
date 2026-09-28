@@ -21,11 +21,18 @@ const ERR_INVALID: u32 = 1;
 ///
 /// AssemblyScript は u16 同士の加算を比較の中でも u16 に丸める
 /// （`i32.add` のあとに `i32.and 0xffff` を出す）ので、u16 のまま足すと
-/// 折り返して画面外の座標が境界検査を通ってしまう。例:
-/// `fillRect(65530, 0, 10, 1, c)` は `65530 + 10 == 4` になって `<= 320` を
-/// 通り、`window` が `x0 > x1` の矩形を送ったうえで `ROW` の範囲外に書く
-/// （`asconfig.json` は `noAssert: true` なので**境界検査が無く、黙って
-/// リニアメモリを壊す**）。Rust 版の `in_bounds()` と同じ形に揃えてある
+/// 折り返して画面外の座標が境界検査を通ってしまう。すり抜ける入力は
+/// `start + len` が 65536..65856 のもので、**結果は 2 つあり入力の範囲が違う**:
+///
+/// - `fillRect(65530, 0, 10, 1, c)` → `65530 + 10 == 4` で通り、`window` が
+///   `x0 > x1` の反転した矩形を送る。バッファは超えない（`n == 20`）
+/// - `fillRect(65216, 0, 640, 1, c)` → 折り返して 320 で通り、さらに
+///   `n = w * 2 == 1280` が 640 バイトの `ROW` を超える。**こちらだけが
+///   範囲外書き込み**で、`asconfig.json` は `noAssert: true` なので
+///   境界検査が無く、黙ってリニアメモリを壊す（Rust 側はトラップする）
+///
+/// `drawText` は `w <= MAX_TEXT * 8 == 96` なので `TEXT` を超えられない。
+/// Rust 版の `in_bounds()` と同じ形に揃えてある
 /// （`apps/sensor-display-rs/src/ili9341.rs`）。
 function inBounds(start: u16, len: u16, limit: u16): bool {
   return <u32>start + <u32>len <= <u32>limit;
@@ -144,6 +151,12 @@ export class Display {
   /// 等幅 8×8 で文字列を描く。0 なら成功。
   drawText(x: u16, y: u16, text: Uint8Array, len: i32, fg: u16, bg: u16): u32 {
     if (len == 0) return 0;
+    // **負の len を弾く。** Rust 版は `&[u8]` を取るので構造的に表現できない
+    // 穴で、AS 側だけに開いていた。`len == -8192` だと `<u16>(n * 8) == 0` に
+    // なって inBounds を通り、`window` が `x1 = x - 1` を送ったうえで
+    // `dataN` が負の長さで呼ばれる（`noAssert: true` なので止まらない）。
+    // 今の呼び出し元は 0 から増やすだけなので到達しない。
+    if (len < 0) return ERR_INVALID;
     // 黙って切り詰めない（apps/README.md §2）。
     if (len > MAX_TEXT) return ERR_INVALID;
     const n = len;

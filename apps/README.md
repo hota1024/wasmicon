@@ -7,6 +7,22 @@
 検査は `ports/host/tests/apps.rs`。両者のトレースを突き合わせるので、
 `spi.write` の CRC-32 が食い違えば落ちる。
 
+## 0. ILI9341 ドライバは 3 箇所にある
+
+**`ili9341.rs` / `ili9341.ts` の写しが 3 つある。片方を直したら残り 2 つも見る。**
+
+| ファイル | 検査 |
+|---|---|
+| `apps/sensor-display-rs/src/ili9341.rs` | AS 版とトレースを突き合わせられる |
+| `apps/sensor-display-as/assembly/ili9341.ts` | 同上 |
+| `apps/lcd-demo-rs/src/ili9341.rs` | **自動検査が無い**（このアプリは AS 版を持たない） |
+
+Rust の 2 つは **module コメント以外同一**に保っている（`diff -u` が 1 hunk）。
+`lcd-demo-rs` は自動で守られないので、**直し忘れが起きるのはここ**。実際に
+起きた: 境界検査の u16 折り返しを `321fe3d` で `lcd-demo-rs` だけ直し、
+`sensor-display` の 2 つに残っていた（2026-09-28 に揃え直した。
+`docs/TODO.md` §2.1 に重複を解消するかの項目がある）。
+
 ## 1. センサー: SHT31 / SHT30
 
 - I2C バス index 0、`standard`（100 kHz）、アドレス `0x44`
