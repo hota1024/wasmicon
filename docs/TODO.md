@@ -169,16 +169,27 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
         ただし**今まで返らなかった状態を返すようになる**ので ABI の変更
 - [ ] **ゲストの `ili9341.rs` の重複を解消するか。** `apps/sensor-display-rs` と
       `apps/lcd-demo-rs` に 179 行の写しがある（元は module コメント以外同一）。
-      意図的に分けたが、**実際に挙動が分岐した**: 境界検査の u16 折り返しバグ
-      （`594a63b` で `lcd-demo-rs` 側だけ修正）は両方にあり、今は振る舞いが違う
-      - `sensor-display` 側も直せる。画面内の座標では送るバイト列が変わらない
-        ので CRC は動かない。ただし `apps/README.md` §4 の規則どおり
-        **AssemblyScript 版も同時に直す**必要がある（片方だけだと
-        `sensor_display_rs_and_as_agree` が落ちる）
+      意図的に分けたが、**一度は実際に挙動が分岐した**: 境界検査の u16 折り返し
+      バグを `321fe3d` で `lcd-demo-rs` 側だけ直し、しばらく振る舞いが違っていた
+      （2026-09-28 に `sensor-display` の Rust / AS 両方を直して揃え直した）
       - 共有クレートに切り出すならフォント表をパラメータにする。
         `apps/` の workspace メンバーが 1 つ増える
       - 分けたままにするなら、片方を直したらもう片方も見ることを
         `apps/README.md` に書く（AS 版も含めて 3 箇所になる）
+- [ ] **ゲストの単体テストを CI で回すか。** 2026-09-28 に `in_bounds` の単体
+      テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れたが、
+      **CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
+      いるので、ホストのトリプルを明示しないと実行できない:
+
+      ```
+      (cd apps && cargo test --target aarch64-apple-darwin)   # 手元
+      ```
+
+      - 手元（macOS / aarch64）では debug / release とも通り、`in_bounds` を
+        折り返す版に戻すと落ちることも確かめた。**Linux で `extern "C"` の
+        未定義シンボルがリンクエラーにならないかは未確認**なので、`guest`
+        ジョブに足すのは CI で 1 回試してからにする
+      - 足すなら `.github/workflows/ci.yml` の `guest` ジョブに 1 行
 
 ---
 

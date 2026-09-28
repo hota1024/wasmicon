@@ -186,3 +186,31 @@ impl<'a> Display<'a> {
         self.end()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{HEIGHT, WIDTH, in_bounds};
+
+    /// **u16 のまま足すと折り返す**ので、画面外が境界検査を通ってしまう。
+    /// `apps/README.md` §2 は「`x + w > 320` なら描かずに失敗を返す」と定めている。
+    #[test]
+    fn wrapping_coordinates_are_rejected() {
+        // 折り返すと 65530 + 10 == 4 で `<= 320` を通ってしまう組み合わせ。
+        assert!(!in_bounds(65530, 10, WIDTH));
+        // 和がちょうど 65536 になる組み合わせ（折り返すと 0）。
+        assert!(!in_bounds(65000, 536, WIDTH));
+        assert!(!in_bounds(65528, 8, HEIGHT));
+        // 折り返さなくても画面外なもの。ここは元の検査でも弾けていた。
+        assert!(!in_bounds(65000, 1000, WIDTH));
+    }
+
+    /// 画面ぴったりは通す（`lcd-demo` の外周 1 px の枠が踏む境界）。
+    #[test]
+    fn exact_fit_is_allowed() {
+        assert!(in_bounds(0, WIDTH, WIDTH));
+        assert!(in_bounds(0, HEIGHT, HEIGHT));
+        assert!(in_bounds(WIDTH - 1, 1, WIDTH));
+        assert!(in_bounds(319, 1, WIDTH));
+        assert!(!in_bounds(1, WIDTH, WIDTH));
+    }
+}
