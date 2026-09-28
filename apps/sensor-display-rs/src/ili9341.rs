@@ -23,6 +23,25 @@ const TEXT_BYTES: usize = MAX_TEXT * 8 * 8 * 2;
 
 type Result<T> = core::result::Result<T, ErrorCode>;
 
+/// `start + len` が `limit` に収まるか。**u32 に広げてから足す。**
+/// u16 のまま足すと折り返して、画面外の座標が境界検査を通ってしまう
+/// （リリースビルドの Wasm 算術は wrapping）。
+///
+/// すり抜ける入力は `start + len` が 65536..65856 のもの。**結果は 2 つあり、
+/// 入力の範囲が違う**:
+///
+/// - `fill_rect(65530, 0, 10, 1, c)` → `65530 + 10 == 4` で通り、`window` が
+///   `x0 > x1` の反転した矩形を CASET で送る。バッファは超えない（`n == 20`）
+/// - `fill_rect(65216, 0, 640, 1, c)` → 折り返して 320 で通り、さらに
+///   `n = w * 2 == 1280` が 640 バイトの `row` を超える。**こちらだけが
+///   範囲外書き込みになる**（`w > 320` が要る）
+///
+/// `draw_text` は `w <= MAX_TEXT * 8 == 96` なので `buf` を超えられない
+/// （`p` の最大は 1534 < 1536）。反転した矩形を送るところまで。
+fn in_bounds(start: u16, len: u16, limit: u16) -> bool {
+    u32::from(start) + u32::from(len) <= u32::from(limit)
+}
+
 /// 繋がった ILI9341。
 pub struct Display<'a> {
     spi: &'a Bus,
@@ -101,7 +120,7 @@ impl<'a> Display<'a> {
             return Ok(());
         }
         // 画面外は描かない（`apps/README.md` §2）。row バッファの範囲外書き込みも防ぐ。
-        if x + w > WIDTH || y + h > HEIGHT {
+        if !in_bounds(x, w, WIDTH) || !in_bounds(y, h, HEIGHT) {
             return Err(ErrorCode::InvalidArgument);
         }
         self.window(x, y, w, h)?;
@@ -139,7 +158,7 @@ impl<'a> Display<'a> {
         }
         let len = text.len();
         let w = (len * 8) as u16;
-        if x + w > WIDTH || y + 8 > HEIGHT {
+        if !in_bounds(x, w, WIDTH) || !in_bounds(y, 8, HEIGHT) {
             return Err(ErrorCode::InvalidArgument);
         }
         self.window(x, y, w, 8)?;
@@ -170,5 +189,40 @@ impl<'a> Display<'a> {
         self.cmd(0x2C)?; // RAMWR
         self.data(&buf[..stride * 8])?;
         self.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEIGHT, WIDTH, in_bounds};
+
+    /// 折り返しですり抜ける入力（`start + len` が 65536..65856）。
+    /// `apps/README.md` §2 は「`x + w > 320` なら描かずに失敗を返す」と定めている。
+    #[test]
+    fn wrapping_coordinates_are_rejected() {
+        // 和がちょうど 65536 で、折り返すと 0 になる組み合わせ。
+        assert!(!in_bounds(65000, 536, WIDTH));
+        assert!(!in_bounds(65528, 8, HEIGHT));
+        // 折り返すと 4 になる組み合わせ。
+        assert!(!in_bounds(65530, 10, WIDTH));
+        // すり抜ける範囲の上端（65856 → 320）。ここは行バッファも超える。
+        assert!(!in_bounds(65216, 640, WIDTH));
+    }
+
+    /// 折り返さない画面外。元の検査でも弾けていた側。
+    #[test]
+    fn plain_out_of_range_is_rejected() {
+        assert!(!in_bounds(65000, 1000, WIDTH));
+        assert!(!in_bounds(1, WIDTH, WIDTH));
+        assert!(!in_bounds(0, HEIGHT + 1, HEIGHT));
+    }
+
+    /// 画面ぴったりは通す。`fill_rect(0, 0, WIDTH, HEIGHT, …)` が
+    /// どのアプリでも毎フレーム踏む境界。
+    #[test]
+    fn exact_fit_is_allowed() {
+        assert!(in_bounds(0, WIDTH, WIDTH));
+        assert!(in_bounds(0, HEIGHT, HEIGHT));
+        assert!(in_bounds(WIDTH - 1, 1, WIDTH));
     }
 }

@@ -168,17 +168,56 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
       - `types.error-code` に `timeout` は既にあるので型は足りている。
         ただし**今まで返らなかった状態を返すようになる**ので ABI の変更
 - [ ] **ゲストの `ili9341.rs` の重複を解消するか。** `apps/sensor-display-rs` と
-      `apps/lcd-demo-rs` に 179 行の写しがある（元は module コメント以外同一）。
-      意図的に分けたが、**実際に挙動が分岐した**: 境界検査の u16 折り返しバグ
-      （`594a63b` で `lcd-demo-rs` 側だけ修正）は両方にあり、今は振る舞いが違う
-      - `sensor-display` 側も直せる。画面内の座標では送るバイト列が変わらない
-        ので CRC は動かない。ただし `apps/README.md` §4 の規則どおり
-        **AssemblyScript 版も同時に直す**必要がある（片方だけだと
-        `sensor_display_rs_and_as_agree` が落ちる）
+      `apps/lcd-demo-rs` に 228 行 / 233 行の写しがある（**差分は module
+      コメントだけ**。`diff -u` で 1 hunk に保ってある）。
+      意図的に分けたが、**一度は実際に挙動が分岐した**: 境界検査の u16 折り返し
+      バグを `321fe3d` で `lcd-demo-rs` 側だけ直し、しばらく振る舞いが違っていた
+      （2026-09-28 に `sensor-display` の Rust / AS 両方を直して揃え直した）
       - 共有クレートに切り出すならフォント表をパラメータにする。
         `apps/` の workspace メンバーが 1 つ増える
       - 分けたままにするなら、片方を直したらもう片方も見ることを
         `apps/README.md` に書く（AS 版も含めて 3 箇所になる）
+### 2.2 ゲストの境界検査から出た未決（`/code-review` の指摘、2026-09-28）
+
+`apps/sensor-display-*` の u16 折り返しを直したときに出たもの。**ABI には関わらない。**
+
+- [ ] **ゲストの単体テストを CI で回すか**（2026-09-28）。`in_bounds` の単体
+      テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れたが、
+      **CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
+      いるので、ホストのトリプルを明示しないと実行できない:
+
+      ```
+      (cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
+      ```
+
+      - 手元（macOS / aarch64）では debug / release とも通り、`in_bounds` を
+        折り返す版に戻すと落ちることも確かめた。**Linux で `extern "C"` の
+        未定義シンボルがリンクエラーにならないかは未確認**なので、`guest`
+        ジョブ（`ubuntu-latest`）に足すのは CI で 1 回試してからにする。
+        ジョブに書くときは上の移植可能な形か `x86_64-unknown-linux-gnu` を使う
+        （`aarch64-apple-darwin` を直書きすると CI では std が無くて落ちる）
+      - **足す前に `clashing_extern_declarations` を潰す必要がある**（下の項目）。
+        `guest` ジョブは `-D warnings` で止まる
+- [ ] **`bindings/rust` の生成物が出す `clashing_extern_declarations` を潰すか。**
+      `i2c` と `spi` が `[static]bus.open` / `[method]bus.write` を別シグネチャで
+      宣言していて、`#[link(wasm_import_module = …)]` で区別している。この lint は
+      wasm32 では属性を見るが**ホストターゲットでは見ない**ので、ゲストを
+      ホスト向けにビルドしたときだけ警告 2 件が出る（2026-09-28 に単体テストを
+      足して初めて見えた）
+      - 直す場所は `tools/wasmicon-gen`。生成物を手で編集しない（CLAUDE.md）
+      - 直さないと上の CI 項目が `-D warnings` で通らない
+- [ ] **境界検査の「呼び出し側」は pin されていない**（2026-09-28）。入れた
+      単体テストは `in_bounds` / `inBounds` を検査するだけなので、**呼び出し側を
+      折り返す式に戻されても気付けない**（`fill_rect` と `draw_text` の両方を
+      戻すと `in_bounds` が dead_code になって clippy が落ちるが、片方だけなら
+      通る。AS 側にはその保険も無い）
+      - 本当に pin するには `fill_rect` / `draw_text` を敵対的な座標で叩く
+        テストが要る。ゲストは `run` しか export していないので、host から
+        叩くには export を増やすことになり、**`lcd_demo_rs.wasm` のハッシュが
+        変わって記録済みのトレースが取り直しになる**
+      - **AS 側には単体テストが無い**（この repo に AS のテスト基盤が無い）。
+        `noAssert: true` で境界検査が消えている側なので、危ないほうが
+        テストされていないという非対称がある
 
 ---
 

@@ -84,6 +84,10 @@ sh tools/check-sigs.sh          # 参照実装 tools/wit2sig.py と突き合わ�
 npm ci
 (cd apps && cargo build --release)
 (cd apps/sensor-display-as && npx asc assembly/index.ts --config asconfig.json --target release)
+# ゲストの単体テスト。apps/ は wasm32 固定なのでホストのトリプルを明示する。
+# bindings の生成物が clashing_extern_declarations を 2 件出すが、これは
+# ホストターゲットでだけ見える既知のもの（docs/TODO.md §2.2）
+(cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
 
 # 実機向け
 (cd ports/rp2040 && cargo build --release)
