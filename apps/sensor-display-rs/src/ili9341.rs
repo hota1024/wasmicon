@@ -27,11 +27,17 @@ type Result<T> = core::result::Result<T, ErrorCode>;
 /// u16 のまま足すと折り返して、画面外の座標が境界検査を通ってしまう
 /// （リリースビルドの Wasm 算術は wrapping）。
 ///
-/// 例: `fill_rect(65530, 0, 10, 1, c)` は u16 のままだと
-/// `65530 + 10 == 4` になって `<= 320` を通り、`window` が `x0 > x1` の矩形を
-/// 送ったうえで `row` の範囲外に書く。`apps/lcd-demo-rs` と同じ実装
-/// （あちらは `321fe3d` で先に直した）。**AssemblyScript 版も同じ形に
-/// 揃えてある**（`apps/sensor-display-as/assembly/ili9341.ts`）。
+/// すり抜ける入力は `start + len` が 65536..65856 のもの。**結果は 2 つあり、
+/// 入力の範囲が違う**:
+///
+/// - `fill_rect(65530, 0, 10, 1, c)` → `65530 + 10 == 4` で通り、`window` が
+///   `x0 > x1` の反転した矩形を CASET で送る。バッファは超えない（`n == 20`）
+/// - `fill_rect(65216, 0, 640, 1, c)` → 折り返して 320 で通り、さらに
+///   `n = w * 2 == 1280` が 640 バイトの `row` を超える。**こちらだけが
+///   範囲外書き込みになる**（`w > 320` が要る）
+///
+/// `draw_text` は `w <= MAX_TEXT * 8 == 96` なので `buf` を超えられない
+/// （`p` の最大は 1534 < 1536）。反転した矩形を送るところまで。
 fn in_bounds(start: u16, len: u16, limit: u16) -> bool {
     u32::from(start) + u32::from(len) <= u32::from(limit)
 }
@@ -190,26 +196,33 @@ impl<'a> Display<'a> {
 mod tests {
     use super::{HEIGHT, WIDTH, in_bounds};
 
-    /// **u16 のまま足すと折り返す**ので、画面外が境界検査を通ってしまう。
+    /// 折り返しですり抜ける入力（`start + len` が 65536..65856）。
     /// `apps/README.md` §2 は「`x + w > 320` なら描かずに失敗を返す」と定めている。
     #[test]
     fn wrapping_coordinates_are_rejected() {
-        // 折り返すと 65530 + 10 == 4 で `<= 320` を通ってしまう組み合わせ。
-        assert!(!in_bounds(65530, 10, WIDTH));
-        // 和がちょうど 65536 になる組み合わせ（折り返すと 0）。
+        // 和がちょうど 65536 で、折り返すと 0 になる組み合わせ。
         assert!(!in_bounds(65000, 536, WIDTH));
         assert!(!in_bounds(65528, 8, HEIGHT));
-        // 折り返さなくても画面外なもの。ここは元の検査でも弾けていた。
-        assert!(!in_bounds(65000, 1000, WIDTH));
+        // 折り返すと 4 になる組み合わせ。
+        assert!(!in_bounds(65530, 10, WIDTH));
+        // すり抜ける範囲の上端（65856 → 320）。ここは行バッファも超える。
+        assert!(!in_bounds(65216, 640, WIDTH));
     }
 
-    /// 画面ぴったりは通す（`lcd-demo` の外周 1 px の枠が踏む境界）。
+    /// 折り返さない画面外。元の検査でも弾けていた側。
+    #[test]
+    fn plain_out_of_range_is_rejected() {
+        assert!(!in_bounds(65000, 1000, WIDTH));
+        assert!(!in_bounds(1, WIDTH, WIDTH));
+        assert!(!in_bounds(0, HEIGHT + 1, HEIGHT));
+    }
+
+    /// 画面ぴったりは通す。`fill_rect(0, 0, WIDTH, HEIGHT, …)` が
+    /// どのアプリでも毎フレーム踏む境界。
     #[test]
     fn exact_fit_is_allowed() {
         assert!(in_bounds(0, WIDTH, WIDTH));
         assert!(in_bounds(0, HEIGHT, HEIGHT));
         assert!(in_bounds(WIDTH - 1, 1, WIDTH));
-        assert!(in_bounds(319, 1, WIDTH));
-        assert!(!in_bounds(1, WIDTH, WIDTH));
     }
 }
