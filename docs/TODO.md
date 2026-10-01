@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-09-26
+最終更新: 2026-09-29
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -10,8 +10,10 @@
 
 ## 1. 実機が要るもの
 
-**Raspberry Pi Pico 2 W は手元にある**（2026-09-26 に `lcd-demo-rs` で動作確認済み）。
-ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未入手。
+**Raspberry Pi Pico 2 W と ESP32-S3 DevKitC-1 は手元にある**（どちらも 2026-09-26 に
+`lcd-demo-rs` で動作確認済み。`docs/verification-report.md` §6 / §7）。
+**Raspberry Pi Pico WH（RP2040）と SHT31 センサーは未入手**で、RP2040 の項目と
+I2C / sensor-display の検証はここで止まっている。
 
 ### 1.1 オーナーに聞くこと
 
@@ -78,10 +80,14 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
 
 ### 1.4 実機で最初に疑うところ
 
-**RP2350 は観測済み**（2026-09-26）。`lcd-demo-rs` を Pico 2 W で走らせ、GPIO
-（`pin.open` / `pin.write`）と SPI0 が全て成功し、host call のトレースが host
-ポートと完全一致した（14,352 行、`spi.write` の CRC-32 3,272 件を含む）。
-以下の懸念は RP2350 では解消済み。**RP2040 と ESP32-S3 は未観測のまま**で、
+**RP2350 と ESP32-S3 は観測済み**（どちらも 2026-09-26）。`lcd-demo-rs` を Pico 2 W と
+ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと完全一致し
+（どちらも 14,352 行、`spi.write` の CRC-32 3,272 件を含む）、画面にも絵が出た
+（`docs/verification-report.md` §6 / §7）。以下の懸念のうち **GPIO / SPI のレジスタ
+設定に関するもの**は RP2350 / ESP32-S3 では解消済み（`ARENA` とネイティブスタックの
+項目は解消ではなく、今も有効な注意書き）。ただし **ESP32-S3 は「トレースが完全一致
+するのにピンが動かない」を実際に踏んでいる**（`out_sel`。下の項目）ので、
+**トレースの一致だけでは GPIO が動いた証拠にならない**。**RP2040 は未観測のまま**で、
 「blink が光らない」を最初の期待値として想定すること。
 
 - RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）
