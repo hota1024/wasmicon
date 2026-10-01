@@ -3,11 +3,15 @@
 import { I2cBus, time } from "../../../bindings/assemblyscript/assembly/index";
 
 /// I2C アドレス。**サフィックスで変わる**（-AD1B が 0x44）ので、
-/// 別の品種を挿すならここと Rust 版の 2 箇所を直す。
+/// 変えるなら 3 箇所: ここ、`sensor-display-rs` の `ADDRESS`、
+/// `ports/host/tests/apps.rs` の `SHT4X_ADDR`（トレースの期待値）。
 export const ADDRESS: u16 = 0x44;
 
 /// 計測が終わるまでの待ち時間。SHT4x の高精度は最大 8.3 ms なので余裕がある。
-/// SHT3x のときと同じ 15 ms を使う（`time` は abi-spec §9 でトレース対象外）。
+/// SHT3x のときと同じ 15 ms のまま据え置いている。
+///
+/// **変えるなら Rust 版と必ず同時に変える。** `time` は abi-spec §9 でトレース
+/// 対象外なので、ここが 2 言語で食い違っても一致検査は気付かない。
 const MEASURE_MS: u32 = 15;
 
 /// CRC-8。多項式 0x31、初期値 0xFF、反転なし。

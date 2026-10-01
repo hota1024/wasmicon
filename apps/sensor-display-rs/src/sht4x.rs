@@ -4,15 +4,20 @@ use wasmicon_hal::i2c::Bus;
 use wasmicon_hal::time;
 
 /// I2C アドレス。**サフィックスで変わる**（-AD1B が 0x44）ので、
-/// 別の品種を挿すならここと AS 版の 2 箇所を直す。
+/// 変えるなら 3 箇所: ここ、`sensor-display-as` の `ADDRESS`、
+/// `ports/host/tests/apps.rs` の `SHT4X_ADDR`（トレースの期待値）。
 pub const ADDRESS: u16 = 0x44;
 
 /// 単発計測（高精度）。SHT4x のコマンドは **1 バイト**（SHT3x は 2 バイト）。
 const MEASURE: [u8; 1] = [0xFD];
 
 /// 計測が終わるまでの待ち時間。SHT4x の高精度は最大 8.3 ms なので余裕がある。
-/// SHT3x のときと同じ 15 ms を使う（短くしてもトレースには出ない。`time` は
-/// abi-spec §9 でトレース対象外）。
+/// SHT3x のときと同じ 15 ms のまま据え置いている。
+///
+/// **変えるなら AS 版と必ず同時に変える。** `time` は abi-spec §9 でトレース
+/// 対象外なので、ここが 2 言語で食い違っても `sensor_display_rs_and_as_agree`
+/// も `diff-traces.sh` も気付かない。短くしすぎると実機で変換前の値を読んで
+/// CRC 不一致や古い値になるが、それも host では再現しない。
 const MEASURE_MS: u32 = 15;
 
 /// CRC-8。多項式 0x31、初期値 0xFF、反転なし。
@@ -105,8 +110,18 @@ pub fn humidity_centi(raw_h: u16) -> i32 {
 mod tests {
     use super::{crc8, humidity_centi, temp_centi};
 
-    /// `verify/sht4x-replay.txt` の合成応答。
+    /// `verify/sht4x-replay.txt` の合成応答の**写し**。
+    /// §1.3 であのファイルを実機記録に差し替えるときは、ここも一緒に直す
+    /// （下の期待値は `FIXTURE` から導出しているので、片方だけ直すと落ちる）。
     const FIXTURE: [u8; 6] = [0x64, 0x21, 0xe0, 0x74, 0xe9, 0x70];
+
+    /// `FIXTURE` の生の測定値。`read` と同じ組み立て方をする。
+    fn fixture_raw() -> (u16, u16) {
+        (
+            (u16::from(FIXTURE[0]) << 8) | u16::from(FIXTURE[1]),
+            (u16::from(FIXTURE[3]) << 8) | u16::from(FIXTURE[4]),
+        )
+    }
 
     /// 応答の形式と CRC-8 は SHT3x と SHT4x で同一。
     /// センサーを替えてもここは変わっていない。
@@ -120,7 +135,7 @@ mod tests {
     /// **この値が動くと `bar_px` の f32 の題材も変わる**ので釘を打っておく。
     #[test]
     fn temperature_matches_fixture() {
-        assert_eq!(temp_centi(0x6421), 2344); // 23.44 °C
+        assert_eq!(temp_centi(fixture_raw().0), 2344); // 23.44 °C
         assert_eq!(temp_centi(0), -4500); // 下端 -45.00 °C
         assert_eq!(temp_centi(65535), 13000); // 上端 130.00 °C
     }
@@ -128,8 +143,8 @@ mod tests {
     /// 湿度は SHT4x で式が変わった（SHT3x は `100·raw/65535` で 4566 になる）。
     #[test]
     fn humidity_uses_the_sht4x_formula() {
-        assert_eq!(humidity_centi(0x74e9), 5108); // 51.08 %
-        assert_ne!(humidity_centi(0x74e9), 4566); // SHT3x の式に戻していない
+        // SHT3x の式なら 4566 になる値。
+        assert_eq!(humidity_centi(fixture_raw().1), 5108); // 51.08 %
     }
 
     /// 素の式は 0 未満・100 超に振れるので、データシートどおりクランプする。

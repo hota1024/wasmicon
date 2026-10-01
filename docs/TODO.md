@@ -15,8 +15,10 @@
 **温湿度センサーは SHT40 が手元にある**（2026-09-29。`docs/handoff.md` §2 の
 決定 9 を SHT31/SHT30 から SHT4x に変更し、ゲストのドライバを直した）。
 **未入手は Raspberry Pi Pico WH（RP2040）だけ**で、RP2040 の項目はここで止まって
-いる。I2C / sensor-display は **Pico 2 W と ESP32-S3 でなら閉じられる**ようになった
-（ポートの I2C 実装が §1.2 に残っている）。
+いる。I2C と sensor-display の**実装と動作確認は Pico 2 W と ESP32-S3 で進められる**
+ようになった（ポートの I2C 実装が §1.2 に残っている）。
+**ただし Phase 4/5/6 の完了条件は §1.3 のとおり ESP32-S3 と Pico WH の 2 ボードで
+定義されており、変えない。**手元の 2 枚で通しても Phase 5/6 は完了にならない。
 
 ### 1.1 オーナーに聞くこと
 
@@ -37,9 +39,12 @@
 - [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版を前提にしている
       - センサーは **SHT40 で確定**（2026-09-29）。ただし **I2C アドレスは
         サフィックスで変わる**（-AD1B が 0x44）。ドライバは `0x44` のままなので、
-        **手元の品種の刻印かバススキャンで確認すること**。違っていれば
+        **手元の品種の刻印かバススキャンで確認すること**。違っていれば **3 箇所**:
         `apps/sensor-display-rs/src/sht4x.rs` と
-        `apps/sensor-display-as/assembly/sht4x.ts` の `ADDRESS` 2 箇所
+        `apps/sensor-display-as/assembly/sht4x.ts` の `ADDRESS`、および
+        `ports/host/tests/apps.rs` の `SHT4X_ADDR`（host テストが期待する
+        トレースの値。直さないと「計測コマンドが違う」という紛らわしい
+        メッセージで落ちる）
 - [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
 - [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
 - [x] **RP2350 ボードの品種** → **Pico 2 W**（RP2350A、GP0..GP29）で確定。`NUM_GPIO` は 30 のままでよい
@@ -198,7 +203,10 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 - [ ] **ゲストの単体テストを CI で回すか**（2026-09-28）。`in_bounds` の単体
       テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れ、
       2026-09-29 に `sht4x` の換算（CRC / 温度 / 湿度のクランプ）も足したが、
-      **どちらも CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
+      **どちらも CI では走っていない**。
+      （湿度のクランプだけは 2026-10-01 に host テスト
+      `sensor_display_agrees_at_humidity_clamp_bounds` でも見るようにしたので、
+      **こちらは CI で走る**。AS 側の唯一のクランプ検査でもある。）`apps/.cargo/config.toml` が wasm32 を固定して
       いるので、ホストのトリプルを明示しないと実行できない:
 
       ```
