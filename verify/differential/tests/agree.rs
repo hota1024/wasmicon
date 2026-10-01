@@ -64,8 +64,8 @@ fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
     std::fs::read(app.join("build").join(out)).expect("ビルド結果を読めない")
 }
 
-fn sht31_replay() -> Vec<Vec<u8>> {
-    wasmicon_host::load_i2c_replay(&repo_root().join("verify/sht31-replay.txt"))
+fn sht4x_replay() -> Vec<Vec<u8>> {
+    wasmicon_host::load_i2c_replay(&repo_root().join("verify/sht4x-replay.txt"))
         .expect("記録済み応答を読めない")
 }
 
@@ -103,7 +103,7 @@ fn blink_as_agrees_with_wasmtime() {
 fn sensor_display_rs_agrees_with_wasmtime() {
     assert_agrees(
         &build_rust_app("sensor-display-rs"),
-        sht31_replay(),
+        sht4x_replay(),
         "sensor-display-rs",
     );
 }
@@ -112,7 +112,7 @@ fn sensor_display_rs_agrees_with_wasmtime() {
 fn sensor_display_as_agrees_with_wasmtime() {
     assert_agrees(
         &build_as_app("sensor-display-as", "sensor_display_as.wasm"),
-        sht31_replay(),
+        sht4x_replay(),
         "sensor-display-as",
     );
 }
