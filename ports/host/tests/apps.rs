@@ -265,14 +265,21 @@ fn lcd_demo_rs_runs_on_host() {
     assert_no_host_errors(&trace, "lcd-demo-rs");
 }
 
-/// 記録済みの SHT31 応答（`verify/sht31-replay.txt`）。
-fn sht31_replay() -> Vec<Vec<u8>> {
-    let path = repo_root().join("verify/sht31-replay.txt");
+/// SHT4x の I2C アドレス（`apps/README.md` §1）。トレースには 10 進で出る。
+///
+/// **品種のサフィックスで変わる**（-AD1B が 0x44）。ゲスト側の `ADDRESS` を
+/// 変えたらここも変える。ここに集約してあるので、アドレスが出てくるのは
+/// ゲストの Rust 版 / AS 版とこの定数の 3 箇所だけ。
+const SHT4X_ADDR: u16 = 0x44;
+
+/// 記録済みの SHT4x 応答（`verify/sht4x-replay.txt`）。
+fn sht4x_replay() -> Vec<Vec<u8>> {
+    let path = repo_root().join("verify/sht4x-replay.txt");
     wasmicon_host::load_i2c_replay(&path).expect("記録済み応答を読めない")
 }
 
 fn run_with_sensor(wasm: &[u8], label: &str) -> String {
-    match wasmicon_host::run_wasm_with(wasm, true, sht31_replay()) {
+    match wasmicon_host::run_wasm_with(wasm, true, sht4x_replay()) {
         Ok(out) => out.trace,
         Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
     }
@@ -291,14 +298,16 @@ fn sensor_display_rs_runs_on_host() {
             "{role} を引いていない:\n{trace}"
         );
     }
-    // SHT31 の単発計測コマンドを書いて 6 バイト読んでいる。
+    // SHT4x の単発計測コマンド（高精度、1 バイト）を書いて 6 バイト読んでいる。
     assert!(
-        trace.contains("[method]bus.write(1, 68, 0x2400)"),
-        "SHT31 の計測コマンドが違う:\n{trace}"
+        trace.contains(&format!("[method]bus.write(1, {SHT4X_ADDR}, 0xfd)")),
+        "SHT4x の計測コマンドが違う:\n{trace}"
     );
     assert!(
-        trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
-        "SHT31 の読み出しが違う:\n{trace}"
+        trace.contains(&format!(
+            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6]"
+        )),
+        "SHT4x の読み出しが違う:\n{trace}"
     );
     // 背景は 240 行を 1 行ずつ送る（全画面フレームバッファを持たない）。
     assert!(
@@ -316,9 +325,17 @@ fn sensor_display_as_runs_on_host() {
     let wasm = build_as_app("sensor-display-as", "sensor_display_as.wasm");
     assert_within_feature_set(&wasm, "sensor-display-as");
     let trace = run_with_sensor(&wasm, "sensor-display-as");
+    // Rust 版（`sensor_display_rs_runs_on_host`）と対称にしておく。
+    // 片方だけ SHT3x の 2 バイトコマンドに戻っても、ここで単体で気付ける。
     assert!(
-        trace.contains("[method]bus.read(1, 68, 6)\n< 0 [len=6]"),
-        "SHT31 の読み出しが違う:\n{trace}"
+        trace.contains(&format!("[method]bus.write(1, {SHT4X_ADDR}, 0xfd)")),
+        "SHT4x の計測コマンドが違う:\n{trace}"
+    );
+    assert!(
+        trace.contains(&format!(
+            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6]"
+        )),
+        "SHT4x の読み出しが違う:\n{trace}"
     );
     assert_no_host_errors(&trace, "sensor-display-as");
 }
@@ -343,6 +360,50 @@ fn sensor_display_rs_and_as_agree() {
     assert_traces_equal(&rs, &as_);
 }
 
+/// 湿度のクランプで Rust 版と AS 版が一致すること。
+///
+/// `verify/sht4x-replay.txt` の 1 件（raw_h = 0x74e9 → 51.08%）は**クランプの
+/// 上下端のちょうど中間**なので、`sensor_display_rs_and_as_agree` はクランプの
+/// どちらの分岐も踏まない。つまり片方の言語でクランプを落としても CI が通って
+/// しまう。境界を踏む合成応答で別に見る（`docs/TODO.md` §2.2 の非対称を埋める）。
+///
+/// 応答は CRC-8 が合っていないとゲストが `sensor crc failed` で降りて
+/// クランプまで到達しないので、3 バイト目 / 6 バイト目は poly 0x31 / init 0xFF で
+/// 計算した値を置いてある。温度は replay と同じ 23.44 °C に固定し、湿度だけ動かす。
+#[test]
+fn sensor_display_agrees_at_humidity_clamp_bounds() {
+    let cases: [(&str, [u8; 6]); 3] = [
+        // 素の式が -600。下端のクランプ。
+        ("raw_h=0", [0x64, 0x21, 0xe0, 0x00, 0x00, 0x81]),
+        // 素の式が -1。下端のすぐ内側（符号の扱いが分かれやすい）。
+        ("raw_h=3145", [0x64, 0x21, 0xe0, 0x0c, 0x49, 0x80]),
+        // 素の式が 11900。上端のクランプ。
+        ("raw_h=65535", [0x64, 0x21, 0xe0, 0xff, 0xff, 0xac]),
+    ];
+    let rs_wasm = build_rust_app("sensor-display-rs");
+    let as_wasm = build_as_app("sensor-display-as", "sensor_display_as.wasm");
+    for (label, frame) in cases {
+        let go = |wasm: &[u8], lang: &str| -> String {
+            match wasmicon_host::run_wasm_with(wasm, true, vec![frame.to_vec()]) {
+                Ok(out) => out.trace,
+                Err(e) => panic!(
+                    "{lang} / {label} の実行に失敗: {} [{}]",
+                    e.reason(),
+                    e.kind().name()
+                ),
+            }
+        };
+        let rs = go(&rs_wasm, "sensor-display-rs");
+        let as_ = go(&as_wasm, "sensor-display-as");
+        // 合成応答が壊れていると CRC で降りて、クランプを通らないまま一致する。
+        assert!(
+            !rs.contains(r#"log(0, "sensor crc failed")"#),
+            "{label}: 合成応答の CRC が合っていない（テスト側の誤り）:\n{rs}"
+        );
+        assert_traces_equal(&rs, &as_);
+    }
+}
+
 /// 失敗経路でも Rust 版と AS 版が一致すること。
 ///
 /// Phase 5 の一致検査はハッピーパスしか通らないが、実機では
@@ -352,7 +413,7 @@ fn sensor_display_rs_and_as_agree() {
 fn sensor_display_agrees_when_spi_is_unsupported() {
     let opts = || wasmicon_host::Options {
         trace: true,
-        i2c_replay: sht31_replay(),
+        i2c_replay: sht4x_replay(),
         spi_unsupported: true,
     };
     let go = |wasm: &[u8], label: &str| -> String {

@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-09-26
+最終更新: 2026-09-29
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -10,8 +10,15 @@
 
 ## 1. 実機が要るもの
 
-**Raspberry Pi Pico 2 W は手元にある**（2026-09-26 に `lcd-demo-rs` で動作確認済み）。
-ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未入手。
+**Raspberry Pi Pico 2 W と ESP32-S3 DevKitC-1 は手元にある**（どちらも 2026-09-26 に
+`lcd-demo-rs` で動作確認済み。`docs/verification-report.md` §6 / §7）。
+**温湿度センサーは SHT40 が手元にある**（2026-09-29。`docs/handoff.md` §2 の
+決定 9 を SHT31/SHT30 から SHT4x に変更し、ゲストのドライバを直した）。
+**未入手は Raspberry Pi Pico WH（RP2040）だけ**で、RP2040 の項目はここで止まって
+いる。I2C と sensor-display の**実装と動作確認は Pico 2 W と ESP32-S3 で進められる**
+ようになった（ポートの I2C 実装が §1.2 に残っている）。
+**ただし Phase 4/5/6 の完了条件は §1.3 のとおり ESP32-S3 と Pico WH の 2 ボードで
+定義されており、変えない。**手元の 2 枚で通しても Phase 5/6 は完了にならない。
 
 ### 1.1 オーナーに聞くこと
 
@@ -29,7 +36,15 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
         `USB-UART` 側のブリッジが CH343 (VID 0x1A86 / PID 0x55D3) で、macOS では
         `/dev/cu.usbmodem*` として見える**（CP2102N ではないので `usbserial` を
         探すと見つからない）。書き込みは `USB-OTG` 側（USB-Serial-JTAG）からも通る
-- [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版、SHT31 は I2C アドレス 0x44 を前提にしている
+- [ ] **モジュールの型番**。ILI9341 は 3.3V ロジックの SPI 版を前提にしている
+      - センサーは **SHT40 で確定**（2026-09-29）。ただし **I2C アドレスは
+        サフィックスで変わる**（-AD1B が 0x44）。ドライバは `0x44` のままなので、
+        **手元の品種の刻印かバススキャンで確認すること**。違っていれば **3 箇所**:
+        `apps/sensor-display-rs/src/sht4x.rs` と
+        `apps/sensor-display-as/assembly/sht4x.ts` の `ADDRESS`、および
+        `ports/host/tests/apps.rs` の `SHT4X_ADDR`（host テストが期待する
+        トレースの値。直さないと「計測コマンドが違う」という紛らわしい
+        メッセージで落ちる）
 - [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
 - [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
 - [x] **RP2350 ボードの品種** → **Pico 2 W**（RP2350A、GP0..GP29）で確定。`NUM_GPIO` は 30 のままでよい
@@ -73,15 +88,19 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
 - [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
   - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
   - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
-- [ ] `verify/sht31-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
+- [ ] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
 - [ ] 結果を `docs/verification-report.md` に反映する
 
 ### 1.4 実機で最初に疑うところ
 
-**RP2350 は観測済み**（2026-09-26）。`lcd-demo-rs` を Pico 2 W で走らせ、GPIO
-（`pin.open` / `pin.write`）と SPI0 が全て成功し、host call のトレースが host
-ポートと完全一致した（14,352 行、`spi.write` の CRC-32 3,272 件を含む）。
-以下の懸念は RP2350 では解消済み。**RP2040 と ESP32-S3 は未観測のまま**で、
+**RP2350 と ESP32-S3 は観測済み**（どちらも 2026-09-26）。`lcd-demo-rs` を Pico 2 W と
+ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと完全一致し
+（どちらも 14,352 行、`spi.write` の CRC-32 3,272 件を含む）、画面にも絵が出た
+（`docs/verification-report.md` §6 / §7）。以下の懸念のうち **GPIO / SPI のレジスタ
+設定に関するもの**は RP2350 / ESP32-S3 では解消済み（`ARENA` とネイティブスタックの
+項目は解消ではなく、今も有効な注意書き）。ただし **ESP32-S3 は「トレースが完全一致
+するのにピンが動かない」を実際に踏んでいる**（`out_sel`。下の項目）ので、
+**トレースの一致だけでは GPIO が動いた証拠にならない**。**RP2040 は未観測のまま**で、
 「blink が光らない」を最初の期待値として想定すること。
 
 - RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）
@@ -182,14 +201,20 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
 `apps/sensor-display-*` の u16 折り返しを直したときに出たもの。**ABI には関わらない。**
 
 - [ ] **ゲストの単体テストを CI で回すか**（2026-09-28）。`in_bounds` の単体
-      テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れたが、
-      **CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
+      テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れ、
+      2026-09-29 に `sht4x` の換算（CRC / 温度 / 湿度のクランプ）も足したが、
+      **どちらも CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
       いるので、ホストのトリプルを明示しないと実行できない:
 
       ```
       (cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
       ```
 
+      - **湿度のクランプだけは別経路で CI に入っている**（2026-10-01）。host テスト
+        `sensor_display_agrees_at_humidity_clamp_bounds` が境界を踏む合成応答で
+        Rust 版と AS 版を突き合わせるので、こちらは CI で走る。**AS 側にある
+        唯一のクランプ検査**でもある。ただし**部分的な緩和にすぎず、この項目
+        自体は未解決**（`in_bounds` と `sht4x` の換算の大半は今も CI 外）
       - 手元（macOS / aarch64）では debug / release とも通り、`in_bounds` を
         折り返す版に戻すと落ちることも確かめた。**Linux で `extern "C"` の
         未定義シンボルがリンクエラーにならないかは未確認**なので、`guest`
@@ -225,7 +250,7 @@ ESP32-S3 DevKitC-1 と Raspberry Pi Pico WH、および SHT31 センサーは未
 
 直す必要が出たときのために書いておく。
 
-- **`spi.transfer` と `i2c.write-read` は 128 バイトまで**（`ports/common` の `SCRATCH`）。送信元と受信先がどちらもゲストメモリにあり範囲が重なりうるので、送信側を一度写している。超えると `unsupported`。v0.1 の用途（SHT31 の 6 バイト、ILI9341 の ID 読み）には十分
+- **`spi.transfer` と `i2c.write-read` は 128 バイトまで**（`ports/common` の `SCRATCH`）。送信元と受信先がどちらもゲストメモリにあり範囲が重なりうるので、送信側を一度写している。超えると `unsupported`。v0.1 の用途（SHT4x の 6 バイト、ILI9341 の ID 読み）には十分
 - **`draw_text` は 12 文字まで**（`apps/README.md` §2）。超えると描かずに失敗を返す
 - **`fill_rect` は行ごとに `dc` を high に上げ直している。** CS low の 1 トランザクション
   内で `dc` は RAMWR の後に 1 回上げれば足りるので、2 回目以降は無駄な host call。
