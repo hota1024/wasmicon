@@ -203,16 +203,18 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 - [ ] **ゲストの単体テストを CI で回すか**（2026-09-28）。`in_bounds` の単体
       テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れ、
       2026-09-29 に `sht4x` の換算（CRC / 温度 / 湿度のクランプ）も足したが、
-      **どちらも CI では走っていない**。
-      （湿度のクランプだけは 2026-10-01 に host テスト
-      `sensor_display_agrees_at_humidity_clamp_bounds` でも見るようにしたので、
-      **こちらは CI で走る**。AS 側の唯一のクランプ検査でもある。）`apps/.cargo/config.toml` が wasm32 を固定して
+      **どちらも CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
       いるので、ホストのトリプルを明示しないと実行できない:
 
       ```
       (cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
       ```
 
+      - **湿度のクランプだけは別経路で CI に入っている**（2026-10-01）。host テスト
+        `sensor_display_agrees_at_humidity_clamp_bounds` が境界を踏む合成応答で
+        Rust 版と AS 版を突き合わせるので、こちらは CI で走る。**AS 側にある
+        唯一のクランプ検査**でもある。ただし**部分的な緩和にすぎず、この項目
+        自体は未解決**（`in_bounds` と `sht4x` の換算の大半は今も CI 外）
       - 手元（macOS / aarch64）では debug / release とも通り、`in_bounds` を
         折り返す版に戻すと落ちることも確かめた。**Linux で `extern "C"` の
         未定義シンボルがリンクエラーにならないかは未確認**なので、`guest`
