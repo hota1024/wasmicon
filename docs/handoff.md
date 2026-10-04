@@ -152,7 +152,7 @@
   - `ports/host` で両ゲストを走らせ、**トレース全文（1215 行）が完全一致**することをテストで検査する（`ports/host/tests/apps.rs`）。abi-spec §9 により `time` はトレースに出ないので、全文一致がそのまま §2-10 の「`time` を除く全 host call と結果が一致」になる。`spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが同一」を意味する
   - ただしこれは **host（1 プラットフォーム）上での一致**。RP2040 のソフトフロートと Xtensa の f32 FPU を跨いだ一致は Phase 6 の実測対象で、まだ確かめていない
   - センサーは `verify/sht4x-replay.txt` の記録済み応答を `WASMICON_I2C_REPLAY` で流し込む。実機から記録したものへの差し替えは Phase 6
-  - 実機の I2C / SPI は `ports/rp2040` / `ports/esp32s3` でまだ `unsupported` を返す。ここを実装しないと実機では動かない
+  - 実機の I2C / SPI は `ports/rp2040` がまだ `unsupported` を返す（Pico WH 未入手）。`ports/rp2350` / `ports/esp32s3` は SPI が実機で動き、I2C は 2026-10-04 に実装したが未検証（docs/TODO.md §1.2 / §1.3）
 
 ### Phase 6: クロスボード検証
 

@@ -23,7 +23,8 @@
 host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出た
 （[`docs/verification-report.md`](docs/verification-report.md) §7）。
 **これで Phase 6「同一バイナリが 2 ボードで同じトレースを出す」は達成。**
-残っているのは I2C と sensor-display（→ [`docs/TODO.md`](docs/TODO.md)）。
+残っているのは sensor-display の実機確認（I2C は RP2350 / ESP32-S3 で実装済みだが未検証）
+→ [`docs/TODO.md`](docs/TODO.md)。
 
 | 検証 | 状態 |
 |---|---|
@@ -33,7 +34,7 @@ host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出
 | RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
 | ESP32-S3 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
 | 同一バイナリが 2 ボードで同じトレースを出す | 達成（2026-09-26、RP2350 と ESP32-S3） |
-| 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達（I2C 未実装で sensor-display が動かない）** |
+| 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達**（I2C は実装済み・未検証。sensor-display は未観測） |
 
 詳細は [`docs/verification-report.md`](docs/verification-report.md)。
 
