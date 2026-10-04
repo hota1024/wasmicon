@@ -120,7 +120,7 @@
 
 ### Phase 3: Rust / AS バインディング + blink
 
-- Rust: `no_std` クレート、`wasm32-unknown-unknown`。生成 extern を `Pin` / `I2cBus` / `SpiBus` の安全ラッパ（`Drop` で `[resource-drop]`）で包む。ビルドフラグ: `-C target-feature=-reference-types,+sign-ext,+nontrapping-fptoint,+bulk-memory,+mutable-globals,+multivalue`、`--initial-memory=65536`、`-z stack-size=8192`、`panic=abort`、`opt-level=z`。
+- Rust: `no_std` クレート、`wasm32-unknown-unknown`。生成 extern を `Pin` / `I2cBus` / `SpiBus` の安全ラッパ（`Drop` で `[resource-drop]`）で包む。ビルドフラグ: `-C target-feature=-reference-types,+sign-ext,+nontrapping-fptoint,+bulk-memory,+mutable-globals,+multivalue`、`--initial-memory=65536`、`-z stack-size=8192`、`panic=abort`、`opt-level=z`。**実体の正は `tools/wasmicon-cli/src/flags.rs`**（`apps/.cargo/config.toml` と `wasmicon new` の雛形はそこから出る。`docs/app-workflow.md` §4.4）。
 - AS: `--runtime stub`、`--initialMemory 1`、`--disable simd,threads,exception-handling`、`--enable sign-extension,nontrapping-f2i,bulk-memory,mutable-globals`。`env.abort` は AS 用に小さな shim をホストへ用意（トラップに変換）。
 - **完了条件**: `blink-rs` と `blink-as` の Wasm を `wasm-tools validate --features=...` で対応機能セット内であることを確認し、`ports/host` で同じ GPIO トレースを出す。→ **達成（2026-09-10）**。`ports/host/tests/apps.rs` が両方をビルドして機能検査し、`gpio` と `board` の host call 列が完全一致することを検査する。blink-rs 796 バイト / blink-as 2.1 KB。
 - AssemblyScript のビルドはリポジトリルートの npm workspace（`npm ci`）+ `npx asc`。asc がスコープ付きパッケージ (`@wasmicon/hal`) を `~lib` として解決できないので、アプリ側は相対パスで import している。
