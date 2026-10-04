@@ -613,6 +613,30 @@ stty -f /dev/cu.usbserial-21420 115200 raw -echo   # 開いている間に当て
 コマンドを一字も変えずに実行して通った**（`picotool load -o 0x10100000
 <file>.bin`）。その状態で走らせたのが上のトレース一致。
 
+### `wasmicon deploy` が 1 コマンドで通った（同日）
+
+検査・画像の用意・書き込み・リセットを畳んだ `deploy` を実機で通した。
+**スロットの中身を lcd-demo（4,088 B）から blink（775 B）に差し替えた**ので、
+入れ替わったことがトレースの先頭で分かる。
+
+```
+$ wasmicon deploy blink_rs.wasm --board rp2350
+blink_rs.bin → rp2350 のスロット（0x10100000）  791 B（wasm 775 B、crc32 d6c9dce3）
+The device was rebooted into application mode.
+→ 走っている。トレースを見るなら: ...
+
+（実機のシリアル）
+wasmicon rp2350
+wasmicon: slot 775 B crc32=d6c9dce3
+[wasm] blink start
+```
+
+CRC は `deploy` の報告値と一致し、**トレースも host と完全一致した（20 行）**。
+
+`deploy` は**走らないものを焼かない**（焼く前に `check --board` を通す）。
+`tools/wasmicon-cli/tests/deploy.rs` が、sensor-display を rp2040 に送ろうと
+すると**画像も書かずに**止まることを固定している。
+
 ### まだ見ていないこと
 
 - **ファームの末尾とスロットの重なり検査**（`__flash_binary_end`）は発動して

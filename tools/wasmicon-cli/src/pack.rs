@@ -30,6 +30,7 @@ pub struct Options {
 pub fn run(opts: &Options) -> Result<bool> {
     let wasm =
         std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
+    let image = build(&wasm);
 
     // **拡張子は `.bin`。** `picotool load` は拡張子でファイル種別を判定する
     // ので、`.slot` のような独自の名前だと
@@ -41,41 +42,18 @@ pub fn run(opts: &Options) -> Result<bool> {
         p
     });
 
-    let header = slot::header(&wasm);
-    let mut image = Vec::with_capacity(slot::image_len(wasm.len()));
-    image.extend_from_slice(&header);
-    image.extend_from_slice(&wasm);
-
     // ボードが分かるなら、スロットに収まるかを**書く前に**見る。
     // 入らないものを焼いても、実機で「slot truncated」が出るまで分からない。
     let board = match &opts.board {
         None => None,
-        Some(name) => Some(profile::by_name(name).with_context(|| {
-            let known: Vec<&str> = profile::PROFILES.iter().map(|p| p.name).collect();
-            format!("知らないボード {name}（あるのは {}）", known.join(" / "))
-        })?),
+        Some(name) => Some(resolve_board(name)?),
     };
     if let Some(p) = board {
-        match p.slot {
-            None => bail!(
-                "{} のスロットの置き場所がまだ決まっていない（docs/TODO.md §5-2）",
-                p.name
-            ),
-            Some(sl) if image.len() > sl.len as usize => bail!(
-                "{} のスロットに入らない（{} B > {} B）",
-                p.name,
-                image.len(),
-                sl.len
-            ),
-            Some(_) => {}
-        }
+        fits(p, image.len())?;
     }
 
     std::fs::write(&out, &image).with_context(|| format!("{} を書けない", out.display()))?;
-
-    // CRC はヘッダの 12..16（§3.4）。デバイス側のログと突き合わせられるよう
-    // 同じ値を出す。
-    let crc = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+    let crc = crc_of(&image);
     println!(
         "{}  {} B（wasm {} B + ヘッダ {} B、crc32 {crc:08x}）",
         out.display(),
@@ -100,5 +78,52 @@ pub fn run(opts: &Options) -> Result<bool> {
     Ok(true)
 }
 
-/// RP2040 / RP2350 の XIP の先頭。`picotool` に渡す絶対アドレスの基準。
-const XIP_BASE: u64 = 0x1000_0000;
+/// RP2040 / RP2350 の XIP の先頭。`picotool` に渡すアドレスの基準。
+pub const XIP_BASE: u64 = 0x1000_0000;
+
+/// スロット画像を組む（ヘッダ + wasm）。
+#[must_use]
+pub fn build(wasm: &[u8]) -> Vec<u8> {
+    let mut image = Vec::with_capacity(slot::image_len(wasm.len()));
+    image.extend_from_slice(&slot::header(wasm));
+    image.extend_from_slice(wasm);
+    image
+}
+
+/// 画像のヘッダに入っている CRC（§3.4 の 12..16）。
+///
+/// デバイス側のログと突き合わせられるよう、同じ値を出すために使う。
+#[must_use]
+pub fn crc_of(image: &[u8]) -> u32 {
+    u32::from_le_bytes([image[12], image[13], image[14], image[15]])
+}
+
+/// `--board` を解決する。
+///
+/// # Errors
+/// 知らない名前のとき。
+pub fn resolve_board(name: &str) -> Result<&'static profile::Profile> {
+    profile::by_name(name).with_context(|| {
+        let known: Vec<&str> = profile::PROFILES.iter().map(|p| p.name).collect();
+        format!("知らないボード {name}（あるのは {}）", known.join(" / "))
+    })
+}
+
+/// そのボードのスロットに収まるか。
+///
+/// # Errors
+/// 置き場所が決まっていない、または入らないとき。
+pub fn fits(p: &profile::Profile, image_len: usize) -> Result<profile::Slot> {
+    match p.slot {
+        None => bail!(
+            "{} のスロットの置き場所がまだ決まっていない（docs/TODO.md §5-2）",
+            p.name
+        ),
+        Some(sl) if image_len > sl.len as usize => bail!(
+            "{} のスロットに入らない（{image_len} B > {} B）",
+            p.name,
+            sl.len
+        ),
+        Some(sl) => Ok(sl),
+    }
+}

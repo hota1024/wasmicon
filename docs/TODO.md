@@ -572,9 +572,15 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         （XIP の番地や RAM への写しはトレースに出ない）
       - **失うもの**: 焼いた直後に「ランタイムが decode → run まで通る」ことを
         実機で確かめる足場。host テストと最初の `deploy` で代替する
-- [ ] **`deploy` の 1 段目**: 既存フラッシャでスロットだけ書く
-      （ESP32-S3 は `espflash write-bin`、Pico は UF2 か `picotool load -o`）。
-      **この時点で ESP32-S3 はボタン操作不要**
+- [x] **`deploy` の 1 段目**（2026-10-04 完了、RP2040 / RP2350）。検査・
+      画像の用意・`picotool load -t bin -o <アドレス>`・リセットを畳んだ。
+      **Pico 2 W で 1 コマンド通し済み**（`docs/verification-report.md` §9）
+      - **走らないものを焼かない**（焼く前に `check --board` を通す）。
+        `tests/deploy.rs` が、sensor-display を rp2040 に送ろうとすると
+        **画像も書かずに**止まることを固定している
+      - トレースの取り込み手順（`cat` で開いたまま `stty`）を最後に出す
+      - **ESP32-S3 は未実装**（スロットの置き場所が未決。§5-2）。
+        あちらは `espflash write-bin` で**ボタン操作不要**になる
 - [ ] **ファームが自分を名乗るようにする**（`info` とバナー。
       `docs/app-workflow.md` §3.8）。今バナーは `wasmicon rp2350` の 1 行だけで
       **版も git も入っていない**（`ports/rp2350/src/main.rs:140`）。
