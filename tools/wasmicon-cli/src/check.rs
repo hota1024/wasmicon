@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::manifest::Manifest;
 use wasmicon_core::module::{ExportDesc, ImportDesc};
 use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
 use wasmicon_port::profile::{self, Interfaces, Profile};
@@ -140,6 +141,9 @@ pub struct Verdict {
     pub unimplemented: Vec<String>,
     /// プロファイルに無い役割名（**参考**。`fails()` には数えない）。
     pub missing_roles: Vec<&'static str>,
+    /// `wasmicon.toml` が宣言した役割のうち、このボードに無いもの。
+    /// **こちらは宣言なので `fails()` に数える。**
+    pub missing_declared_roles: Vec<&'static str>,
 }
 
 impl Verdict {
@@ -163,7 +167,9 @@ impl Verdict {
     /// AssemblyScript には当たらない）なので、終了コードを左右させない。
     #[must_use]
     pub fn fails(&self) -> usize {
-        usize::from(self.validate.is_err()) + self.unimplemented.len()
+        usize::from(self.validate.is_err())
+            + self.unimplemented.len()
+            + self.missing_declared_roles.len()
     }
 
     #[must_use]
@@ -176,6 +182,9 @@ pub struct Options {
     pub path: PathBuf,
     /// `--board`。`None` なら全ボードを見る（同一バイナリが本題なので既定）。
     pub board: Option<String>,
+    /// `wasmicon.toml`（§4.7）。**`[requirements] pin-roles` があると
+    /// 役割の照合が「参考」から「保証」に変わる。**
+    pub manifest: Option<Manifest>,
 }
 
 /// 検査して結果を出す。全ボードが通れば `true`。
@@ -192,13 +201,18 @@ pub fn run(opts: &Options) -> Result<bool> {
     };
 
     let facts = facts(&wasm)?;
-    print_module(&opts.path, &wasm, &facts);
+    let declared: Option<&[&'static str]> = opts
+        .manifest
+        .as_ref()
+        .filter(|m| !m.pin_roles.is_empty())
+        .map(|m| m.pin_roles.as_slice());
+    print_module(&opts.path, &wasm, &facts, declared);
 
     let mut all_ok = facts.failures() == 0;
     for board in boards {
-        let v = judge(&wasm, board, &facts);
+        let v = judge(&wasm, board, &facts, declared);
         println!();
-        print_verdict(&v, &facts, board);
+        print_verdict(&v, &facts, board, declared);
         all_ok &= v.is_ok();
     }
     Ok(all_ok)
@@ -271,8 +285,16 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
 }
 
 /// 1 ボード分を判定する。
+///
+/// `declared` は `wasmicon.toml` の `[requirements] pin-roles`。
+/// **宣言があるときだけ役割の不足を失敗として数える**（走査の結果は参考）。
 #[must_use]
-pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
+pub fn judge(
+    wasm: &[u8],
+    p: &'static Profile,
+    f: &Facts,
+    declared: Option<&[&'static str]>,
+) -> Verdict {
     let (validate, stage) = match instantiate_with(wasm, p) {
         Ok(()) => (Ok(p.config.max_memory_pages), Stage::Instantiate),
         Err((stage, e)) => (Err(e), stage),
@@ -292,12 +314,20 @@ pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
         .filter(|r| !p.roles.iter().any(|(name, _)| name == r))
         .collect();
 
+    let missing_declared_roles = declared
+        .unwrap_or(&[])
+        .iter()
+        .copied()
+        .filter(|r| !p.roles.iter().any(|(name, _)| name == r))
+        .collect();
+
     Verdict {
         board: p.name,
         validate,
         stage,
         unimplemented,
         missing_roles,
+        missing_declared_roles,
     }
 }
 
@@ -423,7 +453,7 @@ fn reason(e: wasmicon_core::Error) -> String {
 
 // ---- 印字 ----
 
-fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
+fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[&'static str]>) {
     let name = path.file_name().unwrap_or(path.as_os_str());
     println!("{}  {} B", name.to_string_lossy(), thousands(wasm.len()));
     println!();
@@ -491,6 +521,19 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
         None => row("table", "なし", ""),
     }
 
+    match declared {
+        Some(roles) => row(
+            "roles",
+            &roles.join(", "),
+            "wasmicon.toml の宣言（照合は保証）",
+        ),
+        None => row(
+            "roles",
+            "宣言が無い",
+            "wasmicon.toml に書くと照合が保証になる",
+        ),
+    }
+
     // ここまでがボードに依存しない判定。ボードごとの節に混ぜると、
     // 同じ失敗が全ボードに重複して出て、どれがボード固有か読めなくなる。
     if f.failures() > 0 {
@@ -498,7 +541,7 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
     }
 }
 
-fn print_verdict(v: &Verdict, f: &Facts, p: &Profile) {
+fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[&'static str]>) {
     println!("[{}]", v.board);
 
     match (&v.validate, f.mem_pages) {
@@ -526,7 +569,22 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile) {
         );
     }
 
-    if f.roles_seen.is_empty() {
+    if let Some(declared) = declared {
+        // 宣言があるなら走査は出さない（保証の方が強い）。
+        if v.missing_declared_roles.is_empty() {
+            row("roles", &declared.join(", "), &format!("{} にある", p.name));
+        } else {
+            row(
+                "roles",
+                &declared.join(", "),
+                &format!(
+                    "{} に無い: {}  ← 落ちる",
+                    p.name,
+                    v.missing_declared_roles.join(", ")
+                ),
+            );
+        }
+    } else if f.roles_seen.is_empty() {
         row("roles", "見つからない", "（参考）");
     } else {
         let seen = f.roles_seen.join(", ");

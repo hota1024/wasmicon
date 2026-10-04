@@ -73,7 +73,7 @@ fn blink_rs_passes_on_every_board() {
     assert!(!f.per_iface.contains_key("spi"));
 
     for p in profile::PROFILES {
-        let v = check::judge(&wasm, p, &f);
+        let v = check::judge(&wasm, p, &f, None);
         assert!(
             v.is_ok(),
             "{} で落ちた（{} 件、未実装 {:?}）",
@@ -93,7 +93,7 @@ fn sensor_display_fails_only_on_rp2040() {
     assert!(f.per_iface.contains_key("i2c"), "SHT4x を I2C で読む");
     assert!(f.per_iface.contains_key("spi"), "ILI9341 を SPI で描く");
 
-    let rp2040 = check::judge(&wasm, &profile::RP2040, &f);
+    let rp2040 = check::judge(&wasm, &profile::RP2040, &f, None);
     assert!(!rp2040.is_ok(), "rp2040 は I2C / SPI が未実装なので落ちる");
     let mut unimpl = rp2040.unimplemented.clone();
     unimpl.sort();
@@ -104,7 +104,7 @@ fn sensor_display_fails_only_on_rp2040() {
     );
 
     for p in [&profile::RP2350, &profile::ESP32S3, &profile::HOST] {
-        let v = check::judge(&wasm, p, &f);
+        let v = check::judge(&wasm, p, &f, None);
         assert!(v.is_ok(), "{} では通る（{} 件落ちた）", p.name, v.fails());
     }
 }
@@ -118,15 +118,21 @@ fn memory_limit_is_per_board() {
 
     assert_eq!(f.mem_pages, Some(4));
     assert!(
-        check::judge(&wasm, &profile::HOST, &f).validate.is_ok(),
+        check::judge(&wasm, &profile::HOST, &f, None)
+            .validate
+            .is_ok(),
         "host は 65536 ページまで"
     );
     assert!(
-        check::judge(&wasm, &profile::RP2350, &f).validate.is_ok(),
+        check::judge(&wasm, &profile::RP2350, &f, None)
+            .validate
+            .is_ok(),
         "rp2350 は 4 ページまで"
     );
     assert!(
-        check::judge(&wasm, &profile::RP2040, &f).validate.is_err(),
+        check::judge(&wasm, &profile::RP2040, &f, None)
+            .validate
+            .is_err(),
         "rp2040 は 2 ページまでなので validate が落ちる"
     );
 }
@@ -205,6 +211,44 @@ fn the_run_export_must_take_and_return_nothing() {
         "引数付きの run は落とす"
     );
     assert_eq!(f.failures(), 1, "run の型違いを 1 件として数える");
+}
+
+#[test]
+fn a_declaration_turns_the_role_check_into_a_guarantee() {
+    // 走査は参考（部分一致で誤検出し、AssemblyScript には当たらない）。
+    // `wasmicon.toml` の宣言があれば列挙が確定するので、**送る前に**
+    // 「このボードにこの役割は無い」と言える（§4.7）。
+    //
+    // 役割を 1 つだけ持つプロファイルを組んで、宣言した 2 つのうち
+    // 片方が無い状態を作る。
+    let wasm = wat_memory_pages(1);
+    let f = facts_of(&wasm);
+    let only_led: &[(&str, u32)] = &[("led", 2)];
+    let board = Profile {
+        name: "led-only",
+        config: profile::RP2350.config,
+        interfaces: Interfaces::ALL,
+        roles: only_led,
+        arena: profile::RP2350.arena,
+        scratch: profile::RP2350.scratch,
+    };
+    // `Profile` は `&'static` を要求するので leak する（テストの中だけ）。
+    let board: &'static Profile = Box::leak(Box::new(board));
+
+    // 宣言が無いと、このモジュールには役割名の文字列が無いので何も言えない。
+    let without = check::judge(&wasm, board, &f, None);
+    assert!(without.is_ok(), "宣言が無ければ役割では落とさない");
+
+    // 宣言があると、無い役割が失敗になる。
+    let declared: &[&str] = &["led", "lcd-cs"];
+    let with = check::judge(&wasm, board, &f, Some(declared));
+    assert_eq!(with.missing_declared_roles, ["lcd-cs"]);
+    assert!(!with.is_ok(), "宣言した役割が無いので落ちる");
+    assert_eq!(with.fails(), 1);
+
+    // 全部あるボードなら通る。
+    let ok = check::judge(&wasm, &profile::RP2350, &f, Some(declared));
+    assert!(ok.is_ok(), "rp2350 には 4 つ揃っている");
 }
 
 /// `run` が `(i32) -> ()` のモジュール。abi-spec §3.3 違反。
