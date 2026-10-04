@@ -25,10 +25,25 @@
 //!   組み合わせに張り付けるので、**この 1 点だけ揃っていない**
 //!   （docs/TODO.md §2.1）
 //!
-//! I2C はまだ `unsupported`。
+//! I2C は I2C0 を `esp-hal` の `i2c::master` ドライバで使う（SPI と同じ理由で
+//! レジスタ直叩きにしていない）。`ports/rp2350` と揃えた点:
+//!
+//! - **失敗条件**。`index != 0` は `unsupported`。アドレスが 7 bit の外なら
+//!   `invalid-argument`（`esp-hal` が `AddressInvalid` を返す / rp2350 は
+//!   自分で検査する）。host の mock はアドレスを検査しないので、
+//!   **そこだけ揃っていない**（docs/TODO.md §2.1）
+//! - **タイムアウト**。`esp-hal` は `Error::Timeout` を返す。rp2350 も
+//!   TIMER0 で実時間を計って `timeout` を返すようにしてある
+//! - **内部プルアップ**。`esp-hal` の `connect_pin` が SDA/SCL に必ず
+//!   `Pull::Up` を掛ける（1.2.1 の `i2c/master/low_level/mod.rs`）。
+//!   rp2350 側もそれに合わせて `pue` を立てている。ただしどちらも弱い
+//!   補助で、**外部 10 kΩ のプルアップが要る**
+//!
+//! **I2C は実機では未検証**（docs/TODO.md §1.2）。
 
 use esp_hal::gpio::AnyPin;
-use esp_hal::peripherals::{GPIO, IO_MUX, SPI2};
+use esp_hal::i2c::master::{Config as HalI2cConfig, Error as HalI2cError, I2c};
+use esp_hal::peripherals::{GPIO, I2C0, IO_MUX, SPI2};
 use esp_hal::spi::master::{Config as HalSpiConfig, Spi};
 use esp_hal::spi::Mode as HalSpiMode;
 use esp_hal::time::Rate;
@@ -89,6 +104,11 @@ const SPI2_SCK: u8 = 12;
 const SPI2_MOSI: u8 = 11;
 const SPI2_MISO: u8 = 13;
 
+/// I2C0 に割り当てるピン（abi-spec §8）。`SPI2_*` と同じ理由で
+/// `reserved` には入れていない。
+const I2C0_SDA: u8 = 8;
+const I2C0_SCL: u8 = 9;
+
 /// トレースとログを出す先。
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
@@ -100,21 +120,63 @@ pub struct EspBoard<S: Serial> {
     /// 開いている SPI2 のドライバ。`spi_close` で落とすと `Drop` が
     /// ピンの配線とペリフェラルのクロックを戻す。
     spi: Option<Spi<'static, Blocking>>,
+    /// 開いている I2C0 のドライバ。`spi` と同じく `Drop` 任せで、
+    /// GPIO8/9 を自前で戻すことはしない。
+    i2c: Option<I2c<'static, Blocking>>,
 }
 
 impl<S: Serial> EspBoard<S> {
     /// # Safety
-    /// GPIO / IO_MUX / SPI2、および SPI2 に割り当てた GPIO
-    /// (`SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO`) をこのボードが排他的に
-    /// 使うこと。
+    /// GPIO / IO_MUX / SPI2 / I2C0、および SPI2 と I2C0 に割り当てた GPIO
+    /// (`SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` / `I2C0_SDA` / `I2C0_SCL`) を
+    /// このボードが排他的に使うこと。
     #[must_use]
     pub unsafe fn new(serial: S) -> Self {
-        EspBoard { serial, spi: None }
+        EspBoard {
+            serial,
+            spi: None,
+            i2c: None,
+        }
     }
 
     /// シリアルへの参照。失敗の理由を出すのに使う。
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
+    }
+}
+
+/// 7 bit アドレスを `esp-hal` の型に直す。
+///
+/// `wit/i2c.wit` は 7 bit アドレスしか定めていない。範囲外は
+/// `invalid-argument`。**`ports/rp2350` も同じ判定**（host の mock だけは
+/// 検査しない。docs/TODO.md §2.1）。
+fn i2c_addr(address: u16) -> BoardResult<u8> {
+    if address > 0x7f {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    Ok(address as u8)
+}
+
+/// `esp-hal` の I2C エラーを ABI のエラーコードに直す（abi-spec §7）。
+///
+/// `ports/rp2350` は `IC_TX_ABRT_SOURCE` を見て同じ振り分けをする:
+/// アドレス / データの NACK は `nack`、調停負けなどは `io`。
+/// host の mock も相手が居ないときは `nack` を返す。
+fn i2c_error(e: HalI2cError) -> ErrorCode {
+    match e {
+        // 相手が応答しない。実機で最初に出るのはこれ。
+        HalI2cError::AcknowledgeCheckFailed(_) => ErrorCode::Nack,
+        HalI2cError::Timeout => ErrorCode::Timeout,
+        // 長さ 0 と範囲外アドレスは Hal 側 / 呼び出し側で弾いているが、
+        // ドライバが先に気付いたらこちらに来る。
+        HalI2cError::ZeroLengthInvalid | HalI2cError::AddressInvalid(_) => {
+            ErrorCode::InvalidArgument
+        }
+        // FIFO より長い転送。Hal 側が SCRATCH (128) で切っているので
+        // v0.1 では来ないが、来たら「このプラットフォームでは無理」。
+        HalI2cError::FifoExceeded => ErrorCode::Unsupported,
+        // 調停負け・コマンド列の不整合などバス側の失敗。
+        _ => ErrorCode::Io,
     }
 }
 
@@ -266,25 +328,96 @@ impl<S: Serial> Board for EspBoard<S> {
 
     // --- I2C は Phase 5 で実装する（docs/TODO.md §1.2） ---
 
-    fn i2c_open(&mut self, _index: u32, _speed: Speed) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+    // --- I2C。index 0 = I2C0 (SDA=GPIO8, SCL=GPIO9) ---
+
+    fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
+        // I2C1 もあるが、v0.1 で割り当てているのは I2C0 だけ（abi-spec §8）。
+        // Hal 側で index < MAX_I2C は検査済み。SPI と同じ判定にしてある。
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        // Hal 側が二重 open を Busy で弾くので普通はここに残っていないが、
+        // 残っていたら先に落とす（`steal` したペリフェラルを二重に持たない）。
+        self.i2c = None;
+
+        let hz = match speed {
+            Speed::Standard => 100_000,
+            Speed::Fast => 400_000,
+            Speed::FastPlus => 1_000_000,
+        };
+        let config = HalI2cConfig::default().with_frequency(Rate::from_hz(hz));
+
+        // SAFETY: EspBoard::new の契約により、I2C0 と I2C0_* のピンはこの
+        // ボードだけが触る。self.i2c を先に None にしてあるので、同じものを
+        // 指すドライバが同時に 2 つ存在することはない。
+        let (i2c0, sda, scl) = unsafe {
+            (
+                I2C0::steal(),
+                AnyPin::steal(I2C0_SDA),
+                AnyPin::steal(I2C0_SCL),
+            )
+        };
+        // `with_sda` / `with_scl` がオープンドレイン + 内部プルアップを掛ける。
+        // 外部 10 kΩ が別途要ることはモジュールのコメントに書いてある。
+        let i2c = I2c::new(i2c0, config)
+            .map_err(|_| ErrorCode::Unsupported)?
+            .with_sda(sda)
+            .with_scl(scl);
+        self.i2c = Some(i2c);
+        Ok(())
     }
-    fn i2c_write(&mut self, _index: u32, _address: u16, _data: &[u8]) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+
+    fn i2c_write(&mut self, index: u32, address: u16, data: &[u8]) -> BoardResult<()> {
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        let addr = i2c_addr(address)?;
+        let bus = self.i2c.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        bus.write(addr, data).map_err(i2c_error)
     }
-    fn i2c_read(&mut self, _index: u32, _address: u16, _buf: &mut [u8]) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+
+    fn i2c_read(&mut self, index: u32, address: u16, buf: &mut [u8]) -> BoardResult<usize> {
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        let addr = i2c_addr(address)?;
+        let n = buf.len();
+        let bus = self.i2c.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        bus.read(addr, buf).map_err(i2c_error)?;
+        Ok(n)
     }
+
     fn i2c_write_read(
         &mut self,
-        _index: u32,
-        _address: u16,
-        _data: &[u8],
-        _buf: &mut [u8],
+        index: u32,
+        address: u16,
+        data: &[u8],
+        buf: &mut [u8],
     ) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        let addr = i2c_addr(address)?;
+        let n = buf.len();
+        let bus = self.i2c.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        // write → Repeated START → read を 1 トランザクションで出す。
+        //
+        // **SHT4x はこれで読めない。** 計測コマンドを書いたあと STOP を出して
+        // 変換時間だけ待つ必要があるので、ゲストは `write` / `sleep-ms` /
+        // `read` に分けている（apps/README.md §1）。v0.1 で `write-read` を
+        // 使う相手は無い（ILI9341 の ID 読みは SPI 側）。
+        bus.write_read(addr, data, buf).map_err(i2c_error)?;
+        Ok(n)
     }
-    fn i2c_close(&mut self, _index: u32) {}
+
+    fn i2c_close(&mut self, index: u32) {
+        if index != 0 {
+            return;
+        }
+        // `Drop` がピンの配線とペリフェラルのクロックを戻す。
+        // `spi_close` と同じく GPIO8/9 を自前で触ることはしない。
+        self.i2c = None;
+    }
 
     // --- SPI。index 0 = SPI2 (SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13) ---
 

@@ -16,7 +16,11 @@
 //! 型付きピンを要求するが、ボードは `Peripherals::steal()` で動くので
 //! 所有権を渡せない。GPIO と同じ書き方に揃えてある。
 //! GPIO と SPI は Pico 2 W 実機で確認済み（docs/verification-report.md §6）。
-//! I2C はまだ `unsupported`。
+//!
+//! I2C は I2C0（DW_apb_i2c）を同じくレジスタ直叩きで使う。初期化と転送の
+//! 手順は `rp235x-hal` の `i2c/controller.rs` に合わせてあるが、**`assert!` を
+//! 使わずエラーコードを返す**（パニックハンドラは理由を出せない。
+//! docs/TODO.md §1.4）。**実機では未検証**（docs/TODO.md §1.2）。
 
 use rp235x_hal::pac;
 use wasmicon_core::generated::ErrorCode;
@@ -59,6 +63,24 @@ const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 const SPI0_SCK: usize = 18;
 const SPI0_MOSI: usize = 19;
 const SPI0_MISO: usize = 16;
+
+/// I2C0 に割り当てるピン（abi-spec §8）。FUNCSEL=3 が I2C0 に繋がる。
+///
+/// `SPI0_*` と同じ理由で `RESERVED` には入れていない。
+const I2C0_SDA: usize = 4;
+const I2C0_SCL: usize = 5;
+
+/// I2C の 1 バイトあたりの待ち上限。
+///
+/// **仕様ではなく診断のための値**。クロックが止まる・相手が SCL を握り
+/// 続けるといった状況で無言で固まらないようにするだけのもの。100 kHz で
+/// 1 バイト（9 ビット）は 90 µs なので 25 ms は 250 倍以上の余裕があり、
+/// 正常系で踏むことはない。踏んだら `timeout` を返す。
+///
+/// 反復回数ではなく TIMER0 の実時間で計るのは、回数だと `opt-level` で
+/// 意味が変わるため。`ports/esp32s3` は `esp-hal` が同じ役割の
+/// `Error::Timeout` を返すので、**2 つのポートはここで揃っている**。
+const I2C_TIMEOUT_US: u64 = 25_000;
 
 /// トレースとログを出す先。
 pub trait Serial {
@@ -113,6 +135,167 @@ impl<S: Serial> Pico2Board<S> {
     fn spi0() -> pac::SPI0 {
         // SAFETY: 同上。SPI0 はこのボードだけが触る。
         unsafe { pac::Peripherals::steal().SPI0 }
+    }
+
+    fn i2c0() -> pac::I2C0 {
+        // SAFETY: 同上。I2C0 はこのボードだけが触る。
+        unsafe { pac::Peripherals::steal().I2C0 }
+    }
+
+    /// 現在のマイクロ秒。TIMER0 は 1 MHz なのでそのまま使える。
+    ///
+    /// TIMELR を読むと TIMEHR がラッチされるので、順序を守る。
+    fn micros() -> u64 {
+        let t = Self::timer();
+        let lo = t.timelr().read().bits();
+        let hi = t.timehr().read().bits();
+        (u64::from(hi) << 32) | u64::from(lo)
+    }
+
+    /// `IC_TX_ABRT_SOURCE` を読み、立っていれば握ってエラーに変える。
+    ///
+    /// **このレジスタは `IC_CLR_TX_ABRT` を読むまでクリアされない**
+    /// （`IC_CLR_TX_ABRT` 自体は常に 0 を読む）。クリアを忘れると TX FIFO が
+    /// 再武装されず、次の転送が通らない。
+    ///
+    /// アボートのときハードウェアが STOP を自動で出すので、ここで STOP を
+    /// 送る必要はない（`rp235x-hal` の `write_internal` のコメントと同じ）。
+    fn i2c_take_abort(i2c: &pac::I2C0) -> BoardResult<()> {
+        let src = i2c.ic_tx_abrt_source().read();
+        if src.bits() == 0 {
+            return Ok(());
+        }
+        // 読んでクリアする。
+        let _ = i2c.ic_clr_tx_abrt().read();
+        // アドレス / データが NACK されたのか、それ以外（調停負けなど）か。
+        // host の mock は相手が居ないとき `nack` を返すので、そこに揃える。
+        let nacked = src.abrt_7b_addr_noack().bit_is_set()
+            || src.abrt_10addr1_noack().bit_is_set()
+            || src.abrt_10addr2_noack().bit_is_set()
+            || src.abrt_txdata_noack().bit_is_set()
+            || src.abrt_gcall_noack().bit_is_set();
+        Err(if nacked {
+            ErrorCode::Nack
+        } else {
+            ErrorCode::Io
+        })
+    }
+
+    /// STOP が出るまで待ってフラグを落とす。
+    fn i2c_wait_stop(i2c: &pac::I2C0) -> BoardResult<()> {
+        let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+        while i2c.ic_raw_intr_stat().read().stop_det().is_inactive() {
+            if Self::micros() > deadline {
+                return Err(ErrorCode::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+        let _ = i2c.ic_clr_stop_det().read();
+        Ok(())
+    }
+
+    /// 転送相手のアドレスを設定する。
+    ///
+    /// `IC_TAR` は ENABLE=1 のままでは変えられないので一度落とす。
+    /// **`IC_ENABLE_STATUS.IC_EN` が落ちきるのを待つ**（`rp235x-hal` は
+    /// 待っていないが、待たないと `open` → `close` → `open` を跨いだときに
+    /// 書き込みが無視されうる）。
+    fn i2c_set_target(i2c: &pac::I2C0, address: u16) -> BoardResult<()> {
+        // 7 bit アドレスのみ（`wit/i2c.wit`）。`ports/esp32s3` も `esp-hal` が
+        // 範囲外を `AddressInvalid` で弾くので、2 つのポートは揃っている
+        // （host の mock は検査しない。docs/TODO.md §2.1）。
+        if address > 0x7f {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        i2c.ic_enable().write(|w| w.enable().disabled());
+        let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+        while i2c.ic_enable_status().read().ic_en().bit_is_set() {
+            if Self::micros() > deadline {
+                return Err(ErrorCode::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+        i2c.ic_con()
+            .modify(|_, w| w.ic_10bitaddr_master().addr_7bits());
+        // SAFETY: 上で 0x7f 以下に絞っているので IC_TAR（10 bit）に収まる。
+        i2c.ic_tar().write(|w| unsafe { w.ic_tar().bits(address) });
+        i2c.ic_enable().write(|w| w.enable().enabled());
+        Ok(())
+    }
+
+    /// `data` を送る。`stop` が false なら STOP を出さない
+    /// （`write-read` の前半で使う。次の read が Repeated START になる）。
+    ///
+    /// **`data` は空でないこと**（呼び出し側が `invalid-argument` で弾く）。
+    /// 空だと `data.len() - 1` が溢れる。
+    fn i2c_send(i2c: &pac::I2C0, data: &[u8], stop: bool) -> BoardResult<()> {
+        let last = data.len() - 1;
+        for (i, &b) in data.iter().enumerate() {
+            let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+            while i2c.ic_status().read().tfnf().bit_is_clear() {
+                // FIFO が空かないのは相手が止まっているとき。アボートが
+                // 立っていればそれを理由として返す。
+                Self::i2c_take_abort(i2c)?;
+                if Self::micros() > deadline {
+                    return Err(ErrorCode::Timeout);
+                }
+                core::hint::spin_loop();
+            }
+            i2c.ic_data_cmd().write(|w| {
+                w.stop().bit(stop && i == last);
+                // SAFETY: DAT は 8 bit。
+                unsafe { w.dat().bits(b) }
+            });
+        }
+        // シフトレジスタから出きるまで待ってからアボートを見る。
+        let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+        while i2c.ic_raw_intr_stat().read().tx_empty().is_inactive() {
+            if Self::micros() > deadline {
+                return Err(ErrorCode::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+        Self::i2c_take_abort(i2c)?;
+        if stop {
+            Self::i2c_wait_stop(i2c)?;
+        }
+        Ok(())
+    }
+
+    /// `buf` を埋めるまで読む。読み出しは**1 バイトにつき READ コマンドを
+    /// 1 つ `IC_DATA_CMD` に積む**必要がある（積まないとクロックが出ない）。
+    ///
+    /// **`buf` は空でないこと**（呼び出し側が `invalid-argument` で弾く）。
+    /// 空だと `n - 1` が溢れる。
+    fn i2c_recv(i2c: &pac::I2C0, buf: &mut [u8]) -> BoardResult<usize> {
+        let n = buf.len();
+        let last = n - 1;
+        for (i, byte) in buf.iter_mut().enumerate() {
+            let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+            while i2c.ic_status().read().tfnf().bit_is_clear() {
+                Self::i2c_take_abort(i2c)?;
+                if Self::micros() > deadline {
+                    return Err(ErrorCode::Timeout);
+                }
+                core::hint::spin_loop();
+            }
+            i2c.ic_data_cmd().write(|w| {
+                w.stop().bit(i == last);
+                w.cmd().read()
+            });
+
+            let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+            while i2c.ic_rxflr().read().bits() == 0 {
+                Self::i2c_take_abort(i2c)?;
+                if Self::micros() > deadline {
+                    return Err(ErrorCode::Timeout);
+                }
+                core::hint::spin_loop();
+            }
+            *byte = i2c.ic_data_cmd().read().dat().bits();
+        }
+        Self::i2c_wait_stop(i2c)?;
+        Ok(n)
     }
 
     /// 送信が完全に終わるまで待ち、受信 FIFO を空にする。
@@ -174,6 +357,68 @@ fn spi_divisors(clk_hz: u32, want_hz: u32) -> (u8, u8) {
     }
     // 要求が下限より低い。最も遅い組み合わせに張り付ける。
     (254, 255)
+}
+
+/// DW_apb_i2c の SCL カウンタを決める。`(hcnt, lcnt, spklen, sda_tx_hold)`。
+///
+/// 計算は `rp235x-hal` の `i2c/controller.rs`（さらに元は pico-sdk の
+/// `hardware_i2c`）と同じ。**違うのは `assert!` ではなく `None` を返す点**
+/// で、呼び出し側が `unsupported` に変える。パニックハンドラは理由を
+/// 出せないので、範囲外はエラーで返さないと診断できない（TODO §1.4）。
+///
+/// 周期を 60% low / 40% high に割る。I2C はクロックを引き延ばされても
+/// 構わないので、SPI の `spi_divisors` のような「要求値を超えない」丸めは
+/// していない（`wit/i2c.wit` は `speed` の enum しか受け取らないので、
+/// そもそも任意の周波数は来ない）。
+///
+/// `clk_peri` 150 MHz のときの 3 速度（いずれも誤差なしで出る）:
+///
+/// | speed | hcnt | lcnt | spklen | sda_hold | 実効 |
+/// |---|---|---|---|---|---|
+/// | `standard` | 600 | 900 | 56 | 46 | 100.00 kHz |
+/// | `fast` | 150 | 225 | 14 | 46 | 400.00 kHz |
+/// | `fast-plus` | 60 | 90 | 5 | 19 | 1000.00 kHz |
+///
+/// `None` を返すのは、1 MHz 超・0、`hcnt` / `lcnt` が 8..=0xffff の外
+/// （`clk_peri` が 2 MHz 程度まで落ちると起きる）、`fast-plus` で
+/// `clk_peri` が 32 MHz 未満、`sda_hold` が `lcnt - 2` を超える場合。
+fn i2c_timing(clk_hz: u32, freq_hz: u32) -> Option<(u16, u16, u8, u16)> {
+    if freq_hz == 0 || freq_hz > 1_000_000 {
+        return None;
+    }
+    let clk = u64::from(clk_hz);
+    let freq = u64::from(freq_hz);
+    // 四捨五入してから 3:2 に割る。
+    let period = (clk + freq / 2) / freq;
+    let lcnt = period * 3 / 5;
+    let hcnt = period - lcnt;
+    if !(8..=0xffff).contains(&hcnt) || !(8..=0xffff).contains(&lcnt) {
+        return None;
+    }
+
+    // I2C の仕様が要求する SDA のホールド時間（standard / fast は 300 ns、
+    // fast-plus は 120 ns）をクロック数に直す。切り捨てを避けて +1 する。
+    let sda_hold = if freq < 1_000_000 {
+        (clk * 3) / 10_000_000 + 1
+    } else {
+        // fast-plus は clk_in > 32 MHz でないと必要なホールド時間が作れない。
+        if clk < 32_000_000 {
+            return None;
+        }
+        (clk * 3) / 25_000_000 + 1
+    };
+    // lcnt >= 8 は上で確かめてあるので引き算は溢れない。
+    if sda_hold > lcnt - 2 {
+        return None;
+    }
+
+    // スパイクフィルタの長さ。
+    let spklen = if lcnt < 16 { 1 } else { lcnt / 16 };
+    if spklen > 0xff {
+        return None;
+    }
+
+    Some((hcnt as u16, lcnt as u16, spklen as u8, sda_hold as u16))
 }
 
 impl<S: Serial> Board for Pico2Board<S> {
@@ -304,27 +549,152 @@ impl<S: Serial> Board for Pico2Board<S> {
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C は Phase 5 で実装する（docs/TODO.md §1.2） ---
+    // --- I2C。index 0 = I2C0 (SDA=GP4, SCL=GP5) ---
 
-    fn i2c_open(&mut self, _index: u32, _speed: Speed) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+    fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
+        // i2c1 もヘッダに出ているが、v0.1 で割り当てているのは i2c0 だけ
+        // （abi-spec §8）。Hal 側で index < MAX_I2C は検査済み。
+        // SPI と同じ判定にしてある（docs/TODO.md §2.1）。
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        let freq_hz = match speed {
+            Speed::Standard => 100_000,
+            Speed::Fast => 400_000,
+            Speed::FastPlus => 1_000_000,
+        };
+        let Some((hcnt, lcnt, spklen, sda_hold)) = i2c_timing(self.peri_clock_hz, freq_hz) else {
+            return Err(ErrorCode::Unsupported);
+        };
+
+        // SAFETY: Pico2Board::new の契約により、これらのペリフェラルは排他。
+        let p = unsafe { pac::Peripherals::steal() };
+
+        // 一度リセットを掛け直す。SPI0 と違い落としてから上げるのは、
+        // open → close → open で前の設定が残らないようにするため。
+        p.RESETS.reset().modify(|_, w| w.i2c0().set_bit());
+        p.RESETS.reset().modify(|_, w| w.i2c0().clear_bit());
+        while p.RESETS.reset_done().read().i2c0().bit_is_clear() {
+            core::hint::spin_loop();
+        }
+
+        let i2c = p.I2C0;
+        // 設定は ENABLE=0 のうちに行う。
+        i2c.ic_enable().write(|w| w.enable().disabled());
+
+        // マスターとして動かす。`ic_restart_en` は `write-read` の
+        // Repeated START に要る。`rx_fifo_full_hld_ctrl` を立てると
+        // 受信 FIFO が満杯のときにクロックを握ってくれるので取りこぼさない。
+        i2c.ic_con().modify(|_, w| {
+            w.speed().fast();
+            w.master_mode().enabled();
+            w.ic_slave_disable().slave_disabled();
+            w.ic_restart_en().enabled();
+            w.tx_empty_ctrl().enabled();
+            w.rx_fifo_full_hld_ctrl().enabled();
+            w
+        });
+
+        // SAFETY: i2c_timing が範囲内に収めた値。
+        unsafe {
+            i2c.ic_fs_scl_hcnt()
+                .write(|w| w.ic_fs_scl_hcnt().bits(hcnt));
+            i2c.ic_fs_scl_lcnt()
+                .write(|w| w.ic_fs_scl_lcnt().bits(lcnt));
+            i2c.ic_fs_spklen().write(|w| w.ic_fs_spklen().bits(spklen));
+            i2c.ic_sda_hold()
+                .modify(|_, w| w.ic_sda_tx_hold().bits(sda_hold));
+            // 閾値は使わない（転送は IC_STATUS を見る同期ループ）。0 にしておく。
+            i2c.ic_tx_tl().write(|w| w.tx_tl().bits(0));
+            i2c.ic_rx_tl().write(|w| w.rx_tl().bits(0));
+        }
+
+        // SDA / SCL をパッドに出す。GPIO / SPI と同じく `write()` は
+        // リセット値（ISO=1, PDE=1）から始まるので ISO を落とす。
+        //
+        // **内部プルアップを有効にする。** I2C は両線をプルアップで
+        // high に保つバスで、RP2350 の内部プルは 50..80 kΩ と弱い。
+        // `ports/esp32s3` では `esp-hal` の `connect_pin` が SDA/SCL に
+        // 必ず `Pull::Up` を掛けるので（esp-hal 1.2.1 の
+        // `i2c/master/low_level/mod.rs`）、**2 つのポートで同じバス条件に
+        // なるよう揃えている**。pico-sdk の i2c の例も同じことをする。
+        // ただしこれは弱い補助にすぎず、**外部 10 kΩ のプルアップが要る**
+        // （短い配線の 100 kHz なら内部だけでも動くことがあるが、
+        // `fast` / `fast-plus` では足りない）。
+        for n in [I2C0_SDA, I2C0_SCL] {
+            p.PADS_BANK0.gpio(n).write(|w| {
+                w.ie().set_bit();
+                w.od().clear_bit();
+                w.pue().set_bit();
+                w.pde().clear_bit();
+                w.iso().clear_bit();
+                w
+            });
+            p.IO_BANK0.gpio(n).gpio_ctrl().write(|w| w.funcsel().i2c());
+        }
+
+        i2c.ic_enable().write(|w| w.enable().enabled());
+        Ok(())
     }
-    fn i2c_write(&mut self, _index: u32, _address: u16, _data: &[u8]) -> BoardResult<()> {
-        Err(ErrorCode::Unsupported)
+
+    fn i2c_write(&mut self, index: u32, address: u16, data: &[u8]) -> BoardResult<()> {
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        // 長さ 0 は Hal 側で invalid-argument にしている（abi-spec §8）。
+        if data.is_empty() {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let i2c = Self::i2c0();
+        Self::i2c_set_target(&i2c, address)?;
+        Self::i2c_send(&i2c, data, true)
     }
-    fn i2c_read(&mut self, _index: u32, _address: u16, _buf: &mut [u8]) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+
+    fn i2c_read(&mut self, index: u32, address: u16, buf: &mut [u8]) -> BoardResult<usize> {
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        if buf.is_empty() {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let i2c = Self::i2c0();
+        Self::i2c_set_target(&i2c, address)?;
+        Self::i2c_recv(&i2c, buf)
     }
+
     fn i2c_write_read(
         &mut self,
-        _index: u32,
-        _address: u16,
-        _data: &[u8],
-        _buf: &mut [u8],
+        index: u32,
+        address: u16,
+        data: &[u8],
+        buf: &mut [u8],
     ) -> BoardResult<usize> {
-        Err(ErrorCode::Unsupported)
+        if index != 0 {
+            return Err(ErrorCode::Unsupported);
+        }
+        if data.is_empty() || buf.is_empty() {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let i2c = Self::i2c0();
+        Self::i2c_set_target(&i2c, address)?;
+        // 前半は STOP を出さない。次の read コマンドが Repeated START になる
+        // （`ic_restart_en` を立ててある）。
+        Self::i2c_send(&i2c, data, false)?;
+        Self::i2c_recv(&i2c, buf)
     }
-    fn i2c_close(&mut self, _index: u32) {}
+
+    fn i2c_close(&mut self, index: u32) {
+        if index != 0 {
+            return;
+        }
+        let i2c = Self::i2c0();
+        i2c.ic_enable().write(|w| w.enable().disabled());
+        // gpio_release / spi_close と同じく入力・プル無しに戻す
+        // （FUNCSEL も SIO に戻るので、開いたままのバスが線を握らない）。
+        for n in [I2C0_SDA, I2C0_SCL] {
+            let _ = self.gpio_configure(n as u32, PinMode::Input);
+        }
+    }
 
     // --- SPI。index 0 = SPI0 (SCK=GP18, MOSI=GP19, MISO=GP16) ---
 
@@ -460,11 +830,7 @@ impl<S: Serial> Board for Pico2Board<S> {
     // --- 時間。TIMER0 は 1 MHz なのでそのままマイクロ秒。 ---
 
     fn now_us(&mut self) -> u64 {
-        let t = Self::timer();
-        // TIMELR を読むと TIMEHR がラッチされる。順序を守る。
-        let lo = t.timelr().read().bits();
-        let hi = t.timehr().read().bits();
-        (u64::from(hi) << 32) | u64::from(lo)
+        Self::micros()
     }
 
     fn sleep_ms(&mut self, ms: u32) {

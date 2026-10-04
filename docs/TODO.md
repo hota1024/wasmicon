@@ -30,6 +30,12 @@
         MOSI=GPIO11）は 2026-09-26 に実機で確認済み。配線表は
         `apps/lcd-demo-rs/README.md`。**残るのは `led` と I2C
         (SDA=GPIO8 / SCL=GPIO9)**
+      - **I2C は SDA / SCL に外部 10 kΩ のプルアップが要る。** 両ポートとも
+        内部プルアップを有効にしているが（esp-hal の `connect_pin` が必ず
+        `Pull::Up` を掛けるので rp2350 もそれに揃えた）、RP2350 は 50..80 kΩ、
+        ESP32-S3 は約 45 kΩ と弱く、`standard` (100 kHz) の短い配線で
+        かろうじてという程度。モジュール側に載っていることが多いので、
+        **載っているなら足さなくてよい**
 - [ ] **シリアルの接続方法**。RP2040 / RP2350 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
       - RP2350 は UART0 + USB シリアル変換 (CP2102N) で 2026-09-26 に確認済み
       - ESP32-S3 も UART0 (GPIO43/44) で 2026-09-26 に確認済み。**手元のボードは
@@ -52,19 +58,29 @@
 
 ### 1.2 実装
 
-- [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。これが無いと sensor-display は実機で動かない
+- [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。Pico WH が
+      未入手なので着手していない。足すときは rp2350 の実装をそのまま持って
+      これる（RP2040 と RP2350 の I2C は同じ DW_apb_i2c で、SPI も同じ PL022。
+      違いは PADS の `ISO` が無いことと FUNCSEL の綴りだけ）
 - [x] **`ports/rp2350` の SPI**。SPI0 (PL022) をレジスタ直叩きで実装した。
       **2026-09-26 に実機で確認済み**（`docs/verification-report.md` §6）。
       rp2040 に足すときは、周波数の丸め（要求値を超えない最大）と
       「送信後 `BSY` が落ちるまで戻らない」を揃えること
       （esp32s3 はこの 2 点を `esp-hal` のドライバが満たしている）
-- [ ] **`ports/rp2350` の I2C**。まだ `unsupported`
+- [x] **`ports/rp2350` の I2C**。I2C0（DW_apb_i2c）をレジスタ直叩きで実装した
+      （2026-10-04）。初期化と転送の手順は `rp235x-hal` の
+      `i2c/controller.rs` に合わせたが、`assert!` ではなくエラーコードを返す
+      （パニックハンドラは理由を出せない → §1.4）。待ちは TIMER0 の実時間で
+      上限を付けて `timeout` を返す。**実機では未検証**（→ §1.3）
 - [x] **`ports/esp32s3` の SPI**。SPI2 (FSPI) を `esp-hal` の `spi::master`
       ドライバで実装した（GPIO と違いレジスタ直叩きにしていない）。rp2350 と
       揃えた点は `ports/esp32s3/src/board.rs` の module コメント。
       **2026-09-26 に実機で確認済み**（トレース 14,352 行完全一致 + ILI9341 に
       絵が出た。`docs/verification-report.md` §7）
-- [ ] **`ports/esp32s3` の I2C**。まだ `unsupported`
+- [x] **`ports/esp32s3` の I2C**。I2C0 を `esp-hal` の `i2c::master`
+      ドライバで実装した（2026-10-04。SPI と同じくレジスタ直叩きにしていない）。
+      エラーの振り分けは rp2350 と揃えてある（NACK → `nack`、調停負け → `io`、
+      `esp-hal` の `Error::Timeout` → `timeout`）。**実機では未検証**（→ §1.3）
 
 ### 1.3 検証（Phase 4 / 5 / 6 の完了条件）
 
@@ -88,6 +104,11 @@
 - [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
   - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
   - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
+- [ ] **SHT40 を実機で読む**（2026-10-04 時点で次の一手）。`ports/rp2350` と
+  `ports/esp32s3` の I2C は実装したが**一度も実機で動かしていない**。
+  sensor-display を Pico 2 W と ESP32-S3 で走らせ、host のトレースと
+  突き合わせる。最初に疑うところは §1.4 に足した
+  - **先に I2C アドレスの確認が要る**（§1.1）。ドライバは 0x44 のまま
 - [ ] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
 - [ ] 結果を `docs/verification-report.md` に反映する
 
@@ -116,6 +137,24 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
   するのに ILI9341 が真白」。`docs/verification-report.md` §7
 - ESP32-S3: SPI2 は `esp-hal` のドライバ任せなので信号番号を自前で持たない。
   上のような取り違えは起きない
+- **I2C は 2 ポートとも一度も実機で動かしていない**（2026-10-04 に実装）。
+  コンパイルが通ることしか確かめていないので、ここが今いちばん疑わしい。
+  最初の期待値は「`i2c.bus.open` は成功するのに `write` が `nack` を返す」。
+  見る順番:
+  1. **外部プルアップ**（§1.1）。無いと SDA/SCL が high に戻れず、
+     アドレスの ACK が取れない。内部プルだけでは弱い
+  2. **アドレス**（§1.1）。SHT4x はサフィックスで変わる。`nack` が出たら
+     まずここ。品種が違えば 3 箇所直す
+  3. **SDA / SCL の取り違え**。入れ替わっていても `open` は成功する
+  4. RP2350 のみ: **PADS の `ISO`**。GPIO / SPI と同じ落とし穴で、
+     `i2c_open` でも `pue` と一緒に落としている。レジスタは正しく読めるのに
+     波形が出ないならここ
+  5. ESP32-S3 のみ: `esp-hal` のドライバ任せなので GPIO マトリクスの
+     信号番号を自前で持たない。§7 の `out_sel` のような取り違えは起きない
+  - **`timeout` が返ったらバスが握られている**（SCL が low に張り付く）。
+    rp2350 は TIMER0 の実時間で 1 バイトあたり 25 ms で諦める。無言で
+    止まらないようにしてあるので、トレースの最後の行が理由を示す
+
 - ESP32-S3: **ネイティブスタックは `ARENA` の残り**。`esp-hal` の
   リンカスクリプトは `.stack` を dram_seg の余りに置くので、`ARENA` を
   300 KB にしている今は 17.4 KiB しかない（`.bss` 315,496 B の直後、
@@ -178,6 +217,12 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         要求だけは揃っていない**: rp2350 は最も遅い分周に張り付けて成功を返し、
         esp32s3 は `esp-hal` が範囲外を弾くので `unsupported` を返す
         （APB 80 MHz のとき 78.125 kHz 未満）。どちらのデモも踏まない
+      - **I2C も同じ形の食い違いがある**（2026-10-04 に実装して判明）。
+        `i2c.bus.open` の `index != 0` は両ポートが `unsupported`、
+        7 bit の外のアドレスは両ポートが `invalid-argument` を返すが、
+        **`ports/host` の mock はどちらも検査しない**。SHT4x は index 0 /
+        0x44 しか使わないので踏まないが、揃えるなら SPI と同じく
+        `ports/common` に検査を置くことになる
 - [ ] **SPI の待ちループに上限を設けるか。** `ports/rp2350` の `spi_drain` の
       `BSY` 待ち、RESETS 完了待ち、`spi_write` / `spi_transfer` の `TNF` / `RNE`
       待ちはいずれも無制限に回る。クロックが止まる・ペリフェラルが固まると、
