@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["runtime", "tools/wasmicon-gen", "ports/common", "ports/host"]
+members = [
+    "runtime",
+    "tools/wasmicon-gen",
+    "tools/wasmicon-cli",
+    "ports/common",
+    "ports/host",
+]
 # ターゲット / toolchain / profile が異なるものは別 workspace にする（docs/handoff.md §3 #9）。
 # bindings/rust は guest workspace の root、apps/*-rs は Phase 3 でそこに加わる。
 # ports/rp2040 と ports/esp32s3 は Phase 4 で作る。
