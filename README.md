@@ -28,7 +28,8 @@ host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出
 
 | 検証 | 状態 |
 |---|---|
-| **ファームを焼き直さずにアプリを差し替える**（アプリスロット） | **RP2350 実機で達成（2026-10-04）**。スロットから走らせたトレースが host と 14,352 行完全一致。RP2040 は未検証、ESP32-S3 は未実装 |
+| **ファームを焼き直さずにアプリを差し替える**（アプリスロット） | **RP2350 と ESP32-S3 の実機で達成（2026-10-04）**。どちらもスロットから走らせたトレースが host と 14,352 行完全一致。**RP2040 は未検証**（Pico WH 未入手。コードは同じ経路） |
+| **フラッシュの読み方が違う 2 ボードでスロット経由のトレースが一致** | **達成（2026-10-04）**。Pico 2 W は XIP のスライスをそのまま decode に渡し、ESP32-S3 は `esp-storage` でヘッダを読んでから arena に写すが、同じ `.wasm` で 14,352 行一致 |
 | Wasm 仕様適合（spec testsuite コア 74 ファイル / 22507 コマンド） | 達成 |
 | インタプリタの正しさ（wasmtime との差分、4 ゲスト） | 達成 |
 | Rust 版と AS 版が同じ host call 列を出す（成功経路 + 失敗経路） | 達成 |
@@ -106,8 +107,43 @@ sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
 
 # 実機のトレースを突き合わせる（2 ボード）
 sh verify/diff-traces.sh pico.log esp32s3.log
+```
 
-# その他
+### アプリをスロットに焼く（ファームの再ビルドが要らない道）
+
+上の `--features guest-lcd-demo` はアプリをファームに埋め込む古い道で、
+アプリを変えるたびにファームを焼き直す。**スロットを使えばファームは一度
+焼いたままでアプリだけ差し替えられる**（[`docs/app-workflow.md`](docs/app-workflow.md)）。
+
+```bash
+# CLI を用意する。PATH に入れたいなら cargo install --path tools/wasmicon-cli
+cargo build --release -p wasmicon-cli
+w=./target/release/wasmicon
+app=apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
+
+$w doctor                            # 道具が揃っているか、焼けるボードは何か
+
+# アプリをビルドして、そのボードで走るかを検査する
+(cd apps && cargo build --release -p lcd-demo-rs)
+$w check "$app" --board rp2350
+
+# 焼いて、そのままトレースを取り込む（検査に落ちたら焼かない）
+$w deploy "$app" --board rp2350 --monitor -o pico.log
+
+# host の実行と突き合わせる
+$w run "$app" --trace > host.log
+$w trace diff host.log pico.log
+```
+
+- **Pico は BOOTSEL を押しながら USB を挿してから** `deploy` する
+  （`picotool` に渡すため。2 段の USB 制御チャネルで要らなくなる）
+- **ESP32-S3 はボタン操作が要らない**（`espflash` が DTR/RTS でリセットする）。
+  書き込みとトレースが同じ口なので `--monitor` は `espflash monitor` に委譲する
+- 新しいアプリを始めるなら `wasmicon new <dir> --lang rust --hal bindings`
+
+### その他
+
+```bash
 wasm-tools component wit wit/                              # WIT の構文検証
 wasm-tools json-from-wast <file>.wast -o out/<file>.json   # spec テストの変換（旧 wast2json）
 wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
