@@ -547,7 +547,8 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       - CLI 側は `wasmicon pack`。1 段では**外のフラッシャに渡す素材**
         （`espflash write-bin <offset>` / `picotool load -o <offset>`）
 - [ ] **スーパーバイザのループ**（`docs/app-workflow.md` §3.1）。
-      **RP2350 だけスロットを読むようにした**（2026-10-04）。残りは
+      **3 ポートがスロットを読むようになった**（2026-10-04。RP2350 と
+      ESP32-S3 は実機で確認済み、RP2040 はコードだけ）。残りは
       idle への復帰とサイクルごとの作り直し（arena / `Hal` / **ロール表**。
       持ち越すとトレースが変わりうる。`release_all.rs` が現状を固定）
       - **RP2040 と RP2350 が読む**（XIP で memory-mapped なので RAM に
