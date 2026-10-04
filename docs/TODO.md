@@ -582,11 +582,18 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         `espflash monitor` に任せる**ことで解けた（`--before default-reset
         --after hard-reset` が既定なので、開いてから起動させられる）。
         `espflash reset` は居座るので呼ばない
-      - **残り**: CRC 不一致 / `Truncated` / 空スロットの枝を実機で
-        起こしていない（単体テストはある）
+      - **失敗側も同日 実機で踏んだ**（§9 と同じ 3 点）。正しい画像 →
+        走る / 本体を 1 バイト反転 → `slot crc mismatch, running built-in` /
+        `0xff` 埋め → `slot empty, running built-in`。**ボタン操作が
+        要らない**ので Pico より楽に回せる
+      - **残り**: `Truncated`（長さだけ嘘をつく画像）は未実施。
+        `Overlap` の検査は `read_xip` 側にしか無いので **ESP32-S3 には
+        無い**（`esp-storage` 経由で読むため）。重なりを防ぐ責任が
+        `espflash` 側に出ているのが妥当か未決
 - [ ] **内蔵アプリを外す**（1 段。**3 ポートがスロットを読めるようになってから**
-      — 先に外すとファームが何も走らせなくなる。RP2350 は読めるが実機で
-      未検証なので、まだフォールバックとして残してある）。`ports/*/src/main.rs` の `include_bytes!` と
+      — 先に外すとファームが何も走らせなくなる。**RP2350 と ESP32-S3 は
+      実機で確認済み、残るのは RP2040**（Pico WH 未入手。コードは同じ
+      `slot::read_xip` を通る）。それまではフォールバックとして残す）。`ports/*/src/main.rs` の `include_bytes!` と
       `guest-lcd-demo` feature を落とし、空スロットは理由を出して idle、
       生存確認はポート層が LED を振る（`Board` 直叩きで Wasm を通らない）
       - **CI も同時に直す**: ポートのジョブから `apps` の先行ビルドが不要になり、
