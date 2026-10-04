@@ -559,9 +559,21 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 - [ ] **ファームの配布**（release manifest と `flash --fw` / `fw list`）。
       ボード × 版の成果物に manifest（ファイル + sha256 + §3.8 の 5 軸）を付ける。
       §5-7 と対になる
-- [ ] **`wasmicon.toml`**（`docs/app-workflow.md` §4.7）。
+- [x] **`wasmicon.toml` を読む**（2026-10-04 完了。`docs/app-workflow.md` §4.7）。
       `[requirements] pin-roles`（このアプリが引く役割名）、既定のボード、
       replay のパス、配線の意図を書く。
+      - **カレントから上に探す**（cargo と同じ）。無くても `check` / `run` は動く
+      - **`pin-roles` があると役割の照合が保証になる**（走査は出さない）。
+        名前は `ROLE_NAMES` と突き合わせるので**デバイスに繋がなくても
+        タイポが止まる**
+      - `[defaults] board` は `--board` の既定、`i2c-replay` は
+        `--i2c-replay` の既定（**toml のある場所基準**で解決する）
+      - **未知のキーはエラー**（`deny_unknown_fields`）。`version` が
+        CLI より新しければエラー。`"none"` は「この役割は無い」
+      - **`[board.<name>.roles]` は読んで検証するだけ**で、まだ使わない。
+        デバイスへ押し込むのは `config apply`（§3.9 / §5-9 の決定後）
+      - **残り**: `wasmicon new` が雛形としてこのファイルを出すこと
+        （`new` 自体が未着手）
       **ABI 準拠のビルドフラグは書かせない**（§4.4 の 3 重化を 4 重にする）。
       マシン固有の値は `wasmicon.local.toml`（gitignore）に分ける
       - `[requirements] pin-roles` があると §4.3 の役割名の照合が

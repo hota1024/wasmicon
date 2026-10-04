@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use wasmicon_cli::{check, doctor, run as run_cmd, trace};
+use wasmicon_cli::{check, doctor, manifest, run as run_cmd, trace};
 
 const USAGE: &str = "\
 wasmicon — Wasmicon のアプリを検査・実行・配備する
@@ -33,6 +33,9 @@ run のオプション:
 共通:
     -h, --help               このヘルプ
     -V, --version            版を出す
+
+`wasmicon.toml` があれば読む（カレントから上に探す）。
+`[requirements] pin-roles` を書くと、役割名の照合が参考から保証に変わる。
 
 検査の中身は実ランタイムの decode / validate と、wit/ から生成した import 表。
 host は全ボードより緩いので、`--board` でボードを指定したものだけが
@@ -98,7 +101,21 @@ fn parse_check(args: impl Iterator<Item = String>) -> Result<check::Options> {
     }
 
     let path = path.context("検査する .wasm を渡すこと\n\n".to_string() + USAGE)?;
-    Ok(check::Options { path, board })
+    // `wasmicon.toml` はカレントから上に探す（cargo と同じ）。無くてもよい。
+    let manifest = find_manifest()?;
+    // `--board` が無ければ toml の既定を使う。
+    let board = board.or_else(|| manifest.as_ref().and_then(|m| m.default_board.clone()));
+    Ok(check::Options {
+        path,
+        board,
+        manifest,
+    })
+}
+
+/// カレントから上に向かって `wasmicon.toml` を探す（§4.7）。
+fn find_manifest() -> Result<Option<manifest::Manifest>> {
+    let cwd = std::env::current_dir().context("カレントディレクトリが取れない")?;
+    manifest::find(&cwd)
 }
 
 fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
@@ -126,6 +143,13 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     }
 
     let path = path.context("走らせる .wasm を渡すこと\n\n".to_string() + USAGE)?;
+    // `--i2c-replay` が無ければ toml の既定（toml のある場所基準で解決済み）。
+    let i2c_replay = i2c_replay.or_else(|| {
+        find_manifest()
+            .ok()
+            .flatten()
+            .and_then(|m| m.default_i2c_replay)
+    });
     Ok(run_cmd::Options {
         path,
         trace: trace_on,

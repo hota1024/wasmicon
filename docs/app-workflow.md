@@ -930,8 +930,18 @@ led = 4
 | **`version`** | CLI の対応より新しければエラー、古ければ受ける |
 | **toml は任意** | `build` / `check` / `run` は **toml が無くても動く**（プロジェクトの形だけで足りる）。toml が増やすのは `pin-roles` の保証と既定値だけ |
 
-- **プロジェクトの中で `deploy` → 保証**（toml がある）
-- **`.wasm` 単体を受け取って `deploy` → 参考**（toml が無い。今と同じ）
+- **プロジェクトの中で `check` / `deploy` → 保証**（toml がある）
+- **`.wasm` 単体を受け取って → 参考**（toml が無い。走査に落ちる）
+
+`wasmicon.toml` は**カレントから上に向かって探す**（cargo と同じ）。
+`[requirements] pin-roles` の名前は `ports/common` の `ROLE_NAMES` と
+突き合わせるので、**デバイスに繋がなくてもタイポが止まる**:
+
+```
+$ wasmicon check app.wasm
+wasmicon: .../wasmicon.toml: [requirements] pin-roles が不正:
+  lcd-cd という役割名は無い（あるのは led / lcd-cs / lcd-dc / lcd-rst）
+```
 
 バイナリと一緒に運びたくなったら、そこで初めてカスタムセクション
 （`wasmicon.roles`）か `wasmicon pack` で束ねる話になる。ランタイムは custom

@@ -21,3 +21,8 @@ wasmicon-port.workspace = true
 # run は host ポートを lib として呼ぶ（crate は残す。§4.2）。
 wasmicon-host = { path = "../../ports/host" }
 anyhow = "1.0.104"
+# wasmicon.toml を読む（docs/app-workflow.md §4.7）。未知のキーをエラーに
+# したいので serde の derive を使う（黙って無視すると「設定したのに
+# 効いていない」に気付けない）。
+toml = "1.1.6"
+serde = { version = "1.0.229", features = ["derive"] }
