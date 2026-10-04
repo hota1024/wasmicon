@@ -524,6 +524,9 @@ probe-rs）は**呼ぶだけで、自前実装しない**。
 
 ### 4.2 コマンド
 
+**実装済みは `check` / `run` / `trace diff` / `doctor`**（2026-10-04）。
+`monitor` と `size` は未着手（`docs/TODO.md` §5）。
+
 | コマンド | 中身 | 今あるもの |
 |---|---|---|
 | `new <name> --lang rust\|as` | 雛形。ABI 準拠のビルドフラグを埋める（§4.4） | 無し |
@@ -535,7 +538,7 @@ probe-rs）は**呼ぶだけで、自前実装しない**。
 | `fw list` | 手元にある版と、デバイスに載っている版を並べる（§3.8） | 無し |
 | `config show` / `set` / `apply` / `reset` | 役割マップを見る・書く・`wasmicon.toml` から押し込む・消す（§3.9 / §4.7） | 無し（今はファームを焼き直す） |
 | `monitor` | シリアルを開いてトレースを取る。`/dev/cu.usb*` を列挙し、**先頭に identity を記録する**（§3.8） | `cat /dev/cu.usbmodemXXXX \| tee` |
-| `trace diff a.log b.log` | 正規化して突き合わせ | `verify/diff-traces.sh` |
+| `trace diff a.log b.log` | 正規化して突き合わせ。**最初に食い違う行を出す**（トレースは追記しかされないので、そこが原因に最も近い） | `verify/diff-traces.sh`（**残す**。CLI と同じ判定を出すことをテストが突き合わせる） |
 | `size [target]` | コアのコードサイズ | `tools/measure-size.sh` |
 | `doctor` | ツールチェーンの検査 | 無し |
 

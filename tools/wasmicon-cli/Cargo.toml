@@ -18,4 +18,6 @@ path = "src/main.rs"
 # ボードごとの Config も見られない。
 wasmicon-core.workspace = true
 wasmicon-port.workspace = true
+# run は host ポートを lib として呼ぶ（crate は残す。§4.2）。
+wasmicon-host = { path = "../../ports/host" }
 anyhow = "1.0.104"

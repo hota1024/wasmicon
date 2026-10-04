@@ -4,3 +4,6 @@
 //! ため（`wasmicon-gen` と同じ構成）。
 
 pub mod check;
+pub mod doctor;
+pub mod run;
+pub mod trace;

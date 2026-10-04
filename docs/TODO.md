@@ -441,7 +441,22 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         （host プロファイルが const 文脈で使うため。二重に書くと食い違う）
 - [ ] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る。** 0 段は
       `check` / `run` / `monitor` / `trace diff` / `size` / `doctor`。
-      **`check` は 2026-10-04 に実装した**（骨 + `--board`。残りは未着手）
+      **`check` / `run` / `trace diff` / `doctor` は 2026-10-04 に実装した。
+      残りは `monitor` と `size`**
+      - `run` は `wasmicon-host` を lib として呼ぶだけ（`--trace` /
+        `--i2c-replay`）。`--i2c-replay` は `load_i2c_replay` を直に呼ぶので、
+        環境変数 `WASMICON_I2C_REPLAY` は host の bin 側に残っている
+      - `trace diff` は正規化を Rust で持ち、**`verify/diff-traces.sh` と
+        同じ判定を出すことを `tests/trace.rs` が突き合わせる**
+        （`tools/check-sigs.sh` が `wit2sig.py` と突き合わせているのと同じ形）。
+        スクリプトは CI の `--self-test` のために残す。
+        **NUL 除去を外すと突き合わせが落ちることを確かめた**
+      - `monitor` は**実機が無いと書けない**（シリアルの設定と `/dev/cu.usb*` の
+        列挙）。手元に Pico 2 W と ESP32-S3 があるので、§1.3 の作業と
+        同時にやるのが筋
+      - `size` は `tools/measure-size.sh` のままにしてある。**コアのコード
+        サイズはアプリ作者の関心ではない**（リポジトリ保守側の道具）ので、
+        CLI に入れるかはやめてもよい
       - 判定（`facts` / `judge`）と印字を分けてあるので、判定だけをテストから
         呼べる。`tools/wasmicon-cli/tests/check.rs` が `apps/` の実物で固定:
         **`blink-rs` は 4 ボードすべて通り、`sensor-display-rs` は rp2040 だけ
