@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wasmicon_cli::check::{self, Facts};
-use wasmicon_port::profile;
+use wasmicon_port::profile::{self, Interfaces, Profile};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -120,6 +120,37 @@ fn memory_limit_is_per_board() {
     assert!(
         check::judge(&wasm, &profile::RP2040, &f).validate.is_err(),
         "rp2040 は 2 ページまでなので validate が落ちる"
+    );
+}
+
+#[test]
+fn the_arena_is_part_of_the_judgement() {
+    // **validate だけでは足りない。** 線形メモリは arena の残り全部を取るので、
+    // max_memory_pages に収まっていても「先に取られた残りに min_pages * 64 KiB
+    // が入らない」ことがある。実機はそこで instantiate が落ちる。
+    //
+    // 2 ページ (128 KiB) を要求するモジュールを、arena が 100 KiB しかない
+    // ボードに当てる。Config は RP2040 のまま（2 ページ上限）なので
+    // validate は通り、**instantiate だけが落ちる**。
+    let wasm = wat_memory_pages(2);
+    let tight = Profile {
+        name: "tight",
+        config: profile::RP2040.config,
+        interfaces: Interfaces::ALL,
+        roles: &[],
+        arena: 100 * 1024,
+        scratch: 8 * 1024,
+    };
+    let err = check::instantiate_with(&wasm, &tight).expect_err("arena が足りないので落ちる");
+    assert!(
+        err.contains("arena") || err.contains("Arena") || err.contains("out of"),
+        "arena が足りないことが分かるメッセージ: {err}"
+    );
+
+    // 同じモジュールは実寸の RP2040（160 KiB）なら通る。
+    assert!(
+        check::instantiate_with(&wasm, &profile::RP2040).is_ok(),
+        "RP2040 の実寸なら 2 ページが収まる"
     );
 }
 

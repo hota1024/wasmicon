@@ -23,13 +23,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use wasmicon_core::module::{ExportDesc, ImportDesc};
-use wasmicon_core::{Arena, Config, decode, generated, validate};
-use wasmicon_port::ROLE_NAMES;
+use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
 use wasmicon_port::profile::{self, Interfaces, Profile};
+use wasmicon_port::{Hal, ROLE_NAMES};
 
-/// decode / validate に使う作業領域。アプリは数 KB なので余裕を持たせてよい。
-const ARENA: usize = 16 << 20;
-const SCRATCH: usize = 4 << 20;
+/// 事実を取り出すだけの decode に使う作業領域（ボードに依存しない）。
+/// ボードごとの検査は**そのボードの arena の実寸**を使う（`Profile::arena`）。
+const FACTS_ARENA: usize = 4 << 20;
 
 /// `env.abort` は `world app` に無い例外的な import（`docs/handoff.md` §6）。
 /// AssemblyScript が必ず入れてくるので、未知の import として扱わない。
@@ -48,6 +48,8 @@ pub enum ImportState {
     AsAbort,
     /// 関数でない import（abi-spec §6.2: import memory は不可）。
     NotAFunc,
+    /// 型インデックスが型セクションの外を指している（壊れた `.wasm`）。
+    BadTypeIndex { idx: u32 },
 }
 
 impl ImportState {
@@ -83,6 +85,12 @@ impl Facts {
     pub fn import_failures(&self) -> usize {
         self.imports.iter().filter(|i| i.state.is_failure()).count()
     }
+
+    /// **ボードに依存しない**失敗の数（import と export）。
+    #[must_use]
+    pub fn failures(&self) -> usize {
+        self.import_failures() + usize::from(!self.has_run || !self.has_memory_export)
+    }
 }
 
 /// 1 ボード分の判定。
@@ -92,21 +100,22 @@ pub struct Verdict {
     pub validate: std::result::Result<u32, String>,
     /// 使っているのにそのポートで未実装のインターフェース。
     pub unimplemented: Vec<String>,
-    /// プロファイルに無い役割名（**参考**）。
+    /// プロファイルに無い役割名（**参考**。`fails()` には数えない）。
     pub missing_roles: Vec<&'static str>,
-    pub import_failures: usize,
-    /// `run` か `memory` の export が無い。
-    pub exports_missing: bool,
 }
 
 impl Verdict {
+    /// **このボードに固有の**失敗の数。
+    ///
+    /// import や export の不備はボードに依存しないので、ここには入れない
+    /// （モジュールの節で 1 回だけ数える。`Facts::failures`）。全ボードに
+    /// 同じ数を足すと、どれがボード固有の問題なのか読めなくなる。
+    ///
+    /// **役割名は数えない。** 走査は参考（部分一致で誤検出し、
+    /// AssemblyScript には当たらない）なので、終了コードを左右させない。
     #[must_use]
     pub fn fails(&self) -> usize {
-        usize::from(self.validate.is_err())
-            + self.unimplemented.len()
-            + usize::from(!self.missing_roles.is_empty())
-            + self.import_failures
-            + usize::from(self.exports_missing)
+        usize::from(self.validate.is_err()) + self.unimplemented.len()
     }
 
     #[must_use]
@@ -137,7 +146,7 @@ pub fn run(opts: &Options) -> Result<bool> {
     let facts = facts(&wasm)?;
     print_module(&opts.path, &wasm, &facts);
 
-    let mut all_ok = true;
+    let mut all_ok = facts.failures() == 0;
     for board in boards {
         let v = judge(&wasm, board, &facts);
         println!();
@@ -152,7 +161,7 @@ pub fn run(opts: &Options) -> Result<bool> {
 /// # Errors
 /// decode が失敗したとき（壊れた `.wasm`、対応外の機能セットなど）。
 pub fn facts(wasm: &[u8]) -> Result<Facts> {
-    let mut buf = vec![0u8; ARENA];
+    let mut buf = vec![0u8; FACTS_ARENA];
     let mut arena = Arena::new(&mut buf);
     let m = decode::decode(wasm, &mut arena).map_err(|e| anyhow::anyhow!(reason(e)))?;
 
@@ -160,15 +169,18 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
     let mut per_iface = BTreeMap::new();
     for imp in m.imports {
         let state = match imp.desc {
-            ImportDesc::Func(ty) => {
-                let ft = &m.types[ty as usize];
-                match generated::resolve(imp.module, imp.name) {
+            ImportDesc::Func(ty) => match m.types.get(ty as usize) {
+                // decode は import の型インデックスを検査しない（壊れた
+                // `.wasm` を診断するのがこのコマンドの仕事なので、
+                // ここで panic してはいけない）。
+                None => ImportState::BadTypeIndex { idx: ty },
+                Some(ft) => match generated::resolve(imp.module, imp.name) {
                     Some(d) if ft.sig_matches(d.sig) => ImportState::Ok,
                     Some(d) => ImportState::SigMismatch { want: d.sig },
                     None if (imp.module, imp.name) == AS_ABORT => ImportState::AsAbort,
                     None => ImportState::Unknown,
-                }
-            }
+                },
+            },
             _ => ImportState::NotAFunc,
         };
         if state == ImportState::Ok
@@ -206,7 +218,7 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
 /// 1 ボード分を判定する。
 #[must_use]
 pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
-    let validate = validate_with(wasm, &p.config).map(|()| p.config.max_memory_pages);
+    let validate = instantiate_with(wasm, p).map(|()| p.config.max_memory_pages);
 
     let unimplemented = f
         .per_iface
@@ -227,19 +239,40 @@ pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
         validate,
         unimplemented,
         missing_roles,
-        import_failures: f.import_failures(),
-        exports_missing: !f.has_run || !f.has_memory_export,
     }
 }
 
-/// そのボードの `Config` で decode + validate する。
-fn validate_with(wasm: &[u8], cfg: &Config) -> std::result::Result<(), String> {
-    let mut buf = vec![0u8; ARENA];
-    let mut scratch_buf = vec![0u8; SCRATCH];
+/// そのボードの実寸で decode → validate → `Exec` → instantiate まで通す。
+///
+/// **`validate` だけでは足りない。** 線形メモリは arena の残り全部を取るので
+/// （`Arena::alloc_rest`）、`max_memory_pages` に収まっていても
+/// 「decode / validate / `Exec` が先に取った残りに `min_pages * 64 KiB` が
+/// 入らない」ことがある。実機はそこで `instantiate` が落ちる。
+/// ここでボードの `arena` / `scratch` の実寸を使うのは、その余裕まで
+/// 再現するため（`ports/rp2040` は 160 KiB しかなく、2 ページで
+/// 20 KiB ほどしか余らない）。
+///
+/// リンクは `Hal` が解決する（import 名とシグネチャの完全一致。abi-spec §6.4）。
+/// ボードは host の mock を使う。`instantiate` はゲストを実行しないので、
+/// どのボード実装でも結果は変わらない。
+///
+/// # Errors
+/// decode / validate / `Exec` / instantiate のいずれかが失敗したとき。
+/// 文字列は `reason() [kind]` の形。
+pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), String> {
+    let mut buf = vec![0u8; p.arena];
+    let mut scratch_buf = vec![0u8; p.scratch];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
+
     let m = decode::decode(wasm, &mut arena).map_err(reason)?;
-    validate::validate(&m, cfg, &mut arena, &mut scratch).map_err(reason)?;
+    let v = validate::validate(&m, &p.config, &mut arena, &mut scratch).map_err(reason)?;
+    // Exec は線形メモリ（arena の残り全部）より先に確保する。ポートと同じ順番。
+    let _exec = Exec::new(&p.config, &mut arena).map_err(reason)?;
+    let mut hal = Hal::new(wasmicon_host::hal::HostBoard::new(), false);
+    // 線形メモリはここで arena の残りから取られる。足りなければ実機と同じ
+    // ように落ちる（それがこの関数の目的）。
+    let _inst = instantiate(m, v, &p.config, &mut arena, &mut hal).map_err(reason)?;
     Ok(())
 }
 
@@ -328,6 +361,9 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
                     format!("シグネチャが違う（{want} を期待）")
                 }
                 ImportState::NotAFunc => "関数でない（abi-spec §6.2）".to_string(),
+                ImportState::BadTypeIndex { idx } => {
+                    format!("型 {idx} が型セクションの外を指している（壊れた .wasm）")
+                }
                 ImportState::Ok | ImportState::AsAbort => continue,
             };
             println!("         - {}/{}  {what}", i.module, i.name);
@@ -349,6 +385,12 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
     match f.table_elems {
         Some(n) => row("table", &format!("{n} 要素"), ""),
         None => row("table", "なし", ""),
+    }
+
+    // ここまでがボードに依存しない判定。ボードごとの節に混ぜると、
+    // 同じ失敗が全ボードに重複して出て、どれがボード固有か読めなくなる。
+    if f.failures() > 0 {
+        println!("→ 全ボード共通で落ちる（{} 件）", f.failures());
     }
 }
 
@@ -387,10 +429,11 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile) {
         }
     }
 
-    if v.is_ok() {
-        println!("→ 通る");
-    } else {
-        println!("→ 落ちる（{} 件）", v.fails());
+    match (v.fails(), f.failures()) {
+        (0, 0) => println!("→ 通る"),
+        (0, n) => println!("→ 落ちる（全ボード共通の {n} 件。上に出した）"),
+        (m, 0) => println!("→ 落ちる（このボードで {m} 件）"),
+        (m, n) => println!("→ 落ちる（このボードで {m} 件 + 全ボード共通の {n} 件）"),
     }
 }
 

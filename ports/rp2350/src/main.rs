@@ -55,10 +55,12 @@ static GUEST: &[u8] =
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// RP2350 の SRAM は 520 KB（512 KB + 4 KB × 2）なので、線形メモリ
 /// 4 ページ（256 KB）が収まる大きさにしてある。
-static mut ARENA: [u8; 320 * 1024] = [0; 320 * 1024];
+static mut ARENA: [u8; wasmicon_port::profile::RP2350.arena] =
+    [0; wasmicon_port::profile::RP2350.arena];
 
 /// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
-static mut SCRATCH: [u8; 8 * 1024] = [0; 8 * 1024];
+static mut SCRATCH: [u8; wasmicon_port::profile::RP2350.scratch] =
+    [0; wasmicon_port::profile::RP2350.scratch];
 
 /// マイコン向けの上限。**正は `ports/common` の `profile::RP2350.config`**
 /// （CLI が同じ表を読む。docs/app-workflow.md §4.3）。

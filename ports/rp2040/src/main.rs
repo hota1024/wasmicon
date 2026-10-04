@@ -39,10 +39,12 @@ static GUEST: &[u8] =
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// RP2040 の SRAM は 264 KB なので、線形メモリ 2 ページ（128 KB）が
 /// 収まる大きさにしてある（docs/handoff.md §5 Phase 4）。
-static mut ARENA: [u8; 160 * 1024] = [0; 160 * 1024];
+static mut ARENA: [u8; wasmicon_port::profile::RP2040.arena] =
+    [0; wasmicon_port::profile::RP2040.arena];
 
 /// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
-static mut SCRATCH: [u8; 8 * 1024] = [0; 8 * 1024];
+static mut SCRATCH: [u8; wasmicon_port::profile::RP2040.scratch] =
+    [0; wasmicon_port::profile::RP2040.scratch];
 
 /// マイコン向けの上限。**正は `ports/common` の `profile::RP2040.config`**
 /// （CLI が同じ表を読む。docs/app-workflow.md §4.3）。

@@ -22,6 +22,11 @@ const NUM_GPIO: u32 = 30;
 /// RP2040 の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
 const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2040.roles;
 
+// 番号がこのボードで開けること（範囲内・予約ピンでない）をコンパイル時に
+// 確かめる。ROLES を profile に移して NUM_GPIO / RESERVED との隣接が
+// 切れたので、ここで繋ぎ直す。
+const _: () = wasmicon_port::profile::assert_roles_openable(ROLES, NUM_GPIO, RESERVED);
+
 /// SIO の FUNCSEL。ソフトウェア制御の GPIO。
 const FUNCSEL_SIO: u8 = 5;
 
