@@ -20,7 +20,8 @@ use rp2040_hal as hal;
 use rp2040_hal::Clock;
 use rp2040_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
-use wasmicon_port::Hal;
+use wasmicon_port::fmt::Buf;
+use wasmicon_port::{Hal, slot};
 
 use board::{PicoBoard, Serial};
 
@@ -32,9 +33,31 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 /// Pico の水晶振動子。
 const XTAL_HZ: u32 = 12_000_000;
 
-/// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
-static GUEST: &[u8] =
+/// 内蔵のゲスト。**スロットが空のときだけ使う。**
+///
+/// `cd apps && cargo build --release` を先に実行しておく。
+///
+/// **これは撤去する予定**（`docs/app-workflow.md` §3.3 の 2026-10-04 決定）。
+/// 3 ポートがスロットを読めるようになったら落とす。今はスロットの読み出しが
+/// 実機で未検証なので、焼き直しで戻れるようフォールバックとして残してある。
+static BUILTIN: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
+
+/// XIP の先頭。フラッシュはここから memory-mapped で読める。
+/// RP2040 は先頭 256 バイトが二段目のブートローダ（`.boot2`）。
+const XIP_BASE: usize = 0x1000_0000;
+
+/// アプリスロット（`ports/common` の `profile::RP2040`）。
+const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2040.slot {
+    Some(s) => s,
+    None => panic!("RP2040 のプロファイルにスロットが無い"),
+};
+
+// リンカが置く「ファームの末尾」（`memory.x` の `.wasmicon_fw_end`）。
+// スロットと重なっていないことを起動時に検査する。
+unsafe extern "C" {
+    static __flash_binary_end: u8;
+}
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// RP2040 の SRAM は 264 KB なので、線形メモリ 2 ページ（128 KB）が
@@ -130,7 +153,8 @@ fn main() -> ! {
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let outcome = run(&mut hal, arena_buf, scratch_buf);
+    let guest = pick_guest(hal.board_mut().serial());
+    let outcome = run(&mut hal, guest, arena_buf, scratch_buf);
 
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
     // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
@@ -156,16 +180,53 @@ fn main() -> ! {
     }
 }
 
+/// スロットから走らせるアプリを選ぶ。
+///
+/// **スロットが優先、空なら内蔵アプリ。** 読めない理由はシリアルに出す
+/// （`docs/app-workflow.md` §3.1。空は失敗ではないので、そのことも出す）。
+/// 読み出しは `ports/common` の `slot::read_xip`（RP2350 と同じ）。
+fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
+    // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
+    // だけ（中身は見ない）。
+    let fw_end = (&raw const __flash_binary_end) as usize;
+
+    let mut line = [0u8; 96];
+    let mut out = Buf::new(&mut line);
+    // SAFETY: XIP は読み出し専用でマップされていて、2 MB のフラッシュに
+    // 対して offset + len（1 MiB + 64 KiB）は収まる。ファームとの重なりは
+    // read_xip が fw_end で弾く。
+    match unsafe { slot::read_xip(XIP_BASE, SLOT, fw_end) } {
+        Ok(wasm) => {
+            out.str("wasmicon: slot ");
+            out.u32(wasm.len() as u32);
+            out.str(" B crc32=");
+            out.hex(wasmicon_port::crc32(wasm), 8);
+            serial.write(out.as_bytes());
+            serial.write(b"\r\n");
+            wasm
+        }
+        Err(e) => {
+            out.str("wasmicon: ");
+            out.str(e.reason());
+            out.str(", running built-in");
+            serial.write(out.as_bytes());
+            serial.write(b"\r\n");
+            BUILTIN
+        }
+    }
+}
+
 /// デコードから `run` の呼び出しまで。
 fn run(
     hal: &mut Hal<PicoBoard<Uart>>,
+    guest: &[u8],
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) -> Result<(), wasmicon_core::Error> {
     let mut arena = Arena::new(arena_buf);
     let mut scratch = Arena::new(scratch_buf);
 
-    let m = decode::decode(GUEST, &mut arena)?;
+    let m = decode::decode(guest, &mut arena)?;
     let v = validate::validate(&m, &MCU_CONFIG, &mut arena, &mut scratch)?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;
