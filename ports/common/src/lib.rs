@@ -32,6 +32,14 @@ pub const MAX_SPI: usize = 2;
 /// `world app` には無い例外的な import（docs/handoff.md §6）。
 const HOST_ENV_ABORT: u32 = 0xffff;
 
+/// `world app` の外で唯一許す import（`docs/handoff.md` §6）。
+///
+/// **リンクを決めているのはここ**（`Resolver::resolve`）。`wasmicon check` と
+/// `verify/differential` も同じ組を見るので、綴りを 3 箇所に散らさない
+/// （食い違うと、check がリンクするものを「表に無い」と言ったり、
+/// リンクしないものを通したりする）。
+pub const AS_ABORT: (&str, &str) = ("env", "abort");
+
 /// 入出力が重なりうる転送で使う一時領域の大きさ。
 ///
 /// `spi.transfer` と `i2c.write-read` は送信元と受信先がどちらもゲストの
@@ -284,7 +292,7 @@ fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
 impl<B: Board> Resolver for Hal<B> {
     fn resolve(&mut self, module: &str, name: &str, ty: &ExternType<'_>) -> Option<Extern> {
         // AssemblyScript の env.abort は world app に無い例外的な import（docs/handoff.md §6）。
-        if module == "env" && name == "abort" {
+        if (module, name) == AS_ABORT {
             return Some(Extern::Func(HOST_ENV_ABORT));
         }
         let ExternType::Func(ft) = ty else {

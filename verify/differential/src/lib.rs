@@ -183,11 +183,12 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
         )?;
     }
     // world app には無い例外的な import（docs/handoff.md §6）。
+    // 綴りの正は ports/common の AS_ABORT（リンクを決めているのはあちら）。
     define(
         &mut linker,
         &engine,
-        "env",
-        "abort",
+        wasmicon_port::AS_ABORT.0,
+        wasmicon_port::AS_ABORT.1,
         "iiii:",
         HOST_ENV_ABORT,
     )?;

@@ -28,7 +28,13 @@ pub fn run(opts: &Options) -> Result<bool> {
     let wasm =
         std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
 
-    let i2c_replay = match &opts.i2c_replay {
+    // `--i2c-replay` が無ければ環境変数を見る。`ports/host` のバイナリが
+    // これを読むので（docs/verification-report.md §6 の取り込み手順）、
+    // CLI が無視すると**黙って「センサー無し」に落ちて**トレースが
+    // 記録済みの行と食い違う。
+    let from_env = std::env::var("WASMICON_I2C_REPLAY").ok().map(PathBuf::from);
+    let replay_path = opts.i2c_replay.clone().or(from_env);
+    let i2c_replay = match &replay_path {
         None => Vec::new(),
         Some(p) => wasmicon_host::load_i2c_replay(p)
             .with_context(|| format!("{} を読めない", p.display()))?,

@@ -27,6 +27,17 @@ const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2040.roles;
 // 切れたので、ここで繋ぎ直す。
 const _: () = wasmicon_port::profile::assert_roles_openable(ROLES, NUM_GPIO, RESERVED);
 
+// プロファイルの「実装済みインターフェース」と、下の `Board` 実装の
+// `unsupported` スタブを縛る。**片方だけ直すとここで落ちる。**
+const _: () = {
+    let i = wasmicon_port::profile::RP2040.interfaces;
+    assert!(
+        !i.i2c && !i.spi,
+        "I2C / SPI を実装したら profile::RP2040.interfaces も true にする"
+    );
+    assert!(i.gpio && i.time && i.log && i.board);
+};
+
 /// SIO の FUNCSEL。ソフトウェア制御の GPIO。
 const FUNCSEL_SIO: u8 = 5;
 
@@ -209,6 +220,11 @@ impl<S: Serial> Board for PicoBoard<S> {
     }
 
     // --- I2C / SPI は Phase 5 で実装する ---
+    //
+    // **実装したら `profile::RP2040.interfaces` の i2c / spi も true にする。**
+    // 下の const がその組を縛っていて、片方だけ直すとコンパイルが落ちる。
+    // 揃っていないと `wasmicon check --board rp2040` が、動くアプリを
+    // 「このポートは未実装」で落とし続ける（docs/TODO.md §1.2）。
 
     fn i2c_open(&mut self, _index: u32, _speed: Speed) -> BoardResult<()> {
         Err(ErrorCode::Unsupported)

@@ -54,9 +54,14 @@ fn each_board_arena_holds_the_pages_it_promises() {
             continue; // 下の test を見ること
         }
         let promised = p.config.max_memory_pages as usize * 64 * 1024;
+        // **`<=` では足りない。** arena は decode / validate / Exec を先に
+        // 取るので、ちょうど収まる大きさでは instantiate が必ず落ちる。
+        // 実測で要るのは数 KB だが、32 KiB は空けておく
+        // （ESP32-S3 が 4 ページ / 300 KiB で 44 KiB しか余らない一番きつい側）。
+        let headroom = p.arena - promised;
         assert!(
-            promised <= p.arena,
-            "{}: {} ページ ({promised} B) が arena {} B に入らない",
+            promised < p.arena && headroom >= 32 * 1024,
+            "{}: {} ページ ({promised} B) に対して arena {} B は余裕 {headroom} B しかない",
             p.name,
             p.config.max_memory_pages,
             p.arena

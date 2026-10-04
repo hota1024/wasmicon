@@ -19,6 +19,11 @@ const NUM_GPIO: usize = 48;
 /// mock ボードの役割名 → GPIO 番号（abi-spec §8）。
 const ROLES: &[(&str, u32)] = wasmicon_port::profile::HOST.roles;
 
+// 番号がこの mock で開けることをコンパイル時に確かめる。実機のポートと
+// 同じ検査（profile に移して NUM_GPIO との隣接が切れた分を繋ぎ直す）。
+// mock に予約ピンは無い。
+const _: () = wasmicon_port::profile::assert_roles_openable(ROLES, NUM_GPIO as u32, &[]);
+
 #[derive(Clone, Copy, Default)]
 struct PinState {
     configured: bool,

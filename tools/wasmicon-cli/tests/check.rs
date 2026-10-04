@@ -24,8 +24,13 @@ fn repo_root() -> PathBuf {
 
 /// guest workspace でアプリをビルドして `.wasm` を返す。
 fn build(pkg: &str) -> Vec<u8> {
-    // 複数のテストが同じ target に向けて cargo を走らせる。cargo のロックで
-    // ビルドは直列化されるが、その隙に書きかけの .wasm を読むことがある。
+    // 同じプロセス内のテストを直列化する。
+    //
+    // **プロセスをまたぐ競合は防げない。** `ports/host/tests/apps.rs` が
+    // 同じ `.wasm` を同じ target に作るので、テストバイナリが並走する
+    // ランナー（nextest など）では、片方のリンカが書いている途中で
+    // もう片方が読む形が残る。cargo のロックはビルドを直列化するが
+    // 読み出しは守らない。共有のヘルパに切り出す件は docs/TODO.md §5。
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
@@ -58,7 +63,10 @@ fn blink_rs_passes_on_every_board() {
     let wasm = build("blink-rs");
     let f = facts_of(&wasm);
 
-    assert!(f.has_run && f.has_memory_export, "run と memory がある");
+    assert!(
+        matches!(f.run_export, Some(Ok(()))) && f.has_memory_export,
+        "run: func() と memory がある"
+    );
     assert_eq!(f.import_failures(), 0, "import は全て表と一致する");
     // blink は gpio / time / board しか触らない。
     assert!(!f.per_iface.contains_key("i2c"));
@@ -141,7 +149,13 @@ fn the_arena_is_part_of_the_judgement() {
         arena: 100 * 1024,
         scratch: 8 * 1024,
     };
-    let err = check::instantiate_with(&wasm, &tight).expect_err("arena が足りないので落ちる");
+    let (stage, err) =
+        check::instantiate_with(&wasm, &tight).expect_err("arena が足りないので落ちる");
+    assert_eq!(
+        stage.label(),
+        "instantiate",
+        "validate ではなく instantiate で落ちたと言う（{err}）"
+    );
     assert!(
         err.contains("arena") || err.contains("Arena") || err.contains("out of"),
         "arena が足りないことが分かるメッセージ: {err}"
@@ -152,6 +166,65 @@ fn the_arena_is_part_of_the_judgement() {
         check::instantiate_with(&wasm, &profile::RP2040).is_ok(),
         "RP2040 の実寸なら 2 ページが収まる"
     );
+}
+
+#[test]
+fn every_board_can_instantiate_its_advertised_maximum() {
+    // **上限いっぱいのページ数が実際に収まるか**を全ボードで見る。
+    // ESP32-S3 が一番きつい（4 ページ = 256 KiB を 300 KiB の arena）。
+    // TODO §1.4 のとおり DRAM はほぼ使い切っているので、arena を削ると
+    // ここで `max_memory_pages: 4` が嘘になることが分かる。
+    for p in profile::PROFILES {
+        if p.name == "host" {
+            continue; // host は 65536 ページを名乗るが arena は 256 ページ分
+        }
+        let pages = u8::try_from(p.config.max_memory_pages).expect("ページ数が u8 に入る");
+        let wasm = wat_memory_pages(pages);
+        assert!(
+            check::instantiate_with(&wasm, p).is_ok(),
+            "{}: 名乗っている {pages} ページが arena {} B に収まらない",
+            p.name,
+            p.arena
+        );
+    }
+}
+
+#[test]
+fn the_run_export_must_take_and_return_nothing() {
+    // abi-spec §3.3 は `run: func()`。引数が付いていると実行時に
+    // `wrong arity` で落ちるので、**export の有無だけでは足りない**。
+    let ok = wat_memory_pages(1);
+    let f = facts_of(&ok);
+    assert!(matches!(f.run_export, Some(Ok(()))), "() -> () は通る");
+    assert_eq!(f.failures(), 0);
+
+    let bad = wat_run_with_param();
+    let f = facts_of(&bad);
+    assert!(
+        matches!(f.run_export, Some(Err(_))),
+        "引数付きの run は落とす"
+    );
+    assert_eq!(f.failures(), 1, "run の型違いを 1 件として数える");
+}
+
+/// `run` が `(i32) -> ()` のモジュール。abi-spec §3.3 違反。
+fn wat_run_with_param() -> Vec<u8> {
+    let mut w = Vec::new();
+    w.extend_from_slice(b"\0asm");
+    w.extend_from_slice(&1u32.to_le_bytes());
+    // type: (i32) -> ()
+    w.extend_from_slice(&[0x01, 0x05, 0x01, 0x60, 0x01, 0x7f, 0x00]);
+    w.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]);
+    w.extend_from_slice(&[0x05, 0x03, 0x01, 0x00, 0x01]);
+    let exports: &[u8] = &[
+        0x02, 0x03, b'r', b'u', b'n', 0x00, 0x00, 0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02,
+        0x00,
+    ];
+    w.push(0x07);
+    w.push(u8::try_from(exports.len()).expect("export セクションが大きすぎる"));
+    w.extend_from_slice(exports);
+    w.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
+    w
 }
 
 /// `(module (memory n) (export "memory" ...) (func (export "run")))` を
