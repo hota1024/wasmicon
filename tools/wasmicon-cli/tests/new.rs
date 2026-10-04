@@ -217,6 +217,21 @@ fn it_refuses_to_write_into_a_non_empty_directory() {
 }
 
 #[test]
+fn it_refuses_an_unknown_board() {
+    // `manifest::load` は `[defaults] board` を検証しないので、ここで
+    // 弾かないと `new` が通って**そのあと全部のコマンドが落ちる**。
+    let mut o = opts(tmp("bad-board").join("bad-board"), new::Lang::Rust);
+    o.board = Some("rp2040x".to_string());
+    let err = new::create(&o)
+        .err()
+        .expect("知らないボードが通ってしまった");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("知らないボード"), "{msg}");
+    // 候補を出していること（打ち間違えたときに一番欲しい）。
+    assert!(msg.contains("rp2040"), "{msg}");
+}
+
+#[test]
 fn it_refuses_a_name_cargo_cannot_use() {
     let base = tmp("bad-name");
     for bad in ["1st-app", "my app", "app.rs"] {
@@ -231,10 +246,10 @@ fn it_refuses_a_name_cargo_cannot_use() {
 #[test]
 fn it_finds_the_bindings_by_walking_up() {
     // `--hal` を渡さない経路。リポジトリの中に作れば見つかるはず。
-    let dir = repo_root().join("target/new-walkup/found-app");
-    let _ = std::fs::remove_dir_all(dir.parent().expect("親"));
+    // `CARGO_TARGET_TMPDIR` はリポジトリの `target/` の下なので、ここに
+    // 作れば上に向かって `bindings/` が見つかる。
     let made = created(&new::Options {
-        dir,
+        dir: tmp("walkup").join("found-app"),
         lang: new::Lang::Rust,
         board: None,
         hal: None,

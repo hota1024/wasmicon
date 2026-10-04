@@ -2,8 +2,9 @@
 #
 # **このファイルは `wasmicon new` が書き出すものと同一**で、一致は
 # `tools/wasmicon-cli/tests/flags.rs` が見る。真実は
-# `tools/wasmicon-cli/src/flags.rs` の `CARGO_CONFIG` で、ここを手で変えると
-# テストが落ちる（コメント 1 文字でも落ちる。それが狙い）。
+# `tools/wasmicon-cli/src/flags.rs` の `CARGO_CONFIG` にあるので、wasmicon の
+# リポジトリでここを手で変えるとテストが落ちる（コメント 1 文字でも落ちる。
+# それが狙い）。
 #
 # 値を変えると実機で静かに壊れる: reference-types が混ざれば
 # call_indirect のテーブル索引で弾かれ（abi-spec §6.1 の注）、

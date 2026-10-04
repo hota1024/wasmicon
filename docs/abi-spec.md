@@ -197,7 +197,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 対象外: SIMD, threads/atomics, exception-handling, tail-call, GC, reference-types の拡張命令（`ref.null`, `ref.func`, `table.get/set/grow/size/fill/copy/init`）、multi-memory, memory64。
 
-> 注: Rust の `wasm32-unknown-unknown` は近年 `reference-types` と `multivalue` をデフォルト有効にしている。`reference-types` が有効だと `call_indirect` のテーブルインデックスが LEB128 でエンコードされる（テーブルが 1 つなら値は 0 で従来と同じバイト列）。ランタイムは `call_indirect` のテーブルインデックスを LEB128 で読み、0 以外を拒否する。Rust 側では `-C target-feature=-reference-types` または `-C target-cpu=mvp` に加えて必要機能を個別に `+` する運用を推奨する（バインディング側の build 手順で固定する）。
+> 注: Rust の `wasm32-unknown-unknown` は近年 `reference-types` と `multivalue` をデフォルト有効にしている。`reference-types` が有効だと `call_indirect` のテーブルインデックスが LEB128 でエンコードされる（テーブルが 1 つなら値は 0 で従来と同じバイト列）。ランタイムは `call_indirect` のテーブルインデックスを LEB128 で読み、0 以外を拒否する。Rust 側では `-C target-feature=-reference-types` または `-C target-cpu=mvp` に加えて必要機能を個別に `+` する運用を推奨する（**実体は `tools/wasmicon-cli/src/flags.rs` で固定している**。`docs/app-workflow.md` §4.4）。
 
 ### 6.2 メモリ
 

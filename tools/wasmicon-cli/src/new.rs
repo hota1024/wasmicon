@@ -17,7 +17,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Component, Path, PathBuf};
 
-use crate::flags;
+use crate::{flags, pack};
 
 /// 雛形の言語。`docs/app-workflow.md` §4.6 の `--lang` の値。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,6 +64,13 @@ pub struct Created {
 /// 名前が使えない、置き場所が空でない、書けないとき。
 pub fn create(opts: &Options) -> Result<Created> {
     let name = app_name(&opts.dir)?;
+
+    // **ボード名はここで弾く。** `manifest::load` は `[defaults] board` を
+    // 検証しない（役割名は語彙と突き合わせるが、ボード名は素通り）ので、
+    // 打ち間違えると `new` は成功して**そのあと全部のコマンドが落ちる**。
+    if let Some(b) = &opts.board {
+        pack::resolve_board(b)?;
+    }
 
     // **空でないところには書かない**（cargo new と同じ）。見てから書く。
     if opts.dir.exists() {
