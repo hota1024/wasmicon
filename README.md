@@ -47,7 +47,7 @@ thumbv8m.main-none-eabihf（RP2350）向けで **46.0 KiB**
 ```
 wit/                  HAL 定義。唯一の真実。生成物を手で編集しない
 tools/wasmicon-gen/   wit/ から 3 つの生成物を出すジェネレータ
-tools/wasmicon-cli/   アプリ作者が触る CLI（bin 名 wasmicon）。今は check だけ
+tools/wasmicon-cli/   アプリ作者が触る CLI（bin 名 wasmicon）。check / run / trace diff / doctor
 runtime/              wasmicon-core。no_std / 依存ゼロ / alloc 不使用のインタプリタ
 ports/common/         ポート共通の HAL。ボード固有の操作だけ Board トレイトに切り出す
 ports/host/           PC 用。mock HAL + トレース。CI はここで回す

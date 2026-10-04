@@ -1,13 +1,14 @@
 //! `wasmicon` — アプリ作者が触る唯一の面（`docs/app-workflow.md` §4）。
 //!
-//! 0 段は `check` から。`run` / `monitor` / `trace diff` / `size` / `doctor` を
-//! 続けて足す（§5）。引数のパースは `wasmicon-gen` と同じ手書き + `USAGE` 定数。
+//! 0 段は `check` / `run` / `trace diff` / `doctor` まで入った。`monitor` と
+//! `size` は未実装（§5。残作業は `docs/TODO.md` §5）。引数のパースは
+//! `wasmicon-gen` と同じ手書き + `USAGE` 定数。
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use wasmicon_cli::check;
+use wasmicon_cli::{check, doctor, run as run_cmd, trace};
 
 const USAGE: &str = "\
 wasmicon — Wasmicon のアプリを検査・実行・配備する
@@ -16,15 +17,22 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
     wasmicon <コマンド> [オプション]
 
 コマンド:
-    check <app.wasm>    そのボードで走るかを検査する
+    check <app.wasm>         そのボードで走るかを検査する
+    run <app.wasm>           host ポート（mock HAL）で走らせる
+    trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
+    doctor                   道具が揃っているかを見る
 
 check のオプション:
-    --board <name>      検査するボード（既定: 全ボード）
-                        rp2040 / rp2350 / esp32s3 / host
+    --board <name>           検査するボード（既定: 全ボード）
+                             rp2040 / rp2350 / esp32s3 / host
+
+run のオプション:
+    --trace                  全 host call を abi-spec §9 の形式で出す
+    --i2c-replay <file>      記録済みの I2C 応答（host にセンサーは無い）
 
 共通:
-    -h, --help          このヘルプ
-    -V, --version       版を出す
+    -h, --help               このヘルプ
+    -V, --version            版を出す
 
 検査の中身は実ランタイムの decode / validate と、wit/ から生成した import 表。
 host は全ボードより緩いので、`--board` でボードを指定したものだけが
@@ -32,7 +40,7 @@ host は全ボードより緩いので、`--board` でボードを指定した�
 ";
 
 fn main() -> ExitCode {
-    match run() {
+    match dispatch() {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
@@ -42,8 +50,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// 検査が通れば `Ok(true)`。使い方の誤りは `Err`。
-fn run() -> Result<bool> {
+/// 判定が通れば `Ok(true)`。使い方の誤りは `Err`。
+fn dispatch() -> Result<bool> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
         print!("{USAGE}");
@@ -60,6 +68,9 @@ fn run() -> Result<bool> {
             Ok(true)
         }
         "check" => check::run(&parse_check(args)?),
+        "run" => run_cmd::run(&parse_run(args)?),
+        "trace" => trace::diff(&parse_trace(args)?),
+        "doctor" => doctor::run(),
         other if other.starts_with('-') => {
             bail!("未知のオプション: {other}\n\n{USAGE}")
         }
@@ -74,13 +85,8 @@ fn parse_check(args: impl Iterator<Item = String>) -> Result<check::Options> {
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--board" => {
-                board = Some(args.next().context("--board に値が無い")?);
-            }
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                std::process::exit(0);
-            }
+            "--board" => board = Some(args.next().context("--board に値が無い")?),
+            "-h" | "--help" => help(),
             other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
             other => {
                 if path.is_some() {
@@ -93,4 +99,66 @@ fn parse_check(args: impl Iterator<Item = String>) -> Result<check::Options> {
 
     let path = path.context("検査する .wasm を渡すこと\n\n".to_string() + USAGE)?;
     Ok(check::Options { path, board })
+}
+
+fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
+    let mut path: Option<PathBuf> = None;
+    let mut trace_on = false;
+    let mut i2c_replay: Option<PathBuf> = None;
+
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--trace" => trace_on = true,
+            "--i2c-replay" => {
+                let v = args.next().context("--i2c-replay に値が無い")?;
+                i2c_replay = Some(PathBuf::from(v));
+            }
+            "-h" | "--help" => help(),
+            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => {
+                if path.is_some() {
+                    bail!("走らせられるのは 1 つだけ: {other}");
+                }
+                path = Some(PathBuf::from(other));
+            }
+        }
+    }
+
+    let path = path.context("走らせる .wasm を渡すこと\n\n".to_string() + USAGE)?;
+    Ok(run_cmd::Options {
+        path,
+        trace: trace_on,
+        i2c_replay,
+    })
+}
+
+fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options> {
+    let sub = args.next().context("trace の後に diff が要る")?;
+    if sub != "diff" {
+        bail!("trace のサブコマンドは diff だけ: {sub}");
+    }
+    let mut files: Vec<PathBuf> = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "-h" | "--help" => help(),
+            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => files.push(PathBuf::from(other)),
+        }
+    }
+    let [a, b] = files.as_slice() else {
+        bail!(
+            "突き合わせるログを 2 つ渡すこと（渡されたのは {} 個）",
+            files.len()
+        );
+    };
+    Ok(trace::Options {
+        a: a.clone(),
+        b: b.clone(),
+    })
+}
+
+fn help() -> ! {
+    print!("{USAGE}");
+    std::process::exit(0)
 }
