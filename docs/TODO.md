@@ -507,6 +507,10 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       - **`size` は入れない。** コアのコードサイズはアプリ作者の関心ではなく
         リポジトリ保守側の道具なので、`tools/measure-size.sh` のままにする。
         アプリ自身の大きさは `check` が先頭行で出している
+      - **`build` も入れない**（2026-10-04 決定）。`cargo build --release` /
+        `npm run build` を言語で振り分けるだけの薄いラッパで、ビルドフラグは
+        `new` が埋めたファイルが持つ（§4.4）ので足せるものが無い。
+        `docs/app-workflow.md` §4.6 の内側のループは `cargo build` で書いた
       - 判定（`facts` / `judge`）と印字を分けてあるので、判定だけをテストから
         呼べる。`tools/wasmicon-cli/tests/check.rs` が `apps/` の実物で固定:
         **`blink-rs` は 4 ボードすべて通り、`sensor-display-rs` は rp2040 だけ
