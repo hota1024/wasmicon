@@ -1,5 +1,16 @@
-# cargo はカレントディレクトリから上に向かって .cargo/config.toml を探すので、
-# この設定は apps/ の中で cargo を実行したときに効く。
+# ゲストのビルドフラグ（Wasmicon の契約。docs/app-workflow.md §4.4）。
+#
+# **このファイルは `wasmicon new` が書き出すものと同一**で、一致は
+# `tools/wasmicon-cli/tests/flags.rs` が見る。真実は
+# `tools/wasmicon-cli/src/flags.rs` の `CARGO_CONFIG` で、ここを手で変えると
+# テストが落ちる（コメント 1 文字でも落ちる。それが狙い）。
+#
+# 値を変えると実機で静かに壊れる: reference-types が混ざれば
+# call_indirect のテーブル索引で弾かれ（abi-spec §6.1 の注）、
+# --initial-memory を増やすと RP2040 の 2 ページ上限を超える。
+#
+# cargo は実行したディレクトリから上に向かって .cargo/config.toml を探すので、
+# この設定はこのディレクトリの中で cargo を実行したときに効く。
 [build]
 target = "wasm32-unknown-unknown"
 

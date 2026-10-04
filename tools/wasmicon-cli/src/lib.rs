@@ -6,8 +6,10 @@
 pub mod check;
 pub mod deploy;
 pub mod doctor;
+pub mod flags;
 pub mod manifest;
 pub mod monitor;
+pub mod new;
 pub mod pack;
 pub mod run;
 pub mod trace;
