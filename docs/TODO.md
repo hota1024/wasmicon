@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-09-29
+最終更新: 2026-10-04
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -327,7 +327,179 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 `docs/design-notes.md` §6 のロードマップにある、v0.1 の範囲外のもの。
 
 - AoT コンパイル（`wasmicon_compiler`）
-- HTTP での動的ロード
+- HTTP での動的ロード → **§5 で設計に入った**（`docs/app-workflow.md`）
 - Component Model の完全採用（resource type / async / component binary）
 - インタプリタの最適化。今は `match` ループのまま。RP2040 で ILI9341 のテキスト描画が
   1 秒以内という目標は未計測（`docs/handoff.md` §5 Phase 2）
+
+---
+
+## 5. アプリ開発フロー（ローダと `wasmicon` CLI）
+
+**設計は `docs/app-workflow.md` が正。ここは残作業と未決だけ。**
+2026-10-04 にオーナーが方針を出した: **ボードごとにファームウェアを用意し、
+そのファームウェアがアプリを USB / HTTP 経由でロードできるようにする。**
+
+**同日の決定: ファームにアプリは入れない。** `include_bytes!` の内蔵アプリは
+外し、空スロットなら理由を出して idle、生存確認はポート層が直接 LED を振る
+（`docs/app-workflow.md` §3.3）。**今の `include_bytes!` はファームのビルドを
+`apps/` のビルドに依存させていて、ファームを単体のリリース成果物として
+作れない**のがもう 1 つの理由。
+
+§1 を押し退けるものではない。**0 段は §1.3 の SHT40 作業を短くする**
+（取り込みと突き合わせを CLI に寄せる）。**handoff §5 の Phase 4 / 5 / 6 の
+完了条件は変えない。**
+
+### 未決（オーナー判断。本文からは §5-1 … §5-9 で参照する）
+
+- [ ] **§5-1 トラップ後の挙動を「停止したまま次のアプリを受け付ける」に確定するか。**
+      今は handoff §3 #4 のとおり「ログを出して停止、再起動しない」で、`main` は
+      `loop { wfi() }` に入る。ローダは**同じアプリの自動再実行はしないまま**
+      「新しいアプリを待つ」状態を足す。`docs/abi-spec.md` §6.6 がトラップ後の
+      挙動をポートに委ねているので **ABI の変更ではない**が、§3 #4 の記録とは
+      読みが変わるので確定が要る。§2 の「§10 の未決 2〜5 を確定にするか」の #3 と
+      同じ対象
+- [ ] **§5-2 ボードの品種**（スロットの置き場所が決まらない）
+      - ESP32-S3 DevKitC-1 の**フラッシュ容量**（N8 = 8 MB / N16 = 16 MB）と
+        **PSRAM の有無**（N8R8 なら 8 MB）。`espflash board-info` で分かる
+      - RP2350 側は Pico 2 W（フラッシュ 4 MB）で確定済み（§1.1）
+- [ ] **§5-3 ESP32-S3 の RAM 予算をどうするか**（HTTP の前提）。DRAM はほぼ
+      使い切っている（`.bss` 315 KB / `ARENA` 300 KB / ネイティブスタック
+      17.4 KiB。§1.4）。`esp-wifi` を入れるなら二択:
+      - `max_memory_pages` を 4 → 2 に落とす。abi-spec §6.2 は「上限はポートが
+        決める」としているので**仕様違反ではない**が、**「同一バイナリがどの
+        ボードでも通る」が実質的に崩れる**
+      - arena を PSRAM に置く（§5-2 の品種次第）。**線形メモリが遅くなる**。
+        どれだけ遅くなるかは未計測
+- [ ] **§5-4 Pico 2 W / Pico WH の Wi-Fi をやるか。** CYW43439 で、実用的な
+      ドライバ `cyw43` は embassy（async）前提。今の blocking 構成から
+      **ポートの作り直しになる**。v1 の HTTP は ESP32-S3 だけに絞ることを推す
+- [ ] **§5-5 HTTP の向き。** デバイスがサーバ（`POST /app` + mDNS。dev ループが
+      楽）か、URL から pull（OTA が楽、NAT 越えが効く）か。両方は後でもよいが、
+      先に入れる側を決める
+- [ ] **§5-6 技術的な要確認**（実装前に確かめる。推測で進めない）
+      - **RP2350 のフラッシュ書き込み**。`rom_data::flash_range_erase` /
+        `flash_range_program` を**XIP から実行しているコードから呼べない**。
+        書き込みルーチンを RAM に置き（`#[link_section = ".data"]`）割り込みを
+        止める形になるはず
+      - **UF2 で任意アドレスに書けるか**。RP2350 でパーティションテーブルが
+        無いとき absolute family ID (0xe48bff57) が要るかもしれない。通れば
+        `deploy` が picotool 無しで済む
+      - **ESP32-S3 で任意オフセットが XIP にマップされているとは仮定しない**。
+        `esp-storage` で RAM に読み出す前提で設計してある
+- [ ] **§5-7 ESP32-S3 のファームをリリース成果物として CI で作るか。** 今は
+      Xtensa のため CI で回していない（`.github/workflows/ci.yml` のコメント）。
+      アプリ作者にファームをビルドさせない方針（`docs/app-workflow.md` §4.5）を
+      取るなら espup を入れるジョブが要る
+- [ ] **§5-9 役割マップをデバイス側の設定にするか / いつやるか**
+      （`docs/app-workflow.md` §3.9 / §4.7）。今は役割 → GPIO がファームの
+      `const ROLES` にあるので、**配線を変えるとファームを焼き直す**ことになり
+      「ファームは一度だけ焼く」と衝突する
+      - **決定性は壊れない**。abi-spec §9 が役割で配った番号を `role:` に
+        正規化するので、対応表を変えてもトレース行は変わらない
+      - ただし**ピン番号をハードコードしているアプリのトレースは変わる**
+        （`role:` だった行が生の番号になる）。§9 が既に対象外としている
+        アプリに限る話だが、症状の説明が要る
+      - 最小版は 1 段でも成立する（設定セクタを `espflash write-bin` / UF2 で
+        外から書き、ファームは読んで適用するだけ）。プロトコル経由は 2 段
+- [ ] **§5-8 ファーム版の振り方。** 3 ポート共通の 1 本（`0.1.0` を揃える）か、
+      ポートごとに独立か。**ABI 版（`wasmicon:hal@0.1.0`）は `wit/` 由来で、
+      ファーム版とは別物**。勝手に上げない（handoff §2-5）。互換の判定は
+      版 1 本ではなく軸ごとに行う（`docs/app-workflow.md` §3.8）ので、
+      ファーム版は由来の記録にしか使わない
+
+### 実装（段階は `docs/app-workflow.md` §5）
+
+- [ ] **`ports/common` に abi-spec §5.2 のハンドル掃除を実装する**（0 段の前に
+      やってよい。**ローダの有無と関係なく仕様と実装が食い違っている**）。
+      §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを drop する」と
+      定めるが、**host も rp2040 / rp2350 / esp32s3 もこれをやっていない**。今
+      見えていないのは Rust バインディングの `Drop`（`bindings/rust/src/hal.rs`）が
+      ゲスト側で解放しているから。ローダでは**次のアプリが `busy` を踏む**
+      （前のアプリがトラップしたときは確実に踏む）
+      - `Hal::release_all()` を足し、`run` の後とトラップの後に全ポートで呼ぶ
+      - **掃除はトレース行を出さない。** ゲストの host call ではないし、出すと
+        記録済みの 14,352 行（`docs/verification-report.md` §6 / §7）が変わる
+- [ ] **ボードプロファイルを `ports/common` に集める**（`Config` +
+      **実装済みインターフェース**）。後者が無いと `ports/rp2040` 向けの
+      `check` は**静的には通ってしまう**（SPI / I2C が `unsupported` を返すのは
+      実行時。§1.2）。`Config` は今は 3 つの `main.rs` に
+      散っていて（RP2040 = 2 ページ、RP2350 / ESP32-S3 = 4 ページ、他は同値）
+      CLI から参照できない。`pub const PROFILES: [(&str, Config); N]` のような表に
+      して各 `main.rs` が名前で引く形にすると、**値が変わっていないことを CI の
+      rp2040 / rp2350 ジョブが見る**。**値は 1 ビットも変えずに移す**
+      （validate の上限なので、変えると通るアプリが変わる）
+- [ ] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る。** 0 段は
+      `check` / `run` / `monitor` / `trace diff` / `size` / `doctor`。
+      **ファームの変更ゼロ・実機不要**で、§1.3 の作業に効く
+      - `check` は**実ランタイムで** decode / validate / instantiate する。
+        `ports/host` は `Config::default()`（`max_memory_pages` = 65536）で走るので
+        **host 実行は全ボードより緩い**。`--board` が要る理由
+      - `monitor` は `/dev/cu.usb*` を列挙する。`usbserial` を決め打ちしない（§1.1）。
+        **0 段の `monitor` は identity より先に出る**（ログ先頭への記録は下の
+        「ファームが自分を名乗るようにする」の担当で、これだけでは済まない）
+      - **`run` の `--i2c-replay` は既存の環境変数 `WASMICON_I2C_REPLAY` に対応する。**
+        指す先の `verify/sht4x-replay.txt` は §1.3 で実機の記録に差し替える予定
+      - **「検証だけする入口」が今は無い。** `wasmicon_host::run_wasm_opts` は
+        `run` まで呼ぶ。CLI 側で `wasmicon-core` + `wasmicon_port::Hal` +
+        `wasmicon_host::hal::HostBoard` を直に組む（推奨）か、`ports/host` に
+        `check_wasm(wasm, &Config)` を足すかを決める
+      - `wasmicon-host` の crate は残して lib として使う
+        （`verify/differential` が依存している）
+- [ ] **アプリ側ビルドフラグの単一真実**。`apps/.cargo/config.toml` と
+      `apps/*/asconfig.json` と `wasmicon new` の雛形で 3 重化する。
+      **`wasmicon-gen --check` と同じ形で CI に検査を置く**。食い違うと
+      「ボード間で同じバイナリ」が静かに壊れる（`docs/app-workflow.md` §4.4）
+- [ ] **スロット形式（`docs/app-workflow.md` §3.4）とスーパーバイザのループ**
+      （§3.1）。arena / `Hal` / **ロール表**をサイクルごとに作り直す。ロール表を
+      持ち越すとトレースが変わりうる
+- [ ] **内蔵アプリを外す**（1 段。**スロットが入るのと同時に行う** — 先に外すと
+      ファームが何も走らせなくなる）。`ports/*/src/main.rs` の `include_bytes!` と
+      `guest-lcd-demo` feature を落とし、空スロットは理由を出して idle、
+      生存確認はポート層が LED を振る（`Board` 直叩きで Wasm を通らない）
+      - **CI も同時に直す**: ポートのジョブから `apps` の先行ビルドが不要になり、
+        rp2350 の `cargo clippy --release --features guest-lcd-demo` の行も消える
+      - **記録済みトレースは生き続ける**。`lcd_demo_rs.wasm`（`fc470947…`）を
+        スロットへ `deploy` すれば**バイト列が同一なので host call 列も同一**
+        （XIP の番地や RAM への写しはトレースに出ない）
+      - **失うもの**: 焼いた直後に「ランタイムが decode → run まで通る」ことを
+        実機で確かめる足場。host テストと最初の `deploy` で代替する
+- [ ] **`deploy` の 1 段目**: 既存フラッシャでスロットだけ書く
+      （ESP32-S3 は `espflash write-bin`、Pico は UF2 か `picotool load -o`）。
+      **この時点で ESP32-S3 はボタン操作不要**
+- [ ] **ファームが自分を名乗るようにする**（`info` とバナー。
+      `docs/app-workflow.md` §3.8）。今バナーは `wasmicon rp2350` の 1 行だけで
+      **版も git も入っていない**（`ports/rp2350/src/main.rs:140`）。
+      `docs/verification-report.md` は**ゲストの SHA-256 は記録しているのに
+      ファーム側は何も記録していない**ので、どのビルドが 14,352 行を出したかは
+      日付と git 履歴から推測するしかない
+      - 載せるもの: ボード名 / ファーム版 + `git describe` + dirty / ABI 版 /
+        構成（`trace` の有無、内蔵アプリ）/ `Config` / スロット容量と形式版 /
+        プロトコル版 / 役割名
+      - `git describe` は `build.rs` で埋める。**dirty を落とさない**
+      - `monitor` が取り込みログの先頭に identity を記録し、`trace diff` は
+        identity 行を比較から外すが**食い違ったら警告する**
+      - **`trace` を切って焼いたボードは `monitor` が無言になる**。
+        `trace: off` と申告できれば配線から疑わずに済む
+- [ ] **ファームの配布**（release manifest と `flash --fw` / `fw list`）。
+      ボード × 版の成果物に manifest（ファイル + sha256 + §3.8 の 5 軸）を付ける。
+      §5-7 と対になる
+- [ ] **`wasmicon.toml`**（`docs/app-workflow.md` §4.7）。`requires`（必要な
+      役割名）、既定のボード、replay のパス、配線の意図を書く。
+      **ABI 準拠のビルドフラグは書かせない**（§4.4 の 3 重化を 4 重にする）。
+      マシン固有の値は `wasmicon.local.toml`（gitignore）に分ける
+      - `requires` があると §4.3 の役割名の照合が**参考から保証に変わる**
+      - `deploy` は toml とデバイスの実効マップを毎回照合し、**黙って適用しない**
+        （駆動されるピンが変わるので物理的に危ない）
+- [ ] **役割マップの設定スロット**（§5-9 の決定後。§3.9）。設定セクタ +
+      `config` コマンド + デバイス側の検証（予約ピン・バスのピン・重複を弾く）。
+      **CRC が合わなければ既定値で起動**してログに出す（手が届くのが同じ UART
+      しかないので fail-safe にする）。identity に実効マップの CRC-32 を入れる
+- [ ] **USB 制御チャネル**（2 段）。ESP32-S3 は `esp-hal` の
+      `usb::usb_serial_jtag`（追加クレート不要）、RP2350 / RP2040 は
+      `rp235x-hal::usb` + `usbd-serial`。**制御は USB、トレースは UART0 に分ける**
+      - **`hw-probe` feature を `probe` コマンドにする**（`docs/app-workflow.md` §3.6）。
+        焼き直さずに切り分けられ、build 構成が 1 つ減って variant が
+        `trace` あり / なしの 2 つに収束する
+- [ ] **HTTP**（3 段）。§5-3 / §5-4 / §5-5 の判断が先
+- [ ] **`new` と bindings の配布**（crates.io / npm）。0 段と独立。先に決め打ちしない
