@@ -673,7 +673,7 @@ $ wasmicon trace diff host.log pico.log
 
 ---
 
-## 10. ESP32-S3 のスロット（2026-10-04、実測と未検証）
+## 10. ESP32-S3 のスロット（2026-10-04、実測）
 
 `espflash board-info` の実測:
 
@@ -716,15 +716,71 @@ GPIO43/44）。Pico が別の USB-シリアル変換を使うのと違う。そ�
   呼んだ結果、ボードが `boot:0x0 (DOWNLOAD)` で止まった。
   **`write-bin` は既定で `--after hard-reset` までやるので、別に呼んではいけない**
 
-`deploy --board esp32s3` は**書き込みとリセットまでは通した**
-（`Binary successfully written to flash!`）。`--monitor` は成立しないので
-理由を出して断るようにした。
+**答えは「口ごと espflash に任せる」だった。** `monitor` は `stty` しか
+当てないので自分ではリセットできない（DTR/RTS を触らない）。`espflash monitor`
+は既定で `--before default-reset --after hard-reset` をやる、つまり**開いて
+から起動させる**ので、1 プロセスで順番の問題が消える:
+
+```sh
+espflash monitor --port <dev> -c esp32s3 --non-interactive
+```
+
+- **`-c esp32s3` が要る。** 無いと `--before` の指定次第で
+  `chip_not_provided` で落ちる
+- **`--before no-reset-no-sync` は使えない。** アプリが走っている
+  （= ブートローダに居ない）ので `Timeout while running ReadReg command`
+  になる。既定の `default-reset`（DTR/RTS でブートローダに入れてから
+  hard-reset）で通る
+- `--non-interactive` を付けないと端末を要求する
+
+`deploy --monitor --board esp32s3` はこの道具に委譲する形にした
+（`monitor::capture_cmd`）。書き込み側は `--after no-reset` にして**走らせず**、
+リセットは `espflash monitor` にやらせる。
+
+### **2 つのリーダが同じ口を取り合う**（取り込みが欠ける原因）
+
+最初に取った取り込みが 13,634 行で切れていた。原因は**前の取り込みが
+まだ生きているうちに次を開いた**こと。macOS の `cu.*` は排他にならないので
+両方が read でき、**バイト列が 2 つのプロセスに分配される**（13,634 +
+710 = 14,344 ≒ 14,346 で辻褄が合った）。取り込みが欠けたら、まず
+`pgrep -f 'wasmicon|espflash|cat /dev/cu'` で居残りを疑うこと。
+
+### スロットから走らせるところまで一致した（本題）
+
+`espflash monitor` で 1 回で取り込めた:
+
+```
+wasmicon: slot 4088 B crc32=0f19d973
+```
+
+`pack` が報告した CRC と一致している。そのうえで:
+
+| 突き合わせ | 結果 |
+| --- | --- |
+| host（`wasmicon run`）vs ESP32-S3（スロット） | **14,352 行 一致** |
+| Pico 2 W（スロット、§9）vs ESP32-S3（スロット） | **14,352 行 一致** |
+
+後者が肝で、**フラッシュの読み方が違う 2 つのボード**——RP2350 は XIP の
+スライスをそのまま `decode` に渡し、ESP32-S3 は `esp-storage` でヘッダを
+読んでから長さの分だけ arena を取って本体を写す——が、同じ `.wasm` で
+**同一のホスト呼び出し列**を出した。スロット経路が
+`docs/handoff.md` §5 Phase 6 の決定性の条件を壊していない。
+
+そのうえで `deploy --monitor` を 1 コマンドで通した:
+
+```
+$ wasmicon deploy apps/.../lcd_demo_rs.wasm --board esp32s3 \
+    --port /dev/cu.usbmodem5C630009931 --monitor -o esp12.log
+lcd_demo_rs.bin → esp32s3 のスロット（0x10100000）  4104 B（wasm 4088 B、crc32 0f19d973）
+→ espflash monitor にリセットと取り込みを任せる:
+無音になった: 442835 B / トレース 14352 行
+```
+
+これも host と 14,352 行一致。**Pico と違ってボタン操作が要らない**
+（DTR/RTS でブートローダに入るので、BOOTSEL のような物理操作が無い）。
 
 ### まだ見ていないこと
 
-- **ESP32-S3 がスロットからアプリを走らせるところは未検証。** ファームは
-  `esp-storage` でヘッダを読み、長さの分だけ arena を取って本体を読む形に
-  書いてある（ビルドは通る）が、**実機の出力を取れていない**（上の共用の件）。
-  取るには `espflash write-bin --after no-reset` → `espflash monitor`
-  （リセットを espflash に任せる）か、USB-Serial-JTAG 側の口を使う必要がある
-- Pico 系（§9）と違い、**ここは「書けた」までしか言えない**
+- `read_flash` の 2 段読み（ヘッダ → 本体）の失敗側、つまり CRC 不一致や
+  `Truncated` を実機で起こしていない（単体テストはある）
+- スロットが空のときに idle に入るところ（ファームだけ焼いた直後の形）

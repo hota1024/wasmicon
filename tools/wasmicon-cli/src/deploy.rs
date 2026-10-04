@@ -135,8 +135,13 @@ pub fn run(opts: &Options) -> Result<bool> {
         plan.crc
     );
 
+    // **ESP32-S3 は書き込み・リセットとトレースが同じ口**なので、取り込みも
+    // 同じ道具に任せる。そのとき書き込みでは走らせない（§10）。
+    let shared_port = plan.board.name == "esp32s3";
+    let hand_off = opts.monitor && !opts.no_run && shared_port;
+
     // 1 段は外のフラッシャ（§3.5）。ボードで道具が違う。
-    if !write_slot(&plan, opts.port.as_deref())? {
+    if !write_slot(&plan, opts.port.as_deref(), hand_off)? {
         return Ok(false);
     }
 
@@ -145,16 +150,27 @@ pub fn run(opts: &Options) -> Result<bool> {
         return Ok(true);
     }
 
-    // **`--monitor` は ESP32-S3 では成立しない。** 書き込み・リセットと
-    // トレースが**同じ口**なので、`monitor` が握ったままでは
-    // `espflash` が使えず（`Resource busy`）、先にリセットさせると
-    // 開く前に出力が終わっている（2026-10-04 に実機で踏んだ。§10）。
-    if opts.monitor && plan.board.name == "esp32s3" {
-        eprintln!(
-            "  --monitor は esp32s3 では使えない（書き込みとトレースが同じ口）。\n  \
-             espflash monitor --port <dev> を別に使うこと（docs/TODO.md §5）"
+    if hand_off {
+        // `espflash monitor` が DTR/RTS でリセットしてから読む。**口を
+        // 自分で開かない**（開くと `Resource busy` で espflash が使えない）。
+        println!("→ espflash monitor にリセットと取り込みを任せる:");
+        let mut args = vec!["monitor", "-c", "esp32s3", "--non-interactive"];
+        let p;
+        if let Some(dev) = opts.port.as_deref() {
+            p = dev.to_string_lossy().into_owned();
+            args.extend_from_slice(&["--port", &p]);
+        }
+        return monitor::capture_cmd(
+            "espflash",
+            &args,
+            &monitor::Options {
+                port: None,
+                baud: monitor::DEFAULT_BAUD,
+                out: opts.out.clone(),
+                idle: Some(monitor::DEFAULT_IDLE),
+                timeout: None,
+            },
         );
-        return Ok(false);
     }
 
     // **`--monitor` ならリセットの前に開いて baud を当てる。**
@@ -169,7 +185,7 @@ pub fn run(opts: &Options) -> Result<bool> {
     };
 
     // ESP32-S3 は `write-bin` が既定でリセットまでやる（上）。
-    if plan.board.name != "esp32s3" && !reset(&plan)? {
+    if !shared_port && !reset(&plan)? {
         eprintln!("  書けたがリセットできなかった。USB を抜き差しすること");
         return Ok(false);
     }
@@ -195,7 +211,7 @@ pub fn run(opts: &Options) -> Result<bool> {
 }
 
 /// スロットに書く。ボードで道具が違う。
-fn write_slot(plan: &Plan, port: Option<&Path>) -> Result<bool> {
+fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<bool> {
     let image = plan.image.to_string_lossy().into_owned();
     match plan.board.name {
         // ESP32-S3 は ROM ブートローダに DTR/RTS で落ちるので**ボタン操作が
@@ -212,6 +228,12 @@ fn write_slot(plan: &Plan, port: Option<&Path>) -> Result<bool> {
             if let Some(dev) = port {
                 p = dev.to_string_lossy().into_owned();
                 args.extend_from_slice(&["--port", &p]);
+            }
+            // `--monitor` のときは**ここでリセットしない**。走らせてしまうと、
+            // 次に開くまでに出力が終わっている（§10 で踏んだ形）。
+            // リセットは `espflash monitor` に任せる。
+            if keep_halted {
+                args.extend_from_slice(&["--after", "no-reset"]);
             }
             args.extend_from_slice(&[&offset, &image]);
             let ok = spawn("espflash", &args)?;

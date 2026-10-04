@@ -24,7 +24,7 @@
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -302,7 +302,52 @@ pub fn capture(session: Session, opts: &Options) -> Result<bool> {
     let mut sink = Sink::new(opts.out.as_deref())?;
     let stats = stream(session.file, &mut sink, opts.idle, opts.timeout)?;
     sink.finish()?;
+    report(&stats)
+}
 
+/// 口を開く道具に任せて、その標準出力から取り込む。
+///
+/// **ESP32-S3 のためにある。** あのボードは書き込み・リセットとトレースが
+/// 同じ口で、リセットは DTR/RTS を当てないとできない（`monitor` は `stty` しか
+/// 当てないので自分ではリセットできない）。両方できる道具
+/// （`espflash monitor`）に口ごと任せて、出てきたものをここで数える
+/// （`docs/verification-report.md` §10）。
+///
+/// # Errors
+/// 道具を起動できない、書き出せないとき。
+pub fn capture_cmd(cmd: &str, args: &[&str], opts: &Options) -> Result<bool> {
+    if let Some(idle) = opts.idle {
+        eprintln!("（{} 秒無音になったら終わる）", idle.as_secs());
+    }
+
+    // stderr は渡す（道具の進捗や失敗の理由がそこに出る）。
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!("{cmd} を起動できない（`wasmicon doctor` で入っているか見ること）")
+        })?;
+    let out = child
+        .stdout
+        .take()
+        .with_context(|| format!("{cmd} の標準出力を取れない"))?;
+
+    let mut sink = Sink::new(opts.out.as_deref())?;
+    let stats = stream(out, &mut sink, opts.idle, opts.timeout)?;
+    sink.finish()?;
+
+    // **必ず終わらせる。** `espflash monitor` は自分では終わらないので、
+    // 残すと口を握ったままになり、次の書き込みが `Resource busy` になる
+    // （§10 でその形に詰まった）。
+    let _ = child.kill();
+    let _ = child.wait();
+
+    report(&stats)
+}
+
+/// 取り込みの結果を出して、使える取り込みだったかを返す。
+fn report(stats: &Stats) -> Result<bool> {
     eprintln!(
         "{}: {} B / トレース {} 行",
         stats.stopped.reason(),
