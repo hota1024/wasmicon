@@ -1034,7 +1034,7 @@ wasmicon.local.toml  gitignore。シリアルポートなどマシン固有の�
 
 | 段 | 中身 | ファームの変更 | 実機 |
 |---|---|---|---|
-| 0 | CLI の骨 + `check` / `run` / `monitor` / `trace diff` / `doctor` | **ゼロ** | 不要 |
+| 0 | CLI の骨 + `new` / `check` / `run` / `monitor` / `trace diff` / `doctor` | **ゼロ** | 不要 |
 | 1 | §3.2 の掃除 → スロット形式 → 「スロットを読んで走る」ファーム → **内蔵アプリの撤去**（§3.3）→ 既存フラッシャで `deploy` | ローダの芯 | 要 |
 | 2 | USB 制御チャネル + §3.6 のプロトコル。`info` と `probe`、役割マップの設定（§3.9）が入る | USB スタック | 要 |
 | 3 | HTTP（ESP32-S3） | Wi-Fi + RAM 予算の判断 | 要 |
@@ -1042,7 +1042,8 @@ wasmicon.local.toml  gitignore。シリアルポートなどマシン固有の�
 - **0 段は TODO §1.3 の SHT40 作業にそのまま効く**（取り込みと突き合わせ）
 - **1 段の時点で ESP32-S3 はボタン操作不要**（espflash が DTR/RTS でリセットする）。
   Pico は BOOTSEL 押下が残り、2 段で消える
-- `new` と bindings の配布（crates.io / npm）は 0 段と独立。ここで決め打ちしない
+- **bindings の配布**（crates.io / npm）はどの段とも独立。ここで決め打ちしない。
+  `new` は 0 段に入ったが、依存はパスで書いている（§4.6 の 3）
 
 ---
 
