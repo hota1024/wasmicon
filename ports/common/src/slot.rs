@@ -144,7 +144,12 @@ pub fn verify(wasm: &[u8], h: &Header) -> Result<(), SlotError> {
 /// 空、magic 違い、版違い、長さ不足、CRC 不一致のとき。
 pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
     let h = parse_header(bytes)?;
-    let need = HEADER_LEN + h.len;
+    let Some(need) = image_end(h.len) else {
+        return Err(SlotError::Truncated {
+            need: usize::MAX,
+            have: bytes.len(),
+        });
+    };
     let Some(wasm) = bytes.get(HEADER_LEN..need) else {
         return Err(SlotError::Truncated {
             need,
@@ -199,8 +204,27 @@ pub fn header(wasm: &[u8]) -> [u8; HEADER_LEN] {
     h
 }
 
-/// スロットに置くときの全体の大きさ。
+/// スロットに置くときの全体の大きさ（書く側が使う）。
+///
+/// 書く側の長さは実在するファイルの大きさなので溢れない。読む側は
+/// `image_end` を使う。
 #[must_use]
 pub fn image_len(wasm_len: usize) -> usize {
     HEADER_LEN + wasm_len
+}
+
+/// ヘッダが申告する長さから、必要な全体のバイト数を出す。溢れたら `None`。
+///
+/// **読む側の足し算をここ 1 箇所にしてある。** 長さは壊れたフラッシュから
+/// 来た値で、`usize` が 32 bit のターゲット（thumbv6m / thumbv8m /
+/// xtensa）では `0xffff_fff8 + 16` が 8 に巻き戻る。巻き戻ると `Truncated`
+/// が「need 8 / have 65536」のような自己矛盾した理由を出し、debug ビルドでは
+/// 足し算そのものが panic する —— **理由を出すためにある経路が無言で死ぬ**
+/// （`docs/handoff.md` §3 #4 に反する）。
+///
+/// **`parse` 経由では host で再現しない**（長さは u32 で、host の `usize` は
+/// 64 bit）。だから検査はこの関数を直に呼ぶ（`tests/slot.rs`）。
+#[must_use]
+pub fn image_end(wasm_len: usize) -> Option<usize> {
+    HEADER_LEN.checked_add(wasm_len)
 }

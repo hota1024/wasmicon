@@ -172,7 +172,37 @@ fn pick_guest<'a>(
         return BUILTIN;
     }
 
-    // ここで初めて長さが分かるので、その分だけ arena を取る。
+    // **arena を取る前に CRC を確かめる。** `Arena` は bump で、返す手段が
+    // 無い（`runtime/src/arena.rs` に reset は無い）。壊れたスロットで
+    // 先に取ってしまうと、内蔵アプリへ落ちたあとも**その分 arena が減った
+    // まま**走ることになり、`wasmicon check` が見積もる余裕と実機がずれる。
+    // だから一度フラッシュから流して CRC だけ見る。
+    //
+    // 読みは小さなバッファで分割する。`esp-storage` の `read` は**呼ぶたびに
+    // 4 KiB のセクタバッファをスタックに作る**（あちらの実装）ので、
+    // ここを大きくしてもスタックの山は変わらない。順に呼ぶので山は 1 つ分
+    // （`docs/TODO.md` §1.4 に記録した）。
+    let mut chunk = [0u8; 512];
+    let mut crc = wasmicon_port::CRC32_INIT;
+    let mut left = header.len;
+    let mut at = SLOT.offset + slot::HEADER_LEN as u32;
+    while left > 0 {
+        let n = if left < chunk.len() { left } else { chunk.len() };
+        if storage.read(at, &mut chunk[..n]).is_err() {
+            serial.write(b"wasmicon: slot read failed, running built-in\r\n");
+            return BUILTIN;
+        }
+        crc = wasmicon_port::crc32_update(crc, &chunk[..n]);
+        at += n as u32;
+        left -= n;
+    }
+    if wasmicon_port::crc32_end(crc) != header.crc {
+        serial.write(b"wasmicon: slot crc mismatch, running built-in\r\n");
+        return BUILTIN;
+    }
+
+    // CRC が合ったので、ここで初めて arena を取る。失敗する枝はもう
+    // 「arena が足りない」だけ。
     let Ok(buf) = arena.alloc_bytes(header.len) else {
         serial.write(b"wasmicon: arena too small for the slot app\r\n");
         return BUILTIN;
@@ -184,6 +214,9 @@ fn pick_guest<'a>(
         serial.write(b"wasmicon: slot read failed, running built-in\r\n");
         return BUILTIN;
     }
+    // **写したものをもう一度検査する。** 上で確かめたのは流し読みした
+    // バイト列で、decode に渡すのはこの `buf`。2 度目の読みが壊れていたら
+    // ここで捕まえる（arena は既に取ってあるが、走らせはしない）。
     if let Err(e) = slot::verify(buf, &header) {
         out.str("wasmicon: ");
         out.str(e.reason());

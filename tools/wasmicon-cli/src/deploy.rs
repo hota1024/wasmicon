@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmicon_port::profile::{Profile, Slot};
+use wasmicon_port::profile::{Flasher, Profile, Slot};
 
 use crate::manifest::Manifest;
 use crate::{check, monitor, pack};
@@ -49,6 +49,41 @@ pub struct Plan {
     pub wasm_len: usize,
     pub image_len: usize,
     pub crc: u32,
+}
+
+/// 焼き方の判断。**ボード名ではなくフラッシャで決まる。**
+///
+/// `run` から切り出してあるのは、ここがテストできる唯一の分岐だから
+/// （外のフラッシャを呼ぶ部分は実機が要る）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Mode {
+    /// 書き込みのあと走らせない（`espflash --after no-reset`）。
+    pub keep_halted: bool,
+    /// リセットと取り込みを `espflash monitor` に渡す。
+    pub hand_off: bool,
+    /// 書き込みとトレースが同じ口。
+    pub shared_port: bool,
+}
+
+impl Mode {
+    /// オプションとフラッシャから決める。
+    #[must_use]
+    pub fn of(opts: &Options, flasher: Flasher) -> Self {
+        // **同じ口のボードは取り込みも同じ道具に任せる**（§10）。
+        let shared_port = flasher == Flasher::Espflash;
+        let hand_off = opts.monitor && !opts.no_run && shared_port;
+        Mode {
+            // **`--no-run` のときも走らせない。** `espflash write-bin` は
+            // 既定で `--after hard-reset` までやるので、ここで抑えないと
+            // **焼いた直後に走ってしまう**のに「リセットすると走る」と
+            // 出す（嘘になる）。プローブを当てる前や、モータに繋いだ
+            // ボードでは走らせたくない。picotool はリセットを別に呼ぶので
+            // 抑える必要が無い。
+            keep_halted: hand_off || (opts.no_run && shared_port),
+            hand_off,
+            shared_port,
+        }
+    }
 }
 
 /// 検査して画像を用意する。
@@ -138,13 +173,10 @@ pub fn run(opts: &Options) -> Result<bool> {
         plan.crc
     );
 
-    // **ESP32-S3 は書き込み・リセットとトレースが同じ口**なので、取り込みも
-    // 同じ道具に任せる。そのとき書き込みでは走らせない（§10）。
-    let shared_port = plan.board.name == "esp32s3";
-    let hand_off = opts.monitor && !opts.no_run && shared_port;
+    let mode = Mode::of(opts, plan.slot.flasher);
 
     // 1 段は外のフラッシャ（§3.5）。ボードで道具が違う。
-    if !write_slot(&plan, opts.port.as_deref(), hand_off)? {
+    if !write_slot(&plan, opts.port.as_deref(), mode.keep_halted)? {
         return Ok(false);
     }
 
@@ -153,11 +185,11 @@ pub fn run(opts: &Options) -> Result<bool> {
         return Ok(true);
     }
 
-    if hand_off {
+    if mode.hand_off {
         // `espflash monitor` が DTR/RTS でリセットしてから読む。**口を
         // 自分で開かない**（開くと `Resource busy` で espflash が使えない）。
         println!("→ espflash monitor にリセットと取り込みを任せる:");
-        let mut args = vec!["monitor", "-c", "esp32s3", "--non-interactive"];
+        let mut args = vec!["monitor", "-c", plan.board.name, "--non-interactive"];
         let p;
         if let Some(dev) = opts.port.as_deref() {
             p = dev.to_string_lossy().into_owned();
@@ -197,8 +229,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         None
     };
 
-    // ESP32-S3 は `write-bin` が既定でリセットまでやる（上）。
-    if !shared_port && !reset(&plan)? {
+    // espflash は `write-bin` が既定でリセットまでやる（上）。
+    if !mode.shared_port && !reset(&plan)? {
         eprintln!("  書けたがリセットできなかった。USB を抜き差しすること");
         return Ok(false);
     }
@@ -226,10 +258,12 @@ pub fn run(opts: &Options) -> Result<bool> {
 /// スロットに書く。ボードで道具が違う。
 fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<bool> {
     let image = plan.image.to_string_lossy().into_owned();
-    match plan.board.name {
+    // **ボード名の文字列で分岐しない。** プロファイルが道具を持っているので、
+    // 新しいポートを足したときに既定の枝へ落ちることがない。
+    match plan.slot.flasher {
         // ESP32-S3 は ROM ブートローダに DTR/RTS で落ちるので**ボタン操作が
         // 要らない**。`write-bin` はフラッシュのオフセットを取る。
-        "esp32s3" => {
+        Flasher::Espflash => {
             // **`write-bin` はフラッシュのオフセットを取る**（picotool の
             // `-o` がアドレスなのと違う）。既定で `--after hard-reset` まで
             // やるので、**別に reset を呼ばない** —— 呼ぶと終了せずに
@@ -259,7 +293,7 @@ fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<boo
         // `-t bin` を明示するのは、ファイル名の拡張子に判定を任せないため。
         // `-o` は picotool の help が "Load offset (memory address)" と
         // 書いているとおり**アドレス**で、オフセットを渡すと弾かれる。
-        _ => {
+        Flasher::Picotool => {
             let addr = format!("{:#x}", plan.addr);
             let ok = spawn("picotool", &["load", &image, "-t", "bin", "-o", &addr])?;
             if !ok {

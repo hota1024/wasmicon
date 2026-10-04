@@ -101,13 +101,23 @@ pub fn ports() -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = dir
         .filter_map(|e| {
             let name = e.ok()?.file_name().to_string_lossy().into_owned();
-            name.starts_with("cu.usb")
+            PREFIXES
+                .iter()
+                .any(|p| name.starts_with(p))
                 .then(|| PathBuf::from("/dev").join(name))
         })
         .collect();
     found.sort();
     found
 }
+
+/// 口の名前の頭。
+///
+/// **macOS だけにしない。** `open` は Linux の `stty -F` の枝を持っている
+/// のに、ここが `cu.usb` だけだと Linux では候補が 0 件になり、
+/// 「USB-シリアル変換を挿して」と配線のせいにしてしまう（あちらは
+/// `ttyUSB*` / `ttyACM*`）。
+const PREFIXES: &[&str] = &["cu.usb", "ttyUSB", "ttyACM"];
 
 /// どの口を使うか決める。
 ///
@@ -230,6 +240,17 @@ pub fn stream<R: Read + Send + 'static>(
                 trace_lines += count_trace_lines(&chunk, &mut partial);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // **上限で切れたのを「無音」と言わない。** 待ち時間は上限の
+                // 残りで詰めてあるので、`recv_timeout` の時間切れだけでは
+                // どちらか分からない。先に上限を見る。これを見ないと、
+                // 流れている最中に打ち切ったログが「無音になった」と出て
+                // **途中で切れたものがきれいに終わったように見える**
+                // （`--idle` は既定で入っているので、`Timeout` が事実上
+                // 出なくなってもいた）。
+                if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    stopped = Stopped::Timeout;
+                    break;
+                }
                 if idle.is_some() {
                     stopped = Stopped::Idle;
                     break;
@@ -337,11 +358,26 @@ pub fn capture_cmd(cmd: &str, args: &[&str], opts: &Options) -> Result<bool> {
     let stats = stream(out, &mut sink, opts.idle, opts.timeout)?;
     sink.finish()?;
 
-    // **必ず終わらせる。** `espflash monitor` は自分では終わらないので、
-    // 残すと口を握ったままになり、次の書き込みが `Resource busy` になる
-    // （§10 でその形に詰まった）。
-    let _ = child.kill();
-    let _ = child.wait();
+    // **先に「もう死んでいるか」を見る。** `espflash` が口を開けずに即
+    // 終了した場合（`Resource busy`、`--port` 違い）、`stream` は 0 バイトで
+    // `Disconnected` を見るだけなので、`report` は「トレースが 1 行も無い」
+    // として `Ok(false)` を返す。それだと**呼び出し側が「道具が失敗した」と
+    // 「走ったがトレースが無い」を区別できない**（`deploy` は `is_err()` で
+    // 「ボードがブートローダで止まっている」案内を出すので、まさにその場面で
+    // 出なくなる）。
+    let failed = match child.try_wait() {
+        Ok(Some(status)) => !status.success(),
+        // まだ生きている = 取り込みが終わったので止める。
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            false
+        }
+        Err(_) => false,
+    };
+    if failed {
+        bail!("{cmd} が失敗した（上の出力を見ること）");
+    }
 
     report(&stats)
 }

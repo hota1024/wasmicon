@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 
 use wasmicon_port::profile;
+use wasmicon_port::profile::Flasher;
 use wasmicon_port::slot;
 
 pub struct Options {
@@ -66,7 +67,7 @@ pub fn run(opts: &Options) -> Result<bool> {
     if let Some(p) = board
         && let Some(sl) = p.slot
     {
-        if p.name == "esp32s3" {
+        if sl.flasher == Flasher::Espflash {
             // espflash は**フラッシュのオフセット**を取る。既定で
             // `--after hard-reset` までやるので、別にリセットは要らない。
             println!(

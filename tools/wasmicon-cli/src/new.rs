@@ -90,10 +90,23 @@ pub fn create(opts: &Options) -> Result<Created> {
         .with_context(|| format!("{} の実体を取れない", opts.dir.display()))?;
 
     let hal = match &opts.hal {
-        Some(p) => Some(
-            p.canonicalize()
-                .with_context(|| format!("--hal {} が無い", p.display()))?,
-        ),
+        Some(p) => {
+            let p = p
+                .canonicalize()
+                .with_context(|| format!("--hal {} が無い", p.display()))?;
+            // **中身まで見る。** canonicalize だけだと、どんなディレクトリでも
+            // 受けて `<渡された所>/rust` を Cargo.toml に書いてしまい、
+            // `cargo build` が「no Cargo.toml」で落ちるまで分からない
+            // （探索の枝は同じ条件で判定しているので、片方だけ緩い）。
+            if !p.join("rust/Cargo.toml").is_file() {
+                bail!(
+                    "--hal {} に bindings が無い（{}/rust/Cargo.toml を探した）。\n                       渡すのは bindings そのもののディレクトリ",
+                    p.display(),
+                    p.display()
+                );
+            }
+            Some(p)
+        }
         None => find_bindings(&dir),
     };
     let inside_workspace = enclosing_workspace(&dir).is_some();
@@ -162,7 +175,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         println!();
         println!("※ バインディングが見つからなかったので依存を版指定で書いた。");
         println!("  まだ crates.io / npm に出していないので、");
-        println!("  `--hal <wasmicon を置いた場所>` を渡し直すこと");
+        println!("  `--hal <wasmicon の bindings ディレクトリ>` を渡し直すこと");
+        println!("  （リポジトリの中からなら `--hal bindings`）");
     }
     if made.inside_workspace {
         // cargo は入れ子の .cargo/config.toml の rustflags を**連結**する。

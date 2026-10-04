@@ -23,9 +23,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::manifest::Manifest;
+use crate::pack;
 use wasmicon_core::module::{ExportDesc, ImportDesc};
 use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
-use wasmicon_port::profile::{self, Interfaces, Profile};
+use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
 use wasmicon_port::{Hal, ROLE_NAMES};
 
 /// 事実を取り出すだけの decode に使う作業領域（ボードに依存しない）。
@@ -192,11 +193,10 @@ pub fn run(opts: &Options) -> Result<bool> {
     let wasm =
         std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
 
+    // 解決は `pack::resolve_board` に 1 つだけ置く（文面と候補の一覧を
+    // 2 箇所に持つと、片方だけ直して食い違う）。
     let boards: Vec<&'static Profile> = match &opts.board {
-        Some(name) => vec![profile::by_name(name).with_context(|| {
-            let known: Vec<&str> = profile::PROFILES.iter().map(|p| p.name).collect();
-            format!("知らないボード {name}（あるのは {}）", known.join(" / "))
-        })?],
+        Some(name) => vec![pack::resolve_board(name)?],
         None => profile::PROFILES.to_vec(),
     };
 
@@ -353,6 +353,18 @@ pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (St
     let mut scratch_buf = vec![0u8; p.scratch];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
+
+    // **アプリを RAM に写すボードは、その分だけ arena が減る**（ESP32-S3 は
+    // XIP に任意オフセットを期待できないので `esp-storage` で写す）。
+    // ポートは decode の前に取るので、同じ順番で再現する。これを入れないと
+    // **アプリの大きさの分だけ余裕を多く見積もる**ことになり、
+    // 「`check` は通るのに実機の instantiate で落ちる」—— この関数が
+    // 防ぐためにある形 —— をそのまま作ってしまう。
+    if p.slot.is_some_and(|sl| sl.read == SlotRead::Copy) {
+        arena
+            .alloc_bytes(wasm.len())
+            .map_err(|e| (Stage::Instantiate, reason(e)))?;
+    }
 
     let m = decode::decode(wasm, &mut arena).map_err(|e| (Stage::Decode, reason(e)))?;
     let v = validate::validate(&m, &p.config, &mut arena, &mut scratch)
