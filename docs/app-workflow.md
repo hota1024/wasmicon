@@ -154,7 +154,7 @@ drop する**」と定めているが、**どのポートもこれを実装し�
 | SRAM | 264 KB（`ARENA` 160 KB） | 520 KB（`ARENA` 320 KB） | 512 KB（`ARENA` 300 KB、残り DRAM はほぼ無い。TODO §1.4） |
 | RAM スロットの取り方 | `ARENA` の先頭を `split_at_mut` で切る | 同じ | 同じ |
 | フラッシュ書き込み | `rom_data`（RP2350 と同系） | `rom_data::connect_internal_flash` / `flash_exit_xip` / `flash_range_erase` / `flash_range_program` / `flash_flush_cache`（rp235x-hal 0.4.0） | `esp-storage` 0.10 の `FlashStorage`（`SECTOR_SIZE` = 4096） |
-| フラッシュからの実行 | XIP スライスをそのまま渡す（RAM コピー不要） | 同じ。**2026-10-04 に実装**（`0x10100000`、64 KiB。実機未検証） | **RAM にコピーする。** 任意オフセットが XIP にマップされている前提を置かない（MMU / DROM） |
+| フラッシュからの実行 | **2026-10-04 に実装**（XIP スライスをそのまま渡す。RAM コピー不要） | 同じ（`0x10100000` から 64 KiB。どちらも実機未検証） | **RAM にコピーする。** 任意オフセットが XIP にマップされている前提を置かない（MMU / DROM） |
 
 - アプリは現状 775 B〜5.3 KB（`blink_rs` 775 B / `lcd_demo_rs` 4.0 KB /
   `sensor_display_as` 5.3 KB）なので、64 KiB のスロットでも RP2350 / ESP32-S3 では

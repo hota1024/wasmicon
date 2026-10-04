@@ -217,22 +217,13 @@ fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
     // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
     // だけ（中身は見ない）。
     let fw_end = (&raw const __flash_binary_end) as usize;
-    let slot_start = XIP_BASE + SLOT.offset as usize;
-    if fw_end > slot_start {
-        // 重なっていたらスロットを読まない（自分のコードを wasm として
-        // 食わせてしまう）。オフセットを上げるしかないので理由を出す。
-        serial.write(b"wasmicon: firmware overlaps the app slot\r\n");
-        return BUILTIN;
-    }
-
-    // SAFETY: XIP の読み出し専用領域で、上でファームの末尾より後ろだと
-    // 確かめてある。4 MB のフラッシュに対して offset + len は収まる
-    // （1 MiB + 64 KiB）。
-    let bytes = unsafe { core::slice::from_raw_parts(slot_start as *const u8, SLOT.len as usize) };
 
     let mut line = [0u8; 96];
     let mut out = Buf::new(&mut line);
-    match slot::parse(bytes) {
+    // SAFETY: XIP は読み出し専用でマップされていて、4 MB のフラッシュに
+    // 対して offset + len（1 MiB + 64 KiB）は収まる。ファームとの重なりは
+    // read_xip が fw_end で弾く。
+    match unsafe { slot::read_xip(XIP_BASE, SLOT, fw_end) } {
         Ok(wasm) => {
             out.str("wasmicon: slot ");
             out.u32(wasm.len() as u32);

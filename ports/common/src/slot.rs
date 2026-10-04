@@ -21,6 +21,7 @@
 //! ここに置いて両方が使う。
 
 use crate::crc32;
+use crate::profile::Slot;
 
 /// スロットの先頭に置く識別子。
 pub const MAGIC: [u8; 4] = *b"WMCA";
@@ -49,6 +50,9 @@ pub enum SlotError {
     Truncated { need: usize, have: usize },
     /// CRC が合わない。転送か書き込みの事故。
     BadCrc { want: u32, got: u32 },
+    /// ファームの末尾がスロットに食い込んでいる。**読んではいけない**
+    /// （自分のコードを wasm として食わせてしまう）。
+    Overlap { fw_end: usize, slot_start: usize },
 }
 
 impl SlotError {
@@ -61,6 +65,7 @@ impl SlotError {
             SlotError::UnsupportedVersion { .. } => "slot format version not supported",
             SlotError::Truncated { .. } => "slot truncated",
             SlotError::BadCrc { .. } => "slot crc mismatch",
+            SlotError::Overlap { .. } => "firmware overlaps the app slot",
         }
     }
 
@@ -113,6 +118,37 @@ pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
         return Err(SlotError::BadCrc { want, got });
     }
     Ok(wasm)
+}
+
+/// XIP にマップされたフラッシュからスロットを読む。
+///
+/// RP2040 / RP2350 はフラッシュが memory-mapped なので、**RAM に写さず
+/// スライスのまま返す**（design-notes §4）。両ポートで同じことをするので
+/// ここに置く（生スライスを作る `unsafe` を 1 箇所にする）。
+///
+/// `fw_end` はリンカが置く「ファームの末尾」のアドレス。**スロットに
+/// 食い込んでいたら読まずに `Overlap` を返す。**
+///
+/// # Errors
+/// 重なっているとき、および `parse` が失敗したとき。
+///
+/// # Safety
+/// `xip_base + slot.offset` から `slot.len` バイトが、読み出し可能な
+/// memory-mapped flash であること（範囲外を読むとバスフォルトになる）。
+pub unsafe fn read_xip(
+    xip_base: usize,
+    slot: Slot,
+    fw_end: usize,
+) -> Result<&'static [u8], SlotError> {
+    let slot_start = xip_base + slot.offset as usize;
+    if fw_end > slot_start {
+        // **ここで返るので、重なっているときはスライスを作らない。**
+        return Err(SlotError::Overlap { fw_end, slot_start });
+    }
+    // SAFETY: 呼び出し側の契約（読み出し可能な memory-mapped flash）。
+    // 上でファームの末尾より後ろだと確かめてある。
+    let bytes = unsafe { core::slice::from_raw_parts(slot_start as *const u8, slot.len as usize) };
+    parse(bytes)
 }
 
 /// ヘッダを組む（書く側が使う）。

@@ -14,3 +14,13 @@ SECTIONS {
         KEEP(*(.boot2));
     } > BOOT2
 } INSERT BEFORE .text;
+
+SECTIONS {
+    /* ファームの末尾。アプリスロット（ports/common の profile::RP2040.slot）と
+     * 重なっていないことを起動時に検査するために要る。rp2350 の memory.x が
+     * .end_block の中で同じ名前を置いているのに合わせてある。 */
+    .wasmicon_fw_end : ALIGN(4)
+    {
+        __flash_binary_end = .;
+    } > FLASH
+} INSERT AFTER .uninit;

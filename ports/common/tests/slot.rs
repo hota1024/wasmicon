@@ -3,6 +3,7 @@
 //! 書く側（CLI）と読む側（ファーム）が同じ形を使うので、ここが両方の契約。
 //! **形を変えたら `FORMAT_VERSION` を上げる**（互換の軸の 1 つ。§3.6）。
 
+use wasmicon_port::profile::Slot;
 use wasmicon_port::slot::{self, SlotError};
 
 /// 読めることを確かめて中身を返す。
@@ -116,6 +117,44 @@ fn trailing_bytes_in_the_slot_are_ignored() {
     let mut img = image(wasm);
     img.resize(4096, 0xff);
     assert_eq!(parsed(&img), wasm);
+}
+
+#[test]
+fn an_overlapping_firmware_is_refused_without_reading() {
+    // **重なっていたらスライスを作らない**（自分のコードを wasm として
+    // 食わせてしまう）。アドレスを渡すだけなので、ここは host で試せる。
+    let slot = Slot {
+        offset: 0x10_0000,
+        len: 64 * 1024,
+    };
+    let xip = 0x1000_0000;
+    let slot_start = xip + slot.offset as usize;
+    // SAFETY: 重なっている側に入るので、スライスは作られない。
+    let e = match unsafe { slot::read_xip(xip, slot, slot_start + 1) } {
+        Err(e) => e,
+        Ok(_) => panic!("重なりを検出していない"),
+    };
+    assert_eq!(e.reason(), "firmware overlaps the app slot");
+    assert!(matches!(e, SlotError::Overlap { .. }));
+}
+
+#[test]
+fn a_mapped_slot_is_read_in_place() {
+    // XIP の読み出しそのものは host でも試せる（static をフラッシュに
+    // 見立てて、そのアドレスを xip_base として渡す）。
+    let wasm = b"\0asm\x01\0\0\0mapped";
+    let mut region = image(wasm);
+    region.resize(4096, 0xff);
+    let slot = Slot {
+        offset: 0,
+        len: u32::try_from(region.len()).expect("収まる"),
+    };
+    // SAFETY: region は生きていて、長さぶん読める。
+    let read = match unsafe { slot::read_xip(region.as_ptr() as usize, slot, 0) } {
+        Ok(w) => w,
+        Err(e) => panic!("読めない: {}", e.reason()),
+    };
+    assert_eq!(read, wasm);
 }
 
 #[test]

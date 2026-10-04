@@ -137,9 +137,12 @@ pub const RP2040: Profile = Profile {
     // SRAM 264 KB のうち 160 KB。2 ページ (128 KiB) + ランタイムの構造体。
     arena: 160 * 1024,
     scratch: 8 * 1024,
-    // RP2350 と同じ置き方にできる（XIP で読める）が、ポートが
-    // スロットを読む実装をまだ持っていない。
-    slot: None,
+    // フラッシュ 2 MB（Pico / Pico W(H)）。RP2350 と同じ置き方
+    // （XIP で読める）で、オフセットも揃えてある。
+    slot: Some(Slot {
+        offset: 1 << 20,
+        len: 64 * 1024,
+    }),
 };
 
 /// Raspberry Pi Pico 2 / Pico 2 W。

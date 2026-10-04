@@ -90,17 +90,37 @@ fn host_promises_more_pages_than_its_arena_can_hold() {
 }
 
 #[test]
-fn only_rp2350_has_a_decided_slot() {
-    // 置き場所が決まっているのは RP2350 だけ（Pico 2 W / 4 MB で確定）。
-    // RP2040 はポートがスロットを読まない、ESP32-S3 は固定オフセットに
-    // できない（partitions.csv が要る）、host にフラッシュは無い。
-    let sl = profile::RP2350.slot.expect("決まっている");
-    assert_eq!(sl.offset, 1 << 20, "先頭 1 MiB はファームに空けてある");
-    assert_eq!(sl.len, 64 * 1024);
-    // フラッシュ 4 MB に収まる。
-    assert!((sl.offset + sl.len) as usize <= 4 << 20);
+fn the_pico_ports_have_a_decided_slot() {
+    // RP2040 と RP2350 は XIP で読めるので同じ置き方。オフセットも揃える
+    // （フラッシュは 2 MB / 4 MB だが、1 MiB + 64 KiB はどちらにも収まる）。
+    for (p, flash) in [
+        (&profile::RP2040, 2usize << 20),
+        (&profile::RP2350, 4usize << 20),
+    ] {
+        let sl = p
+            .slot
+            .unwrap_or_else(|| panic!("{} は決まっている", p.name));
+        assert_eq!(
+            sl.offset,
+            1 << 20,
+            "{}: 先頭 1 MiB はファームに空ける",
+            p.name
+        );
+        assert_eq!(sl.len, 64 * 1024, "{}", p.name);
+        assert!(
+            (sl.offset + sl.len) as usize <= flash,
+            "{}: フラッシュ {flash} B に収まらない",
+            p.name
+        );
+    }
+}
 
-    for p in [&profile::RP2040, &profile::ESP32S3, &profile::HOST] {
+#[test]
+fn the_undecided_slots_say_so() {
+    // ESP32-S3 は固定オフセットにできない（espflash の既定テーブルは
+    // factory がフラッシュ末尾まで伸びるので partitions.csv が要る）。
+    // 容量も §5-2 が未決。host にフラッシュは無い。
+    for p in [&profile::ESP32S3, &profile::HOST] {
         assert!(p.slot.is_none(), "{} は未決（docs/TODO.md §5-2）", p.name);
     }
 }
