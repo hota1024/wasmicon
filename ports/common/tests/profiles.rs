@@ -90,6 +90,22 @@ fn host_promises_more_pages_than_its_arena_can_hold() {
 }
 
 #[test]
+fn only_rp2350_has_a_decided_slot() {
+    // 置き場所が決まっているのは RP2350 だけ（Pico 2 W / 4 MB で確定）。
+    // RP2040 はポートがスロットを読まない、ESP32-S3 は固定オフセットに
+    // できない（partitions.csv が要る）、host にフラッシュは無い。
+    let sl = profile::RP2350.slot.expect("決まっている");
+    assert_eq!(sl.offset, 1 << 20, "先頭 1 MiB はファームに空けてある");
+    assert_eq!(sl.len, 64 * 1024);
+    // フラッシュ 4 MB に収まる。
+    assert!((sl.offset + sl.len) as usize <= 4 << 20);
+
+    for p in [&profile::RP2040, &profile::ESP32S3, &profile::HOST] {
+        assert!(p.slot.is_none(), "{} は未決（docs/TODO.md §5-2）", p.name);
+    }
+}
+
+#[test]
 fn host_config_is_the_runtime_default() {
     // host は意図的に緩い。`Config::DEFAULT` と一致していることを見ておく
     // （profile 側が独自の値を持ち始めると、`wasmicon run` と `check --board host`

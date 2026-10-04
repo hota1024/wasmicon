@@ -538,14 +538,25 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         持ち込まないため）。テストは `reason()` と `matches!` で書く
       - CLI 側は `wasmicon pack`。1 段では**外のフラッシャに渡す素材**
         （`espflash write-bin <offset>` / `picotool load -o <offset>`）
-- [ ] **スーパーバイザのループ**（`docs/app-workflow.md` §3.1）。スロットを
-      読んで走らせ、空なら理由を出して idle に入る。arena / `Hal` /
-      **ロール表**をサイクルごとに作り直す（ロール表を持ち越すとトレースが
-      変わりうる。`ports/common/tests/release_all.rs` が現状を固定している）
-      - スロットの**置き場所**がまだ決まっていない（RP2350 は固定オフセット、
-        ESP32-S3 は `partitions.csv` のエントリ。§5-2 のボード品種が前提）
-- [ ] **内蔵アプリを外す**（1 段。**スロットが入るのと同時に行う** — 先に外すと
-      ファームが何も走らせなくなる）。`ports/*/src/main.rs` の `include_bytes!` と
+- [ ] **スーパーバイザのループ**（`docs/app-workflow.md` §3.1）。
+      **RP2350 だけスロットを読むようにした**（2026-10-04）。残りは
+      idle への復帰とサイクルごとの作り直し（arena / `Hal` / **ロール表**。
+      持ち越すとトレースが変わりうる。`release_all.rs` が現状を固定）
+      - **RP2350 は実機で未検証。** スロットが空なら理由を出して内蔵アプリに
+        落ちるので、読み出しに不備があっても焼き直しで戻れる。確かめること:
+        空のボードで `slot empty, running built-in` が出るか、
+        `wasmicon pack --board rp2350` の画像を `picotool load -o 0x100000`
+        で書いて `slot <len> B crc32=<..>` が出て**そのアプリが走るか**、
+        CRC を 1 bit 壊したら `slot crc mismatch` になるか
+      - **ファームの末尾（`__flash_binary_end`）とスロットが重ならないことを
+        起動時に検査している。** 重なったら読まずに内蔵へ落ちる（自分の
+        コードを wasm として食わせない）
+      - `ports/rp2040` は同じ置き方にできる（XIP で読める）が未実装。
+        `ports/esp32s3` は**固定オフセットにできない**（`partitions.csv` が
+        要る）ので §5-2 のボード品種が前提
+- [ ] **内蔵アプリを外す**（1 段。**3 ポートがスロットを読めるようになってから**
+      — 先に外すとファームが何も走らせなくなる。RP2350 は読めるが実機で
+      未検証なので、まだフォールバックとして残してある）。`ports/*/src/main.rs` の `include_bytes!` と
       `guest-lcd-demo` feature を落とし、空スロットは理由を出して idle、
       生存確認はポート層が LED を振る（`Board` 直叩きで Wasm を通らない）
       - **CI も同時に直す**: ポートのジョブから `apps` の先行ビルドが不要になり、

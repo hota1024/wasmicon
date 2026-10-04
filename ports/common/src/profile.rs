@@ -76,6 +76,22 @@ pub struct Profile {
     pub arena: usize,
     /// 検証中だけ使う作業領域の大きさ。ポートの `static SCRATCH` がこれを使う。
     pub scratch: usize,
+    /// アプリスロットの置き場所（`docs/app-workflow.md` §3.3 / §3.4）。
+    ///
+    /// **`None` = まだ決まっていない。** ESP32-S3 は固定オフセットではなく
+    /// `partitions.csv` のエントリにする必要があり（espflash の既定の
+    /// `factory` がフラッシュ末尾まで伸びる）、フラッシュ容量が
+    /// `docs/TODO.md` §5-2 の未決。
+    pub slot: Option<Slot>,
+}
+
+/// アプリスロットの位置と大きさ。
+#[derive(Clone, Copy)]
+pub struct Slot {
+    /// フラッシュの先頭からのオフセット。
+    pub offset: u32,
+    /// 取ってある大きさ（消去単位の倍数）。ヘッダを含む。
+    pub len: u32,
 }
 
 /// マイコン共通の上限。ボード間の差は `max_memory_pages` だけ。
@@ -121,6 +137,9 @@ pub const RP2040: Profile = Profile {
     // SRAM 264 KB のうち 160 KB。2 ページ (128 KiB) + ランタイムの構造体。
     arena: 160 * 1024,
     scratch: 8 * 1024,
+    // RP2350 と同じ置き方にできる（XIP で読める）が、ポートが
+    // スロットを読む実装をまだ持っていない。
+    slot: None,
 };
 
 /// Raspberry Pi Pico 2 / Pico 2 W。
@@ -132,6 +151,13 @@ pub const RP2350: Profile = Profile {
     // SRAM 520 KB のうち 320 KB。4 ページ (256 KiB) が収まる。
     arena: 320 * 1024,
     scratch: 8 * 1024,
+    // フラッシュ 4 MB（Pico 2 W で確定。docs/TODO.md §1.1）。ファームは
+    // 先頭から数百 KB なので、1 MiB から先を空けてある。**ファームの末尾と
+    // 重ならないことは起動時に検査する**（重なれば自分を壊す）。
+    slot: Some(Slot {
+        offset: 1 << 20,
+        len: 64 * 1024,
+    }),
 };
 
 /// ESP32-S3 DevKitC-1。
@@ -144,6 +170,11 @@ pub const ESP32S3: Profile = Profile {
     // （docs/TODO.md §1.4）。
     arena: 300 * 1024,
     scratch: 8 * 1024,
+    // **固定オフセットにできない。** espflash の既定のパーティション
+    // テーブルは `factory` がフラッシュ末尾まで伸びるので、
+    // `partitions.csv` に専用エントリを足す必要がある（§3.3）。
+    // フラッシュ容量も未決（§5-2）。
+    slot: None,
 };
 
 /// PC 上の mock。**全ボードより緩い**ので、これで通っても実機で通るとは限らない。
@@ -155,6 +186,8 @@ pub const HOST: Profile = Profile {
     // PC なので潤沢に取る。
     arena: 16 << 20,
     scratch: 4 << 20,
+    // mock にフラッシュは無い。
+    slot: None,
 };
 
 /// 名前で引くための表。CLI と `info`（`docs/app-workflow.md` §3.8）が使う。
