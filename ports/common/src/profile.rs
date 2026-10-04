@@ -173,11 +173,17 @@ pub const ESP32S3: Profile = Profile {
     // （docs/TODO.md §1.4）。
     arena: 300 * 1024,
     scratch: 8 * 1024,
-    // **固定オフセットにできない。** espflash の既定のパーティション
-    // テーブルは `factory` がフラッシュ末尾まで伸びるので、
-    // `partitions.csv` に専用エントリを足す必要がある（§3.3）。
-    // フラッシュ容量も未決（§5-2）。
-    slot: None,
+    // フラッシュ 8 MB（2026-10-04 に `espflash board-info` で実測。
+    // docs/TODO.md §5-2）。Pico 系と同じ 1 MiB から取る。
+    //
+    // **`partitions.csv` は要らなかった。** 既定のテーブルは `factory` が
+    // フラッシュ末尾まで伸びるが、`espflash flash` はアプリのセクタしか
+    // 消さない —— 7 MB 地点に目印を書いてファームを焼き、残っていることを
+    // 実測した（docs/verification-report.md §10）。
+    slot: Some(Slot {
+        offset: 1 << 20,
+        len: 64 * 1024,
+    }),
 };
 
 /// PC 上の mock。**全ボードより緩い**ので、これで通っても実機で通るとは限らない。

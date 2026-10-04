@@ -24,8 +24,10 @@ mod board;
 mod probe;
 
 use esp_hal::uart::{Config as UartConfig, Uart};
+use esp_storage::FlashStorage;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
-use wasmicon_port::Hal;
+use wasmicon_port::fmt::Buf;
+use wasmicon_port::{slot, Hal};
 
 use board::{EspBoard, Serial};
 
@@ -40,11 +42,17 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// **`ports/rp2350` と同じファイルを取り込む。** 2 ボードで同一バイナリを
 /// 走らせるのが目的なので、ボードごとに別のゲストを作らない。
 #[cfg(not(feature = "guest-lcd-demo"))]
-static GUEST: &[u8] =
+static BUILTIN: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
 #[cfg(feature = "guest-lcd-demo")]
-static GUEST: &[u8] =
+static BUILTIN: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm");
+
+/// アプリスロット（`ports/common` の `profile::ESP32S3`）。
+const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.slot {
+    Some(s) => s,
+    None => panic!("ESP32-S3 のプロファイルにスロットが無い"),
+};
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// ESP32-S3 は PSRAM 無しで SRAM 512 KB。線形メモリ 4 ページ（256 KB）が
@@ -101,7 +109,7 @@ fn main() -> ! {
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let outcome = run(&mut hal, arena_buf, scratch_buf);
+    let outcome = run(&mut hal, p.FLASH, arena_buf, scratch_buf);
 
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
     // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
@@ -127,16 +135,85 @@ fn main() -> ! {
     }
 }
 
+/// スロットから走らせるアプリを選ぶ。
+///
+/// **スロットが優先、空なら内蔵アプリ。** ESP32-S3 は任意オフセットが XIP に
+/// マップされている前提を置けないので、Pico 系（`slot::read_xip`）と違って
+/// **RAM に写す**。写すのは**ヘッダが持つ長さの分だけ** —— スロットは
+/// 64 KiB だがアプリは数 KB で、DRAM はほぼ使い切っている
+/// （`docs/TODO.md` §1.4）。arena から取るので静的な領域を増やさない。
+fn pick_guest<'a>(
+    flash: esp_hal::peripherals::FLASH<'static>,
+    arena: &mut Arena<'a>,
+    serial: &mut SerialPort<'static>,
+) -> &'a [u8] {
+    let mut line = [0u8; 96];
+    let mut out = Buf::new(&mut line);
+    let mut storage = FlashStorage::new(flash);
+
+    let mut head = [0u8; slot::HEADER_LEN];
+    if storage.read(SLOT.offset, &mut head).is_err() {
+        serial.write(b"wasmicon: slot read failed, running built-in\r\n");
+        return BUILTIN;
+    }
+    let header = match slot::parse_header(&head) {
+        Ok(h) => h,
+        Err(e) => {
+            out.str("wasmicon: ");
+            out.str(e.reason());
+            out.str(", running built-in");
+            serial.write(out.as_bytes());
+            serial.write(b"\r\n");
+            return BUILTIN;
+        }
+    };
+    if header.len > (SLOT.len as usize - slot::HEADER_LEN) {
+        serial.write(b"wasmicon: slot truncated, running built-in\r\n");
+        return BUILTIN;
+    }
+
+    // ここで初めて長さが分かるので、その分だけ arena を取る。
+    let Ok(buf) = arena.alloc_bytes(header.len) else {
+        serial.write(b"wasmicon: arena too small for the slot app\r\n");
+        return BUILTIN;
+    };
+    if storage
+        .read(SLOT.offset + slot::HEADER_LEN as u32, buf)
+        .is_err()
+    {
+        serial.write(b"wasmicon: slot read failed, running built-in\r\n");
+        return BUILTIN;
+    }
+    if let Err(e) = slot::verify(buf, &header) {
+        out.str("wasmicon: ");
+        out.str(e.reason());
+        out.str(", running built-in");
+        serial.write(out.as_bytes());
+        serial.write(b"\r\n");
+        return BUILTIN;
+    }
+
+    out.str("wasmicon: slot ");
+    out.u32(header.len as u32);
+    out.str(" B crc32=");
+    out.hex(header.crc, 8);
+    serial.write(out.as_bytes());
+    serial.write(b"\r\n");
+    buf
+}
+
 /// デコードから `run` の呼び出しまで。
 fn run(
     hal: &mut Hal<EspBoard<SerialPort<'static>>>,
+    flash: esp_hal::peripherals::FLASH<'static>,
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) -> Result<(), wasmicon_core::Error> {
     let mut arena = Arena::new(arena_buf);
     let mut scratch = Arena::new(scratch_buf);
 
-    let m = decode::decode(GUEST, &mut arena)?;
+    let guest = pick_guest(flash, &mut arena, hal.board_mut().serial());
+    let m = decode::decode(guest, &mut arena)?;
     let v = validate::validate(&m, &MCU_CONFIG, &mut arena, &mut scratch)?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;

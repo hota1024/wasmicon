@@ -119,18 +119,17 @@ fn a_board_with_a_slot_gets_its_offset_checked() {
 }
 
 #[test]
-fn a_board_without_a_decided_slot_is_refused() {
-    // ESP32-S3 は固定オフセットにできない（partitions.csv が要る）。
-    // 置き場所が決まっていないことを**黙って無視しない**。
+fn a_board_without_a_slot_is_refused() {
+    // host にフラッシュは無い。置き場所が無いことを**黙って無視しない**。
     let dir = tmp("board-undecided");
     let input = dir.join("app.wasm");
     std::fs::write(&input, b"\0asm\x01\0\0\0").expect("書けない");
     let e = pack::run(&pack::Options {
         path: input,
         out: None,
-        board: Some("esp32s3".to_string()),
+        board: Some("host".to_string()),
     })
-    .expect_err("未決");
+    .expect_err("スロットが無い");
     assert!(format!("{e:#}").contains("決まっていない"), "{e:#}");
     assert!(!dir.join("app.bin").exists(), "書く前に弾く");
 }

@@ -10,7 +10,7 @@
 //! 分けてある。前者はテストから呼べる。
 
 use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wasmicon_port::profile::{Profile, Slot};
@@ -135,32 +135,26 @@ pub fn run(opts: &Options) -> Result<bool> {
         plan.crc
     );
 
-    // 1 段は picotool（§3.5）。`-t bin` を明示するのは、ファイル名の拡張子に
-    // 判定を任せないため（picotool は拡張子で種別を決める）。
-    // `-o` は picotool の help が "Load offset (memory address)" と書いている
-    // とおり**アドレス**で、フラッシュのオフセットを渡すと弾かれる。
-    let ok = spawn(
-        "picotool",
-        &[
-            "load",
-            &plan.image.to_string_lossy(),
-            "-t",
-            "bin",
-            "-o",
-            &format!("{:#x}", plan.addr),
-        ],
-    )?;
-    if !ok {
-        eprintln!(
-            "  BOOTSEL を押しながら USB を挿してから、もう一度実行すること\n  \
-             （USB の制御チャネルが入れば押下は要らなくなる。§3.5）"
-        );
+    // 1 段は外のフラッシャ（§3.5）。ボードで道具が違う。
+    if !write_slot(&plan, opts.port.as_deref())? {
         return Ok(false);
     }
 
     if opts.no_run {
         println!("→ 書いた。リセットすると走る");
         return Ok(true);
+    }
+
+    // **`--monitor` は ESP32-S3 では成立しない。** 書き込み・リセットと
+    // トレースが**同じ口**なので、`monitor` が握ったままでは
+    // `espflash` が使えず（`Resource busy`）、先にリセットさせると
+    // 開く前に出力が終わっている（2026-10-04 に実機で踏んだ。§10）。
+    if opts.monitor && plan.board.name == "esp32s3" {
+        eprintln!(
+            "  --monitor は esp32s3 では使えない（書き込みとトレースが同じ口）。\n  \
+             espflash monitor --port <dev> を別に使うこと（docs/TODO.md §5）"
+        );
+        return Ok(false);
     }
 
     // **`--monitor` ならリセットの前に開いて baud を当てる。**
@@ -174,7 +168,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         None
     };
 
-    if !spawn("picotool", &["reboot"])? {
+    // ESP32-S3 は `write-bin` が既定でリセットまでやる（上）。
+    if plan.board.name != "esp32s3" && !reset(&plan)? {
         eprintln!("  書けたがリセットできなかった。USB を抜き差しすること");
         return Ok(false);
     }
@@ -197,6 +192,56 @@ pub fn run(opts: &Options) -> Result<bool> {
             timeout: None,
         },
     )
+}
+
+/// スロットに書く。ボードで道具が違う。
+fn write_slot(plan: &Plan, port: Option<&Path>) -> Result<bool> {
+    let image = plan.image.to_string_lossy().into_owned();
+    match plan.board.name {
+        // ESP32-S3 は ROM ブートローダに DTR/RTS で落ちるので**ボタン操作が
+        // 要らない**。`write-bin` はフラッシュのオフセットを取る。
+        "esp32s3" => {
+            // **`write-bin` はフラッシュのオフセットを取る**（picotool の
+            // `-o` がアドレスなのと違う）。既定で `--after hard-reset` まで
+            // やるので、**別に reset を呼ばない** —— 呼ぶと終了せずに
+            // DTR/RTS を握ったままになり、ボードがダウンロードモードで
+            // 止まる（2026-10-04 に実機で踏んだ。§10）。
+            let offset = format!("{:#x}", plan.slot.offset);
+            let mut args = vec!["write-bin"];
+            let p;
+            if let Some(dev) = port {
+                p = dev.to_string_lossy().into_owned();
+                args.extend_from_slice(&["--port", &p]);
+            }
+            args.extend_from_slice(&[&offset, &image]);
+            let ok = spawn("espflash", &args)?;
+            if !ok {
+                eprintln!("  口が複数あるなら --port で選ぶこと");
+            }
+            Ok(ok)
+        }
+        // Pico 系は BOOTSEL が要る（2 段の USB 制御チャネルで消える）。
+        // `-t bin` を明示するのは、ファイル名の拡張子に判定を任せないため。
+        // `-o` は picotool の help が "Load offset (memory address)" と
+        // 書いているとおり**アドレス**で、オフセットを渡すと弾かれる。
+        _ => {
+            let addr = format!("{:#x}", plan.addr);
+            let ok = spawn("picotool", &["load", &image, "-t", "bin", "-o", &addr])?;
+            if !ok {
+                eprintln!(
+                    "  BOOTSEL を押しながら USB を挿してから、もう一度実行すること\n  \
+                     （USB の制御チャネルが入れば押下は要らなくなる。§3.5）"
+                );
+            }
+            Ok(ok)
+        }
+    }
+}
+
+/// 走らせるためにリセットする（Pico 系だけ。ESP32-S3 は `write-bin` が
+/// 既定でやる）。
+fn reset(_plan: &Plan) -> Result<bool> {
+    spawn("picotool", &["reboot"])
 }
 
 /// 外のコマンドを呼ぶ。見つからないのはエラー、失敗は `false`。
