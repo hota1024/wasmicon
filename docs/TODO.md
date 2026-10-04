@@ -490,11 +490,14 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 - [ ] **ファームの配布**（release manifest と `flash --fw` / `fw list`）。
       ボード × 版の成果物に manifest（ファイル + sha256 + §3.8 の 5 軸）を付ける。
       §5-7 と対になる
-- [ ] **`wasmicon.toml`**（`docs/app-workflow.md` §4.7）。`requires`（必要な
-      役割名）、既定のボード、replay のパス、配線の意図を書く。
+- [ ] **`wasmicon.toml`**（`docs/app-workflow.md` §4.7）。
+      `[requirements] pin-roles`（このアプリが引く役割名）、既定のボード、
+      replay のパス、配線の意図を書く。
       **ABI 準拠のビルドフラグは書かせない**（§4.4 の 3 重化を 4 重にする）。
       マシン固有の値は `wasmicon.local.toml`（gitignore）に分ける
-      - `requires` があると §4.3 の役割名の照合が**参考から保証に変わる**
+      - `[requirements] pin-roles` があると §4.3 の役割名の照合が
+        **参考から保証に変わる**。検証は `ports/common` の `ROLE_NAMES` と
+        突き合わせるだけなので**デバイスに繋がなくてもタイポが止まる**
       - `deploy` は toml とデバイスの実効マップを毎回照合し、**黙って適用しない**
         （駆動されるピンが変わるので物理的に危ない）
 - [ ] **役割マップの設定スロット**（§5-9 の決定後。§3.9）。設定セクタ +

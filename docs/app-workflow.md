@@ -560,7 +560,8 @@ probe-rs）は**呼ぶだけで、自前実装しない**。
 組み立てていれば見落とし、使っていない文字列は空振りする。`check` の役割名の行は
 **参考**であって保証ではない。確実に分かるのは実行時で、`pin-by-role` が
 `unsupported` を返した行がトレースに残る（§3.1）。
-**`wasmicon.toml` の `requires`（§4.7）があれば、列挙が宣言になるので保証に
+**`wasmicon.toml` の `requirements.pin-roles`（§4.7）があれば、列挙が宣言に
+なるので保証に
 変わる。** プロジェクトの外から `.wasm` 単体を受け取ったときだけ参考に落ちる。
 
 **今は「検証だけする入口」が無い。** `wasmicon_host::run_wasm_opts` は
@@ -677,6 +678,7 @@ roles      led, lcd-cs, lcd-dc, lcd-rst
 ```
 $ wasmicon new room-monitor --lang rust
 room-monitor/
+  wasmicon.toml        [requirements] pin-roles は空（使う役割を書き足す）
   Cargo.toml           wasmicon-hal 0.1
   .cargo/config.toml   -reference-types / --initial-memory=65536 / -zstack-size=8192
   rust-toolchain.toml
@@ -727,7 +729,7 @@ i2c      このポートは未実装（実機では unsupported が返る）    
 
 `roles` の行に **（参考）**と付いているのは、役割名を `.wasm` から確実に列挙
 できないため（§4.3）。データセグメントで見つかった名前だけを照合している。
-**`wasmicon.toml` に `requires` を書けば保証に変わる**（§4.7）。
+**`wasmicon.toml` に `requirements.pin-roles` を書けば保証に変わる**（§4.7）。
 
 **これを言えるのはボードプロファイルが「実装済みインターフェース」を持つから**
 （§3.8）。持たせなければ `check` は通り、実機で `i2c.bus.open` が
@@ -809,11 +811,10 @@ $ wasmicon deploy room_monitor.wasm --persist
 # wasmicon.toml — プロジェクトに 1 つ
 version = 1
 
-[app]
-name = "room-monitor"
-lang = "rust"
-# 番号ではなく役割名。これが §4.3 の照合を「参考」から「保証」に変える
-requires = ["lcd-cs", "lcd-dc", "lcd-rst"]
+[requirements]
+# このアプリが `board.pin-by-role` で引く役割名。**番号は書かない。**
+# これが §4.3 の照合を「参考」から「保証」に変える
+pin-roles = ["lcd-cs", "lcd-dc", "lcd-rst"]
 
 [defaults]
 board = "rp2350"
@@ -831,15 +832,43 @@ led = 4
 
 | 情報 | 真実はどこか | toml の役割 |
 |---|---|---|
-| 必要な役割名（`requires`） | **toml**。アプリの性質 | 真実そのもの |
+| 必要な役割名（`requirements.pin-roles`） | **toml**。アプリの性質 | 真実そのもの |
 | 役割 → GPIO | **デバイス**（`info` が実効値を申告。§3.9） | 「こうであってほしい」の宣言。差分を見るために使う |
 | ABI 準拠のビルドフラグ | **`.cargo/config.toml` / `asconfig.json`** | **書かせない**（下記） |
 
-#### `requires` が照合を保証に変える
+#### `requirements.pin-roles` が照合を保証に変える
 
 §4.3 のとおり、役割名は実行時に文字列で渡るので `.wasm` から確実に列挙できない。
-`requires` があれば列挙が宣言になるので、**送る前に**「このボードは
-`lcd-rst=none` なのでこのアプリは動かない」と言える。
+宣言があれば列挙が確定するので、**送る前に**「このボードは `lcd-rst=none` なので
+このアプリは動かない」と言える。
+
+**節に分けてあるのは、同じ性質の未宣言項目がもう 1 つあるから。**
+`i2c.bus.open` / `spi.bus.open` の `index` も実行時の整数引数で、`.wasm` から
+静的に列挙できない（バスが 1 本のボードに index 1 を開くアプリを送ると実機で
+`unsupported`）。v0.1 では書かないが、必要になれば
+`[requirements]` に `i2c-buses = [0]` を足すだけで済む。
+**インターフェースの実装状況は import から分かる**ので宣言は要らない（§4.3）。
+
+名前は `requirements.pin-roles`。`requires` だと何が必要なのか読めず、
+`required-pin-roles` のような平坦なキーは項目が増えるたびに長くなる。
+
+**書かれた名前の検証はデバイスに繋がなくてもできる。** 役割名の語彙は
+`ports/common` の `ROLE_NAMES` にあるので、CLI はそれと突き合わせるだけで
+タイポを止められる（§4.3 の「ボードにあるか」の検査はデバイスの申告が要るが、
+「そんな役割名は存在しない」はオフラインで分かる）。
+
+#### スキーマの規則
+
+| 決め | 内容 |
+|---|---|
+| **導出できるものは書かない** | アプリ名と言語は `Cargo.toml` の `package.name` / `asconfig.json` の有無から取る。toml に書くのは上書きとしてだけ。§4.4 と同じ理由で、二重に持つと必ず drift する |
+| **1 アプリに 1 つ** | workspace でも**アプリごとに置く**。この repo の `apps/` をドッグフードするなら 5 つになる。`wasmicon new` が 1 つ出す形と揃う |
+| **必須のみ** | `pin-roles` は「無ければ動かない」ものだけを並べる。`led` が無くても動く degradation は v0.1 では表現しない（`optional-pin-roles` は実例が出てから） |
+| **「この役割は無い」は `"none"`** | `lcd-rst = "none"`。キーを省略すればファームの既定どおり。`false` や `0` より誤読しにくい |
+| **パスは toml のあるディレクトリ基準** | `i2c-replay = "fixtures/sht4x.txt"`。CLI の cwd 基準にすると、どこから呼んだかで壊れる |
+| **未知のキーはエラー** | 黙って無視すると「設定したのに効いていない」に気付けない。タイポはここで止める |
+| **`version`** | CLI の対応より新しければエラー、古ければ受ける |
+| **toml は任意** | `build` / `check` / `run` は **toml が無くても動く**（プロジェクトの形だけで足りる）。toml が増やすのは `pin-roles` の保証と既定値だけ |
 
 - **プロジェクトの中で `deploy` → 保証**（toml がある）
 - **`.wasm` 単体を受け取って `deploy` → 参考**（toml が無い。今と同じ）
@@ -855,7 +884,7 @@ led = 4
 ```
 $ wasmicon deploy
 rp2350 0.1.0 と照合
-  requires  lcd-cs, lcd-dc, lcd-rst            ボードにある
+  pin-roles lcd-cs, lcd-dc, lcd-rst            ボードにある
   roles     lcd-cs: toml=GP22 / device=GP17    食い違い
 → 中止。`wasmicon config apply` で押し込むか、toml を直す
 ```
