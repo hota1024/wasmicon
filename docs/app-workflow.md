@@ -556,10 +556,15 @@ probe-rs）は**呼ぶだけで、自前実装しない**。
 
 **できないこと: 役割名の列挙。** `pin-by-role` の引数は実行時に `(ptr, len)` で
 渡る `string` で（`wit/board.wit`）、語彙は WIT の型に入っていない。だから
-「このアプリがどの役割を引くか」を `.wasm` から**確実に列挙することはできない** —
-データセグメントから既知の名前を探すヒューリスティックは書けるが、文字列を
-組み立てていれば見落とし、使っていない文字列は空振りする。`check` の役割名の行は
-**参考**であって保証ではない。確実に分かるのは実行時で、`pin-by-role` が
+「このアプリがどの役割を引くか」を `.wasm` から**確実に列挙することはできない**。
+`check` は既知の名前がバイト列に現れるかを見るだけで、**参考**であって保証ではない。
+実測した限界は 2 つ:
+
+- **ログ文字列の中の名前も拾う。** `sensor-display` は `led` を使っていないのに
+  `roles` に出る（`sensor crc failed` の中に `led` がある）
+- **AssemblyScript のゲストには当たらない。** AS の文字列リテラルは UTF-16 で
+  置かれ、UTF-8 への変換は呼び出し時に起きるので、UTF-8 の役割名がバイナリに
+  現れない（`sensor_display_as.wasm` は「見つからない」になる）確実に分かるのは実行時で、`pin-by-role` が
 `unsupported` を返した行がトレースに残る（§3.1）。
 **`wasmicon.toml` の `requirements.pin-roles`（§4.7）があれば、列挙が宣言に
 なるので保証に
@@ -712,12 +717,15 @@ $ wasmicon build
 room_monitor.wasm  4,549 B
 
 $ wasmicon check --board rp2350
-abi      wasmicon:hal@0.1.0                                   一致
-imports  13 件すべて一致  (log 1 / board 1 / gpio 3 / i2c 4 / spi 3 / time 1)
-exports  run, memory                                          あり
-memory   初期 1 ページ ≤ 4                                     ok
-table    なし                                                  ok
-roles    lcd-cs, lcd-dc, lcd-rst                              rp2350 にある（参考）
+abi      wasmicon:hal@0.1.0                          import 名で強制される
+imports  13 件すべて一致                             (board 1 / gpio 3 / i2c 4 / log 1 / spi 3 / time 1)
+exports  run, memory                                 あり
+memory   初期 1 ページ
+table    なし
+
+[rp2350]
+validate 初期 1 ページ ≤ 4                           ok
+roles    led, lcd-cs, lcd-dc, lcd-rst                rp2350 にある（参考）
 → 通る
 
 $ wasmicon run --trace --i2c-replay sht4x-replay.txt > host.log
@@ -736,11 +744,11 @@ $ head -6 host.log
 
 ```
 $ wasmicon check --board rp2040
-abi      wasmicon:hal@0.1.0                                   一致
-memory   初期 1 ページ ≤ 2                                     ok
-roles    lcd-cs, lcd-dc, lcd-rst                              rp2040 にある（参考）
-spi      このポートは未実装（実機では unsupported が返る）        ← 落ちる
-i2c      このポートは未実装（実機では unsupported が返る）        ← 落ちる
+[rp2040]
+validate 初期 1 ページ ≤ 2                           ok
+i2c      このポートは未実装（実機では unsupported）  ← 落ちる
+spi      このポートは未実装（実機では unsupported）  ← 落ちる
+roles    led, lcd-cs, lcd-dc, lcd-rst                rp2040 にある（参考）
 → 落ちる（2 件）
 ```
 

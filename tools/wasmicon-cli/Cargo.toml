@@ -1,0 +1,21 @@
+[package]
+name = "wasmicon-cli"
+description = "アプリ作者が触る CLI。検査・実行・配備（docs/app-workflow.md §4）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "wasmicon"
+path = "src/main.rs"
+
+[dependencies]
+# 検査は実ランタイムで行う（docs/app-workflow.md §4.3）。
+# wasm-tools のような外部の検証器では、import 表との完全一致も
+# ボードごとの Config も見られない。
+wasmicon-core.workspace = true
+wasmicon-port.workspace = true
+anyhow = "1.0.104"

@@ -441,6 +441,15 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         （host プロファイルが const 文脈で使うため。二重に書くと食い違う）
 - [ ] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る。** 0 段は
       `check` / `run` / `monitor` / `trace diff` / `size` / `doctor`。
+      **`check` は 2026-10-04 に実装した**（骨 + `--board`。残りは未着手）
+      - 判定（`facts` / `judge`）と印字を分けてあるので、判定だけをテストから
+        呼べる。`tools/wasmicon-cli/tests/check.rs` が `apps/` の実物で固定:
+        **`blink-rs` は 4 ボードすべて通り、`sensor-display-rs` は rp2040 だけ
+        I2C / SPI の未実装で落ちる**。4 ページ要求の最小 `.wasm` を手で組んで
+        「host と rp2350 では通り rp2040 では落ちる」も見ている
+      - **役割名の照合の限界を実測した**（どちらも §4.3 に記録）:
+        ログ文字列の中の `led` を拾う（`sensor crc failed`）、
+        **AssemblyScript のゲストには当たらない**（文字列が UTF-16）
       **ファームの変更ゼロ・実機不要**で、§1.3 の作業に効く
       - `check` は**実ランタイムで** decode / validate / instantiate する。
         `ports/host` は `Config::default()`（`max_memory_pages` = 65536）で走るので
