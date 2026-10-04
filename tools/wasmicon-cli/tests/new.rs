@@ -217,6 +217,32 @@ fn it_refuses_to_write_into_a_non_empty_directory() {
 }
 
 #[test]
+fn it_refuses_a_hal_path_without_bindings() {
+    // **`--hal` も中身まで見る。** 探索の枝（`find_bindings`）は
+    // `bindings/rust/Cargo.toml` があることを条件にしているのに、
+    // `--hal` は存在するディレクトリなら何でも受けていた。すると
+    // `<渡された所>/rust` が Cargo.toml に書かれ、`cargo build` が
+    // 「no Cargo.toml」で落ちるまで分からない。
+    let base = tmp("bad-hal");
+    let empty = base.join("not-bindings");
+    std::fs::create_dir_all(&empty).expect("作れない");
+
+    let mut o = opts(base.join("app"), new::Lang::Rust);
+    o.hal = Some(empty.clone());
+    let err = new::create(&o).err().expect("bindings が無いのに通った");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("bindings が無い"), "{msg}");
+    // 何を探したかを出していること（渡す階層を間違えたときに一番欲しい）。
+    assert!(msg.contains("rust/Cargo.toml"), "{msg}");
+
+    // 無いパスは今までどおり弾く。
+    let mut o = opts(base.join("app2"), new::Lang::Rust);
+    o.hal = Some(base.join("nowhere"));
+    let msg = format!("{:#}", new::create(&o).err().expect("通った"));
+    assert!(msg.contains("--hal"), "{msg}");
+}
+
+#[test]
 fn it_refuses_an_unknown_board() {
     // `manifest::load` は `[defaults] board` を検証しないので、ここで
     // 弾かないと `new` が通って**そのあと全部のコマンドが落ちる**。

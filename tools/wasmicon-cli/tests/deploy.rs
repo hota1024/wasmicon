@@ -135,3 +135,51 @@ fn the_board_must_be_named_somewhere() {
     assert!(msg.contains("--board"), "{msg}");
     assert!(msg.contains("wasmicon.toml"), "{msg}");
 }
+
+/// `Mode` を見るための最小の `Options`。パスは使わない。
+fn mode_opts(no_run: bool, monitor: bool) -> deploy::Options {
+    deploy::Options {
+        path: PathBuf::from("x.wasm"),
+        board: None,
+        manifest: None,
+        no_run,
+        monitor,
+        out: None,
+        port: None,
+    }
+}
+
+#[test]
+fn no_run_keeps_an_espflash_board_halted() {
+    use wasmicon_port::profile::Flasher;
+
+    // **これが肝。** `espflash write-bin` は既定で `--after hard-reset` まで
+    // やるので、抑えないと `--no-run` なのに**焼いた直後に走る**。それで
+    // 「書いた。リセットすると走る」と出すと嘘になる。プローブを当てる前や、
+    // モータに繋いだボードでは走らせたくない。
+    let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Espflash);
+    assert!(m.keep_halted, "--no-run なのにリセットしてしまう");
+    assert!(!m.hand_off);
+
+    // picotool はリセットを別に呼ぶので、抑える必要が無い。
+    let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Picotool);
+    assert!(!m.keep_halted);
+}
+
+#[test]
+fn monitor_hands_the_port_over_only_when_it_is_shared() {
+    use wasmicon_port::profile::Flasher;
+
+    // 同じ口のボードは、書き込みで走らせずリセットを espflash に任せる。
+    let m = deploy::Mode::of(&mode_opts(false, true), Flasher::Espflash);
+    assert!(m.hand_off && m.keep_halted && m.shared_port);
+
+    // 口が別なら自分で開いてから自分でリセットする。
+    let m = deploy::Mode::of(&mode_opts(false, true), Flasher::Picotool);
+    assert!(!m.hand_off && !m.keep_halted && !m.shared_port);
+
+    // `--no-run` が入ったら取り込みはしない（走らせないので何も出ない）。
+    let m = deploy::Mode::of(&mode_opts(true, true), Flasher::Espflash);
+    assert!(!m.hand_off, "走らせないのに取り込もうとしている");
+    assert!(m.keep_halted);
+}

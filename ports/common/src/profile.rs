@@ -85,13 +85,46 @@ pub struct Profile {
     pub slot: Option<Slot>,
 }
 
-/// アプリスロットの位置と大きさ。
+/// アプリスロットの位置と大きさ、読み方、焼き方。
+///
+/// **読み方と焼き方もここに置く。** ボード名の文字列で分岐していると、
+/// 新しいポートが増えたときに**コンパイルエラーにならず**既定の枝に
+/// 落ちる（esp32p4 を足したら `picotool` で焼こうとする、など）。
+/// ボードを宣言する 1 箇所で明示させる。
 #[derive(Clone, Copy)]
 pub struct Slot {
     /// フラッシュの先頭からのオフセット。
     pub offset: u32,
     /// 取ってある大きさ（消去単位の倍数）。ヘッダを含む。
     pub len: u32,
+    /// スロットの読み方。**arena を食うかどうかが変わる。**
+    pub read: SlotRead,
+    /// スロットに書くのに使う外のツール。
+    pub flasher: Flasher,
+}
+
+/// スロットの読み方。
+///
+/// **`wasmicon check` がこれを見る。** `Copy` のボードはアプリの分だけ
+/// arena が減るので、同じ `.wasm` でも `instantiate` の余裕が違う。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SlotRead {
+    /// フラッシュが memory-mapped（XIP）。**RAM に写さない**ので
+    /// arena は減らない。RP2040 / RP2350。
+    Xip,
+    /// RAM に写してから decode する。**アプリの分だけ arena が減る。**
+    /// ESP32-S3（`esp-storage` 経由。XIP に任意オフセットを期待しない）。
+    Copy,
+}
+
+/// スロットに書くのに使う外のツール（1 段。`docs/app-workflow.md` §3.5）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Flasher {
+    /// `picotool load -t bin -o <絶対アドレス>`。**BOOTSEL 押下が要る。**
+    Picotool,
+    /// `espflash write-bin <オフセット>`。DTR/RTS でリセットするので
+    /// **ボタン操作が要らない**が、**書き込みとトレースが同じ口**。
+    Espflash,
 }
 
 /// マイコン共通の上限。ボード間の差は `max_memory_pages` だけ。
@@ -142,6 +175,8 @@ pub const RP2040: Profile = Profile {
     slot: Some(Slot {
         offset: 1 << 20,
         len: 64 * 1024,
+        read: SlotRead::Xip,
+        flasher: Flasher::Picotool,
     }),
 };
 
@@ -160,6 +195,8 @@ pub const RP2350: Profile = Profile {
     slot: Some(Slot {
         offset: 1 << 20,
         len: 64 * 1024,
+        read: SlotRead::Xip,
+        flasher: Flasher::Picotool,
     }),
 };
 
@@ -183,6 +220,8 @@ pub const ESP32S3: Profile = Profile {
     slot: Some(Slot {
         offset: 1 << 20,
         len: 64 * 1024,
+        read: SlotRead::Copy,
+        flasher: Flasher::Espflash,
     }),
 };
 

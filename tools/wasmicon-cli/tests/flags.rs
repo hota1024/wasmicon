@@ -96,9 +96,14 @@ fn the_two_languages_ask_for_the_same_initial_memory() {
 fn the_initial_memory_fits_the_tightest_board() {
     // 一番きついボード（`ports/rp2040` は 2 ページ）に収まっていること。
     // 上げるとそのボードで instantiate が落ちる（`docs/TODO.md` §5）。
+    // **`slot.is_some()` で絞らない。** `slot: None` は「置き場所がまだ
+    // 決まっていない」の意味（ESP32-S3 が 2026-10-04 までその状態だった）
+    // なので、新しいポートがその状態で入ると**上限の検査から静かに外れて
+    // テストは green のまま**になる。「host でない」で絞る
+    // （`tests/profiles.rs` と同じ）。
     let tightest = profile::PROFILES
         .iter()
-        .filter(|p| p.slot.is_some()) // host は上限が緩いので除く
+        .filter(|p| p.name != "host") // host は上限が緩い
         .map(|p| p.config.max_memory_pages)
         .min()
         .expect("プロファイルが無い");

@@ -3,7 +3,7 @@
 //! 書く側（CLI）と読む側（ファーム）が同じ形を使うので、ここが両方の契約。
 //! **形を変えたら `FORMAT_VERSION` を上げる**（互換の軸の 1 つ。§3.6）。
 
-use wasmicon_port::profile::Slot;
+use wasmicon_port::profile::{Flasher, Slot, SlotRead};
 use wasmicon_port::slot::{self, SlotError};
 
 /// 読めることを確かめて中身を返す。
@@ -126,6 +126,8 @@ fn an_overlapping_firmware_is_refused_without_reading() {
     let slot = Slot {
         offset: 0x10_0000,
         len: 64 * 1024,
+        read: SlotRead::Xip,
+        flasher: Flasher::Picotool,
     };
     let xip = 0x1000_0000;
     let slot_start = xip + slot.offset as usize;
@@ -148,6 +150,8 @@ fn a_mapped_slot_is_read_in_place() {
     let slot = Slot {
         offset: 0,
         len: u32::try_from(region.len()).expect("収まる"),
+        read: SlotRead::Xip,
+        flasher: Flasher::Picotool,
     };
     // SAFETY: region は生きていて、長さぶん読める。
     let read = match unsafe { slot::read_xip(region.as_ptr() as usize, slot, 0) } {
@@ -163,4 +167,57 @@ fn an_empty_app_is_still_a_valid_slot() {
     // スロットとしては成立することを決めておく。
     let img = image(b"");
     assert_eq!(parsed(&img), b"");
+}
+
+#[test]
+fn a_corrupt_length_is_refused_without_arithmetic_overflow() {
+    // **壊れたフラッシュは長さに何でも入れてくる。** `HEADER_LEN + len` を
+    // 素で足すと `usize` が 32 bit のターゲット（thumbv6m / thumbv8m /
+    // xtensa）で巻き戻り、debug ビルドでは panic する —— 理由を出すために
+    // ある経路が無言で死ぬ。host は 64 bit なので巻き戻り自体は再現しない
+    // が、**`Truncated` を返して落ちないこと**はここで固定できる。
+    let mut bytes = image(b"\0asm\x01\0\0\0");
+    bytes.resize(4096, 0xff);
+    bytes[8..12].copy_from_slice(&0xffff_fff8u32.to_le_bytes());
+    let e = match slot::parse(&bytes) {
+        Err(e) => e,
+        Ok(_) => panic!("壊れた長さを受け入れてしまった"),
+    };
+    assert_eq!(e.reason(), "slot truncated");
+    assert!(matches!(e, SlotError::Truncated { .. }));
+
+    // **巻き戻りそのものを試す。** 上の経路は長さが u32 なので host
+    // （64 bit）では溢れない。足し算は `image_end` に 1 箇所だけ置いて
+    // あるので、そこを直に叩く。
+    assert_eq!(slot::image_end(0), Some(slot::HEADER_LEN));
+    assert_eq!(slot::image_end(usize::MAX), None, "溢れを見逃している");
+    assert_eq!(
+        slot::image_end(usize::MAX - slot::HEADER_LEN),
+        Some(usize::MAX),
+        "ちょうど収まる値を溢れと言ってはいけない"
+    );
+}
+
+#[test]
+fn the_incremental_crc_matches_the_one_shot_one() {
+    // ESP32-S3 は**arena を取る前に**スロットの CRC を確かめる（取ってから
+    // 壊れていると分かっても `Arena` は bump なので返せない）。そのために
+    // 分割して計算するので、一度に計算したものと一致している必要がある。
+    let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    for chunk in [1usize, 7, 251, 512, 1000, 4096] {
+        let mut crc = wasmicon_port::CRC32_INIT;
+        for part in data.chunks(chunk) {
+            crc = wasmicon_port::crc32_update(crc, part);
+        }
+        assert_eq!(
+            wasmicon_port::crc32_end(crc),
+            wasmicon_port::crc32(&data),
+            "{chunk} バイトずつ足したものが一致しない"
+        );
+    }
+    // 空も一致する（長さ 0 のアプリは弾かれるが、境界として固定する）。
+    assert_eq!(
+        wasmicon_port::crc32_end(wasmicon_port::CRC32_INIT),
+        wasmicon_port::crc32(&[])
+    );
 }

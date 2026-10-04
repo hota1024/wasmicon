@@ -256,10 +256,24 @@ fn put_u32(mem: &mut [u8], ptr: u64, v: u32) -> Result<()> {
     Ok(())
 }
 
-/// CRC-32 (IEEE)。長い `list<u8>` のトレース用（abi-spec §9）。
+/// CRC-32 (IEEE)。長い `list<u8>` のトレース用（abi-spec §9）と
+/// スロットの検査用（`slot`）。
 #[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
+    crc32_end(crc32_update(CRC32_INIT, data))
+}
+
+/// 分割して計算するときの初期値。
+///
+/// **一度に渡せないときに要る。** ESP32-S3 はスロットを 1 回では読めない
+/// （`esp-storage` に小さなバッファで何度も読ませる）ので、arena を
+/// 使わずに CRC を確かめるにはこの形が必要になる
+/// （`ports/esp32s3/src/main.rs` の `pick_guest`）。
+pub const CRC32_INIT: u32 = 0xffff_ffff;
+
+/// 続きを足す。`data` を順に全部渡したあと `crc32_end` で締める。
+#[must_use]
+pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
         crc ^= u32::from(b);
         let mut i = 0;
@@ -269,6 +283,12 @@ pub fn crc32(data: &[u8]) -> u32 {
             i += 1;
         }
     }
+    crc
+}
+
+/// 締める。
+#[must_use]
+pub fn crc32_end(crc: u32) -> u32 {
     !crc
 }
 

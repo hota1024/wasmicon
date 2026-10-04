@@ -197,6 +197,67 @@ fn every_board_can_instantiate_its_advertised_maximum() {
 }
 
 #[test]
+fn a_board_that_copies_the_app_into_the_arena_has_less_room() {
+    // **ESP32-S3 はスロットを RAM に写す**（XIP に任意オフセットを期待
+    // できない）。写す先は線形メモリと同じ arena なので、**アプリが大きい
+    // ほど instantiate の余裕が減る**。これを模していないと
+    // 「`check` は通るのに実機で落ちる」—— この関数が防ぐためにある形 ——
+    // をそのまま作る。
+    //
+    // 上限いっぱいのページ数に、余裕より大きいカスタムセクションを足す。
+    let pages = u8::try_from(profile::ESP32S3.config.max_memory_pages).expect("u8");
+    let padded = with_custom_section(&wat_memory_pages(pages), 40 * 1024);
+
+    // 写さないボード（XIP）では**アプリの大きさは arena を食わない**ので、
+    // 同じものが通る。ここが通らないと、下の失敗が「写す分」ではなく
+    // 「decode がバイト列を arena に写している」ことの証拠になってしまう。
+    assert!(
+        check::instantiate_with(&padded, &profile::RP2350).is_ok(),
+        "XIP のボードでアプリの大きさが arena を食っている"
+    );
+
+    // 写すボードでは落ちる。
+    assert!(
+        check::instantiate_with(&padded, &profile::ESP32S3).is_err(),
+        "写す分を見ていない（アプリの大きさだけ余裕を多く見積もっている）"
+    );
+
+    // 同じページ数でも、小さいアプリなら通る（落ちた理由が大きさだと示す）。
+    assert!(
+        check::instantiate_with(&wat_memory_pages(pages), &profile::ESP32S3).is_ok(),
+        "小さいアプリまで落としている"
+    );
+}
+
+/// 末尾にカスタムセクションを足して `.wasm` を大きくする。
+///
+/// 名前だけのカスタムセクションは decode が読み飛ばすので、**中身の意味を
+/// 変えずにファイルの大きさだけ**変えられる。
+fn with_custom_section(wasm: &[u8], extra: usize) -> Vec<u8> {
+    let mut w = wasm.to_vec();
+    // 名前 "pad"（長さ 3）+ 詰め物。
+    let payload = 1 + 3 + extra;
+    w.push(0x00); // section id = 0（custom）
+    let mut len = payload;
+    loop {
+        // LEB128（符号なし）。
+        let mut byte = u8::try_from(len & 0x7f).expect("7 bit");
+        len >>= 7;
+        if len != 0 {
+            byte |= 0x80;
+        }
+        w.push(byte);
+        if len == 0 {
+            break;
+        }
+    }
+    w.push(0x03);
+    w.extend_from_slice(b"pad");
+    w.resize(w.len() + extra, 0);
+    w
+}
+
+#[test]
 fn the_run_export_must_take_and_return_nothing() {
     // abi-spec §3.3 は `run: func()`。引数が付いていると実行時に
     // `wrong arity` で落ちるので、**export の有無だけでは足りない**。

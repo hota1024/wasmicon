@@ -35,11 +35,13 @@ new のオプション:
     --hal <dir>              バインディングの置き場所（既定: 上に向かって探す）
 
 check のオプション:
-    --board <name>           検査するボード（既定: 全ボード）
+    --board <name>           検査するボード
                              rp2040 / rp2350 / esp32s3 / host
+                             既定: wasmicon.toml の [defaults] board、
+                             無ければ全ボード
 
 pack のオプション:
-    -o <file>                出力先（既定: <入力>.slot）
+    -o <file>                出力先（既定: <入力>.bin）
     --board <name>           スロットに収まるかを検査し、焼くコマンドを出す
 
 deploy のオプション:
@@ -212,12 +214,17 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
 
     let path = path.context("走らせる .wasm を渡すこと\n\n".to_string() + USAGE)?;
     // `--i2c-replay` が無ければ toml の既定（toml のある場所基準で解決済み）。
-    let i2c_replay = i2c_replay.or_else(|| {
-        find_manifest()
-            .ok()
-            .flatten()
-            .and_then(|m| m.default_i2c_replay)
-    });
+    //
+    // **読めない toml を黙って無視しない。** `deny_unknown_fields` なので
+    // `i2c_replay` のような綴り違いで `load` が失敗する。そこを捨てると
+    // **replay 無しで走って記録済みの 14,352 行と静かに食い違う** ——
+    // `manifest.rs` の冒頭が「設定したのに効いていないことに気付けない」と
+    // 書いている、まさにその形になる（`check` / `deploy` は `?` で上げて
+    // いるのに、ここだけ落としていた）。
+    let i2c_replay = match i2c_replay {
+        Some(p) => Some(p),
+        None => find_manifest()?.and_then(|m| m.default_i2c_replay),
+    };
     Ok(run_cmd::Options {
         path,
         trace: trace_on,
@@ -286,8 +293,12 @@ fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
     }
 
     let path = path.context("包む .wasm を渡すこと\n\n".to_string() + USAGE)?;
-    // `--board` が無ければ toml の既定を使う（§4.7）。
-    let board = board.or_else(|| find_manifest().ok().flatten().and_then(|m| m.default_board));
+    // `--board` が無ければ toml の既定を使う（§4.7）。読めない toml は
+    // 上げる（`parse_run` と同じ理由）。
+    let board = match board {
+        Some(b) => Some(b),
+        None => find_manifest()?.and_then(|m| m.default_board),
+    };
     Ok(pack::Options { path, out, board })
 }
 
