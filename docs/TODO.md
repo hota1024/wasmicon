@@ -566,18 +566,24 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         コードを wasm として食わせない）。RP2040 にはこのシンボルが
         無かったので `memory.x` に足した（実測で `0x1000de40`、
         スロットは `0x10100000` なので 1 MB 近く空いている）
-      - **`ports/esp32s3` も 2026-10-04 に実装した**（`esp-storage` で
-        ヘッダを読み、長さの分だけ arena を取って本体を読む。64 KiB の
-        スロットに対してアプリは数 KB なので、静的な領域を増やさない）。
-        **ただし実機でスロットから走らせるところは未検証**
+      - **`ports/esp32s3` も 2026-10-04 に実装し、同日 実機で確認した**
+        （`esp-storage` でヘッダを読み、長さの分だけ arena を取って本体を
+        読む。64 KiB のスロットに対してアプリは数 KB なので、静的な領域を
+        増やさない）。**スロットから走ったアプリのトレースが host と
+        14,352 行完全一致**。さらに **Pico 2 W（XIP）と ESP32-S3
+        （`esp-storage` で RAM に写す）が同じ `.wasm` で完全一致**
+        —— フラッシュの読み方が違う 2 ボードで決定性が保たれている
         （`docs/verification-report.md` §10）
       - **`partitions.csv` は要らなかった**（実測。`espflash flash` は
         アプリのセクタしか消さないので、7 MB 地点の目印が生き残った）。
         置き場所は Pico 系と揃えて `0x100000` から 64 KiB
-      - **ESP32-S3 は書き込みとトレースが同じ口**なので `--monitor` が
-        成立しない。`espflash reset` は居座るので呼ばない
-        （`write-bin` が既定でリセットまでやる）。取り込みは
-        `write-bin --after no-reset` → `espflash monitor` に寄せるのが筋
+      - **ESP32-S3 は書き込みとトレースが同じ口**。`monitor` は `stty` しか
+        当てないので自分ではリセットできず、順番が詰む。**口ごと
+        `espflash monitor` に任せる**ことで解けた（`--before default-reset
+        --after hard-reset` が既定なので、開いてから起動させられる）。
+        `espflash reset` は居座るので呼ばない
+      - **残り**: CRC 不一致 / `Truncated` / 空スロットの枝を実機で
+        起こしていない（単体テストはある）
 - [ ] **内蔵アプリを外す**（1 段。**3 ポートがスロットを読めるようになってから**
       — 先に外すとファームが何も走らせなくなる。RP2350 は読めるが実機で
       未検証なので、まだフォールバックとして残してある）。`ports/*/src/main.rs` の `include_bytes!` と
@@ -590,15 +596,18 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         （XIP の番地や RAM への写しはトレースに出ない）
       - **失うもの**: 焼いた直後に「ランタイムが decode → run まで通る」ことを
         実機で確かめる足場。host テストと最初の `deploy` で代替する
-- [x] **`deploy` の 1 段目**（2026-10-04 完了、RP2040 / RP2350）。検査・
+- [x] **`deploy` の 1 段目**（2026-10-04 完了、3 ポート全て）。検査・
       画像の用意・`picotool load -t bin -o <アドレス>`・リセットを畳んだ。
       **Pico 2 W で 1 コマンド通し済み**（`docs/verification-report.md` §9）
       - **走らないものを焼かない**（焼く前に `check --board` を通す）。
         `tests/deploy.rs` が、sensor-display を rp2040 に送ろうとすると
         **画像も書かずに**止まることを固定している
       - トレースの取り込み手順（`cat` で開いたまま `stty`）を最後に出す
-      - **ESP32-S3 は未実装**（スロットの置き場所が未決。§5-2）。
-        あちらは `espflash write-bin` で**ボタン操作不要**になる
+      - **ESP32-S3 も 2026-10-04 に通した**（`espflash write-bin
+        <オフセット>`。`pack` が出すコマンドもボードごとに分けた）。
+        `--monitor` は `espflash monitor` に委譲する
+        （`monitor::capture_cmd`）。**1 コマンドで焼いて取り込み、
+        host と 14,352 行一致**。Pico と違い**ボタン操作が要らない**
 - [ ] **ファームが自分を名乗るようにする**（`info` とバナー。
       `docs/app-workflow.md` §3.8）。今バナーは `wasmicon rp2350` の 1 行だけで
       **版も git も入っていない**（`ports/rp2350/src/main.rs:140`）。
