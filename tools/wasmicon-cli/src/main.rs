@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use wasmicon_cli::{check, doctor, manifest, run as run_cmd, trace};
+use wasmicon_cli::{check, doctor, manifest, pack, run as run_cmd, trace};
 
 const USAGE: &str = "\
 wasmicon — Wasmicon のアプリを検査・実行・配備する
@@ -19,12 +19,16 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
 コマンド:
     check <app.wasm>         そのボードで走るかを検査する
     run <app.wasm>           host ポート（mock HAL）で走らせる
+    pack <app.wasm>          スロット画像にする（ファームが読む形）
     trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
     doctor                   道具が揃っているかを見る
 
 check のオプション:
     --board <name>           検査するボード（既定: 全ボード）
                              rp2040 / rp2350 / esp32s3 / host
+
+pack のオプション:
+    -o <file>                出力先（既定: <入力>.slot）
 
 run のオプション:
     --trace                  全 host call を abi-spec §9 の形式で出す
@@ -72,6 +76,7 @@ fn dispatch() -> Result<bool> {
         }
         "check" => check::run(&parse_check(args)?),
         "run" => run_cmd::run(&parse_run(args)?),
+        "pack" => pack::run(&parse_pack(args)?),
         "trace" => trace::diff(&parse_trace(args)?),
         "doctor" => doctor::run(),
         other if other.starts_with('-') => {
@@ -155,6 +160,29 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         trace: trace_on,
         i2c_replay,
     })
+}
+
+fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
+    let mut path: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
+            "-h" | "--help" => help(),
+            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => {
+                if path.is_some() {
+                    bail!("包めるのは 1 つだけ: {other}");
+                }
+                path = Some(PathBuf::from(other));
+            }
+        }
+    }
+
+    let path = path.context("包む .wasm を渡すこと\n\n".to_string() + USAGE)?;
+    Ok(pack::Options { path, out })
 }
 
 fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options> {
