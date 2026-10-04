@@ -121,6 +121,7 @@ sh tools/measure-size.sh                                   # コアのコード�
 |---|---|
 | [`docs/TODO.md`](docs/TODO.md) | **残作業。ここだけ見れば何が残っているか分かる** |
 | [`docs/abi-spec.md`](docs/abi-spec.md) | WIT → Core Wasm の lowering 規則。**この仕様が正** |
+| [`docs/app-workflow.md`](docs/app-workflow.md) | アプリ開発フローの設計。ファームがアプリを USB / HTTP でロードする形と `wasmicon` CLI |
 | [`docs/verification-report.md`](docs/verification-report.md) | 何がどこまで検証されたか、何がされていないか |
 | [`docs/design-notes.md`](docs/design-notes.md) | 背景・方針・技術選定の理由 |
 | [`docs/handoff.md`](docs/handoff.md) | 確定した決定事項、フェーズと完了条件、落とし穴。**コードのコメントが節番号で参照している** |
