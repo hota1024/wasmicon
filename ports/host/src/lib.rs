@@ -4,7 +4,7 @@
 
 pub mod hal;
 
-use wasmicon_core::{Arena, Config, Error, Exec, decode, instantiate, invoke, validate};
+use wasmicon_core::{Arena, Error, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::Hal;
 
 /// arena の大きさ。残りが線形メモリになる。
@@ -104,7 +104,9 @@ pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
     let mut scratch_buf = vec![0u8; SCRATCH];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
-    let cfg = Config::default();
+    // host は全ボードより緩い（max_memory_pages = 65536）。ボードの上限で
+    // 検査したいときは profile::<board>.config を使う（§4.3）。
+    let cfg = wasmicon_port::profile::HOST.config;
 
     let m = decode::decode(wasm, &mut arena)?;
     let v = validate::validate(&m, &cfg, &mut arena, &mut scratch)?;

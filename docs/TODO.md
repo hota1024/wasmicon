@@ -51,7 +51,7 @@
         `ports/host/tests/apps.rs` の `SHT4X_ADDR`（host テストが期待する
         トレースの値。直さないと「計測コマンドが違う」という紛らわしい
         メッセージで落ちる）
-- [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、各ポートの `ROLES`）
+- [ ] **役割名**。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst` を既定のまま確定扱いで進めている。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、`ports/common` の `profile`）。**番号を変えるだけなら `profile` の 1 箇所**で、語彙（名前）を増やすときは `ROLE_NAMES` にも足す（`assert_role_names` がコンパイル時に弾く）
 - [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
 - [x] **RP2350 ボードの品種** → **Pico 2 W**（RP2350A、GP0..GP29）で確定。`NUM_GPIO` は 30 のままでよい
 - [ ] **RP2350 を Arm だけで見るか**。`ports/rp2350` は Cortex-M33（`thumbv8m.main-none-eabihf`）のみ。RISC-V (Hazard3) でも同じトレースが出るかは v0.1 の検証範囲に入れていない
@@ -393,7 +393,7 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       取るなら espup を入れるジョブが要る
 - [ ] **§5-9 役割マップをデバイス側の設定にするか / いつやるか**
       （`docs/app-workflow.md` §3.9 / §4.7）。今は役割 → GPIO がファームの
-      `const ROLES` にあるので、**配線を変えるとファームを焼き直す**ことになり
+      `profile::<board>.roles` にあるので、**配線を変えるとファームを焼き直す**ことになり
       「ファームは一度だけ焼く」と衝突する
       - **決定性は壊れない**。abi-spec §9 が役割で配った番号を `role:` に
         正規化するので、対応表を変えてもトレース行は変わらない
@@ -426,15 +426,19 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       - 解放の順序は gpio → i2c → spi で固定（ポート間で揃える）
       - 検査は `ports/common/tests/release_all.rs` の 4 件。`release_all` を
         空にすると 3 件が落ちることを確かめた
-- [ ] **ボードプロファイルを `ports/common` に集める**（`Config` +
-      **実装済みインターフェース**）。後者が無いと `ports/rp2040` 向けの
-      `check` は**静的には通ってしまう**（SPI / I2C が `unsupported` を返すのは
-      実行時。§1.2）。`Config` は今は 3 つの `main.rs` に
-      散っていて（RP2040 = 2 ページ、RP2350 / ESP32-S3 = 4 ページ、他は同値）
-      CLI から参照できない。`pub const PROFILES: [(&str, Config); N]` のような表に
-      して各 `main.rs` が名前で引く形にすると、**値が変わっていないことを CI の
-      rp2040 / rp2350 ジョブが見る**。**値は 1 ビットも変えずに移す**
-      （validate の上限なので、変えると通るアプリが変わる）
+- [x] **ボードプロファイルを `ports/common` に集める**（2026-10-04 完了）。
+      `Config`（3 つの `main.rs`）、役割割り当て（各 `board.rs` の `ROLES`）、
+      **実装済みインターフェース**を `ports/common/src/profile.rs` に集めた。
+      各ポートはそこから引くので、CI の rp2040 / rp2350 ジョブの `cargo build` が
+      値の一致を見る。値は `ports/common/tests/profiles.rs` に移す前の数値で固定
+      - 実装済みインターフェースが無いと `ports/rp2040` 向けの `check` は
+        **静的には通ってしまう**（SPI / I2C が `unsupported` を返すのは実行時。§1.2）
+      - **`assert_role_names` が `ROLE_NAMES` との包含関係をコンパイル時に検査する。**
+        外れると `pin-by-role` は成功するのにトレースが `role:` に正規化されず、
+        生の GPIO 番号が出て **2 ボードのトレースが食い違う**（abi-spec §9）。
+        **この検査は今まで無かった**
+      - `Config::DEFAULT` を `runtime` に足し、`Default` がそれを返すようにした
+        （host プロファイルが const 文脈で使うため。二重に書くと食い違う）
 - [ ] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る。** 0 段は
       `check` / `run` / `monitor` / `trace diff` / `size` / `doctor`。
       **ファームの変更ゼロ・実機不要**で、§1.3 の作業に効く

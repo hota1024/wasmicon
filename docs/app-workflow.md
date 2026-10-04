@@ -341,7 +341,7 @@ ABI を触らずにコマンドを 1 つ足せばプロトコル版だけが上�
 |---|---|---|
 | ABI 版 `wasmicon:hal@0.1.0` | import のモジュール名（完全一致。abi-spec §3.1） | 全アプリが `unknown import` で落ちる |
 | ボードプロファイル（`Config` + **実装済みインターフェース**） | 各 `main.rs`（RP2040 = 2 ページ、他 = 4）と各 `board.rs`（RP2040 は SPI / I2C が未実装） | 大きいアプリが validate で落ちる / 実機で `unsupported` が返る |
-| 役割名（`led` / `lcd-cs` …） | 各ポートの `ROLES`（abi-spec §8） | `pin-by-role` が `unsupported` を返す |
+| 役割名（`led` / `lcd-cs` …） | `ports/common` の `profile::<board>.roles`（abi-spec §8） | `pin-by-role` が `unsupported` を返す |
 | プロトコル版 | フレームの `ver u8`（§3.6） | CLI が喋れない |
 | スロット形式版 | スロットヘッダ（§3.4、= 1） | 古いファームが新しいスロットを読む |
 
@@ -406,7 +406,8 @@ A/B スロットでのロールバック、署名検証、HTTP 経由のファ�
 
 ### 3.9 役割マップをデバイス側の設定にする
 
-役割 → GPIO 番号の対応は今**ファームの中**にある（各ポートの `const ROLES`）。
+役割 → GPIO 番号の対応は今**ファームの中**にある（`ports/common` の
+`profile::<board>.roles`。各ポートの `board.rs` がこれを引く）。
 つまり **配線を変えるとファームを焼き直す**ことになり、「ファームは一度だけ焼く」
 （§1.2）と衝突する。LCD の CS を隣のピンに移したいだけでファームのリリースを
 待つのは筋が悪い。
@@ -576,14 +577,30 @@ decode / validate / instantiate のあと `run` まで呼ぶ 1 本の関数な�
 ESP32-S3 = 4。**`wasmicon run` が通っても実機の validate で落ちるアプリが書ける。**
 これが `check --board` の存在理由。
 
-ボードの `Config` は 3 つの `main.rs` に散っていて CLI から参照できない。
-**`ports/common` にボードプロファイルとして集める**のが筋（`ports/common` は
-`no_std` で全ポートが依存している）。形は `pub const PROFILES: [(&str, Config); N]`
-のような名前付きの表にし、**3 つの `main.rs` は自分の名前で引く**。
-そうすると「値が変わっていない」ことを CI の rp2040 / rp2350 ジョブの
-`cargo build` が見てくれる（CLI は同じ表を読む）。**値は 1 ビットも変えずに移す**
-（validate の上限なので、変えると通るアプリが変わる）。`info`（§3.6）が
-入ったあとは、実機に繋がっているなら**デバイスの申告を使う**。
+**ボードプロファイルは `ports/common` の `profile` に集めた**（2026-10-04）。
+散っていた `Config`（3 つの `main.rs`）と役割割り当て（各 `board.rs` の `ROLES`）、
+それに実装済みインターフェースを 1 箇所にしてある。各ポートはそこから引くので
+**CI の rp2040 / rp2350 ジョブの `cargo build` が値の一致を見てくれる**。
+値は `ports/common/tests/profiles.rs` に移す前の数値で固定した。
+
+```
+profile::RP2040   2 ページ / I2C と SPI は未実装 / Pico の役割割り当て
+profile::RP2350   4 ページ / 全実装       / 同じ割り当て（ヘッダが同じ）
+profile::ESP32S3  4 ページ / 全実装       / DevKitC-1 の割り当て
+profile::HOST     Config::DEFAULT（緩い） / mock の割り当て
+```
+
+`Config::DEFAULT` はこのために `runtime` に足した const で、`Default` が
+それを返す（二重に書くと必ず食い違う）。
+
+**役割名の語彙は `assert_role_names` がコンパイル時に検査する。** `ROLE_NAMES`
+に無い名前を割り当てると、`pin-by-role` は成功するのにトレースが `role:` に
+正規化されず、生の GPIO 番号が出る（番号はボードごとに違うので**2 ボードの
+トレースが食い違う**。abi-spec §9）。**これを検査しているものは今まで無かった。**
+
+`info`（§3.6）が入ったあとは、実機に繋がっているなら**デバイスの申告を使う**。
+番号そのものの検査（範囲外・予約ピン）はデバイス側の責務で、プロファイルには
+置かない（§3.9）。
 
 ### 4.4 ビルドフラグの単一真実（腐ると静かに壊れる）
 

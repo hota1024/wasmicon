@@ -11,6 +11,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod fmt;
+pub mod profile;
 
 use wasmicon_core::error::{Error, Result, Trap};
 use wasmicon_core::generated::gpio::{Level, PinMode};

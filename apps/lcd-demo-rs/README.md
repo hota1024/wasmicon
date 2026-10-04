@@ -40,8 +40,10 @@ Rust 版のみ。AssemblyScript の対になるものは用意していない
 
 `docs/abi-spec.md` §8 の既定のまま。**この配線は 2026-09-26 に Pico 2 W 実機で
 確認済み**（`docs/verification-report.md` §6）。
-違うピンに繋ぎたいときは `ports/rp2350/src/board.rs` の `ROLES` と
-`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` を直す（abi-spec §8 の表も合わせる）。
+違うピンに繋ぎたいときは、役割（`lcd-cs` / `lcd-dc` / `lcd-rst`）は
+`ports/common/src/profile.rs` の `RP2350.roles`、SPI のピンは
+`ports/rp2350/src/board.rs` の `SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` を直す
+（abi-spec §8 の表も合わせる）。
 
 | ILI9341 モジュール | Pico 2 W | ピン番号（物理） |
 |---|---|---|
@@ -80,8 +82,9 @@ GND は 8 本ある（3 / 8 / 13 / 18 / 23 / 28 / 33 / 38）。
 
 `docs/abi-spec.md` §8 の既定のまま。**この配線は 2026-09-26 に DevKitC-1 実機で
 確認済み**（`docs/verification-report.md` §7）。違うピンに繋ぎたいときは
-`ports/esp32s3/src/board.rs` の `ROLES` と
-`SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` を直す（abi-spec §8 の表も合わせる）。
+役割は `ports/common/src/profile.rs` の `ESP32S3.roles`、SPI のピンは
+`ports/esp32s3/src/board.rs` の `SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` を直す
+（abi-spec §8 の表も合わせる）。
 
 | ILI9341 モジュール | ESP32-S3 DevKitC-1 |
 |---|---|
@@ -239,7 +242,7 @@ drop する」とも定めているので、解放は必ず起きる。
 1. **UART に何も出ない** — 配線（TX/RX の向き、GND）と 115200 8N1、
    焼けているか。バナー `wasmicon rp2350` が最初に出る
 2. **`spi open failed` / `gpio open failed` が出る** — ポート側。
-   役割名が `ROLES` に無いか、GPIO 番号が `RESERVED` に入っている
+   役割名が `profile::<board>.roles` に無いか、GPIO 番号が `RESERVED` に入っている
 3. **トレースは最後まで流れるのに画面が真っ暗** — バックライト（`LED` ピン）、
    `RESET` の配線、電源。ILI9341 は 3.3 V
 4. **表示が出るが化けている** — DC の配線を最初に疑う。次に SPI のクロック。
