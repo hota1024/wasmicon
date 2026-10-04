@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use wasmicon_cli::{check, deploy, doctor, manifest, pack, run as run_cmd, trace};
+use wasmicon_cli::{check, deploy, doctor, manifest, monitor, pack, run as run_cmd, trace};
 
 const USAGE: &str = "\
 wasmicon — Wasmicon のアプリを検査・実行・配備する
@@ -21,6 +21,7 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
     run <app.wasm>           host ポート（mock HAL）で走らせる
     pack <app.wasm>          スロット画像にする（ファームが読む形）
     deploy <app.wasm>        検査してボードのスロットに焼く
+    monitor                  シリアルを開いてトレースを取り込む
     trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
     doctor                   道具が揃っているかを見る
 
@@ -35,6 +36,16 @@ pack のオプション:
 deploy のオプション:
     --board <name>           送り先（既定: wasmicon.toml の [defaults] board）
     --no-run                 焼くだけでリセットしない
+    --monitor                焼いてリセットし、そのままトレースを取り込む
+    -o <file>                --monitor のときの取り込み先
+    --port <dev>             シリアルの口（既定: /dev/cu.usb* から選ぶ）
+
+monitor のオプション:
+    --port <dev>             シリアルの口（既定: /dev/cu.usb* から選ぶ）
+    --baud <n>               ボーレート（既定: 115200）
+    -o <file>                標準出力とは別にファイルにも書く
+    --idle <秒>              無音がこれだけ続いたら終わる（既定: 3。0 で無効）
+    --timeout <秒>           全体の上限（既定: 無し）
 
 run のオプション:
     --trace                  全 host call を abi-spec §9 の形式で出す
@@ -84,6 +95,7 @@ fn dispatch() -> Result<bool> {
         "run" => run_cmd::run(&parse_run(args)?),
         "pack" => pack::run(&parse_pack(args)?),
         "deploy" => deploy::run(&parse_deploy(args)?),
+        "monitor" => monitor::run(&parse_monitor(args)?),
         "trace" => trace::diff(&parse_trace(args)?),
         "doctor" => doctor::run(),
         other if other.starts_with('-') => {
@@ -173,12 +185,18 @@ fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
     let mut path: Option<PathBuf> = None;
     let mut board: Option<String> = None;
     let mut no_run = false;
+    let mut monitor = false;
+    let mut out: Option<PathBuf> = None;
+    let mut port: Option<PathBuf> = None;
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--board" => board = Some(args.next().context("--board に値が無い")?),
             "--no-run" => no_run = true,
+            "--monitor" => monitor = true,
+            "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
+            "--port" => port = Some(PathBuf::from(args.next().context("--port に値が無い")?)),
             "-h" | "--help" => help(),
             other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
             other => {
@@ -196,6 +214,9 @@ fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
         board,
         manifest: find_manifest()?,
         no_run,
+        monitor,
+        out,
+        port,
     })
 }
 
@@ -224,6 +245,53 @@ fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
     // `--board` が無ければ toml の既定を使う（§4.7）。
     let board = board.or_else(|| find_manifest().ok().flatten().and_then(|m| m.default_board));
     Ok(pack::Options { path, out, board })
+}
+
+fn parse_monitor(args: impl Iterator<Item = String>) -> Result<monitor::Options> {
+    let mut port: Option<PathBuf> = None;
+    let mut baud = monitor::DEFAULT_BAUD;
+    let mut out: Option<PathBuf> = None;
+    let mut idle = Some(monitor::DEFAULT_IDLE);
+    let mut timeout = None;
+
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--port" => port = Some(PathBuf::from(args.next().context("--port に値が無い")?)),
+            "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
+            "--baud" => {
+                let v = args.next().context("--baud に値が無い")?;
+                baud = v
+                    .parse()
+                    .with_context(|| format!("--baud が数でない: {v}"))?;
+            }
+            "--idle" => {
+                let v = args.next().context("--idle に値が無い")?;
+                let secs: u64 = v
+                    .parse()
+                    .with_context(|| format!("--idle が数でない: {v}"))?;
+                // 0 は「無音では終わらない」（Ctrl-C で止める）。
+                idle = (secs > 0).then(|| std::time::Duration::from_secs(secs));
+            }
+            "--timeout" => {
+                let v = args.next().context("--timeout に値が無い")?;
+                let secs: u64 = v
+                    .parse()
+                    .with_context(|| format!("--timeout が数でない: {v}"))?;
+                timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
+            }
+            "-h" | "--help" => help(),
+            other => bail!("未知のオプション: {other}\n\n{USAGE}"),
+        }
+    }
+
+    Ok(monitor::Options {
+        port,
+        baud,
+        out,
+        idle,
+        timeout,
+    })
 }
 
 fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options> {

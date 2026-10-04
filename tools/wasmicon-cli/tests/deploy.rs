@@ -68,6 +68,9 @@ fn opts(path: PathBuf, board: Option<&str>) -> deploy::Options {
         board: board.map(str::to_string),
         manifest: None,
         no_run: true,
+        monitor: false,
+        out: None,
+        port: None,
     }
 }
 

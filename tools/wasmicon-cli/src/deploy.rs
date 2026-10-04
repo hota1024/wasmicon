@@ -16,7 +16,7 @@ use std::process::Command;
 use wasmicon_port::profile::{Profile, Slot};
 
 use crate::manifest::Manifest;
-use crate::{check, pack};
+use crate::{check, monitor, pack};
 
 pub struct Options {
     pub path: PathBuf,
@@ -27,6 +27,12 @@ pub struct Options {
     pub manifest: Option<Manifest>,
     /// 焼いたあとリセットしない（既定はリセットして走らせる）。
     pub no_run: bool,
+    /// 焼いてリセットしたあと、そのままトレースを取り込む。
+    pub monitor: bool,
+    /// `--monitor` のときの取り込み先（`None` なら標準出力だけ）。
+    pub out: Option<PathBuf>,
+    /// `--monitor` のときのシリアルの口（`None` なら `/dev/cu.usb*` から選ぶ）。
+    pub port: Option<PathBuf>,
 }
 
 /// 焼く前に決まること。副作用は画像の書き出しだけ。
@@ -156,38 +162,41 @@ pub fn run(opts: &Options) -> Result<bool> {
         println!("→ 書いた。リセットすると走る");
         return Ok(true);
     }
+
+    // **`--monitor` ならリセットの前に開いて baud を当てる。**
+    // 流れ始めてから当てると行が混ざる（`monitor` の罠 2）。
+    let session = if opts.monitor {
+        let port = monitor::choose(&monitor::ports(), opts.port.as_deref())?;
+        let s = monitor::open(&port, monitor::DEFAULT_BAUD)?;
+        eprintln!("{} を開いた（リセット前）", s.port().display());
+        Some(s)
+    } else {
+        None
+    };
+
     if !spawn("picotool", &["reboot"])? {
         eprintln!("  書けたがリセットできなかった。USB を抜き差しすること");
         return Ok(false);
     }
 
-    println!("→ 走っている。トレースを見るなら:");
-    // 実機で踏んだ手順をそのまま出す（docs/verification-report.md §9）。
-    // **`stty` は開いたまま、流れ始める前に当てる。**
-    println!("    cat {} > app.log &", serial_hint());
-    println!("    stty -f {} 115200 raw -echo", serial_hint());
-    println!("    # それからリセット（USB を抜き差し）");
-    Ok(true)
-}
-
-/// シリアルの口の見当。見つからなければ例を出す。
-fn serial_hint() -> String {
-    let Ok(dir) = std::fs::read_dir("/dev") else {
-        return "/dev/cu.usbserial-XXXX".to_string();
+    let Some(session) = session else {
+        println!("→ 走っている。トレースを取り込むなら:");
+        println!("    wasmicon monitor -o app.log   # そのあとリセット");
+        println!("  次からは deploy --monitor で 1 回で済む");
+        return Ok(true);
     };
-    // **`usbserial` を決め打ちしない**（ブリッジの型番で名前が変わる。
-    // 手元の ESP32-S3 は CH343 で `usbmodem` になる。docs/TODO.md §1.1）。
-    let mut found: Vec<String> = dir
-        .filter_map(|e| {
-            let name = e.ok()?.file_name().to_string_lossy().into_owned();
-            name.starts_with("cu.usb").then(|| format!("/dev/{name}"))
-        })
-        .collect();
-    found.sort();
-    found
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "/dev/cu.usbserial-XXXX".to_string())
+
+    println!("→ 走っている。トレースを取り込む:");
+    monitor::capture(
+        session,
+        &monitor::Options {
+            port: None,
+            baud: monitor::DEFAULT_BAUD,
+            out: opts.out.clone(),
+            idle: Some(monitor::DEFAULT_IDLE),
+            timeout: None,
+        },
+    )
 }
 
 /// 外のコマンドを呼ぶ。見つからないのはエラー、失敗は `false`。
