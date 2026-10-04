@@ -62,18 +62,29 @@ pub fn run(opts: &Options) -> Result<bool> {
         slot::HEADER_LEN
     );
 
-    // 1 段は外のフラッシャに渡す（§3.5）。オフセットはプロファイルが持つ。
+    // 1 段は外のフラッシャに渡す（§3.5）。**ボードで道具も引数も違う。**
     if let Some(p) = board
         && let Some(sl) = p.slot
     {
-        // **picotool の `-o` は絶対アドレス**（フラッシュのオフセットでは
-        // ない）。オフセットを渡すと
-        // 「invalid memory range 0x00100000-...」で弾かれる
-        // （2026-10-04 に Pico 2 W で踏んだ）。RP2040 / RP2350 はどちらも
-        // XIP が 0x1000_0000 から。
-        let addr = XIP_BASE + u64::from(sl.offset);
-        println!("→ 書き込み: picotool load -o {addr:#x} {}", out.display());
-        println!("  （BOOTSEL を押しながら USB を挿してから）");
+        if p.name == "esp32s3" {
+            // espflash は**フラッシュのオフセット**を取る。既定で
+            // `--after hard-reset` までやるので、別にリセットは要らない。
+            println!(
+                "→ 書き込み: espflash write-bin --port <dev> {:#x} {}",
+                sl.offset,
+                out.display()
+            );
+            println!("  （ボタン操作は要らない。DTR/RTS でリセットされる）");
+        } else {
+            // **picotool の `-o` は絶対アドレス**（フラッシュのオフセットでは
+            // ない）。オフセットを渡すと
+            // 「invalid memory range 0x00100000-...」で弾かれる
+            // （2026-10-04 に Pico 2 W で踏んだ）。XIP は 0x1000_0000 から。
+            let addr = XIP_BASE + u64::from(sl.offset);
+            println!("→ 書き込み: picotool load -o {addr:#x} {}", out.display());
+            println!("  （BOOTSEL を押しながら USB を挿してから）");
+        }
+        println!("  `wasmicon deploy` なら 1 コマンドで済む");
     }
     Ok(true)
 }
