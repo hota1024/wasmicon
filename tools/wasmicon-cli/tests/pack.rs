@@ -34,6 +34,7 @@ fn pack_bytes(name: &str, wasm: &[u8]) -> Vec<u8> {
     pack::run(&pack::Options {
         path: input,
         out: Some(out.clone()),
+        board: None,
     })
     .expect("pack できる");
     std::fs::read(&out).expect("読めない")
@@ -55,6 +56,7 @@ fn the_default_output_sits_next_to_the_input() {
     pack::run(&pack::Options {
         path: input,
         out: None,
+        board: None,
     })
     .expect("pack できる");
     assert!(dir.join("app.slot").is_file(), "<入力>.slot に書く");
@@ -85,6 +87,49 @@ fn the_header_is_the_documented_layout() {
     // "abcd" の CRC-32 は 0xed82cd11。
     let crc = u32::from_le_bytes([image[12], image[13], image[14], image[15]]);
     assert_eq!(crc, 0xed82_cd11, "標準の CRC-32");
+}
+
+#[test]
+fn a_board_with_a_slot_gets_its_offset_checked() {
+    // `--board` を渡すと**書く前に**スロットに収まるかを見る。入らない
+    // ものを焼いても、実機で「slot truncated」が出るまで分からない。
+    let dir = tmp("board-ok");
+    let input = dir.join("app.wasm");
+    std::fs::write(&input, b"\0asm\x01\0\0\0").expect("書けない");
+    pack::run(&pack::Options {
+        path: input.clone(),
+        out: None,
+        board: Some("rp2350".to_string()),
+    })
+    .expect("rp2350 のスロットに収まる");
+
+    // スロット（64 KiB）に入らない大きさは弾く。
+    let big = dir.join("big.wasm");
+    std::fs::write(&big, vec![0u8; 100 * 1024]).expect("書けない");
+    let e = pack::run(&pack::Options {
+        path: big,
+        out: None,
+        board: Some("rp2350".to_string()),
+    })
+    .expect_err("入らない");
+    assert!(format!("{e:#}").contains("入らない"), "{e:#}");
+}
+
+#[test]
+fn a_board_without_a_decided_slot_is_refused() {
+    // ESP32-S3 は固定オフセットにできない（partitions.csv が要る）。
+    // 置き場所が決まっていないことを**黙って無視しない**。
+    let dir = tmp("board-undecided");
+    let input = dir.join("app.wasm");
+    std::fs::write(&input, b"\0asm\x01\0\0\0").expect("書けない");
+    let e = pack::run(&pack::Options {
+        path: input,
+        out: None,
+        board: Some("esp32s3".to_string()),
+    })
+    .expect_err("未決");
+    assert!(format!("{e:#}").contains("決まっていない"), "{e:#}");
+    assert!(!dir.join("app.slot").exists(), "書く前に弾く");
 }
 
 #[test]

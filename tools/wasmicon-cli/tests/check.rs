@@ -154,6 +154,7 @@ fn the_arena_is_part_of_the_judgement() {
         roles: &[],
         arena: 100 * 1024,
         scratch: 8 * 1024,
+        slot: None,
     };
     let (stage, err) =
         check::instantiate_with(&wasm, &tight).expect_err("arena が足りないので落ちる");
@@ -231,6 +232,7 @@ fn a_declaration_turns_the_role_check_into_a_guarantee() {
         roles: only_led,
         arena: profile::RP2350.arena,
         scratch: profile::RP2350.scratch,
+        slot: None,
     };
     // `Profile` は `&'static` を要求するので leak する（テストの中だけ）。
     let board: &'static Profile = Box::leak(Box::new(board));

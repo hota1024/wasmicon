@@ -28,7 +28,8 @@ use rp235x_hal as hal;
 use rp235x_hal::Clock;
 use rp235x_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
-use wasmicon_port::Hal;
+use wasmicon_port::fmt::Buf;
+use wasmicon_port::{Hal, slot};
 
 use board::{Pico2Board, Serial};
 
@@ -42,15 +43,36 @@ pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 /// Pico 2 の水晶振動子。
 const XTAL_HZ: u32 = 12_000_000;
 
-/// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
+/// 内蔵のゲスト。**スロットが空のときだけ使う。**
 ///
-/// 既定は blink。`--features guest-lcd-demo` で ILI9341 のデモに差し替わる。
+/// `cd apps && cargo build --release` を先に実行しておく。既定は blink で、
+/// `--features guest-lcd-demo` で ILI9341 のデモに差し替わる。
+///
+/// **これは撤去する予定**（`docs/app-workflow.md` §3.3 の 2026-10-04 決定）。
+/// 3 ポートがスロットを読めるようになったら落とす。今は RP2350 だけが
+/// 読めるので、フォールバックとして残してある
+/// （スロットの読み出しに不備があっても焼き直しで戻れるように）。
 #[cfg(not(feature = "guest-lcd-demo"))]
-static GUEST: &[u8] =
+static BUILTIN: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
 #[cfg(feature = "guest-lcd-demo")]
-static GUEST: &[u8] =
+static BUILTIN: &[u8] =
     include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm");
+
+/// XIP の先頭。フラッシュはここから memory-mapped で読める。
+const XIP_BASE: usize = 0x1000_0000;
+
+/// アプリスロット（`ports/common` の `profile::RP2350`）。
+const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2350.slot {
+    Some(s) => s,
+    None => panic!("RP2350 のプロファイルにスロットが無い"),
+};
+
+// リンカが置く「ファームの末尾」（`memory.x` の `.end_block`）。
+// スロットと重なっていないことを起動時に検査する。
+unsafe extern "C" {
+    static __flash_binary_end: u8;
+}
 
 /// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
 /// RP2350 の SRAM は 520 KB（512 KB + 4 KB × 2）なので、線形メモリ
@@ -157,7 +179,8 @@ fn main() -> ! {
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let outcome = run(&mut hal, arena_buf, scratch_buf);
+    let guest = pick_guest(hal.board_mut().serial());
+    let outcome = run(&mut hal, guest, arena_buf, scratch_buf);
 
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
     // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
@@ -183,16 +206,64 @@ fn main() -> ! {
     }
 }
 
+/// スロットから走らせるアプリを選ぶ。
+///
+/// **スロットが優先、空なら内蔵アプリ。** 読めない理由はシリアルに出す
+/// （`docs/app-workflow.md` §3.1。空は失敗ではないので、そのことも出す）。
+///
+/// スロットはフラッシュに memory-mapped で見えるので、**RAM に写さず
+/// スライスのまま `decode` に渡す**（design-notes §4）。
+fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
+    // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
+    // だけ（中身は見ない）。
+    let fw_end = (&raw const __flash_binary_end) as usize;
+    let slot_start = XIP_BASE + SLOT.offset as usize;
+    if fw_end > slot_start {
+        // 重なっていたらスロットを読まない（自分のコードを wasm として
+        // 食わせてしまう）。オフセットを上げるしかないので理由を出す。
+        serial.write(b"wasmicon: firmware overlaps the app slot\r\n");
+        return BUILTIN;
+    }
+
+    // SAFETY: XIP の読み出し専用領域で、上でファームの末尾より後ろだと
+    // 確かめてある。4 MB のフラッシュに対して offset + len は収まる
+    // （1 MiB + 64 KiB）。
+    let bytes = unsafe { core::slice::from_raw_parts(slot_start as *const u8, SLOT.len as usize) };
+
+    let mut line = [0u8; 96];
+    let mut out = Buf::new(&mut line);
+    match slot::parse(bytes) {
+        Ok(wasm) => {
+            out.str("wasmicon: slot ");
+            out.u32(wasm.len() as u32);
+            out.str(" B crc32=");
+            out.hex(wasmicon_port::crc32(wasm), 8);
+            serial.write(out.as_bytes());
+            serial.write(b"\r\n");
+            wasm
+        }
+        Err(e) => {
+            out.str("wasmicon: ");
+            out.str(e.reason());
+            out.str(", running built-in");
+            serial.write(out.as_bytes());
+            serial.write(b"\r\n");
+            BUILTIN
+        }
+    }
+}
+
 /// デコードから `run` の呼び出しまで。
 fn run(
     hal: &mut Hal<Pico2Board<Uart>>,
+    guest: &[u8],
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) -> Result<(), wasmicon_core::Error> {
     let mut arena = Arena::new(arena_buf);
     let mut scratch = Arena::new(scratch_buf);
 
-    let m = decode::decode(GUEST, &mut arena)?;
+    let m = decode::decode(guest, &mut arena)?;
     let v = validate::validate(&m, &MCU_CONFIG, &mut arena, &mut scratch)?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;

@@ -29,6 +29,7 @@ check のオプション:
 
 pack のオプション:
     -o <file>                出力先（既定: <入力>.slot）
+    --board <name>           スロットに収まるかを検査し、焼くコマンドを出す
 
 run のオプション:
     --trace                  全 host call を abi-spec §9 の形式で出す
@@ -165,11 +166,13 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
 fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
     let mut path: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
+    let mut board: Option<String> = None;
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
+            "--board" => board = Some(args.next().context("--board に値が無い")?),
             "-h" | "--help" => help(),
             other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
             other => {
@@ -182,7 +185,9 @@ fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
     }
 
     let path = path.context("包む .wasm を渡すこと\n\n".to_string() + USAGE)?;
-    Ok(pack::Options { path, out })
+    // `--board` が無ければ toml の既定を使う（§4.7）。
+    let board = board.or_else(|| find_manifest().ok().flatten().and_then(|m| m.default_board));
+    Ok(pack::Options { path, out, board })
 }
 
 fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options> {
