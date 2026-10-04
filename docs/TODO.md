@@ -525,9 +525,25 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       `apps/*/asconfig.json` と `wasmicon new` の雛形で 3 重化する。
       **`wasmicon-gen --check` と同じ形で CI に検査を置く**。食い違うと
       「ボード間で同じバイナリ」が静かに壊れる（`docs/app-workflow.md` §4.4）
-- [ ] **スロット形式（`docs/app-workflow.md` §3.4）とスーパーバイザのループ**
-      （§3.1）。arena / `Hal` / **ロール表**をサイクルごとに作り直す。ロール表を
-      持ち越すとトレースが変わりうる
+- [x] **スロット形式**（2026-10-04 完了。`docs/app-workflow.md` §3.4）。
+      `ports/common/src/slot.rs` に置いて**書く側（CLI）と読む側（ファーム）が
+      同じ形を使う**。CRC-32 は既にある `crc32` を再利用（トレースと同じ）
+      - **空（消去済みの `0xff` / 未使用の `0x00`）は失敗にしない。**
+        magic 違いと区別する（ログの意味が変わる）
+      - 検査は `ports/common/tests/slot.rs` の 9 件（往復、空、magic 違い、
+        版違い、長さ超過、CRC、余りの無視）と
+        `tools/wasmicon-cli/tests/pack.rs` の 4 件（**CLI が書いたものを
+        ファームの経路で読み直す**往復と、既知の値での CRC 照合）
+      - `SlotError` に `Debug` は付けない（ポートに `core::fmt` を
+        持ち込まないため）。テストは `reason()` と `matches!` で書く
+      - CLI 側は `wasmicon pack`。1 段では**外のフラッシャに渡す素材**
+        （`espflash write-bin <offset>` / `picotool load -o <offset>`）
+- [ ] **スーパーバイザのループ**（`docs/app-workflow.md` §3.1）。スロットを
+      読んで走らせ、空なら理由を出して idle に入る。arena / `Hal` /
+      **ロール表**をサイクルごとに作り直す（ロール表を持ち越すとトレースが
+      変わりうる。`ports/common/tests/release_all.rs` が現状を固定している）
+      - スロットの**置き場所**がまだ決まっていない（RP2350 は固定オフセット、
+        ESP32-S3 は `partitions.csv` のエントリ。§5-2 のボード品種が前提）
 - [ ] **内蔵アプリを外す**（1 段。**スロットが入るのと同時に行う** — 先に外すと
       ファームが何も走らせなくなる）。`ports/*/src/main.rs` の `include_bytes!` と
       `guest-lcd-demo` feature を落とし、空スロットは理由を出して idle、

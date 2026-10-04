@@ -12,6 +12,7 @@
 
 pub mod fmt;
 pub mod profile;
+pub mod slot;
 
 use wasmicon_core::error::{Error, Result, Trap};
 use wasmicon_core::generated::gpio::{Level, PinMode};

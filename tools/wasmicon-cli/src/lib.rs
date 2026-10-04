@@ -6,5 +6,6 @@
 pub mod check;
 pub mod doctor;
 pub mod manifest;
+pub mod pack;
 pub mod run;
 pub mod trace;
