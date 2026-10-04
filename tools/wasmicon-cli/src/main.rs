@@ -1,14 +1,17 @@
 //! `wasmicon` — アプリ作者が触る唯一の面（`docs/app-workflow.md` §4）。
 //!
-//! 0 段は `check` / `run` / `trace diff` / `doctor` まで入った。`monitor` と
-//! `size` は未実装（§5。残作業は `docs/TODO.md` §5）。引数のパースは
-//! `wasmicon-gen` と同じ手書き + `USAGE` 定数。
+//! 0 段は `new` / `check` / `run` / `monitor` / `trace diff` / `doctor` が
+//! 入り、1 段の `pack` / `deploy` も通っている。`size` は
+//! `tools/measure-size.sh` のままにしてある（残作業は `docs/TODO.md` §5）。
+//! 引数のパースは `wasmicon-gen` と同じ手書き + `USAGE` 定数。
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use wasmicon_cli::{check, deploy, doctor, manifest, monitor, pack, run as run_cmd, trace};
+use wasmicon_cli::{
+    check, deploy, doctor, manifest, monitor, new as new_cmd, pack, run as run_cmd, trace,
+};
 
 const USAGE: &str = "\
 wasmicon — Wasmicon のアプリを検査・実行・配備する
@@ -17,6 +20,7 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
     wasmicon <コマンド> [オプション]
 
 コマンド:
+    new <dir>                アプリの雛形を出す
     check <app.wasm>         そのボードで走るかを検査する
     run <app.wasm>           host ポート（mock HAL）で走らせる
     pack <app.wasm>          スロット画像にする（ファームが読む形）
@@ -24,6 +28,11 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
     monitor                  シリアルを開いてトレースを取り込む
     trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
     doctor                   道具が揃っているかを見る
+
+new のオプション:
+    --lang <rust|as>         言語（既定: rust）
+    --board <name>           wasmicon.toml の [defaults] board に書く
+    --hal <dir>              バインディングの置き場所（既定: 上に向かって探す）
 
 check のオプション:
     --board <name>           検査するボード（既定: 全ボード）
@@ -91,6 +100,7 @@ fn dispatch() -> Result<bool> {
             println!("wasmicon {}", env!("CARGO_PKG_VERSION"));
             Ok(true)
         }
+        "new" => new_cmd::run(&parse_new(args)?),
         "check" => check::run(&parse_check(args)?),
         "run" => run_cmd::run(&parse_run(args)?),
         "pack" => pack::run(&parse_pack(args)?),
@@ -103,6 +113,40 @@ fn dispatch() -> Result<bool> {
         }
         other => bail!("未知のコマンド: {other}\n\n{USAGE}"),
     }
+}
+
+fn parse_new(args: impl Iterator<Item = String>) -> Result<new_cmd::Options> {
+    let mut dir: Option<PathBuf> = None;
+    let mut lang = new_cmd::Lang::Rust;
+    let mut board: Option<String> = None;
+    let mut hal: Option<PathBuf> = None;
+
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--lang" => {
+                lang = new_cmd::Lang::parse(&args.next().context("--lang に値が無い")?)?;
+            }
+            "--board" => board = Some(args.next().context("--board に値が無い")?),
+            "--hal" => hal = Some(PathBuf::from(args.next().context("--hal に値が無い")?)),
+            "-h" | "--help" => help(),
+            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => {
+                if dir.is_some() {
+                    bail!("作れるのは 1 つだけ: {other}");
+                }
+                dir = Some(PathBuf::from(other));
+            }
+        }
+    }
+
+    let dir = dir.context("作る場所を渡すこと\n\n".to_string() + USAGE)?;
+    Ok(new_cmd::Options {
+        dir,
+        lang,
+        board,
+        hal,
+    })
 }
 
 fn parse_check(args: impl Iterator<Item = String>) -> Result<check::Options> {

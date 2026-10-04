@@ -454,10 +454,11 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         **この検査は今まで無かった**
       - `Config::DEFAULT` を `runtime` に足し、`Default` がそれを返すようにした
         （host プロファイルが const 文脈で使うため。二重に書くと食い違う）
-- [ ] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る。** 0 段は
-      `check` / `run` / `monitor` / `trace diff` / `size` / `doctor`。
-      **`check` / `run` / `trace diff` / `doctor` は 2026-10-04 に実装した。
-      残りは `size` だけ**（`monitor` も同日に実装・実機確認済み）（`/code-review` の指摘を反映済み）
+- [x] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る**（2026-10-04 完了）。
+      0 段は `new` / `check` / `run` / `monitor` / `trace diff` / `doctor`。
+      1 段の `pack` / `deploy` も同日に入って実機で通した。
+      **`size` は入れないことにした**（下の理由。`tools/measure-size.sh` のまま）
+      （`/code-review` の指摘を反映済み）
       - **`check` は `Config` だけでなく arena の実寸で見る。** 線形メモリは
         arena の残り全部を取るので、ページ上限に収まっても
         「decode / validate / `Exec` の残りに入らない」ことがある
@@ -503,9 +504,9 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         `docs/verification-report.md` §9）。取り込みの罠 3 つ
         （開いたまま `stty` / 流れ始める前に当てる / バイト列として扱う）を
         モジュールに閉じ込めてある。止めどきは無音（既定 3 秒）
-      - `size` は `tools/measure-size.sh` のままにしてある。**コアのコード
-        サイズはアプリ作者の関心ではない**（リポジトリ保守側の道具）ので、
-        CLI に入れるかはやめてもよい
+      - **`size` は入れない。** コアのコードサイズはアプリ作者の関心ではなく
+        リポジトリ保守側の道具なので、`tools/measure-size.sh` のままにする。
+        アプリ自身の大きさは `check` が先頭行で出している
       - 判定（`facts` / `judge`）と印字を分けてあるので、判定だけをテストから
         呼べる。`tools/wasmicon-cli/tests/check.rs` が `apps/` の実物で固定:
         **`blink-rs` は 4 ボードすべて通り、`sensor-display-rs` は rp2040 だけ
@@ -529,10 +530,32 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         `check_wasm(wasm, &Config)` を足すかを決める
       - `wasmicon-host` の crate は残して lib として使う
         （`verify/differential` が依存している）
-- [ ] **アプリ側ビルドフラグの単一真実**。`apps/.cargo/config.toml` と
-      `apps/*/asconfig.json` と `wasmicon new` の雛形で 3 重化する。
-      **`wasmicon-gen --check` と同じ形で CI に検査を置く**。食い違うと
-      「ボード間で同じバイナリ」が静かに壊れる（`docs/app-workflow.md` §4.4）
+- [x] **アプリ側ビルドフラグの単一真実**（2026-10-04 完了。
+      `docs/app-workflow.md` §4.4）。真実は
+      `tools/wasmicon-cli/src/flags.rs` が持つ**ファイルの中身そのもの**で、
+      `apps/` の実物との一致は `tools/wasmicon-cli/tests/flags.rs` が
+      **バイトで**見る（`wasmicon-gen --check` と同じ形。検査は既に CI に
+      ある `cargo test` に乗るので新しいジョブは要らない）
+      - **コメント 1 文字の差でも落ちる。** 緩めると「値は合っているが
+        どちらが真実か分からない」状態に戻るので、意図的にそうしてある
+      - `[profile.release]` は入れない。食い違ってもアプリが**大きくなる
+        だけ**で静かには壊れない。§4.4 が名指しする 2 つに絞った
+      - **Rust 版と AS 版で初期メモリがページ単位で一致**していること、
+        **一番きついボード（rp2040 の 2 ページ）に収まる**ことも見る
+        （`profile::PROFILES` から引くので、ボードが増えたら自動で効く）
+- [x] **`wasmicon new`**（2026-10-04 完了。§4.6 の 3）。雛形は `flags` から
+      書き出すだけにしてある（ここで文字列を持つと 3 重化する）
+      - **「`apps/` と一致している」だけでは足りない。** `tests/new.rs` が
+        雛形を本当に `cargo build` して **4 ボードすべてで `check` が
+        通る**ことと、書いた `wasmicon.toml` を自分で読み直せることを見る
+        （`deny_unknown_fields` なので余計なキーを書くと読めない）
+      - `Cargo.toml` に `[workspace]` を入れる（無いと既存の workspace の
+        中で「workspace に入っていない」で止まる）。その場所では
+        `rustflags` が**連結**されて同じ値が 2 回効くので `new` が言う
+      - **依存はパスで書く**（`wasmicon-hal` は未配布）。`--hal` か、
+        無ければ上に向かって `bindings/` を探す。見つからなければ版指定を
+        書いて**その旨を出す**。相対と絶対は**短い方**を選ぶ
+        （共通の祖先が無いと `../` が 8 段並ぶのを実際に出した）
 - [x] **スロット形式**（2026-10-04 完了。`docs/app-workflow.md` §3.4）。
       `ports/common/src/slot.rs` に置いて**書く側（CLI）と読む側（ファーム）が
       同じ形を使う**。CRC-32 は既にある `crc32` を再利用（トレースと同じ）
@@ -646,8 +669,8 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         CLI より新しければエラー。`"none"` は「この役割は無い」
       - **`[board.<name>.roles]` は読んで検証するだけ**で、まだ使わない。
         デバイスへ押し込むのは `config apply`（§3.9 / §5-9 の決定後）
-      - **残り**: `wasmicon new` が雛形としてこのファイルを出すこと
-        （`new` 自体が未着手）
+      - **`wasmicon new` が雛形として出すところまで入った**（2026-10-04）。
+        `tests/new.rs` が**自分で書いたものを自分で読み直せる**ことを見る
       **ABI 準拠のビルドフラグは書かせない**（§4.4 の 3 重化を 4 重にする）。
       マシン固有の値は `wasmicon.local.toml`（gitignore）に分ける
       - `[requirements] pin-roles` があると §4.3 の役割名の照合が
@@ -666,4 +689,6 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         焼き直さずに切り分けられ、build 構成が 1 つ減って variant が
         `trace` あり / なしの 2 つに収束する
 - [ ] **HTTP**（3 段）。§5-3 / §5-4 / §5-5 の判断が先
-- [ ] **`new` と bindings の配布**（crates.io / npm）。0 段と独立。先に決め打ちしない
+- [ ] **bindings の配布**（crates.io / npm）。**`new` は 2026-10-04 に入った**が、
+      依存はパスで書いている（上）。出す先と版の付け方はまだ決め打ちしない。
+      出したら `new` の既定をパスから版指定に変える

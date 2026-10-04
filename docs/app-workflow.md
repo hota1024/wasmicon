@@ -660,8 +660,19 @@ profile::HOST     Config::DEFAULT（緩い） / mock の割り当て
 `reference-types` が混ざれば `call_indirect` のテーブル索引で弾かれ
 （abi-spec §6.1 の注）、`--initial-memory` が増えれば RP2040 の 2 ページを超える。
 
-**`wasmicon-gen --check` と同じ形にする**: 雛形が吐く設定が `apps/` のものと
-一致することを CI で検査する（または雛形を `apps/` から生成する）。
+**`wasmicon-gen --check` と同じ形にした**（2026-10-04 実装）。真実は
+`tools/wasmicon-cli/src/flags.rs` が持つ **ファイルの中身そのもの**で
+（値の表ではない）、`wasmicon new` はそれを書き出すだけ。`apps/` の実物との
+一致は `tools/wasmicon-cli/tests/flags.rs` が**バイトで**見る。
+
+- **コメント 1 文字の差でも落ちる。** 緩めると「値は合っているがどちらが
+  真実か分からない」状態に戻る
+- 検査は既に CI にある `cargo test` に乗るので、新しいジョブは要らない
+- `[profile.release]` はここに入れない。食い違ってもアプリが**大きくなる
+  だけ**で、静かには壊れない
+- あわせて **Rust 版と AS 版で初期メモリがページ単位で一致**していること、
+  **一番きついボード（`ports/rp2040` の 2 ページ）に収まる**ことも見る
+  （`profile::PROFILES` から引く）
 
 ### 4.5 ファームウェアの配布
 
@@ -742,17 +753,33 @@ roles      led, lcd-cs, lcd-dc, lcd-rst
 #### 3. アプリを作る
 
 ```
-$ wasmicon new room-monitor --lang rust
+$ wasmicon new room-monitor --lang rust --board rp2350
 room-monitor/
   wasmicon.toml        [requirements] pin-roles は空（使う役割を書き足す）
-  Cargo.toml           wasmicon-hal 0.1
+  Cargo.toml           単体で立つ workspace + cdylib + profile.release
   .cargo/config.toml   -reference-types / --initial-memory=65536 / -zstack-size=8192
   rust-toolchain.toml
-  src/lib.rs           run() の雛形
+  src/lib.rs           run() の雛形（log だけ使う。役割の例はコメント）
+  .gitignore
+
+次にやること:
+    cd room-monitor && cargo build --release
+    wasmicon check <出力された .wasm> --board <ボード>
 ```
 
-`.cargo/config.toml` の中身は `apps/.cargo/config.toml` と**同一**。一致は CI が
-見る（§4.4）。`--lang as` なら `asconfig.json` と `assembly/index.ts` が出る。
+`.cargo/config.toml` の中身は `apps/.cargo/config.toml` と**バイト一致**。
+一致は `cargo test` が見る（§4.4）。`--lang as` なら `asconfig.json` と
+`package.json` と `assembly/index.ts` が出る。
+
+**`wasmicon-hal` の依存はパスで書く。** crates.io / npm に出していないので
+（`docs/TODO.md` §5 の「`new` と bindings の配布」）、`--hal <bindings の
+置き場所>` を渡すか、省略時は**上に向かって `bindings/` を探す**。
+見つからなければ版指定を書いて**その旨を出す**（配布の決定を先取りしない）。
+
+`Cargo.toml` に `[workspace]` を入れてあるのは、既存の workspace の中に
+置いたときに cargo が「workspace に入っていない」で止まるのを避けるため。
+その場所では `.cargo/config.toml` の `rustflags` が**連結**されて同じ値が
+2 回効くので、`new` がそれも言う（害は無い）。
 
 #### 4. 内側のループ — 実機を触らない（host、1〜2 秒）
 
