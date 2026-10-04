@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use wasmicon_cli::{check, doctor, manifest, pack, run as run_cmd, trace};
+use wasmicon_cli::{check, deploy, doctor, manifest, pack, run as run_cmd, trace};
 
 const USAGE: &str = "\
 wasmicon — Wasmicon のアプリを検査・実行・配備する
@@ -20,6 +20,7 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
     check <app.wasm>         そのボードで走るかを検査する
     run <app.wasm>           host ポート（mock HAL）で走らせる
     pack <app.wasm>          スロット画像にする（ファームが読む形）
+    deploy <app.wasm>        検査してボードのスロットに焼く
     trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
     doctor                   道具が揃っているかを見る
 
@@ -30,6 +31,10 @@ check のオプション:
 pack のオプション:
     -o <file>                出力先（既定: <入力>.slot）
     --board <name>           スロットに収まるかを検査し、焼くコマンドを出す
+
+deploy のオプション:
+    --board <name>           送り先（既定: wasmicon.toml の [defaults] board）
+    --no-run                 焼くだけでリセットしない
 
 run のオプション:
     --trace                  全 host call を abi-spec §9 の形式で出す
@@ -78,6 +83,7 @@ fn dispatch() -> Result<bool> {
         "check" => check::run(&parse_check(args)?),
         "run" => run_cmd::run(&parse_run(args)?),
         "pack" => pack::run(&parse_pack(args)?),
+        "deploy" => deploy::run(&parse_deploy(args)?),
         "trace" => trace::diff(&parse_trace(args)?),
         "doctor" => doctor::run(),
         other if other.starts_with('-') => {
@@ -160,6 +166,36 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         path,
         trace: trace_on,
         i2c_replay,
+    })
+}
+
+fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
+    let mut path: Option<PathBuf> = None;
+    let mut board: Option<String> = None;
+    let mut no_run = false;
+
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--board" => board = Some(args.next().context("--board に値が無い")?),
+            "--no-run" => no_run = true,
+            "-h" | "--help" => help(),
+            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => {
+                if path.is_some() {
+                    bail!("送れるのは 1 つだけ: {other}");
+                }
+                path = Some(PathBuf::from(other));
+            }
+        }
+    }
+
+    let path = path.context("送る .wasm を渡すこと\n\n".to_string() + USAGE)?;
+    Ok(deploy::Options {
+        path,
+        board,
+        manifest: find_manifest()?,
+        no_run,
     })
 }
 

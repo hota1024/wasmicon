@@ -4,6 +4,7 @@
 //! ため（`wasmicon-gen` と同じ構成）。
 
 pub mod check;
+pub mod deploy;
 pub mod doctor;
 pub mod manifest;
 pub mod pack;
