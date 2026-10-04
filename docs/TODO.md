@@ -546,13 +546,13 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         写さない）。読み出しは `ports/common` の `slot::read_xip` に 1 つだけ
         置いてある（生スライスを作る `unsafe` を 1 箇所にするため）。
         **host でも試せる**（static をフラッシュに見立てて渡す）
-      - **実機では未検証。** スロットが空なら理由を出して内蔵アプリに
-        落ちるので、読み出しに不備があっても焼き直しで戻れる。確かめること:
-        空のボードで `slot empty, running built-in` が出るか、
-        `wasmicon pack --board rp2350` の画像を `picotool load -o 0x100000`
-        で書いて `slot <len> B crc32=<..>` が出て**そのアプリが走るか**、
-        CRC を 1 bit 壊したら `slot crc mismatch` になるか
-        （**Pico 2 W で試せる。Pico WH は未入手**）
+      - **RP2350 は 2026-10-04 に Pico 2 W で確認済み**（空 → 内蔵 /
+        スロットのアプリが走る / CRC 破壊 → 内蔵、の 3 点。さらに
+        **スロットから走ったアプリのトレースが host と 14,352 行完全一致**。
+        `docs/verification-report.md` §9）。**RP2040 は未検証**
+        （Pico WH が未入手。コードは同じ `slot::read_xip` を通る）
+      - 実機で `picotool` の引数を 2 つ踏んで直した（拡張子は `.bin`、
+        `-o` は絶対アドレス）。どちらも host では出ない
       - **ファームの末尾（`__flash_binary_end`）とスロットが重ならないことを
         起動時に検査している。** 重なったら読まずに内蔵へ落ちる（自分の
         コードを wasm として食わせない）。RP2040 にはこのシンボルが

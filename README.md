@@ -28,6 +28,7 @@ host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出
 
 | 検証 | 状態 |
 |---|---|
+| **ファームを焼き直さずにアプリを差し替える**（アプリスロット） | **RP2350 実機で達成（2026-10-04）**。スロットから走らせたトレースが host と 14,352 行完全一致。RP2040 は未検証、ESP32-S3 は未実装 |
 | Wasm 仕様適合（spec testsuite コア 74 ファイル / 22507 コマンド） | 達成 |
 | インタプリタの正しさ（wasmtime との差分、4 ゲスト） | 達成 |
 | Rust 版と AS 版が同じ host call 列を出す（成功経路 + 失敗経路） | 達成 |
@@ -123,6 +124,7 @@ sh tools/measure-size.sh                                   # コアのコード�
 | [`docs/TODO.md`](docs/TODO.md) | **残作業。ここだけ見れば何が残っているか分かる** |
 | [`docs/abi-spec.md`](docs/abi-spec.md) | WIT → Core Wasm の lowering 規則。**この仕様が正** |
 | [`docs/app-workflow.md`](docs/app-workflow.md) | アプリ開発フローの設計。ファームがアプリを USB / HTTP でロードする形と `wasmicon` CLI |
+| [`tools/wasmicon-cli`](tools/wasmicon-cli) | `wasmicon` CLI。`check` / `run` / `pack` / `trace diff` / `doctor` |
 | [`docs/verification-report.md`](docs/verification-report.md) | 何がどこまで検証されたか、何がされていないか |
 | [`docs/design-notes.md`](docs/design-notes.md) | 背景・方針・技術選定の理由 |
 | [`docs/handoff.md`](docs/handoff.md) | 確定した決定事項、フェーズと完了条件、落とし穴。**コードのコメントが節番号で参照している** |

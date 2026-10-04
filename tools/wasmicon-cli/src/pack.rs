@@ -31,9 +31,13 @@ pub fn run(opts: &Options) -> Result<bool> {
     let wasm =
         std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
 
+    // **拡張子は `.bin`。** `picotool load` は拡張子でファイル種別を判定する
+    // ので、`.slot` のような独自の名前だと
+    // 「does not have a recognized file type (extension)」で弾かれる
+    // （2026-10-04 に Pico 2 W で踏んだ）。
     let out = opts.out.clone().unwrap_or_else(|| {
         let mut p = opts.path.clone();
-        p.set_extension("slot");
+        p.set_extension("bin");
         p
     });
 
@@ -84,12 +88,17 @@ pub fn run(opts: &Options) -> Result<bool> {
     if let Some(p) = board
         && let Some(sl) = p.slot
     {
-        println!(
-            "→ 書き込み: picotool load -o {:#x} {}",
-            sl.offset,
-            out.display()
-        );
+        // **picotool の `-o` は絶対アドレス**（フラッシュのオフセットでは
+        // ない）。オフセットを渡すと
+        // 「invalid memory range 0x00100000-...」で弾かれる
+        // （2026-10-04 に Pico 2 W で踏んだ）。RP2040 / RP2350 はどちらも
+        // XIP が 0x1000_0000 から。
+        let addr = XIP_BASE + u64::from(sl.offset);
+        println!("→ 書き込み: picotool load -o {addr:#x} {}", out.display());
         println!("  （BOOTSEL を押しながら USB を挿してから）");
     }
     Ok(true)
 }
+
+/// RP2040 / RP2350 の XIP の先頭。`picotool` に渡す絶対アドレスの基準。
+const XIP_BASE: u64 = 0x1000_0000;
