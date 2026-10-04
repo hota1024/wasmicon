@@ -553,7 +553,7 @@ CLAUDE.md「残作業を他の場所に書き足さない」）。「置き換�
 | コマンド | 中身 | 置き換える元 |
 |---|---|---|
 | `new <name> --lang rust\|as` | 雛形。ABI 準拠のビルドフラグを埋める（§4.4） | 無し |
-| `build` | `cargo` / `asc` を呼ぶ。フラグは雛形側が持つ | `apps/.cargo/config.toml` + 手順書 |
+| ~~`build`~~ | **作らない。** `cargo build --release` / `npm run build` を言語で振り分けるだけの薄いラッパで、フラグは `new` が埋めたファイルが持つ（§4.4）ので足せるものが無い | —— |
 | `check <app.wasm> --board X` | **実ランタイムで** decode / validate / `Exec` / instantiate を**そのボードの arena の実寸で**通す（§4.3） | 無し（`wasm-tools validate` では import 表もボードの上限も見られない） |
 | `run <app.wasm> [--trace] [--i2c-replay f]` | host ポートで実行。`--i2c-replay` は既存の環境変数 `WASMICON_I2C_REPLAY` に対応する | `cargo run -p wasmicon-host`（crate は残して lib として使う） |
 | `deploy <app.wasm>` | USB / HTTP でアプリを送る。`--persist` でフラッシュスロット | 無し |
@@ -783,11 +783,17 @@ room-monitor/
 
 #### 4. 内側のループ — 実機を触らない（host、1〜2 秒）
 
+**`wasmicon build` は作らない。** `cargo` / `npm` を言語で振り分けて包むだけの
+薄いラッパになり、ビルドフラグは `.cargo/config.toml` と `asconfig.json` が
+既に持っている（§4.4）ので、足せるものが無い。
+
 ```
-$ wasmicon build
+$ cargo build --release
+    Finished `release` profile [optimized] target(s) in 0.4s
+
+$ wasmicon check target/wasm32-unknown-unknown/release/room_monitor.wasm --board rp2350
 room_monitor.wasm  4,549 B
 
-$ wasmicon check --board rp2350
 abi      wasmicon:hal@0.1.0                          import 名で強制される
 imports  13 件すべて一致                             (board 1 / gpio 3 / i2c 4 / log 1 / spi 3 / time 1)
 exports  run, memory                                 あり
@@ -799,7 +805,7 @@ validate 初期 1 ページ ≤ 4                           ok
 roles    led, lcd-cs, lcd-dc, lcd-rst                rp2350 にある（参考）
 → 通る
 
-$ wasmicon run --trace --i2c-replay sht4x-replay.txt > host.log
+$ wasmicon run target/wasm32-unknown-unknown/release/room_monitor.wasm --trace --i2c-replay sht4x-replay.txt > host.log
 $ head -6 host.log
 > wasmicon:hal/log@0.1.0/log(2, "sensor-display start")
 <
@@ -814,7 +820,7 @@ $ head -6 host.log
 返す。TODO §1.2）なので、**静的検査だけでは通ってしまう**:
 
 ```
-$ wasmicon check --board rp2040
+$ wasmicon check target/wasm32-unknown-unknown/release/room_monitor.wasm --board rp2040
 [rp2040]
 validate 初期 1 ページ ≤ 2                           ok
 i2c      このポートは未実装（実機では unsupported）  ← 落ちる
@@ -835,7 +841,7 @@ roles    led, lcd-cs, lcd-dc, lcd-rst                rp2040 にある（参考�
 #### 5. 外側のループ — 実機に送る（数秒）
 
 ```
-$ wasmicon deploy room_monitor.wasm --monitor > pico.log
+$ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --monitor > pico.log
 rp2350 0.1.0 (g6b1a2c3) と照合
   abi ok / 1 ページ ≤ 4 / roles ok / 4,549 B ≤ 65536 B / slot format 1
 RAM スロットへ 4,549 B 送った (crc32 1f3a9c21)
@@ -856,7 +862,7 @@ $ head -2 pico.log
 ESP32-S3 に差し替えて、**同じ `.wasm` を**送る:
 
 ```
-$ wasmicon deploy room_monitor.wasm --board esp32s3 --monitor > esp32s3.log
+$ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --board esp32s3 --monitor > esp32s3.log
 $ wasmicon trace diff pico.log esp32s3.log
 app       1f3a9c21 / 1f3a9c21                     同一バイナリ
 identity  rp2350 0.1.0 (g6b1a2c3) / esp32s3 0.1.0 (g6b1a2c3)
@@ -874,7 +880,7 @@ identity  rp2350 0.1.0 (g6b1a2c3) / esp32s3 0.1.0 (g7f09de1)   版が違う
 #### 7. 焼き付ける（電源投入で走る）
 
 ```
-$ wasmicon deploy room_monitor.wasm --persist
+$ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --persist
 フラッシュスロット 0x1010_0000 に 4,549 B 書いた (crc32 1f3a9c21, format 1)
 次の電源投入から走る
 ```
@@ -883,7 +889,7 @@ $ wasmicon deploy room_monitor.wasm --persist
 
 | ループ | 何を回すか | 頻度 |
 |---|---|---|
-| 内側 | `build` → `check` → `run`（host、mock HAL とリプレイ） | 常時 |
+| 内側 | `cargo build` → `check` → `run`（host、mock HAL とリプレイ） | 常時 |
 | 外側 | `deploy --monitor` → `trace diff` | 内側が通ったら |
 | ファーム | `flash` | 稀（版を上げるときだけ） |
 
@@ -891,7 +897,7 @@ $ wasmicon deploy room_monitor.wasm --persist
 
 | 段 | 使えるようになるもの |
 |---|---|
-| 0 | `doctor` / `build` / `check` / `run` / `trace diff` / `monitor`（identity 無し） |
+| 0 | `doctor` / `new` / `check` / `run` / `trace diff` / `monitor`（identity 無し） |
 | 1 | `flash`（ファーム）/ `deploy --persist`（既存フラッシャ経由。**Pico は BOOTSEL 押下が残る**） |
 | 2 | `info` / `deploy`（USB、ボタン不要）/ `deploy --monitor` / `monitor` の identity / `fw list` |
 | 3 | `deploy --via http`（ESP32-S3） |
@@ -964,7 +970,7 @@ led = 4
 | **パスは toml のあるディレクトリ基準** | `i2c-replay = "fixtures/sht4x.txt"`。CLI の cwd 基準にすると、どこから呼んだかで壊れる |
 | **未知のキーはエラー** | 黙って無視すると「設定したのに効いていない」に気付けない。タイポはここで止める |
 | **`version`** | CLI の対応より新しければエラー、古ければ受ける |
-| **toml は任意** | `build` / `check` / `run` は **toml が無くても動く**（プロジェクトの形だけで足りる）。toml が増やすのは `pin-roles` の保証と既定値だけ |
+| **toml は任意** | `check` / `run` は **toml が無くても動く**（プロジェクトの形だけで足りる）。toml が増やすのは `pin-roles` の保証と既定値だけ |
 
 - **プロジェクトの中で `check` / `deploy` → 保証**（toml がある）
 - **`.wasm` 単体を受け取って → 参考**（toml が無い。走査に落ちる）
@@ -1046,7 +1052,8 @@ wasmicon.local.toml  gitignore。シリアルポートなどマシン固有の�
   （handoff §2）。必要になったら実装せずオーナーに確認する
 - **`wit/` が唯一の真実**、生成物はジェネレータ出力のみ（CLAUDE.md）
 - **記録済みの `.wasm` ハッシュとトレース**（verification-report §6 / §7、TODO §3）。
-  `build` は `apps/` と同じフラグで同じバイト列を出す。ローダはトレース行を増やさない
+  `new` の雛形は `apps/` と同じフラグを持つので同じバイト列が出る（§4.4）。
+  ローダはトレース行を増やさない
   （§3.7）
 - **内蔵アプリと `guest-lcd-demo` feature は 1 段まで触らない。** 先に外すと
   ファームが何も走らせなくなる。**外すときは CI の rp2040 / rp2350 ジョブも
