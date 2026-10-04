@@ -76,15 +76,27 @@ impl SlotError {
     }
 }
 
-/// スロットの中の wasm を取り出す。
+/// ヘッダから読み取れること。
+#[derive(Clone, Copy)]
+pub struct Header {
+    /// wasm の長さ。
+    pub len: usize,
+    /// ヘッダが持っている CRC-32。
+    pub crc: u32,
+}
+
+/// ヘッダだけを読む。
 ///
-/// `bytes` はスロット領域全体でよい（長さはヘッダが持つので、余りは無視する）。
+/// **XIP で読めないボード（ESP32-S3）はこれを先に読む。** 長さが分かって
+/// から、その分だけ arena を取って本体を読む（64 KiB のスロットに対して
+/// アプリは数 KB なので、スロットの大きさぶんの RAM は要らない。DRAM は
+/// ほぼ使い切っている。`docs/TODO.md` §1.4）。
 ///
 /// # Errors
-/// 空、magic 違い、版違い、長さ不足、CRC 不一致のとき。
-pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
-    let Some(head) = bytes.get(..HEADER_LEN) else {
-        // ヘッダも無い。消去済みの先頭を見たのと同じ扱いにする。
+/// 空、magic 違い、版違いのとき。**長さと CRC はまだ検査しない**
+/// （本体を読んでから `verify`）。
+pub fn parse_header(head: &[u8]) -> Result<Header, SlotError> {
+    let Some(head) = head.get(..HEADER_LEN) else {
         return Err(SlotError::Empty);
     };
     let magic: &[u8] = &head[..4];
@@ -96,27 +108,50 @@ pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
         }
         return Err(SlotError::BadMagic);
     }
-
     let version = u16::from_le_bytes([head[4], head[5]]);
     if version != FORMAT_VERSION {
         return Err(SlotError::UnsupportedVersion { found: version });
     }
+    Ok(Header {
+        len: u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize,
+        crc: u32::from_le_bytes([head[12], head[13], head[14], head[15]]),
+    })
+}
 
-    let len = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
-    let want = u32::from_le_bytes([head[12], head[13], head[14], head[15]]);
+/// 読んだ本体がヘッダと合っているか。
+///
+/// # Errors
+/// 長さが足りない、CRC が合わないとき。
+pub fn verify(wasm: &[u8], h: &Header) -> Result<(), SlotError> {
+    if wasm.len() != h.len {
+        return Err(SlotError::Truncated {
+            need: h.len,
+            have: wasm.len(),
+        });
+    }
+    let got = crc32(wasm);
+    if got != h.crc {
+        return Err(SlotError::BadCrc { want: h.crc, got });
+    }
+    Ok(())
+}
 
-    let need = HEADER_LEN + len;
+/// スロットの中の wasm を取り出す。
+///
+/// `bytes` はスロット領域全体でよい（長さはヘッダが持つので、余りは無視する）。
+///
+/// # Errors
+/// 空、magic 違い、版違い、長さ不足、CRC 不一致のとき。
+pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
+    let h = parse_header(bytes)?;
+    let need = HEADER_LEN + h.len;
     let Some(wasm) = bytes.get(HEADER_LEN..need) else {
         return Err(SlotError::Truncated {
             need,
             have: bytes.len(),
         });
     };
-
-    let got = crc32(wasm);
-    if got != want {
-        return Err(SlotError::BadCrc { want, got });
-    }
+    verify(wasm, &h)?;
     Ok(wasm)
 }
 

@@ -31,6 +31,11 @@ esp-hal = { version = "1.1", features = ["esp32s3", "unstable"] }
 esp-bootloader-esp-idf = { version = "0.6", default-features = false, features = [
     "esp32s3",
 ] }
+# アプリスロットをフラッシュから読む（docs/app-workflow.md §3.3）。
+# ESP32-S3 は任意オフセットが XIP にマップされている前提を置けないので、
+# Pico 系と違って RAM に写す。写すのは**ヘッダが持つ長さの分だけ**
+# （スロットは 64 KiB だがアプリは数 KB。DRAM はほぼ使い切っている）。
+esp-storage = { version = "0.10", features = ["esp32s3"] }
 # 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
 # panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
 

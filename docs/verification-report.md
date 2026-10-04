@@ -670,3 +670,61 @@ $ wasmicon trace diff host.log pico.log
   1 MB 近く空いている。重なる状況を作らないと通らない経路
 - **RP2040 は未検証**（Pico WH が未入手）。コードは RP2350 と同じ
   `slot::read_xip` を通る
+
+---
+
+## 10. ESP32-S3 のスロット（2026-10-04、実測と未検証）
+
+`espflash board-info` の実測:
+
+```
+Chip type:         esp32s3 (revision v0.2)
+Crystal frequency: 40 MHz
+Flash size:        8MB
+Features:          WiFi, BLE, Embedded Flash
+```
+
+**フラッシュ 8 MB**（`docs/TODO.md` §5-2 が解けた）。**PSRAM は Features に
+出ていない** —— 載っていない（N8R8 ではなく N8）と見える。**§5-3 の選択肢が
+1 つ消える**（arena を PSRAM に移せないので、HTTP をやるなら
+`max_memory_pages` を 4 → 2 に落とす一択）。espflash の出力が根拠なので、
+**モジュールの刻印で裏を取れると確実**。
+
+### `partitions.csv` は要らなかった（実測）
+
+`espflash flash` は既定のパーティションテーブルで `factory` が
+**ほぼ 8 MB 全体**を占める（出力に `App/part. size: 145,904/8,323,072 bytes`）。
+「だからスロットを固定オフセットに置けない」と設計時に書いたが、**実測すると
+置ける**:
+
+1. 7 MB 地点（`0x700000`）に 256 B の目印を `espflash write-bin` で書いた
+2. ファームを `espflash flash` で焼いた
+3. `espflash read-flash 0x700000 256` で読み戻した → **目印がそのまま残っていた**
+
+`espflash flash` は**アプリのセクタしか消さない**。`factory` の中に居ること
+自体は害が無いので、`partitions.csv` を増やさず固定オフセット
+（Pico 系と揃えて `0x100000` から 64 KiB）にした。
+
+### シリアルの口が書き込みと共用（ここで詰まった）
+
+**ESP32-S3 は書き込み・リセットとトレースが同じ口**（CH343 →
+GPIO43/44）。Pico が別の USB-シリアル変換を使うのと違う。そのため:
+
+- `monitor` が開いたままでは `espflash` が `Resource busy` で使えない
+- 先に `espflash` にリセットさせると、**開く前にアプリの出力が終わっている**
+- **`espflash reset` は終了せずに居座る**（DTR/RTS を握ったまま）。これを
+  呼んだ結果、ボードが `boot:0x0 (DOWNLOAD)` で止まった。
+  **`write-bin` は既定で `--after hard-reset` までやるので、別に呼んではいけない**
+
+`deploy --board esp32s3` は**書き込みとリセットまでは通した**
+（`Binary successfully written to flash!`）。`--monitor` は成立しないので
+理由を出して断るようにした。
+
+### まだ見ていないこと
+
+- **ESP32-S3 がスロットからアプリを走らせるところは未検証。** ファームは
+  `esp-storage` でヘッダを読み、長さの分だけ arena を取って本体を読む形に
+  書いてある（ビルドは通る）が、**実機の出力を取れていない**（上の共用の件）。
+  取るには `espflash write-bin --after no-reset` → `espflash monitor`
+  （リセットを espflash に任せる）か、USB-Serial-JTAG 側の口を使う必要がある
+- Pico 系（§9）と違い、**ここは「書けた」までしか言えない**

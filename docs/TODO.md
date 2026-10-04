@@ -368,9 +368,14 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       挙動をポートに委ねているので **ABI の変更ではない**が、§3 #4 の記録とは
       読みが変わるので確定が要る。§2 の「§10 の未決 2〜5 を確定にするか」の #3 と
       同じ対象
-- [ ] **§5-2 ボードの品種**（スロットの置き場所が決まらない）
-      - ESP32-S3 DevKitC-1 の**フラッシュ容量**（N8 = 8 MB / N16 = 16 MB）と
-        **PSRAM の有無**（N8R8 なら 8 MB）。`espflash board-info` で分かる
+- [x] **§5-2 ボードの品種**（2026-10-04 実測）。`espflash board-info` の出力:
+      **`Flash size: 8MB`**、`Features: WiFi, BLE, Embedded Flash`、
+      `esp32s3 (revision v0.2)`、水晶 40 MHz
+      - **PSRAM は Features に出ていない** → 載っていない（N8R8 ではなく N8）と
+        見える。**§5-3 の選択肢が 1 つ消える**（arena を PSRAM に移せないので、
+        HTTP をやるなら `max_memory_pages` を 4 → 2 に落とす一択）
+      - espflash の出力が根拠なので、**モジュールの刻印（WROOM-1-N8 か
+        N8R8）で裏を取れると確実**。§5-3 を判断するときに効く
       - RP2350 側は Pico 2 W（フラッシュ 4 MB）で確定済み（§1.1）
 - [ ] **§5-3 ESP32-S3 の RAM 予算をどうするか**（HTTP の前提）。DRAM はほぼ
       使い切っている（`.bss` 315 KB / `ARENA` 300 KB / ネイティブスタック
@@ -378,8 +383,9 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       - `max_memory_pages` を 4 → 2 に落とす。abi-spec §6.2 は「上限はポートが
         決める」としているので**仕様違反ではない**が、**「同一バイナリがどの
         ボードでも通る」が実質的に崩れる**
-      - arena を PSRAM に置く（§5-2 の品種次第）。**線形メモリが遅くなる**。
-        どれだけ遅くなるかは未計測
+      - ~~arena を PSRAM に置く~~ → **この手は無い**。2026-10-04 の実測で
+        PSRAM が載っていないと分かった（§5-2）。刻印で裏を取るまでは
+        完全には閉じないが、`espflash board-info` の Features に出ていない
 - [ ] **§5-4 Pico 2 W / Pico WH の Wi-Fi をやるか。** CYW43439 で、実用的な
       ドライバ `cyw43` は embassy（async）前提。今の blocking 構成から
       **ポートの作り直しになる**。v1 の HTTP は ESP32-S3 だけに絞ることを推す
@@ -560,8 +566,18 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         コードを wasm として食わせない）。RP2040 にはこのシンボルが
         無かったので `memory.x` に足した（実測で `0x1000de40`、
         スロットは `0x10100000` なので 1 MB 近く空いている）
-      - `ports/esp32s3` は**固定オフセットにできない**（`partitions.csv` が
-        要る）ので §5-2 のボード品種が前提
+      - **`ports/esp32s3` も 2026-10-04 に実装した**（`esp-storage` で
+        ヘッダを読み、長さの分だけ arena を取って本体を読む。64 KiB の
+        スロットに対してアプリは数 KB なので、静的な領域を増やさない）。
+        **ただし実機でスロットから走らせるところは未検証**
+        （`docs/verification-report.md` §10）
+      - **`partitions.csv` は要らなかった**（実測。`espflash flash` は
+        アプリのセクタしか消さないので、7 MB 地点の目印が生き残った）。
+        置き場所は Pico 系と揃えて `0x100000` から 64 KiB
+      - **ESP32-S3 は書き込みとトレースが同じ口**なので `--monitor` が
+        成立しない。`espflash reset` は居座るので呼ばない
+        （`write-bin` が既定でリセットまでやる）。取り込みは
+        `write-bin --after no-reset` → `espflash monitor` に寄せるのが筋
 - [ ] **内蔵アプリを外す**（1 段。**3 ポートがスロットを読めるようになってから**
       — 先に外すとファームが何も走らせなくなる。RP2350 は読めるが実機で
       未検証なので、まだフォールバックとして残してある）。`ports/*/src/main.rs` の `include_bytes!` と

@@ -114,12 +114,13 @@ fn an_app_that_cannot_run_on_the_board_is_not_flashed() {
 }
 
 #[test]
-fn a_board_without_a_decided_slot_is_refused() {
+fn a_board_without_a_slot_is_refused() {
+    // host にフラッシュは無い。3 ポートはスロットを持っている。
     let dir = tmp("no-slot");
     let app = dir.join("blink.wasm");
     std::fs::write(&app, build("blink-rs")).expect("書けない");
 
-    let msg = refused(&opts(app, Some("esp32s3")), "置き場所が未決");
+    let msg = refused(&opts(app, Some("host")), "置き場所が無い");
     assert!(msg.contains("決まっていない"), "{msg}");
 }
 

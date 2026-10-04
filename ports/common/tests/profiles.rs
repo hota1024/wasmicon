@@ -90,12 +90,13 @@ fn host_promises_more_pages_than_its_arena_can_hold() {
 }
 
 #[test]
-fn the_pico_ports_have_a_decided_slot() {
-    // RP2040 と RP2350 は XIP で読めるので同じ置き方。オフセットも揃える
-    // （フラッシュは 2 MB / 4 MB だが、1 MiB + 64 KiB はどちらにも収まる）。
+fn every_board_has_a_decided_slot() {
+    // 3 ポートとも同じ置き方（1 MiB から 64 KiB）。読み方だけが違う
+    // （Pico 系は XIP のスライス、ESP32-S3 は RAM への写し）。
     for (p, flash) in [
         (&profile::RP2040, 2usize << 20),
         (&profile::RP2350, 4usize << 20),
+        (&profile::ESP32S3, 8usize << 20),
     ] {
         let sl = p
             .slot
@@ -116,13 +117,9 @@ fn the_pico_ports_have_a_decided_slot() {
 }
 
 #[test]
-fn the_undecided_slots_say_so() {
-    // ESP32-S3 は固定オフセットにできない（espflash の既定テーブルは
-    // factory がフラッシュ末尾まで伸びるので partitions.csv が要る）。
-    // 容量も §5-2 が未決。host にフラッシュは無い。
-    for p in [&profile::ESP32S3, &profile::HOST] {
-        assert!(p.slot.is_none(), "{} は未決（docs/TODO.md §5-2）", p.name);
-    }
+fn the_host_mock_has_no_slot() {
+    // mock にフラッシュは無い。
+    assert!(profile::HOST.slot.is_none());
 }
 
 #[test]
