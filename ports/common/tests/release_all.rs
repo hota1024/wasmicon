@@ -220,6 +220,56 @@ fn emits_no_trace_lines() {
 }
 
 #[test]
+fn the_role_table_survives_release_all() {
+    // **ロール表はハンドルではない**ので release_all では消えない（abi-spec
+    // §5.2 の対象外）。ここで固定しておくのは、ローダが 1 つの `Hal` を
+    // 使い回すなら**別に消す必要がある**ことを忘れないため
+    // （docs/TODO.md §5 の「ロール表をサイクルごとに作り直す」）。
+    // 持ち越すと、次のアプリがハードコードした番号がたまたま前のアプリの
+    // 役割と一致したときに `role:` 表記になり、トレースが変わる（§9）。
+    let mut mem = vec![0u8; 64 * 1024];
+    let mut out = [0u64; 1];
+    let mut hal = Hal::new(RecordingBoard::default(), true);
+
+    // pin-by-role("led") -> 2 を配る。role-ptr=0, role-len=3, out=16。
+    mem[..3].copy_from_slice(b"led");
+    expect_ok(
+        hal.call(
+            host("wasmicon:hal/board@0.1.0", "pin-by-role"),
+            &[0, 3, 16],
+            &mut out,
+            &mut mem,
+        ),
+        "pin-by-role",
+    );
+    assert_eq!(out[0], 0, "led は RecordingBoard にある");
+
+    hal.release_all();
+    hal.board_mut().released.clear();
+
+    // 掃除のあとでも、GPIO 2 は番号ではなく role:led として出る。
+    expect_ok(
+        hal.call(
+            host(GPIO, "[static]pin.open"),
+            &[2, 1, 0],
+            &mut out,
+            &mut mem,
+        ),
+        "pin.open",
+    );
+    let trace: Vec<&String> = hal
+        .board_mut()
+        .released
+        .iter()
+        .filter(|l| l.starts_with("trace"))
+        .collect();
+    assert!(
+        trace.iter().any(|l| l.contains("role:led")),
+        "ロール表が残っているので role:led と出る: {trace:?}"
+    );
+}
+
+#[test]
 fn reopening_after_release_all_succeeds() {
     let mut mem = vec![0u8; 64 * 1024];
     let mut hal = Hal::new(RecordingBoard::default(), false);

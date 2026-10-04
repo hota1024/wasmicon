@@ -29,15 +29,33 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").trim().to_string()
 }
 
-/// rustup が入れているターゲットに wasm32 があるか。
+/// 版の文字列が道具の名前で始まっていれば落とす。
+///
+/// `espflash --version` は `espflash 4.5.0`、`picotool version` は
+/// `picotool v2.3.1 (...)` を返すので、ラベルと並べると名前が二重になる。
+fn strip_name(name: &str, version: &str) -> String {
+    version
+        .strip_prefix(name)
+        .map_or(version, |rest| rest.trim_start())
+        .trim()
+        .to_string()
+}
+
+/// インストール済みターゲットに wasm32 があるか。
+///
+/// **カレントディレクトリで判定する。** rustup は `rust-toolchain.toml` の
+/// override をカレントから探すので、アプリのプロジェクトの中で実行すれば
+/// そのプロジェクトが使う toolchain を見ることになる。`targets = [...]` が
+/// 書いてあれば、無くても `cargo build` のときに自動で入る（この repo の
+/// `apps/rust-toolchain.toml` がその形）。
 fn has_wasm32() -> bool {
-    probe("rustup", &["target", "list", "--installed"]).is_some_and(|_| {
-        Command::new("rustup")
-            .args(["target", "list", "--installed"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("wasm32-unknown-unknown"))
-            .unwrap_or(false)
-    })
+    let Ok(out) = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+    else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("wasm32-unknown-unknown")
 }
 
 pub fn run() -> Result<bool> {
@@ -51,10 +69,18 @@ pub fn run() -> Result<bool> {
 
     // Rust のアプリ
     match &rustc {
-        Some(v) if wasm32 => line("rustc", &format!("{v} + wasm32-unknown-unknown"), true),
+        Some(v) if wasm32 => line(
+            "rustc",
+            &format!("{} + wasm32-unknown-unknown", strip_name("rustc", v)),
+            true,
+        ),
         Some(v) => line(
             "rustc",
-            &format!("{v}（wasm32 が無い: rustup target add wasm32-unknown-unknown）"),
+            &format!(
+                "{}（wasm32 が無い。プロジェクトの rust-toolchain.toml に \
+                 targets があれば自動で入る）",
+                strip_name("rustc", v)
+            ),
             false,
         ),
         None => line("rustc", "無い", false),
@@ -62,7 +88,7 @@ pub fn run() -> Result<bool> {
 
     // AssemblyScript のアプリ
     match &asc {
-        Some(v) => line("asc", v, true),
+        Some(v) => line("asc", &strip_name("asc", v), true),
         None => line(
             "asc",
             "無い（AssemblyScript で書くなら npm i -D assemblyscript）",
@@ -72,15 +98,15 @@ pub fn run() -> Result<bool> {
 
     // 焼く道具
     match &picotool {
-        Some(v) => line("picotool", v, true),
+        Some(v) => line("picotool", &strip_name("picotool", v), true),
         None => line("picotool", "無い（rp2040 / rp2350 を焼くなら要る）", false),
     }
     match &espflash {
-        Some(v) => line("espflash", v, true),
+        Some(v) => line("espflash", &strip_name("espflash", v), true),
         None => line("espflash", "無い（esp32s3 を焼くなら要る）", false),
     }
     match &probe_rs {
-        Some(v) => line("probe-rs", v, true),
+        Some(v) => line("probe-rs", &strip_name("probe-rs", v), true),
         None => line("probe-rs", "無い（任意。デバッガを使うなら）", false),
     }
 
@@ -115,6 +141,19 @@ fn line(label: &str, value: &str, ok: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tool_name_is_not_repeated() {
+        // 版の文字列は道具の名前から始まることが多い。ラベルと並べるので落とす。
+        assert_eq!(strip_name("espflash", "espflash 4.5.0"), "4.5.0");
+        assert_eq!(
+            strip_name("picotool", "picotool v2.3.1 (Darwin)"),
+            "v2.3.1 (Darwin)"
+        );
+        assert_eq!(strip_name("rustc", "rustc 1.97.1 (abc)"), "1.97.1 (abc)");
+        // 名前で始まらないものはそのまま（asc は `Version 0.28.20` を返す）。
+        assert_eq!(strip_name("asc", "Version 0.28.20"), "Version 0.28.20");
+    }
 
     #[test]
     fn version_output_is_reduced_to_one_line() {

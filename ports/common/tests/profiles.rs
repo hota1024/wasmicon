@@ -33,6 +33,58 @@ fn mcu_configs_are_what_the_ports_had() {
 }
 
 #[test]
+fn arenas_are_what_the_ports_had() {
+    // ポートの `static ARENA` / `static SCRATCH` がこの値を使うので、
+    // 変えると実機のメモリ配置が変わる。
+    assert_eq!(profile::RP2040.arena, 160 * 1024);
+    assert_eq!(profile::RP2350.arena, 320 * 1024);
+    assert_eq!(profile::ESP32S3.arena, 300 * 1024);
+    for p in profile::PROFILES {
+        assert_eq!(p.scratch, if p.name == "host" { 4 << 20 } else { 8 * 1024 });
+    }
+}
+
+#[test]
+fn each_board_arena_holds_the_pages_it_promises() {
+    // `max_memory_pages` を満たすだけでは足りない。arena は decode / validate /
+    // Exec / 線形メモリを全部ここから取るので、**上限のページ数が物理的に
+    // 入らなければ、そのボードの Config は嘘**になる。
+    for p in profile::PROFILES {
+        if p.name == "host" {
+            continue; // 下の test を見ること
+        }
+        let promised = p.config.max_memory_pages as usize * 64 * 1024;
+        assert!(
+            promised <= p.arena,
+            "{}: {} ページ ({promised} B) が arena {} B に入らない",
+            p.name,
+            p.config.max_memory_pages,
+            p.arena
+        );
+    }
+}
+
+#[test]
+fn host_promises_more_pages_than_its_arena_can_hold() {
+    // **host だけはこの不変条件を満たさない。** `Config::DEFAULT` は
+    // 「ホスト PC 向けの既定値」で 65536 ページ（4 GiB）を名乗るが、
+    // arena は 16 MiB しかない。256 ページ超のゲストは host でも
+    // instantiate で落ちる。
+    //
+    // これは直すところではなく、**`wasmicon run` や `check --board host` が
+    // 実機の根拠にならないことの、もう 1 つの理由**として記録しておく
+    // （ページ上限の緩さに加えて、arena も実機より緩い）。
+    let p = &profile::HOST;
+    let promised = p.config.max_memory_pages as usize * 64 * 1024;
+    assert!(
+        promised > p.arena,
+        "host が実機並みに締まったら、上の test に入れてよい"
+    );
+    // 実際に収まるのは 256 ページまで。
+    assert_eq!(p.arena / (64 * 1024), 256);
+}
+
+#[test]
 fn host_config_is_the_runtime_default() {
     // host は意図的に緩い。`Config::DEFAULT` と一致していることを見ておく
     // （profile 側が独自の値を持ち始めると、`wasmicon run` と `check --board host`

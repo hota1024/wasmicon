@@ -84,7 +84,7 @@ const SIG_GPIO_OUT: u16 = 256;
 /// - 22..=25: ESP32-S3 には存在しない欠番
 /// - 26..=32: SPI フラッシュと PSRAM。XIP 実行中に触るとファームウェアごと落ちる
 /// - 43, 44: トレース用の UART0（DevKitC-1 では USB シリアルに直結）
-fn reserved(index: u32) -> bool {
+const fn reserved(index: u32) -> bool {
     matches!(index, 22..=32 | 43 | 44)
 }
 
@@ -95,6 +95,24 @@ fn reserved(index: u32) -> bool {
 /// `led` が外付けなのは、DevKitC-1 のオンボード LED が WS2812 で
 /// 素の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
 const ROLES: &[(&str, u32)] = wasmicon_port::profile::ESP32S3.roles;
+
+// 番号がこのボードで開けること（範囲内・予約ピンでない）をコンパイル時に
+// 確かめる。ROLES を profile に移して NUM_GPIO / reserved との隣接が切れたので、
+// ここで繋ぎ直す。`reserved` は範囲で判定していてスライスでないため、
+// ports/common の assert_roles_openable ではなく同じ検査をここに書く
+// （const fn から関数ポインタは呼べない）。
+const _: () = {
+    let mut i = 0;
+    while i < ROLES.len() {
+        let n = ROLES[i].1;
+        assert!(n < NUM_GPIO, "役割の GPIO 番号がボードの本数を超えている");
+        assert!(
+            !reserved(n),
+            "役割の GPIO 番号が予約ピンに当たっている（ゲストは開けない）"
+        );
+        i += 1;
+    }
+};
 
 /// SPI2（FSPI）に割り当てるピン（abi-spec §8）。CS はここに含めない。
 /// ゲストが `lcd-cs` の GPIO を直接振る（`wit/spi.wit` の設計）。

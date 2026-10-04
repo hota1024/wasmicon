@@ -124,8 +124,18 @@ drop する**」と定めているが、**どのポートもこれを実装し�
 - **解放の順序はハンドルの小さい順に gpio → i2c → spi で固定**した。
   ポートごとに違うと、トレースに出ない差がボード間に生まれる
 - 検査は `ports/common/tests/release_all.rs`（解放の順序、冪等、
-  **トレース行を出さないこと**、掃除後に再 `open` できること）。
-  `release_all` を空にすると 3 件が落ちることを確かめてある
+  **トレース行を出さないこと**、掃除後に再 `open` できること、
+  **ロール表は消えないこと**）。`release_all` を空にすると 3 件が落ちる
+- **ロール表は消さない。** あれはハンドルではなく §9 の正規化に使う状態。
+  ローダが 1 つの `Hal` を使い回すなら別に消す必要がある（§3.1）
+- **代償: トラップ後の画面が残らなくなった。** 掃除はピンを入力に戻すので
+  （§5.2）、`lcd-rst` が浮いてパネルが白に戻る（§3.3 の「描き終わると
+  白くなる」と同じ現象）。トラップした瞬間の表示を見て切り分けることは
+  できなくなる。それでも掃除を入れたのは **abi-spec §6.6 が
+  「ホストはインスタンスを破棄し、全ハンドルを drop し、ログに理由を出力する」
+  とトラップ時の drop を明示的に要求している**ため。順序も §6.6 どおり
+  drop → ログ出力にしてある。**画面を見て切り分けたいときは
+  `probe` コマンド（§3.6）側で行う**
 
 ### 3.3 アプリの置き場所
 
@@ -524,14 +534,15 @@ probe-rs）は**呼ぶだけで、自前実装しない**。
 
 ### 4.2 コマンド
 
-**実装済みは `check` / `run` / `trace diff` / `doctor`**（2026-10-04）。
-`monitor` と `size` は未着手（`docs/TODO.md` §5）。
+**どこまで実装されているかは `docs/TODO.md` §5 が正**（ここには書かない。
+CLAUDE.md「残作業を他の場所に書き足さない」）。「置き換える元」は、
+今その仕事をしている既存のものを指す。
 
-| コマンド | 中身 | 今あるもの |
+| コマンド | 中身 | 置き換える元 |
 |---|---|---|
 | `new <name> --lang rust\|as` | 雛形。ABI 準拠のビルドフラグを埋める（§4.4） | 無し |
 | `build` | `cargo` / `asc` を呼ぶ。フラグは雛形側が持つ | `apps/.cargo/config.toml` + 手順書 |
-| `check <app.wasm> --board X` | **実ランタイムで** decode / validate / instantiate（§4.3） | 無し（`wasm-tools validate` は弱い） |
+| `check <app.wasm> --board X` | **実ランタイムで** decode / validate / `Exec` / instantiate を**そのボードの arena の実寸で**通す（§4.3） | 無し（`wasm-tools validate` では import 表もボードの上限も見られない） |
 | `run <app.wasm> [--trace] [--i2c-replay f]` | host ポートで実行。`--i2c-replay` は既存の環境変数 `WASMICON_I2C_REPLAY` に対応する | `cargo run -p wasmicon-host`（crate は残して lib として使う） |
 | `deploy <app.wasm>` | USB / HTTP でアプリを送る。`--persist` でフラッシュスロット | 無し |
 | `flash --board X [--fw v]` | **ファームを**焼く（一度だけ）。版は manifest から引く（§3.8） | 手順書（`apps/lcd-demo-rs/README.md`） |
@@ -573,12 +584,19 @@ probe-rs）は**呼ぶだけで、自前実装しない**。
 なるので保証に
 変わる。** プロジェクトの外から `.wasm` 単体を受け取ったときだけ参考に落ちる。
 
-**今は「検証だけする入口」が無い。** `wasmicon_host::run_wasm_opts` は
-decode / validate / instantiate のあと `run` まで呼ぶ 1 本の関数なので、
-`check` は (a) CLI 側で `wasmicon-core` + `wasmicon_port::Hal` +
-`wasmicon_host::hal::HostBoard`（どちらも `pub`）を直に組んで 4 呼び出しを
-並べるか、(b) `ports/host` に `check_wasm(wasm, &Config)` を足すかのどちらか。
-**(a) を推す**（host ポートを CLI のために太らせない）。
+**検査は CLI 側で組む。** `wasmicon_host::run_wasm_opts` は `run` まで
+呼ぶので検査には使えない。CLI が `wasmicon-core` + `wasmicon_port::Hal` +
+`wasmicon_host::hal::HostBoard` を直に組んで decode → validate → `Exec` →
+instantiate を並べる（host ポートを CLI のために太らせない）。
+`instantiate` はゲストを実行しないので、ボード実装は何でも結果が同じ。
+
+**`Config` だけでは足りない。** 線形メモリは arena の残り全部を取るので
+（`Arena::alloc_rest`）、`max_memory_pages` に収まっていても
+「decode / validate / `Exec` が先に取った残りに `min_pages * 64 KiB` が
+入らない」ことがある。実機はそこで `instantiate` が落ちる。だから
+`Profile` は `arena` / `scratch` の実寸を持ち、`check` はそれで通す
+（`ports/rp2040` は 160 KiB しかなく、2 ページだと 20 KiB ほどしか余らない）。
+**ポートの `static ARENA` もこの値を使う**ので、2 箇所に分かれない。
 
 **host 実行は全ボードより緩い。** `ports/host` は `Config::default()`
 （`max_memory_pages` = 65536）で走るが、実機は RP2040 = 2 / RP2350 = 4 /
@@ -655,11 +673,15 @@ espup と Xtensa ツールチェーンが要る（`ports/esp32s3/build.sh`）。
 
 ```
 $ wasmicon doctor
-rustc 1.98.0 + wasm32-unknown-unknown   ok
-assemblyscript 0.28.8                   ok
-picotool 2.1.1                          ok
-espflash 4.5.0                          ok
-→ ファームを焼ける: rp2040 / rp2350 / esp32s3
+ok  rustc     1.97.1 (8bab26f4f 2026-07-14) + wasm32-unknown-unknown
+ok  asc       Version 0.28.20
+ok  picotool  v2.3.1 (Darwin, ...)
+ok  espflash  4.5.0
+--  probe-rs  無い（任意。デバッガを使うなら）
+
+→ ファームを焼けるボード: rp2040 / rp2350 / esp32s3
+  Rust のアプリはビルドできる
+  AssemblyScript のアプリはビルドできる
 ```
 
 ファームはリリース成果物なので、**espup と Xtensa ツールチェーンは要らない**（§4.5）。
@@ -752,7 +774,7 @@ validate 初期 1 ページ ≤ 2                           ok
 i2c      このポートは未実装（実機では unsupported）  ← 落ちる
 spi      このポートは未実装（実機では unsupported）  ← 落ちる
 roles    led, lcd-cs, lcd-dc, lcd-rst                rp2040 にある（参考）
-→ 落ちる（2 件）
+→ 落ちる（このボードで 2 件）
 ```
 
 `roles` の行に **（参考）**と付いているのは、役割名を `.wasm` から確実に列挙
@@ -823,7 +845,7 @@ $ wasmicon deploy room_monitor.wasm --persist
 
 | 段 | 使えるようになるもの |
 |---|---|
-| 0 | `doctor` / `build` / `check` / `run` / `trace diff` / `size` / `monitor`（identity 無し） |
+| 0 | `doctor` / `build` / `check` / `run` / `trace diff` / `monitor`（identity 無し） |
 | 1 | `flash`（ファーム）/ `deploy --persist`（既存フラッシャ経由。**Pico は BOOTSEL 押下が残る**） |
 | 2 | `info` / `deploy`（USB、ボタン不要）/ `deploy --monitor` / `monitor` の identity / `fw list` |
 | 3 | `deploy --via http`（ESP32-S3） |
@@ -950,7 +972,7 @@ wasmicon.local.toml  gitignore。シリアルポートなどマシン固有の�
 
 | 段 | 中身 | ファームの変更 | 実機 |
 |---|---|---|---|
-| 0 | CLI の骨 + `check` / `run` / `monitor` / `trace diff` / `size` / `doctor` | **ゼロ** | 不要 |
+| 0 | CLI の骨 + `check` / `run` / `monitor` / `trace diff` / `doctor` | **ゼロ** | 不要 |
 | 1 | §3.2 の掃除 → スロット形式 → 「スロットを読んで走る」ファーム → **内蔵アプリの撤去**（§3.3）→ 既存フラッシャで `deploy` | ローダの芯 | 要 |
 | 2 | USB 制御チャネル + §3.6 のプロトコル。`info` と `probe`、役割マップの設定（§3.9）が入る | USB スタック | 要 |
 | 3 | HTTP（ESP32-S3） | Wi-Fi + RAM 予算の判断 | 要 |

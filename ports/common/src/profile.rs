@@ -66,6 +66,16 @@ pub struct Profile {
     /// **既定**であって固定ではない。デバイス側で上書きできるようにするのは
     /// 別の話（`docs/app-workflow.md` §3.9、`docs/TODO.md` §5-9）。
     pub roles: &'static [(&'static str, u32)],
+    /// ランタイムに渡す arena の大きさ。**ポートの `static ARENA` がこれを使う。**
+    ///
+    /// 線形メモリは arena の残り全部を取る（`Arena::alloc_rest`）ので、
+    /// `max_memory_pages` を満たすだけでは足りない。**decode / validate /
+    /// Exec / instantiate が先に取った残りに `min_pages * 64 KiB` が
+    /// 収まらなければ、実機は `instantiate` で落ちる。** この余裕は
+    /// `Config` からは分からないので、プロファイルが持つ。
+    pub arena: usize,
+    /// 検証中だけ使う作業領域の大きさ。ポートの `static SCRATCH` がこれを使う。
+    pub scratch: usize,
 }
 
 /// マイコン共通の上限。ボード間の差は `max_memory_pages` だけ。
@@ -108,6 +118,9 @@ pub const RP2040: Profile = Profile {
         ..Interfaces::ALL
     },
     roles: PICO_ROLES,
+    // SRAM 264 KB のうち 160 KB。2 ページ (128 KiB) + ランタイムの構造体。
+    arena: 160 * 1024,
+    scratch: 8 * 1024,
 };
 
 /// Raspberry Pi Pico 2 / Pico 2 W。
@@ -116,6 +129,9 @@ pub const RP2350: Profile = Profile {
     config: MCU,
     interfaces: Interfaces::ALL,
     roles: PICO_ROLES,
+    // SRAM 520 KB のうち 320 KB。4 ページ (256 KiB) が収まる。
+    arena: 320 * 1024,
+    scratch: 8 * 1024,
 };
 
 /// ESP32-S3 DevKitC-1。
@@ -124,6 +140,10 @@ pub const ESP32S3: Profile = Profile {
     config: MCU,
     interfaces: Interfaces::ALL,
     roles: ESP32S3_ROLES,
+    // DRAM 512 KB のうち 300 KB。増やすとネイティブスタックが削れる
+    // （docs/TODO.md §1.4）。
+    arena: 300 * 1024,
+    scratch: 8 * 1024,
 };
 
 /// PC 上の mock。**全ボードより緩い**ので、これで通っても実機で通るとは限らない。
@@ -132,6 +152,9 @@ pub const HOST: Profile = Profile {
     config: Config::DEFAULT,
     interfaces: Interfaces::ALL,
     roles: HOST_ROLES,
+    // PC なので潤沢に取る。
+    arena: 16 << 20,
+    scratch: 4 << 20,
 };
 
 /// 名前で引くための表。CLI と `info`（`docs/app-workflow.md` §3.8）が使う。
@@ -178,6 +201,36 @@ pub const fn assert_role_names(roles: &[(&str, u32)]) {
             "役割名が ROLE_NAMES に無い。トレースが role: に正規化されず \
              ボード間で食い違う（abi-spec §9）"
         );
+        i += 1;
+    }
+}
+
+/// 役割の GPIO 番号がそのボードで開けることを確かめる。
+///
+/// **`ROLES` を `board.rs` から外に出したので、番号と `NUM_GPIO` /
+/// `RESERVED` の隣接が切れた。** 範囲外や予約ピンを割り当てても
+/// `pin-by-role` は成功し、ゲストの `pin.open` が実機で初めて
+/// `invalid-argument` を返す。各ポートがこれをコンパイル時に呼んで塞ぐ。
+///
+/// 予約ピンをスライスで取るのは、`const fn` から関数ポインタを呼べない
+/// ため（`ports/esp32s3` は範囲で判定しているので、あちらは同じ検査を
+/// `board.rs` 側の const ブロックに書いてある）。
+///
+/// # Panics
+/// 番号が `gpio_count` 以上か、`reserved` に含まれるとき。
+pub const fn assert_roles_openable(roles: &[(&str, u32)], gpio_count: u32, reserved: &[u32]) {
+    let mut i = 0;
+    while i < roles.len() {
+        let n = roles[i].1;
+        assert!(n < gpio_count, "役割の GPIO 番号がボードの本数を超えている");
+        let mut j = 0;
+        while j < reserved.len() {
+            assert!(
+                n != reserved[j],
+                "役割の GPIO 番号が予約ピンに当たっている（ゲストは開けない）"
+            );
+            j += 1;
+        }
         i += 1;
     }
 }

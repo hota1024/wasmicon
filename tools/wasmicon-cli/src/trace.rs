@@ -28,8 +28,13 @@ pub struct Options {
 }
 
 /// 正規化したトレース。
+///
+/// 行は **`Vec<u8>` で持つ**。`String` に落とすと UTF-8 でないバイトが
+/// どれも `U+FFFD` に潰れて、**違うノイズが混ざった 2 本を「一致」と
+/// 言ってしまう**（シリアルがノイズを吐くことはこのコードの前提そのもので、
+/// だから NUL を落としている）。表示のときだけ `from_utf8_lossy` する。
 pub struct Trace {
-    pub lines: Vec<String>,
+    pub lines: Vec<Vec<u8>>,
 }
 
 /// シリアル出力からトレース行だけを取り出す。
@@ -43,11 +48,10 @@ pub fn normalize(bytes: &[u8]) -> Trace {
         .copied()
         .filter(|b| *b != b'\r' && *b != 0)
         .collect();
-    let text = String::from_utf8_lossy(&cleaned);
-    let lines = text
-        .lines()
-        .filter(|l| l.starts_with('>') || l.starts_with('<'))
-        .map(str::to_string)
+    let lines = cleaned
+        .split(|b| *b == b'\n')
+        .filter(|l| matches!(l.first(), Some(b'>' | b'<')))
+        .map(<[u8]>::to_vec)
         .collect();
     Trace { lines }
 }
@@ -110,10 +114,11 @@ fn short(p: &Path) -> String {
         .into_owned()
 }
 
-fn at(t: &Trace, i: usize) -> &str {
-    t.lines
-        .get(i)
-        .map_or("（ここで終わっている）", String::as_str)
+fn at(t: &Trace, i: usize) -> String {
+    t.lines.get(i).map_or_else(
+        || "（ここで終わっている）".to_string(),
+        |l| String::from_utf8_lossy(l).into_owned(),
+    )
 }
 
 /// 読んで正規化する。トレース行が 0 行なら失敗。
@@ -135,19 +140,35 @@ fn read(path: &Path) -> Result<Trace> {
 mod tests {
     use super::*;
 
+    /// 比較しやすいように表示用へ落とす（テストの中だけ）。
+    fn text(t: &Trace) -> Vec<String> {
+        t.lines
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect()
+    }
+
     #[test]
     fn drops_banners_and_guest_logs() {
         let raw = b"wasmicon rp2040\n[wasm] blink start\n> a/b(1)\n< 0 [1]\n";
-        let t = normalize(raw);
-        assert_eq!(t.lines, ["> a/b(1)", "< 0 [1]"]);
+        assert_eq!(text(&normalize(raw)), ["> a/b(1)", "< 0 [1]"]);
+    }
+
+    #[test]
+    fn line_noise_is_not_folded_into_one_character() {
+        // UTF-8 でないバイトが違う 2 本を「一致」と言ってはいけない。
+        // String に落とすとどちらも U+FFFD になって一致してしまう。
+        let a = normalize(b"> a/b(1)\xff\n< 0 [1]\n");
+        let b = normalize(b"> a/b(1)\xfe\n< 0 [1]\n");
+        assert_eq!(a.lines.len(), 2);
+        assert_eq!(first_divergence(&a, &b), Some(0), "1 行目で食い違う");
     }
 
     #[test]
     fn drops_cr_and_nul() {
         // 実機のシリアルは NUL を吐く（2026-09-26 に踏んだ）。
         let raw = b"wasmicon esp32s3\r\n\0\0[wasm] x\r\n\0> a/b(1)\r\n< 0 [1]\r\n";
-        let t = normalize(raw);
-        assert_eq!(t.lines, ["> a/b(1)", "< 0 [1]"]);
+        assert_eq!(text(&normalize(raw)), ["> a/b(1)", "< 0 [1]"]);
     }
 
     #[test]

@@ -391,6 +391,11 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       Xtensa のため CI で回していない（`.github/workflows/ci.yml` のコメント）。
       アプリ作者にファームをビルドさせない方針（`docs/app-workflow.md` §4.5）を
       取るなら espup を入れるジョブが要る
+- [ ] **§5-8 ファーム版の振り方。** 3 ポート共通の 1 本（`0.1.0` を揃える）か、
+      ポートごとに独立か。**ABI 版（`wasmicon:hal@0.1.0`）は `wit/` 由来で、
+      ファーム版とは別物**。勝手に上げない（handoff §2-5）。互換の判定は
+      版 1 本ではなく軸ごとに行う（`docs/app-workflow.md` §3.8）ので、
+      ファーム版は由来の記録にしか使わない
 - [ ] **§5-9 役割マップをデバイス側の設定にするか / いつやるか**
       （`docs/app-workflow.md` §3.9 / §4.7）。今は役割 → GPIO がファームの
       `profile::<board>.roles` にあるので、**配線を変えるとファームを焼き直す**ことになり
@@ -402,11 +407,6 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         アプリに限る話だが、症状の説明が要る
       - 最小版は 1 段でも成立する（設定セクタを `espflash write-bin` / UF2 で
         外から書き、ファームは読んで適用するだけ）。プロトコル経由は 2 段
-- [ ] **§5-8 ファーム版の振り方。** 3 ポート共通の 1 本（`0.1.0` を揃える）か、
-      ポートごとに独立か。**ABI 版（`wasmicon:hal@0.1.0`）は `wit/` 由来で、
-      ファーム版とは別物**。勝手に上げない（handoff §2-5）。互換の判定は
-      版 1 本ではなく軸ごとに行う（`docs/app-workflow.md` §3.8）ので、
-      ファーム版は由来の記録にしか使わない
 
 ### 実装（段階は `docs/app-workflow.md` §5）
 
@@ -442,15 +442,33 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 - [ ] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る。** 0 段は
       `check` / `run` / `monitor` / `trace diff` / `size` / `doctor`。
       **`check` / `run` / `trace diff` / `doctor` は 2026-10-04 に実装した。
-      残りは `monitor` と `size`**
+      残りは `monitor` と `size`**（`/code-review` の指摘を反映済み）
+      - **`check` は `Config` だけでなく arena の実寸で見る。** 線形メモリは
+        arena の残り全部を取るので、ページ上限に収まっても
+        「decode / validate / `Exec` の残りに入らない」ことがある
+        （`ports/rp2040` は 160 KiB で 2 ページだと 20 KiB ほどしか余らない）。
+        `Profile` が `arena` / `scratch` を持ち、**ポートの `static ARENA` も
+        それを使う**
+      - 役割名の照合は**終了コードを左右させない**（走査が参考なので）。
+        import / export の不備はボードに依存しないので、ボードごとの件数に
+        混ぜず「全ボード共通」として 1 回だけ数える
+      - 壊れた `.wasm`（import の型インデックスが範囲外）で **panic しない**。
+        診断する側が落ちては意味がない
       - `run` は `wasmicon-host` を lib として呼ぶだけ（`--trace` /
         `--i2c-replay`）。`--i2c-replay` は `load_i2c_replay` を直に呼ぶので、
         環境変数 `WASMICON_I2C_REPLAY` は host の bin 側に残っている
       - `trace diff` は正規化を Rust で持ち、**`verify/diff-traces.sh` と
-        同じ判定を出すことを `tests/trace.rs` が突き合わせる**
-        （`tools/check-sigs.sh` が `wit2sig.py` と突き合わせているのと同じ形）。
-        スクリプトは CI の `--self-test` のために残す。
+        同じ判定を出すことを `tests/trace.rs` が突き合わせる**（判定だけでなく
+        **行数も**見る。`tools/check-sigs.sh` が `wit2sig.py` と突き合わせて
+        いるのと同じ形）。スクリプトは CI の `--self-test` のために残す。
         **NUL 除去を外すと突き合わせが落ちることを確かめた**
+      - **行は `Vec<u8>` で持つ。** `String` に落とすと UTF-8 でないバイトが
+        どれも `U+FFFD` に潰れて、**違うノイズが混ざった 2 本を「一致」と
+        言ってしまう**。あわせて**スクリプトに `LC_ALL=C` を足した**
+        （ロケールが UTF-8 のままだと macOS の `tr` が不正なバイトで止まり、
+        手元と CI で結果が変わる）
+      - `run --trace` は**トラップしてもそこまでのトレースを出す**
+        （`run_wasm_capture` を足した。トラップしたときこそ要る）
       - `monitor` は**実機が無いと書けない**（シリアルの設定と `/dev/cu.usb*` の
         列挙）。手元に Pico 2 W と ESP32-S3 があるので、§1.3 の作業と
         同時にやるのが筋

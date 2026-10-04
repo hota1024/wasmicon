@@ -40,16 +40,21 @@ pub fn run(opts: &Options) -> Result<bool> {
         spi_unsupported: false,
     };
 
-    match wasmicon_host::run_wasm_opts(&wasm, host_opts) {
-        Ok(out) => {
-            if opts.trace {
-                print!("{}", out.trace);
-            }
-            Ok(true)
-        }
+    // **失敗してもトレースを受け取る口を使う。** トラップしたときこそ
+    // トレースが欲しい（どの host call で分岐したかはそこにしか無い）。
+    let (out, result) = wasmicon_host::run_wasm_capture(&wasm, host_opts);
+    if opts.trace {
+        print!("{}", out.trace);
+    }
+    match result {
+        Ok(()) => Ok(true),
         Err(e) => {
             // docs/handoff.md §3 #4: トラップしたらログを出して停止する。
             eprintln!("wasmicon: {} [{}]", e.reason(), e.kind().name());
+            if opts.trace {
+                let n = out.trace.lines().count();
+                eprintln!("  ここまでのトレース {n} 行は標準出力に出した");
+            }
             Ok(false)
         }
     }

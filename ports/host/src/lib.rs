@@ -7,10 +7,10 @@ pub mod hal;
 use wasmicon_core::{Arena, Error, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::Hal;
 
-/// arena の大きさ。残りが線形メモリになる。
-pub const ARENA: usize = 16 << 20;
-/// 検証中だけ使う作業領域。
-pub const SCRATCH: usize = 4 << 20;
+/// arena の大きさ。残りが線形メモリになる。正は `profile::HOST`。
+pub const ARENA: usize = wasmicon_port::profile::HOST.arena;
+/// 検証中だけ使う作業領域。正は `profile::HOST`。
+pub const SCRATCH: usize = wasmicon_port::profile::HOST.scratch;
 
 /// 実行結果。
 pub struct Outcome {
@@ -99,6 +99,20 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
 /// # Errors
 /// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
 pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
+    let (outcome, result) = run_wasm_capture(wasm, opts);
+    result?;
+    Ok(outcome)
+}
+
+/// 実行して、**失敗しても溜まったトレースを返す**。
+///
+/// `run_wasm_opts` は失敗を `Err` で返すので、そこまでに溜めたトレースが
+/// 捨てられる。**トラップしたときこそトレースが欲しい**（どの host call で
+/// 分岐したかはそこにしか無い）ので、両方返す口を分けてある。
+/// `wasmicon run --trace` はこちらを使う。
+///
+/// 第 2 要素が `Err` のときも、第 1 要素のトレースはそこまでの全行を持つ。
+pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Error>) {
     let (trace, i2c_replay, spi_unsupported) = (opts.trace, opts.i2c_replay, opts.spi_unsupported);
     let mut buf = vec![0u8; ARENA];
     let mut scratch_buf = vec![0u8; SCRATCH];
@@ -108,37 +122,56 @@ pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
     // 検査したいときは profile::<board>.config を使う（§4.3）。
     let cfg = wasmicon_port::profile::HOST.config;
 
-    let m = decode::decode(wasm, &mut arena)?;
-    let v = validate::validate(&m, &cfg, &mut arena, &mut scratch)?;
-    // Exec は線形メモリ（arena の残り全部）より先に確保する。
-    let mut exec = Exec::new(&cfg, &mut arena)?;
     let mut hal = Hal::new(
         hal::HostBoard::new()
             .with_i2c_replay(i2c_replay)
             .with_spi_unsupported(spi_unsupported),
         trace,
     );
-    let mut inst = instantiate(m, v, &cfg, &mut arena, &mut hal)?;
 
-    // 失敗しても下の release_all を通るように、`?` でここから抜けない。
-    let outcome: Result<(), Error> = 'guest: {
-        if let Some(start) = inst.module.start
-            && let Err(e) = invoke(&mut inst, &mut exec, &mut hal, start, &[], &mut [])
-        {
-            break 'guest Err(e);
-        }
-        let Some(run) = inst.export_func("run") else {
-            break 'guest Err(Error::Unlinkable("export run が無い（abi-spec §3.3）"));
+    // ゲストが走り出す前の失敗（decode / validate / Exec / instantiate）では
+    // トレースは空。走り出したあとの失敗では、そこまでの全行が hal に溜まる。
+    // どちらも同じ形で返せるように、1 つのブロックに畳む。
+    let result: Result<(), Error> = 'guest: {
+        let m = match decode::decode(wasm, &mut arena) {
+            Ok(m) => m,
+            Err(e) => break 'guest Err(e),
         };
-        invoke(&mut inst, &mut exec, &mut hal, run, &[], &mut [])
+        let v = match validate::validate(&m, &cfg, &mut arena, &mut scratch) {
+            Ok(v) => v,
+            Err(e) => break 'guest Err(e),
+        };
+        // Exec は線形メモリ（arena の残り全部）より先に確保する。
+        let mut exec = match Exec::new(&cfg, &mut arena) {
+            Ok(e) => e,
+            Err(e) => break 'guest Err(e),
+        };
+        let mut inst = match instantiate(m, v, &cfg, &mut arena, &mut hal) {
+            Ok(i) => i,
+            Err(e) => break 'guest Err(e),
+        };
+
+        let ran = 'run: {
+            if let Some(start) = inst.module.start
+                && let Err(e) = invoke(&mut inst, &mut exec, &mut hal, start, &[], &mut [])
+            {
+                break 'run Err(e);
+            }
+            let Some(run) = inst.export_func("run") else {
+                break 'run Err(Error::Unlinkable("export run が無い（abi-spec §3.3）"));
+            };
+            invoke(&mut inst, &mut exec, &mut hal, run, &[], &mut [])
+        };
+
+        // abi-spec §5.2 / §6.6: `run` から戻ったら（トラップでも）残っている
+        // ハンドルを全部 drop する。実機のポートと同じ場所で呼ぶ。
+        // トレース行は増えない（`Hal::release_all`）。
+        hal.release_all();
+        ran
     };
 
-    // abi-spec §5.2: `run` から戻ったら残っているハンドルを全部 drop する。
-    // 実機のポートと同じ場所で呼ぶ（振る舞いを揃える）。トレースは変わらない。
-    hal.release_all();
-    outcome?;
-
-    Ok(Outcome {
+    let outcome = Outcome {
         trace: hal.board_mut().trace_output().to_string(),
-    })
+    };
+    (outcome, result)
 }

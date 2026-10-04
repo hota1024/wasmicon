@@ -46,6 +46,11 @@ const NUM_GPIO: u32 = 30;
 /// 配線にするため外付けに揃える）。**実機の配線は未確認**（docs/TODO.md §1.1）。
 const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2350.roles;
 
+// 番号がこのボードで開けること（範囲内・予約ピンでない）をコンパイル時に
+// 確かめる。ROLES を profile に移して NUM_GPIO / RESERVED との隣接が
+// 切れたので、ここで繋ぎ直す。
+const _: () = wasmicon_port::profile::assert_roles_openable(ROLES, NUM_GPIO, RESERVED);
+
 /// ゲストに開放しない GPIO。
 ///
 /// GP0/GP1 はトレース用の UART0。開けられるとトレースが途切れる。
