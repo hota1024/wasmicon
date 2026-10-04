@@ -118,13 +118,23 @@ pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
     );
     let mut inst = instantiate(m, v, &cfg, &mut arena, &mut hal)?;
 
-    if let Some(start) = inst.module.start {
-        invoke(&mut inst, &mut exec, &mut hal, start, &[], &mut [])?;
-    }
-    let run = inst
-        .export_func("run")
-        .ok_or(Error::Unlinkable("export run が無い（abi-spec §3.3）"))?;
-    invoke(&mut inst, &mut exec, &mut hal, run, &[], &mut [])?;
+    // 失敗しても下の release_all を通るように、`?` でここから抜けない。
+    let outcome: Result<(), Error> = 'guest: {
+        if let Some(start) = inst.module.start
+            && let Err(e) = invoke(&mut inst, &mut exec, &mut hal, start, &[], &mut [])
+        {
+            break 'guest Err(e);
+        }
+        let Some(run) = inst.export_func("run") else {
+            break 'guest Err(Error::Unlinkable("export run が無い（abi-spec §3.3）"));
+        };
+        invoke(&mut inst, &mut exec, &mut hal, run, &[], &mut [])
+    };
+
+    // abi-spec §5.2: `run` から戻ったら残っているハンドルを全部 drop する。
+    // 実機のポートと同じ場所で呼ぶ（振る舞いを揃える）。トレースは変わらない。
+    hal.release_all();
+    outcome?;
 
     Ok(Outcome {
         trace: hal.board_mut().trace_output().to_string(),
