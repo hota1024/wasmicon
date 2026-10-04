@@ -731,18 +731,24 @@ espflash monitor --port <dev> -c esp32s3 --non-interactive
   （= ブートローダに居ない）ので `Timeout while running ReadReg command`
   になる。既定の `default-reset`（DTR/RTS でブートローダに入れてから
   hard-reset）で通る
-- `--non-interactive` を付けないと端末を要求する
+- `--non-interactive` を付けて回している（対話用の画面を出させない）
 
 `deploy --monitor --board esp32s3` はこの道具に委譲する形にした
 （`monitor::capture_cmd`）。書き込み側は `--after no-reset` にして**走らせず**、
-リセットは `espflash monitor` にやらせる。
+リセットは `espflash monitor` にやらせる。委譲が失敗したときは
+**ボードがブートローダに居る**ことを出す（`espflash reset` は助けにならない）。
+
+要約の行に出すのは**スロットのオフセット**にした。`picotool` に渡す絶対
+アドレス（`0x10100000`）はあのツールの引数であって、スロットの性質ではない
+—— ESP32-S3 では意味を持たない番号になる。
 
 ### **2 つのリーダが同じ口を取り合う**（取り込みが欠ける原因）
 
 最初に取った取り込みが 13,634 行で切れていた。原因は**前の取り込みが
 まだ生きているうちに次を開いた**こと。macOS の `cu.*` は排他にならないので
-両方が read でき、**バイト列が 2 つのプロセスに分配される**（13,634 +
-710 = 14,344 ≒ 14,346 で辻褄が合った）。取り込みが欠けたら、まず
+両方が read でき、**バイト列が 2 つのプロセスに分配される**（欠けた側と
+あとから開いた側を足すとほぼ 14,352 行になり、辻褄が合った）。
+取り込みが欠けたら、まず
 `pgrep -f 'wasmicon|espflash|cat /dev/cu'` で居残りを疑うこと。
 
 ### スロットから走らせるところまで一致した（本題）
@@ -771,7 +777,7 @@ wasmicon: slot 4088 B crc32=0f19d973
 ```
 $ wasmicon deploy apps/.../lcd_demo_rs.wasm --board esp32s3 \
     --port /dev/cu.usbmodem5C630009931 --monitor -o esp12.log
-lcd_demo_rs.bin → esp32s3 のスロット（0x10100000）  4104 B（wasm 4088 B、crc32 0f19d973）
+lcd_demo_rs.bin → esp32s3 のスロット（+0x100000）  4104 B（wasm 4088 B、crc32 0f19d973）
 → espflash monitor にリセットと取り込みを任せる:
 無音になった: 442835 B / トレース 14352 行
 ```
@@ -779,8 +785,32 @@ lcd_demo_rs.bin → esp32s3 のスロット（0x10100000）  4104 B（wasm 4088 
 これも host と 14,352 行一致。**Pico と違ってボタン操作が要らない**
 （DTR/RTS でブートローダに入るので、BOOTSEL のような物理操作が無い）。
 
+### 失敗側の枝も実機で起こした（§9 と同じ 3 点）
+
+スロットに直接書いて（`espflash write-bin --after no-reset` → `espflash
+monitor`）、3 つの入口を踏んだ。**この手順はボタン操作が要らない**ので、
+Pico で必要だった BOOTSEL の抜き差しが消える:
+
+| スロットの中身 | シリアルに出たもの |
+| --- | --- |
+| 正しい画像 | `wasmicon: slot 4088 B crc32=0f19d973` → lcd-demo が走る |
+| 本体を 1 バイト反転 | `wasmicon: slot crc mismatch, running built-in` |
+| `0xff` で埋める | `wasmicon: slot empty, running built-in` |
+
+CRC が「転送の事故」を「アプリのバグ」と切り分ける役（`ports/common/src/slot.rs`
+の module コメント）を実機で果たしている。壊れた本体を `decode` に渡して
+「対応外の命令」のような無関係な理由を出す、という壊れ方をしない。
+
+**ESP32-S3 の内蔵アプリは blink**（`guest-lcd-demo` を付けずに焼いてある）。
+フォールバックの行のあとに `blink start` が続くのが、内蔵へ落ちた証拠に
+なっている。
+
 ### まだ見ていないこと
 
-- `read_flash` の 2 段読み（ヘッダ → 本体）の失敗側、つまり CRC 不一致や
-  `Truncated` を実機で起こしていない（単体テストはある）
-- スロットが空のときに idle に入るところ（ファームだけ焼いた直後の形）
+- `Truncated`（ヘッダの長さがスロットの外を指す）を実機で起こしていない。
+  単体テストはある。`espflash write-bin` では長さだけ嘘をつく画像を作る
+  手間があるので後回しにした
+- **`Overlap` は ESP32-S3 では検査していない**（XIP 前提の検査なので
+  `read_xip` 側にしかない）。ESP32-S3 は `esp-storage` 経由で読むため、
+  ファームとスロットが重なる形は `espflash` の側で防ぐことになる。
+  `docs/TODO.md` §5 の未決

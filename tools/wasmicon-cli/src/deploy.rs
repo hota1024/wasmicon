@@ -125,11 +125,14 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 pub fn run(opts: &Options) -> Result<bool> {
     let plan = prepare(opts)?;
 
+    // **出すのはスロットのオフセット。** `plan.addr` は picotool に渡す
+    // 絶対アドレスで、ESP32-S3 では意味を持たない（あちらはオフセットで
+    // 書く）。要約にアドレスを出すと、ボードによって嘘になる。
     println!(
-        "{} → {} のスロット（{:#x}）  {} B（wasm {} B、crc32 {:08x}）",
+        "{} → {} のスロット（+{:#x}）  {} B（wasm {} B、crc32 {:08x}）",
         plan.image.display(),
         plan.board.name,
-        plan.addr,
+        plan.slot.offset,
         plan.image_len,
         plan.wasm_len,
         plan.crc
@@ -160,7 +163,7 @@ pub fn run(opts: &Options) -> Result<bool> {
             p = dev.to_string_lossy().into_owned();
             args.extend_from_slice(&["--port", &p]);
         }
-        return monitor::capture_cmd(
+        let taken = monitor::capture_cmd(
             "espflash",
             &args,
             &monitor::Options {
@@ -171,6 +174,16 @@ pub fn run(opts: &Options) -> Result<bool> {
                 timeout: None,
             },
         );
+        if taken.is_err() {
+            // `--after no-reset` で焼いたので、**ボードはブートローダに
+            // 居る**。黙って終わると「電源は入っているのに何も出ない」に
+            // 見える（`espflash reset` は居座るので助けにならない。§10）。
+            eprintln!(
+                "  ボードはブートローダで止まっている（--after no-reset で焼いた）。\n  \
+                 EN を押すか、もう一度 deploy すること"
+            );
+        }
+        return taken;
     }
 
     // **`--monitor` ならリセットの前に開いて baud を当てる。**
