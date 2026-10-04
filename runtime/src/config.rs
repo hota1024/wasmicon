@@ -19,17 +19,25 @@ pub struct Config {
     pub operand_stack_slots: usize,
 }
 
-impl Default for Config {
+impl Config {
     /// ホスト PC 向けの既定値。マイコンのポートは小さくする。
+    ///
+    /// `Default` から分けて `const` にしてあるのは、ボードプロファイル
+    /// （`ports/common` の `profile`）が const 文脈でこれを使うため。
+    /// 二重に書くと必ず食い違う。
+    pub const DEFAULT: Config = Config {
+        max_value_stack: 8192,
+        max_control_depth: 2048,
+        max_locals: 8192,
+        max_memory_pages: 65536,
+        max_table_elems: 0x0010_0000,
+        max_call_depth: 512,
+        operand_stack_slots: 16384,
+    };
+}
+
+impl Default for Config {
     fn default() -> Self {
-        Config {
-            max_value_stack: 8192,
-            max_control_depth: 2048,
-            max_locals: 8192,
-            max_memory_pages: 65536,
-            max_table_elems: 0x0010_0000,
-            max_call_depth: 512,
-            operand_stack_slots: 16384,
-        }
+        Config::DEFAULT
     }
 }

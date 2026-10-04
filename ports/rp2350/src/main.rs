@@ -60,16 +60,10 @@ static mut ARENA: [u8; 320 * 1024] = [0; 320 * 1024];
 /// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
 static mut SCRATCH: [u8; 8 * 1024] = [0; 8 * 1024];
 
-/// マイコン向けの上限。ホストの既定値のままだと scratch が足りない。
-const MCU_CONFIG: Config = Config {
-    max_value_stack: 512,
-    max_control_depth: 64,
-    max_locals: 256,
-    max_memory_pages: 4,
-    max_table_elems: 256,
-    max_call_depth: 32,
-    operand_stack_slots: 1024,
-};
+/// マイコン向けの上限。**正は `ports/common` の `profile::RP2350.config`**
+/// （CLI が同じ表を読む。docs/app-workflow.md §4.3）。
+/// ホストの既定値のままだと scratch が足りない。
+const MCU_CONFIG: Config = wasmicon_port::profile::RP2350.config;
 
 /// UART0 の型。長いので別名にする。
 type Uart0 = hal::uart::UartPeripheral<

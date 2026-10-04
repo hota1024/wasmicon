@@ -34,7 +34,9 @@ use wasmicon_port::{Board, BoardResult};
 /// QFN-80 の RP2350B は GP0..GP47 だが、対象ボードには載っていない。
 const NUM_GPIO: u32 = 30;
 
-/// 役割名 → GPIO 番号（abi-spec §8 の表）。
+/// 役割名 → GPIO 番号（abi-spec §8 の表）。**正は `ports/common` の
+/// `profile::RP2350.roles`**（`ROLE_NAMES` から外れていないことを
+/// あちらがコンパイル時に検査する）。
 ///
 /// Pico 2 / Pico 2 W はヘッダのピン配置が Pico / Pico WH と同じなので、
 /// RP2040 ポートと同じ番号にしてある。
@@ -42,7 +44,7 @@ const NUM_GPIO: u32 = 30;
 /// `led` が外付けなのは、Pico 2 W のオンボード LED が CYW43439 側にあって
 /// RP2350 の GPIO では駆動できないため（Pico 2 は GP25 だが、両方で同じ
 /// 配線にするため外付けに揃える）。**実機の配線は未確認**（docs/TODO.md §1.1）。
-const ROLES: &[(&str, u32)] = &[("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("lcd-rst", 21)];
+const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2350.roles;
 
 /// ゲストに開放しない GPIO。
 ///

@@ -88,11 +88,13 @@ fn reserved(index: u32) -> bool {
     matches!(index, 22..=32 | 43 | 44)
 }
 
-/// 役割名 → GPIO 番号（abi-spec §8 の表）。
+/// 役割名 → GPIO 番号（abi-spec §8 の表）。**正は `ports/common` の
+/// `profile::ESP32S3.roles`**（`ROLE_NAMES` から外れていないことを
+/// あちらがコンパイル時に検査する）。
 ///
 /// `led` が外付けなのは、DevKitC-1 のオンボード LED が WS2812 で
 /// 素の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
-const ROLES: &[(&str, u32)] = &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 14), ("lcd-rst", 15)];
+const ROLES: &[(&str, u32)] = wasmicon_port::profile::ESP32S3.roles;
 
 /// SPI2（FSPI）に割り当てるピン（abi-spec §8）。CS はここに含めない。
 /// ゲストが `lcd-cs` の GPIO を直接振る（`wit/spi.wit` の設計）。

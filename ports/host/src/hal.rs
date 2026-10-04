@@ -17,7 +17,7 @@ use wasmicon_port::{Board, BoardResult};
 const NUM_GPIO: usize = 48;
 
 /// mock ボードの役割名 → GPIO 番号（abi-spec §8）。
-const ROLES: &[(&str, u32)] = &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 11), ("lcd-rst", 12)];
+const ROLES: &[(&str, u32)] = wasmicon_port::profile::HOST.roles;
 
 #[derive(Clone, Copy, Default)]
 struct PinState {

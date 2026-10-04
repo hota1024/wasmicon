@@ -14,11 +14,13 @@ use wasmicon_port::{Board, BoardResult};
 /// RP2040 の GPIO は GP0..GP29。
 const NUM_GPIO: u32 = 30;
 
-/// 役割名 → GPIO 番号（abi-spec §8 の表）。
+/// 役割名 → GPIO 番号（abi-spec §8 の表）。**正は `ports/common` の
+/// `profile::RP2040.roles`**（`ROLE_NAMES` から外れていないことを
+/// あちらがコンパイル時に検査する）。
 ///
 /// `led` が外付けなのは、Pico W/WH のオンボード LED が CYW43439 側にあって
 /// RP2040 の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
-const ROLES: &[(&str, u32)] = &[("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("lcd-rst", 21)];
+const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2040.roles;
 
 /// SIO の FUNCSEL。ソフトウェア制御の GPIO。
 const FUNCSEL_SIO: u8 = 5;
