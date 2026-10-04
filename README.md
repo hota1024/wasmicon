@@ -23,8 +23,8 @@
 host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出た
 （[`docs/verification-report.md`](docs/verification-report.md) §7）。
 **これで Phase 6「同一バイナリが 2 ボードで同じトレースを出す」は達成。**
-残っているのは sensor-display の実機確認（I2C は RP2350 / ESP32-S3 で実装済みだが未検証）
-→ [`docs/TODO.md`](docs/TODO.md)。
+残っているのは sensor-display の実機確認。I2C は RP2350 / ESP32-S3 で実装済みだが
+**未検証**で、`ports/rp2040` は未実装（→ [`docs/TODO.md`](docs/TODO.md)）。
 
 | 検証 | 状態 |
 |---|---|

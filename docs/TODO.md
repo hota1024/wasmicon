@@ -71,7 +71,11 @@
       （2026-10-04）。初期化と転送の手順は `rp235x-hal` の
       `i2c/controller.rs` に合わせたが、`assert!` ではなくエラーコードを返す
       （パニックハンドラは理由を出せない → §1.4）。待ちは TIMER0 の実時間で
-      上限を付けて `timeout` を返す。**実機では未検証**（→ §1.3）
+      上限を付け、**タイムアウト時は `IC_ENABLE.ABORT` で転送を畳んでから**
+      `timeout` を返す（畳まないとバスが握られたまま残る）。
+      **SCL カウンタは `clk_sys` から計算する**（SPI の PL022 は `clk_peri`
+      だが DW_apb_i2c は `clk_sys`。既定では両方 150 MHz で一致するので
+      取り違えても動いてしまう）。**実機では未検証**（→ §1.3）
 - [x] **`ports/esp32s3` の SPI**。SPI2 (FSPI) を `esp-hal` の `spi::master`
       ドライバで実装した（GPIO と違いレジスタ直叩きにしていない）。rp2350 と
       揃えた点は `ports/esp32s3/src/board.rs` の module コメント。
@@ -219,10 +223,19 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         （APB 80 MHz のとき 78.125 kHz 未満）。どちらのデモも踏まない
       - **I2C も同じ形の食い違いがある**（2026-10-04 に実装して判明）。
         `i2c.bus.open` の `index != 0` は両ポートが `unsupported`、
-        7 bit の外のアドレスは両ポートが `invalid-argument` を返すが、
-        **`ports/host` の mock はどちらも検査しない**。SHT4x は index 0 /
-        0x44 しか使わないので踏まないが、揃えるなら SPI と同じく
+        7 bit の外のアドレスと長さ 0 の転送は両ポートが `invalid-argument` を
+        返すが、**`ports/host` の mock はどれも検査しない**。SHT4x は
+        index 0 / 0x44 しか使わないので踏まないが、揃えるなら SPI と同じく
         `ports/common` に検査を置くことになる
+        - 長さ 0 は `ports/common` が先に弾くので実際には到達しない。
+          それでも両ポートで明示的に弾いているのは、`esp-hal` の
+          `transaction_impl` が**空の read を転送から除いてしまう**ため
+          （任せると `Ok(0)` が返って rp2350 と食い違う）
+        - タイムアウトは **2 ポートで予算を揃えてある**（1 バイト 25 ms）。
+          esp32s3 は `SoftwareTimeout::PerByte` を明示的に設定している。
+          `Config::default()` は `SoftwareTimeout::None` なので、
+          既定のままだと FSM のハードウェアタイムアウト（≒ 0.2 秒）しか
+          残らず桁が合わない
 - [ ] **SPI の待ちループに上限を設けるか。** `ports/rp2350` の `spi_drain` の
       `BSY` 待ち、RESETS 完了待ち、`spi_write` / `spi_transfer` の `TNF` / `RNE`
       待ちはいずれも無制限に回る。クロックが止まる・ペリフェラルが固まると、
