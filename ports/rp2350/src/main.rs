@@ -159,13 +159,13 @@ fn main() -> ! {
 
     let outcome = run(&mut hal, arena_buf, scratch_buf);
 
-    // abi-spec §5.2: `run` から戻ったら残っているハンドルを全部 drop する。
-    // トラップで抜けたときはゲストの Drop が走らないので、ここだけが片付ける。
-    // トレース行は出さない（Hal::release_all のコメント）。
-    hal.release_all();
-
+    // **理由を先に出す。** 下の release_all は無制限に待ちうる
+    // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
+    // 先に回すとペリフェラルが固まったときに理由が出ないまま無言で止まる
+    // ——  docs/handoff.md §3 #4「ログを出して停止する」が守れない。
+    // abi-spec §6.6 は drop → ログの順で書いてあるが、順序を入れ替えても
+    // 観測できるのは「理由が出る」ことだけ増える（docs/TODO.md §2 に記録）。
     if let Err(e) = outcome {
-        // docs/handoff.md §3 #4: ログを出して停止する。再起動はしない。
         let s = hal.board_mut().serial();
         s.write(b"wasmicon: ");
         s.write(e.reason().as_bytes());
@@ -173,6 +173,11 @@ fn main() -> ! {
         s.write(e.kind().name().as_bytes());
         s.write(b"]\r\n");
     }
+
+    // abi-spec §5.2 / §6.6: `run` から戻ったら（トラップでも）残っている
+    // ハンドルを全部 drop する。ゲストの Drop は走らないので、ここだけが
+    // 片付ける。トレース行は出さない（`Hal::release_all` のコメント）。
+    hal.release_all();
     loop {
         cortex_m::asm::wfi();
     }

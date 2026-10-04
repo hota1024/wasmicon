@@ -28,12 +28,17 @@ use wasmicon_port::profile::{self, Interfaces, Profile};
 use wasmicon_port::{Hal, ROLE_NAMES};
 
 /// 事実を取り出すだけの decode に使う作業領域（ボードに依存しない）。
-/// ボードごとの検査は**そのボードの arena の実寸**を使う（`Profile::arena`）。
-const FACTS_ARENA: usize = 4 << 20;
+///
+/// **最も緩いプロファイル（host）に合わせる。** ここだけ小さいと、
+/// `wasmicon run` や `check --board host` では読める `.wasm` が
+/// 「decode できない」で**モジュールの節もボードの判定も出ないまま**
+/// 終わる。ボードごとの検査はそのボードの実寸を使う（`Profile::arena`）。
+const FACTS_ARENA: usize = profile::HOST.arena;
 
-/// `env.abort` は `world app` に無い例外的な import（`docs/handoff.md` §6）。
-/// AssemblyScript が必ず入れてくるので、未知の import として扱わない。
-const AS_ABORT: (&str, &str) = ("env", "abort");
+/// `world app` の外で唯一許す import。**綴りの正は `ports/common`**
+/// （リンクを決めているのはあちらの `Resolver`。食い違うと、check が
+/// リンクするものを「表に無い」と言う）。
+use wasmicon_port::AS_ABORT;
 
 /// import 1 件の判定。
 #[derive(PartialEq, Eq)]
@@ -71,7 +76,8 @@ pub struct Facts {
     pub imports: Vec<ImportCheck>,
     /// インターフェースごとの import 数。`wasmicon:hal/<iface>@0.1.0` の `<iface>`。
     pub per_iface: BTreeMap<String, usize>,
-    pub has_run: bool,
+    /// `run` の export。`None` = 無い、`Some(Err(..))` = 型が違う。
+    pub run_export: Option<std::result::Result<(), String>>,
     pub has_memory_export: bool,
     pub mem_pages: Option<u32>,
     pub table_elems: Option<u32>,
@@ -86,18 +92,50 @@ impl Facts {
         self.imports.iter().filter(|i| i.state.is_failure()).count()
     }
 
-    /// **ボードに依存しない**失敗の数（import と export）。
+    /// **ボードに依存しない**失敗の数（import / export / メモリ定義）。
+    ///
+    /// 独立した欠陥を 1 件に畳まない。畳むと「1 件」を直して再実行した人が
+    /// 既に分かっていた 2 つ目を知らされることになる。
     #[must_use]
     pub fn failures(&self) -> usize {
-        self.import_failures() + usize::from(!self.has_run || !self.has_memory_export)
+        self.import_failures()
+            + usize::from(!matches!(self.run_export, Some(Ok(()))))
+            + usize::from(!self.has_memory_export)
+            // abi-spec §6.2: memory を 1 つ定義して export する。
+            + usize::from(self.mem_pages.is_none())
+    }
+}
+
+/// どの段で落ちたか。**`validate` と `instantiate` を混ぜない。**
+///
+/// arena 不足は instantiate で出るが、「validate が落ちた」と言うと
+/// `max_memory_pages` を縮める方へ誘導してしまう（正しくは arena を増やす）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Decode,
+    Validate,
+    /// `Exec` の確保と instantiate（線形メモリは arena の残りから取る）。
+    Instantiate,
+}
+
+impl Stage {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::Decode => "decode",
+            Stage::Validate => "validate",
+            Stage::Instantiate => "instantiate",
+        }
     }
 }
 
 /// 1 ボード分の判定。
 pub struct Verdict {
     pub board: &'static str,
-    /// `Ok(そのボードの上限)` か、validate が落ちた理由。
+    /// `Ok(そのボードの上限)` か、落ちた理由。
     pub validate: std::result::Result<u32, String>,
+    /// 落ちた段（通ったときは `Instantiate` = 最後まで行った）。
+    pub stage: Stage,
     /// 使っているのにそのポートで未実装のインターフェース。
     pub unimplemented: Vec<String>,
     /// プロファイルに無い役割名（**参考**。`fails()` には数えない）。
@@ -105,6 +143,16 @@ pub struct Verdict {
 }
 
 impl Verdict {
+    /// 行のラベル。落ちた段を出す（`instantiate` を `validate` と呼ばない）。
+    #[must_use]
+    pub fn stage_label(&self) -> String {
+        if self.validate.is_err() {
+            self.stage.label().to_string()
+        } else {
+            "validate".to_string()
+        }
+    }
+
     /// **このボードに固有の**失敗の数。
     ///
     /// import や export の不備はボードに依存しないので、ここには入れない
@@ -195,10 +243,17 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
         });
     }
 
-    let has_run = m
+    // abi-spec §3.3 は `run: func()`。**引数や戻り値が付いていると
+    // 実行時に `wrong arity` で落ちる**ので、ここで型まで見る
+    // （export の有無だけ見ていると、間違ったシグネチャが素通りする）。
+    let run_export = m
         .exports
         .iter()
-        .any(|e| e.name == "run" && matches!(e.desc, ExportDesc::Func(_)));
+        .find_map(|e| match e.desc {
+            ExportDesc::Func(i) if e.name == "run" => Some(i),
+            _ => None,
+        })
+        .map(|idx| run_signature(&m, idx));
     let has_memory_export = m
         .exports
         .iter()
@@ -207,7 +262,7 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
     Ok(Facts {
         imports,
         per_iface,
-        has_run,
+        run_export,
         has_memory_export,
         mem_pages: m.mems.first().map(|l| l.min),
         table_elems: m.tables.first().map(|l| l.min),
@@ -218,7 +273,10 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
 /// 1 ボード分を判定する。
 #[must_use]
 pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
-    let validate = instantiate_with(wasm, p).map(|()| p.config.max_memory_pages);
+    let (validate, stage) = match instantiate_with(wasm, p) {
+        Ok(()) => (Ok(p.config.max_memory_pages), Stage::Instantiate),
+        Err((stage, e)) => (Err(e), stage),
+    };
 
     let unimplemented = f
         .per_iface
@@ -237,6 +295,7 @@ pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
     Verdict {
         board: p.name,
         validate,
+        stage,
         unimplemented,
         missing_roles,
     }
@@ -259,21 +318,56 @@ pub fn judge(wasm: &[u8], p: &'static Profile, f: &Facts) -> Verdict {
 /// # Errors
 /// decode / validate / `Exec` / instantiate のいずれかが失敗したとき。
 /// 文字列は `reason() [kind]` の形。
-pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), String> {
+pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (Stage, String)> {
     let mut buf = vec![0u8; p.arena];
     let mut scratch_buf = vec![0u8; p.scratch];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
 
-    let m = decode::decode(wasm, &mut arena).map_err(reason)?;
-    let v = validate::validate(&m, &p.config, &mut arena, &mut scratch).map_err(reason)?;
+    let m = decode::decode(wasm, &mut arena).map_err(|e| (Stage::Decode, reason(e)))?;
+    let v = validate::validate(&m, &p.config, &mut arena, &mut scratch)
+        .map_err(|e| (Stage::Validate, reason(e)))?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。ポートと同じ順番。
-    let _exec = Exec::new(&p.config, &mut arena).map_err(reason)?;
+    let _exec = Exec::new(&p.config, &mut arena).map_err(|e| (Stage::Instantiate, reason(e)))?;
     let mut hal = Hal::new(wasmicon_host::hal::HostBoard::new(), false);
     // 線形メモリはここで arena の残りから取られる。足りなければ実機と同じ
     // ように落ちる（それがこの関数の目的）。
-    let _inst = instantiate(m, v, &p.config, &mut arena, &mut hal).map_err(reason)?;
+    let _inst = instantiate(m, v, &p.config, &mut arena, &mut hal)
+        .map_err(|e| (Stage::Instantiate, reason(e)))?;
     Ok(())
+}
+
+/// `run` の型が `func()` かを見る（abi-spec §3.3）。
+///
+/// 戻すのは人が読める形の型。`Ok(())` なら `() -> ()`。
+fn run_signature(
+    m: &wasmicon_core::Module<'_, '_>,
+    func_idx: u32,
+) -> std::result::Result<(), String> {
+    // import 由来の関数は func index の手前に並ぶ（abi-spec §6.4）。
+    let imported = m
+        .imports
+        .iter()
+        .filter(|i| matches!(i.desc, ImportDesc::Func(_)))
+        .count();
+    let Some(local) = (func_idx as usize).checked_sub(imported) else {
+        return Err("import された関数を run として export している".to_string());
+    };
+    let Some(&ty) = m.funcs.get(local) else {
+        return Err(format!("関数 {func_idx} が無い（壊れた .wasm）"));
+    };
+    let Some(ft) = m.types.get(ty as usize) else {
+        return Err(format!("型 {ty} が無い（壊れた .wasm）"));
+    };
+    if ft.sig_matches(":") {
+        Ok(())
+    } else {
+        Err(format!(
+            "引数 {} 個 / 戻り値 {} 個",
+            ft.params().count(),
+            ft.results().count()
+        ))
+    }
 }
 
 /// `wasmicon:hal/<iface>@0.1.0` から `<iface>` を取る（abi-spec §3.1）。
@@ -370,13 +464,23 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
         }
     }
 
-    let exports = match (f.has_run, f.has_memory_export) {
-        (true, true) => ("run, memory", "あり"),
-        (true, false) => ("run", "memory の export が無い（abi-spec §6.2）"),
-        (false, true) => ("memory", "run の export が無い（abi-spec §3.3）"),
-        (false, false) => ("なし", "run と memory の export が無い"),
+    let run_note = match &f.run_export {
+        Some(Ok(())) => None,
+        Some(Err(sig)) => Some(format!(
+            "run の型が違う（{sig}。abi-spec §3.3 は run: func()）"
+        )),
+        None => Some("run の export が無い（abi-spec §3.3）".to_string()),
     };
-    row("exports", exports.0, exports.1);
+    let mem_note = (!f.has_memory_export).then_some("memory の export が無い（abi-spec §6.2）");
+    match (run_note, mem_note) {
+        (None, None) => row("exports", "run, memory", "あり"),
+        (Some(r), None) => row("exports", "memory", &r),
+        (None, Some(m)) => row("exports", "run", m),
+        (Some(r), Some(m)) => {
+            row("exports", "なし", &r);
+            row("", "", m);
+        }
+    }
 
     match f.mem_pages {
         Some(p) => row("memory", &format!("初期 {p} ページ"), ""),
@@ -397,13 +501,21 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts) {
 fn print_verdict(v: &Verdict, f: &Facts, p: &Profile) {
     println!("[{}]", v.board);
 
-    match &v.validate {
-        Ok(limit) => row(
+    match (&v.validate, f.mem_pages) {
+        // メモリ定義が無いモジュールは「0 ページが収まる」ではない
+        // （ランタイムは通すが abi-spec §6.2 が 1 つ要求している）。
+        // **件数はモジュールの節で数えている**ので、ここでは印を付けない。
+        (Ok(_), None) => row(
             "validate",
-            &format!("初期 {} ページ ≤ {limit}", f.mem_pages.unwrap_or(0)),
+            "メモリ定義が無いので判定しない",
+            "（上に出した）",
+        ),
+        (Ok(limit), Some(pages)) => row(
+            &v.stage_label(),
+            &format!("初期 {pages} ページ ≤ {limit}"),
             "ok",
         ),
-        Err(e) => row("validate", e, "← 落ちる"),
+        (Err(e), _) => row(&v.stage_label(), e, "← 落ちる"),
     }
 
     for iface in &v.unimplemented {
@@ -446,9 +558,12 @@ fn row(label: &str, value: &str, note: &str) {
     }
 }
 
+/// 幅 `w` まで空白で埋める。**必ず 1 桁は空ける**（`w` ちょうどの値が
+/// 注記とくっついて読めなくなるのを防ぐ。validate のエラー文はちょうど
+/// 44 桁になることがある）。
 fn pad(s: &str, w: usize) -> String {
     let mut out = String::from(s);
-    for _ in display_width(s)..w {
+    for _ in display_width(s)..w.max(display_width(s) + 1) {
         out.push(' ');
     }
     out

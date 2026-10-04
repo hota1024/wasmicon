@@ -135,6 +135,11 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
 
 fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options> {
     let sub = args.next().context("trace の後に diff が要る")?;
+    // サブコマンドの判定より先に help を見る（`trace --help` が
+    // 「diff だけ」で弾かれていた）。
+    if sub == "-h" || sub == "--help" {
+        help();
+    }
     if sub != "diff" {
         bail!("trace のサブコマンドは diff だけ: {sub}");
     }
