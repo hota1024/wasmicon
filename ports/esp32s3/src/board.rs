@@ -352,6 +352,10 @@ impl<S: Serial> Board for EspBoard<S> {
         // 残るので、SCL が low に張り付いたまま進まない場合に `ports/rp2350`
         // より桁違いに遅くなる。`PerByte` にして rp2350 の
         // `I2C_TIMEOUT_US`（1 バイト 25 ms）と同じ予算に揃える。
+        //
+        // **片方を変えるならもう片方も変える**:
+        // `ports/rp2350/src/board.rs` の `I2C_TIMEOUT_US`
+        // （この値を選んだ理由はあちらの doc コメントにある）。
         const I2C_TIMEOUT_MS: u64 = 25;
         let config = HalI2cConfig::default()
             .with_frequency(Rate::from_hz(hz))
