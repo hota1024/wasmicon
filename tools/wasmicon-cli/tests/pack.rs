@@ -59,7 +59,10 @@ fn the_default_output_sits_next_to_the_input() {
         board: None,
     })
     .expect("pack できる");
-    assert!(dir.join("app.slot").is_file(), "<入力>.slot に書く");
+    assert!(
+        dir.join("app.bin").is_file(),
+        "<入力>.bin に書く（picotool が拡張子で種別を判定する）"
+    );
 }
 
 #[test]
@@ -129,7 +132,7 @@ fn a_board_without_a_decided_slot_is_refused() {
     })
     .expect_err("未決");
     assert!(format!("{e:#}").contains("決まっていない"), "{e:#}");
-    assert!(!dir.join("app.slot").exists(), "書く前に弾く");
+    assert!(!dir.join("app.bin").exists(), "書く前に弾く");
 }
 
 #[test]
