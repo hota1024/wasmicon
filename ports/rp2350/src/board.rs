@@ -90,9 +90,18 @@ pub trait Serial {
 /// Pico 2 のボード。
 pub struct Pico2Board<S: Serial> {
     serial: S,
-    /// `clk_peri` の周波数。SPI の分周器を決めるのに要る。
+    /// `clk_peri` の周波数。**SPI** の分周器を決めるのに要る。
     /// 起動時に決まった実際の値を受け取る（150 MHz を決め打ちにしない）。
     peri_clock_hz: u32,
+    /// `clk_sys` の周波数。**I2C** の SCL カウンタを決めるのに要る。
+    ///
+    /// **SPI と出どころが違う。** PL022 は `clk_peri` で動くが、
+    /// DW_apb_i2c は `clk_sys` で動く（`rp235x-hal` の `new_controller` が
+    /// 取る引数も `system_clock`、pico-sdk の `i2c_set_baudrate` も
+    /// `clock_get_hz(clk_sys)`）。既定の `init_clocks_and_plls` では
+    /// どちらも 150 MHz で一致するので取り違えても動いてしまうが、
+    /// `clk_peri` を別に振った瞬間に SCL が要求値から外れる。
+    sys_clock_hz: u32,
     /// オープンドレインとして開いているピン。
     ///
     /// RP2350 のパッドにもオープンドレイン制御は無い（`OD` は出力ディセーブル）
@@ -103,16 +112,22 @@ pub struct Pico2Board<S: Serial> {
 
 impl<S: Serial> Pico2Board<S> {
     /// # Safety
-    /// SIO / IO_BANK0 / PADS_BANK0 / TIMER0 / SPI0、および RESETS の SPI0 ビットを
-    /// このボードが排他的に使うこと。呼び出し側は同じペリフェラルを他で触らない
-    /// 責任を負う。
+    /// SIO / IO_BANK0 / PADS_BANK0 / TIMER0 / SPI0 / I2C0、および RESETS の
+    /// SPI0 / I2C0 ビットをこのボードが排他的に使うこと。SPI0 に割り当てた
+    /// GPIO (`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO`) と I2C0 に割り当てた
+    /// GPIO (`I2C0_SDA` / `I2C0_SCL`) も同様。呼び出し側は同じペリフェラルと
+    /// 同じピンを他で触らない責任を負う。
     ///
-    /// `peri_clock_hz` には `clocks.peripheral_clock.freq()` を渡す。
+    /// `peri_clock_hz` には `clocks.peripheral_clock.freq()`（SPI 用）、
+    /// `sys_clock_hz` には `clocks.system_clock.freq()`（I2C 用）を渡す。
+    /// **2 つは別のクロックなので取り違えないこと**（既定では値が一致する
+    /// ため、間違えても動いてしまう）。
     #[must_use]
-    pub unsafe fn new(serial: S, peri_clock_hz: u32) -> Self {
+    pub unsafe fn new(serial: S, peri_clock_hz: u32, sys_clock_hz: u32) -> Self {
         Pico2Board {
             serial,
             peri_clock_hz,
+            sys_clock_hz,
             open_drain: 0,
         }
     }
@@ -152,14 +167,64 @@ impl<S: Serial> Pico2Board<S> {
         (u64::from(hi) << 32) | u64::from(lo)
     }
 
+    /// STOP_DET が立つのを待って落とす。待てなくても諦めてフラグを落とす。
+    ///
+    /// 戻り値を持たないのは、ここで待てなかったことを理由にするより、
+    /// 呼び出し側が持っている本当の理由（NACK など）を返すほうが
+    /// 診断に役立つため。
+    ///
+    /// **落とし忘れると次の転送が壊れる。** `IC_RAW_INTR_STAT` は
+    /// `IC_CLR_*` を読むまでクリアされず（`IC_ENABLE` の上げ下げでも
+    /// 消えない）、残っていると次の `i2c_wait_stop` が自分の STOP を
+    /// 待たずに即座に返る。
+    fn i2c_drain_stop(i2c: &pac::I2C0) {
+        let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+        while i2c.ic_raw_intr_stat().read().stop_det().is_inactive() {
+            if Self::micros() > deadline {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        let _ = i2c.ic_clr_stop_det().read();
+    }
+
+    /// 進行中の転送を畳む。
+    ///
+    /// `IC_ENABLE.ABORT` を立てるとコントローラが STOP を出して TX FIFO を
+    /// 捨てる（`rp235x-hal` の `abort` と同じ）。
+    ///
+    /// **タイムアウトしたときは必ず通すこと。** 出さずに返ると転送が進行中の
+    /// まま残り、次の `i2c_set_target` の `IC_EN` 待ちも抜けられなくなって、
+    /// 以降すべての I2C 呼び出しが 25 ms 待って `timeout` を返し続ける。
+    /// NACK の経路はハードウェアが STOP を自動で出すのでこれは要らない。
+    fn i2c_abort(i2c: &pac::I2C0) {
+        i2c.ic_enable().modify(|_, w| w.abort().set_bit());
+        // ABORT はコントローラが自分で落とす。待てなくても先へ進む
+        // （呼び出し側は `timeout` を返すので理由は変わらない）。
+        let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
+        while i2c.ic_enable().read().abort().bit_is_set() {
+            if Self::micros() > deadline {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        // アボートで立つフラグを全部落としておく。
+        let _ = i2c.ic_clr_tx_abrt().read();
+        let _ = i2c.ic_tx_abrt_source().read();
+        Self::i2c_drain_stop(i2c);
+    }
+
     /// `IC_TX_ABRT_SOURCE` を読み、立っていれば握ってエラーに変える。
     ///
     /// **このレジスタは `IC_CLR_TX_ABRT` を読むまでクリアされない**
     /// （`IC_CLR_TX_ABRT` 自体は常に 0 を読む）。クリアを忘れると TX FIFO が
     /// 再武装されず、次の転送が通らない。
     ///
-    /// アボートのときハードウェアが STOP を自動で出すので、ここで STOP を
-    /// 送る必要はない（`rp235x-hal` の `write_internal` のコメントと同じ）。
+    /// アボートのときハードウェアが STOP を自動で出すので STOP を送る必要は
+    /// 無いが、**その STOP のフラグはここで待って落とす**。
+    /// `rp235x-hal` の `write_internal` が
+    /// `if abort_reason.is_err() || do_stop { … clr_stop_det }` と
+    /// 書いているのと同じ理由で、前半を落とすと次の転送が壊れる。
     fn i2c_take_abort(i2c: &pac::I2C0) -> BoardResult<()> {
         let src = i2c.ic_tx_abrt_source().read();
         if src.bits() == 0 {
@@ -174,6 +239,7 @@ impl<S: Serial> Pico2Board<S> {
             || src.abrt_10addr2_noack().bit_is_set()
             || src.abrt_txdata_noack().bit_is_set()
             || src.abrt_gcall_noack().bit_is_set();
+        Self::i2c_drain_stop(i2c);
         Err(if nacked {
             ErrorCode::Nack
         } else {
@@ -181,15 +247,41 @@ impl<S: Serial> Pico2Board<S> {
         })
     }
 
-    /// STOP が出るまで待ってフラグを落とす。
-    fn i2c_wait_stop(i2c: &pac::I2C0) -> BoardResult<()> {
+    /// `cond` が成立するまで待つ。上限は `I2C_TIMEOUT_US`。
+    ///
+    /// **待ちはすべてこれを通す。** 同じ形のループを書き写すと、
+    /// アボートの検査や STOP の後片付けが箇所ごとに食い違う
+    /// （実際に一度やらかした: アボート経路で STOP_DET を落とし忘れていた）。
+    ///
+    /// `check_abort` が true のとき、待っている間に `IC_TX_ABRT_SOURCE` を
+    /// 見て、立っていればその理由で抜ける（送受信の途中で使う）。
+    /// STOP 待ちでは false にする（アボートで出た STOP もそこで待つため）。
+    ///
+    /// タイムアウトしたら `i2c_abort` で転送を畳んでから返る。
+    fn i2c_wait(
+        i2c: &pac::I2C0,
+        check_abort: bool,
+        cond: impl Fn(&pac::I2C0) -> bool,
+    ) -> BoardResult<()> {
         let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
-        while i2c.ic_raw_intr_stat().read().stop_det().is_inactive() {
+        while !cond(i2c) {
+            if check_abort {
+                Self::i2c_take_abort(i2c)?;
+            }
             if Self::micros() > deadline {
+                Self::i2c_abort(i2c);
                 return Err(ErrorCode::Timeout);
             }
             core::hint::spin_loop();
         }
+        Ok(())
+    }
+
+    /// STOP が出るまで待ってフラグを落とす。
+    fn i2c_wait_stop(i2c: &pac::I2C0) -> BoardResult<()> {
+        Self::i2c_wait(i2c, false, |i2c| {
+            i2c.ic_raw_intr_stat().read().stop_det().is_active()
+        })?;
         let _ = i2c.ic_clr_stop_det().read();
         Ok(())
     }
@@ -200,6 +292,11 @@ impl<S: Serial> Pico2Board<S> {
     /// **`IC_ENABLE_STATUS.IC_EN` が落ちきるのを待つ**（`rp235x-hal` は
     /// 待っていないが、待たないと `open` → `close` → `open` を跨いだときに
     /// 書き込みが無視されうる）。
+    ///
+    /// ここでは `i2c_wait` を使わない。`IC_EN` が落ちないのは転送が
+    /// 進行中のときで、そこで `i2c_abort`（= `IC_ENABLE` を触る）を
+    /// 重ねると状態がさらに分かりにくくなる。前の転送のタイムアウトで
+    /// 既に畳んであるはずなので、ここは理由だけ返す。
     fn i2c_set_target(i2c: &pac::I2C0, address: u16) -> BoardResult<()> {
         // 7 bit アドレスのみ（`wit/i2c.wit`）。`ports/esp32s3` も `esp-hal` が
         // 範囲外を `AddressInvalid` で弾くので、2 つのポートは揃っている
@@ -231,16 +328,9 @@ impl<S: Serial> Pico2Board<S> {
     fn i2c_send(i2c: &pac::I2C0, data: &[u8], stop: bool) -> BoardResult<()> {
         let last = data.len() - 1;
         for (i, &b) in data.iter().enumerate() {
-            let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
-            while i2c.ic_status().read().tfnf().bit_is_clear() {
-                // FIFO が空かないのは相手が止まっているとき。アボートが
-                // 立っていればそれを理由として返す。
-                Self::i2c_take_abort(i2c)?;
-                if Self::micros() > deadline {
-                    return Err(ErrorCode::Timeout);
-                }
-                core::hint::spin_loop();
-            }
+            // FIFO が空かないのは相手が止まっているとき。アボートが
+            // 立っていればそれを理由として返す。
+            Self::i2c_wait(i2c, true, |i2c| i2c.ic_status().read().tfnf().bit_is_set())?;
             i2c.ic_data_cmd().write(|w| {
                 w.stop().bit(stop && i == last);
                 // SAFETY: DAT は 8 bit。
@@ -248,13 +338,9 @@ impl<S: Serial> Pico2Board<S> {
             });
         }
         // シフトレジスタから出きるまで待ってからアボートを見る。
-        let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
-        while i2c.ic_raw_intr_stat().read().tx_empty().is_inactive() {
-            if Self::micros() > deadline {
-                return Err(ErrorCode::Timeout);
-            }
-            core::hint::spin_loop();
-        }
+        Self::i2c_wait(i2c, false, |i2c| {
+            i2c.ic_raw_intr_stat().read().tx_empty().is_active()
+        })?;
         Self::i2c_take_abort(i2c)?;
         if stop {
             Self::i2c_wait_stop(i2c)?;
@@ -271,27 +357,12 @@ impl<S: Serial> Pico2Board<S> {
         let n = buf.len();
         let last = n - 1;
         for (i, byte) in buf.iter_mut().enumerate() {
-            let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
-            while i2c.ic_status().read().tfnf().bit_is_clear() {
-                Self::i2c_take_abort(i2c)?;
-                if Self::micros() > deadline {
-                    return Err(ErrorCode::Timeout);
-                }
-                core::hint::spin_loop();
-            }
+            Self::i2c_wait(i2c, true, |i2c| i2c.ic_status().read().tfnf().bit_is_set())?;
             i2c.ic_data_cmd().write(|w| {
                 w.stop().bit(i == last);
                 w.cmd().read()
             });
-
-            let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
-            while i2c.ic_rxflr().read().bits() == 0 {
-                Self::i2c_take_abort(i2c)?;
-                if Self::micros() > deadline {
-                    return Err(ErrorCode::Timeout);
-                }
-                core::hint::spin_loop();
-            }
+            Self::i2c_wait(i2c, true, |i2c| i2c.ic_rxflr().read().bits() != 0)?;
             *byte = i2c.ic_data_cmd().read().dat().bits();
         }
         Self::i2c_wait_stop(i2c)?;
@@ -371,17 +442,25 @@ fn spi_divisors(clk_hz: u32, want_hz: u32) -> (u8, u8) {
 /// していない（`wit/i2c.wit` は `speed` の enum しか受け取らないので、
 /// そもそも任意の周波数は来ない）。
 ///
-/// `clk_peri` 150 MHz のときの 3 速度（いずれも誤差なしで出る）:
+/// `clk_sys` 150 MHz のときの 3 速度:
 ///
-/// | speed | hcnt | lcnt | spklen | sda_hold | 実効 |
-/// |---|---|---|---|---|---|
-/// | `standard` | 600 | 900 | 56 | 46 | 100.00 kHz |
-/// | `fast` | 150 | 225 | 14 | 46 | 400.00 kHz |
-/// | `fast-plus` | 60 | 90 | 5 | 19 | 1000.00 kHz |
+/// | speed | hcnt | lcnt | spklen | sda_hold |
+/// |---|---|---|---|---|
+/// | `standard` | 600 | 900 | 56 | 46 |
+/// | `fast` | 150 | 225 | 14 | 46 |
+/// | `fast-plus` | 60 | 90 | 5 | 19 |
+///
+/// `hcnt + lcnt` が要求周期にちょうど一致するよう選んでいる（150 MHz では
+/// 3 速度とも割り切れる）。**ただし実際の SCL はこれより数 % 低い。**
+/// DW_apb_i2c は SCL の high / low にスパイクフィルタ長と固定サイクルぶんの
+/// オーバーヘッドを足すため。pico-sdk も `rp235x-hal` もこれを無視している
+/// （pico-sdk のコメント: "There are some subtleties to I2C timing which we
+/// are completely ignoring here"）ので実装は合わせてあるが、
+/// **実効周波数を知りたければオシロで測ること**。
 ///
 /// `None` を返すのは、1 MHz 超・0、`hcnt` / `lcnt` が 8..=0xffff の外
-/// （`clk_peri` が 2 MHz 程度まで落ちると起きる）、`fast-plus` で
-/// `clk_peri` が 32 MHz 未満、`sda_hold` が `lcnt - 2` を超える場合。
+/// （`clk_sys` が 2 MHz 程度まで落ちると起きる）、`fast-plus` で
+/// `clk_sys` が 32 MHz 未満、`sda_hold` が `lcnt - 2` を超える場合。
 fn i2c_timing(clk_hz: u32, freq_hz: u32) -> Option<(u16, u16, u8, u16)> {
     if freq_hz == 0 || freq_hz > 1_000_000 {
         return None;
@@ -563,7 +642,7 @@ impl<S: Serial> Board for Pico2Board<S> {
             Speed::Fast => 400_000,
             Speed::FastPlus => 1_000_000,
         };
-        let Some((hcnt, lcnt, spklen, sda_hold)) = i2c_timing(self.peri_clock_hz, freq_hz) else {
+        let Some((hcnt, lcnt, spklen, sda_hold)) = i2c_timing(self.sys_clock_hz, freq_hz) else {
             return Err(ErrorCode::Unsupported);
         };
 

@@ -32,8 +32,10 @@
 //!   `invalid-argument`（`esp-hal` が `AddressInvalid` を返す / rp2350 は
 //!   自分で検査する）。host の mock はアドレスを検査しないので、
 //!   **そこだけ揃っていない**（docs/TODO.md §2.1）
-//! - **タイムアウト**。`esp-hal` は `Error::Timeout` を返す。rp2350 も
-//!   TIMER0 で実時間を計って `timeout` を返すようにしてある
+//! - **タイムアウト**。`SoftwareTimeout::PerByte(25 ms)` を**明示的に設定して**
+//!   rp2350 の `I2C_TIMEOUT_US` と同じ予算に揃えている。`Config::default()` は
+//!   `SoftwareTimeout::None` なので、既定のままだと FSM のハードウェア
+//!   タイムアウト（2^23 バス周期 ≒ 0.2 秒）しか残らず桁が合わない
 //! - **内部プルアップ**。`esp-hal` の `connect_pin` が SDA/SCL に必ず
 //!   `Pull::Up` を掛ける（1.2.1 の `i2c/master/low_level/mod.rs`）。
 //!   rp2350 側もそれに合わせて `pue` を立てている。ただしどちらも弱い
@@ -42,11 +44,11 @@
 //! **I2C は実機では未検証**（docs/TODO.md §1.2）。
 
 use esp_hal::gpio::AnyPin;
-use esp_hal::i2c::master::{Config as HalI2cConfig, Error as HalI2cError, I2c};
+use esp_hal::i2c::master::{Config as HalI2cConfig, Error as HalI2cError, I2c, SoftwareTimeout};
 use esp_hal::peripherals::{GPIO, I2C0, IO_MUX, SPI2};
 use esp_hal::spi::master::{Config as HalSpiConfig, Spi};
 use esp_hal::spi::Mode as HalSpiMode;
-use esp_hal::time::Rate;
+use esp_hal::time::{Duration, Rate};
 use esp_hal::Blocking;
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
@@ -326,8 +328,6 @@ impl<S: Serial> Board for EspBoard<S> {
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C は Phase 5 で実装する（docs/TODO.md §1.2） ---
-
     // --- I2C。index 0 = I2C0 (SDA=GPIO8, SCL=GPIO9) ---
 
     fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
@@ -345,7 +345,19 @@ impl<S: Serial> Board for EspBoard<S> {
             Speed::Fast => 400_000,
             Speed::FastPlus => 1_000_000,
         };
-        let config = HalI2cConfig::default().with_frequency(Rate::from_hz(hz));
+        // **タイムアウトは明示的に設定する。** `Config::default()` は
+        // `software_timeout: SoftwareTimeout::None`（esp-hal 1.2.1 の
+        // `i2c/master/mod.rs`）で、ソフトウェアの上限が無い。FSM の
+        // ハードウェアタイムアウト（既定 2^23 バス周期 ≒ 0.2 秒）だけが
+        // 残るので、SCL が low に張り付いたまま進まない場合に `ports/rp2350`
+        // より桁違いに遅くなる。`PerByte` にして rp2350 の
+        // `I2C_TIMEOUT_US`（1 バイト 25 ms）と同じ予算に揃える。
+        const I2C_TIMEOUT_MS: u64 = 25;
+        let config = HalI2cConfig::default()
+            .with_frequency(Rate::from_hz(hz))
+            .with_software_timeout(SoftwareTimeout::PerByte(Duration::from_millis(
+                I2C_TIMEOUT_MS,
+            )));
 
         // SAFETY: EspBoard::new の契約により、I2C0 と I2C0_* のピンはこの
         // ボードだけが触る。self.i2c を先に None にしてあるので、同じものを
@@ -371,6 +383,14 @@ impl<S: Serial> Board for EspBoard<S> {
         if index != 0 {
             return Err(ErrorCode::Unsupported);
         }
+        // 長さ 0 は Hal 側で invalid-argument にしているが、ここでも弾く。
+        // `esp-hal` の `transaction_impl` は**空の read を転送から除いて
+        // しまう**ので（`.filter(|op| op.is_write() || !op.is_empty())`）、
+        // 任せると長さ 0 の read が `Ok(0)` になって `ports/rp2350` と
+        // 食い違う。3 つのメソッドで同じ判定にしておく。
+        if data.is_empty() {
+            return Err(ErrorCode::InvalidArgument);
+        }
         let addr = i2c_addr(address)?;
         let bus = self.i2c.as_mut().ok_or(ErrorCode::InvalidHandle)?;
         bus.write(addr, data).map_err(i2c_error)
@@ -379,6 +399,9 @@ impl<S: Serial> Board for EspBoard<S> {
     fn i2c_read(&mut self, index: u32, address: u16, buf: &mut [u8]) -> BoardResult<usize> {
         if index != 0 {
             return Err(ErrorCode::Unsupported);
+        }
+        if buf.is_empty() {
+            return Err(ErrorCode::InvalidArgument);
         }
         let addr = i2c_addr(address)?;
         let n = buf.len();
@@ -396,6 +419,9 @@ impl<S: Serial> Board for EspBoard<S> {
     ) -> BoardResult<usize> {
         if index != 0 {
             return Err(ErrorCode::Unsupported);
+        }
+        if data.is_empty() || buf.is_empty() {
+            return Err(ErrorCode::InvalidArgument);
         }
         let addr = i2c_addr(address)?;
         let n = buf.len();

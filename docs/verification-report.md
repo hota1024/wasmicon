@@ -24,7 +24,9 @@ docs/handoff.md §5 Phase 6 の成果物。**何がどこまで検証された�
 | 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達**（I2C は実装したが未検証。sensor-display は未観測） |
 
 **Phase 6 の「同一バイナリが 2 ボードで同じトレースを出す」は満たした。**
-残っているのは 4 通りの表示（I2C の実装が要る。`docs/TODO.md` §1.3）。
+残っているのは 4 通りの表示。I2C は `ports/rp2350` / `ports/esp32s3` で
+実装したが**実機で一度も動かしていない**（`ports/rp2040` は未実装）。
+→ `docs/TODO.md` §1.2 / §1.3。
 
 2026-09-26 に `ports/esp32s3` の SPI2 を実装し、RP2350 と**同じ
 `lcd_demo_rs.wasm`**（SHA-256 `fc470947…`）を実機で走らせた。**host call の

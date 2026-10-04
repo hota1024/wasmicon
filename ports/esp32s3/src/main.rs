@@ -86,9 +86,10 @@ fn main() -> ! {
     let mut serial = SerialPort(uart);
     serial.write(b"wasmicon esp32s3\r\n");
 
-    // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX / SPI2 と SPI2 のピンを排他的に
-    // 使う。UART は GPIO43/44 を占有するが、役割名に割り当てた GPIO とも
-    // SPI2 のピン (GPIO11/12/13) とも重ねていない。
+    // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX / SPI2 / I2C0 と、SPI2 と I2C0 に
+    // 割り当てたピンを排他的に使う。UART は GPIO43/44 を占有するが、役割名に
+    // 割り当てた GPIO とも SPI2 のピン (GPIO11/12/13) とも I2C0 のピン
+    // (GPIO8/9) とも重ねていない。
     // hw-probe のときだけ可変で借りる。
     #[cfg_attr(not(feature = "hw-probe"), allow(unused_mut))]
     let mut board = unsafe { EspBoard::new(serial) };

@@ -140,11 +140,20 @@ fn main() -> ! {
     serial.write(b"wasmicon rp2350\r\n");
 
     // SAFETY: Pico2Board がこれ以降 SIO / IO_BANK0 / PADS_BANK0 / TIMER0 /
-    // SPI0 を排他的に使う。上で取った Pins は UART の GP0/GP1 だけで、
-    // 役割名に割り当てた GPIO とも SPI0 のピンとも重ねていない。
+    // SPI0 / I2C0 と、RESETS の SPI0 / I2C0 ビットを排他的に使う。上で取った
+    // Pins は UART の GP0/GP1 だけで、役割名に割り当てた GPIO とも
+    // SPI0 のピン (GP16/18/19) とも I2C0 のピン (GP4/GP5) とも重ねていない。
     //
-    // clk_peri は SPI の分周に要る。決め打ちにせず実際の値を渡す。
-    let board = unsafe { Pico2Board::new(serial, clocks.peripheral_clock.freq().to_Hz()) };
+    // クロックは 2 つ渡す。**SPI (PL022) は clk_peri、I2C (DW_apb_i2c) は
+    // clk_sys** で動く。既定ではどちらも 150 MHz で一致するが、取り違えると
+    // clk_peri を別に振った瞬間に I2C の SCL が狂うので分けてある。
+    let board = unsafe {
+        Pico2Board::new(
+            serial,
+            clocks.peripheral_clock.freq().to_Hz(),
+            clocks.system_clock.freq().to_Hz(),
+        )
+    };
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
 
     // SAFETY: シングルコアで割り込みからも触らないので、可変静的への参照は
