@@ -143,6 +143,44 @@ impl<B: Board> Hal<B> {
         &mut self.board
     }
 
+    /// 残っているハンドルを全部 drop する（abi-spec §5.2）。
+    ///
+    /// §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを drop する」と
+    /// 定めている。ゲストが自分で解放していれば（Rust バインディングの `Drop`、
+    /// AS 版の明示的な `drop`）ここは何もしない。**トラップで抜けた場合**と、
+    /// バインディングを使わずに書いたゲストが解放し忘れた場合にここで片付く。
+    ///
+    /// 片付けないと、次に走るアプリが同じピン・同じバスの `open` で `busy` を
+    /// 踏む（docs/app-workflow.md §3.2）。
+    ///
+    /// **トレース行は出さない。** ゲストの host call ではないし、出すと記録済みの
+    /// トレース（docs/verification-report.md §6 / §7）が変わる。
+    ///
+    /// 解放の順序は **ハンドルの小さい順に gpio → i2c → spi** で固定する。
+    /// ポートごとに違うと、トレースに出ない差がボード間に生まれる。
+    pub fn release_all(&mut self) {
+        // board と各スロットは別のフィールドなので、分けて借りる。
+        let board = &mut self.board;
+        for slot in &mut self.pins {
+            if slot.open {
+                board.gpio_release(slot.index);
+                *slot = PinSlot::default();
+            }
+        }
+        for slot in &mut self.i2c {
+            if slot.open {
+                board.i2c_close(slot.index);
+                *slot = BusSlot::default();
+            }
+        }
+        for slot in &mut self.spi {
+            if slot.open {
+                board.spi_close(slot.index);
+                *slot = BusSlot::default();
+            }
+        }
+    }
+
     /// abi-spec §9: 役割名で配った GPIO 番号は数値ではなく役割名で出す。
     ///
     /// 判断材料は数値だけなので、ゲストがハードコードした番号が役割割り当てと

@@ -134,7 +134,14 @@ fn main() -> ! {
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    if let Err(e) = run(&mut hal, arena_buf, scratch_buf) {
+    let outcome = run(&mut hal, arena_buf, scratch_buf);
+
+    // abi-spec §5.2: `run` から戻ったら残っているハンドルを全部 drop する。
+    // トラップで抜けたときはゲストの Drop が走らないので、ここだけが片付ける。
+    // トレース行は出さない（Hal::release_all のコメント）。
+    hal.release_all();
+
+    if let Err(e) = outcome {
         // docs/handoff.md §3 #4: ログを出して停止する。再起動はしない。
         let s = hal.board_mut().serial();
         s.write(b"wasmicon: ");
