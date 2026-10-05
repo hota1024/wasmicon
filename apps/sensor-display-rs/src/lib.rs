@@ -15,16 +15,45 @@ mod sht4x;
 use wasmicon_hal::gpio::{Pin, PinMode};
 use wasmicon_hal::i2c::{Bus as I2cBus, Speed};
 use wasmicon_hal::spi::{Bus as SpiBus, Mode};
-use wasmicon_hal::{board, log};
+use wasmicon_hal::{ErrorCode, board, log};
 
 use ili9341::Display;
 
-/// 背景色（黒）。
-const BG: u16 = 0x0000;
-/// 文字色（白）。
+/// 背景。
+const BG: u16 = 0x0841;
+/// 見出しの帯。
+const HEADER: u16 = 0x1A3F;
+/// カードの地。
+const CARD: u16 = 0x2104;
+/// 数値と見出しの文字。
 const FG: u16 = 0xFFFF;
-/// バーの色（赤）。
-const BAR: u16 = 0xF800;
+/// ラベルと目盛り。
+const MUTED: u16 = 0xA514;
+/// 温度カードの差し色。
+const TEMP_ACCENT: u16 = 0xFC00;
+/// 湿度カードの差し色。
+const HUM_ACCENT: u16 = 0x07FF;
+/// ゲージの溝。
+const TRACK: u16 = 0x4208;
+
+/// カードの位置と大きさ（`apps/README.md` §2 の画面レイアウト）。
+const TEMP_X: u16 = 4;
+const HUM_X: u16 = 162;
+const CARD_Y: u16 = 36;
+const CARD_W: u16 = 154;
+const CARD_H: u16 = 116;
+/// 数値の倍率と y。
+const VALUE_SCALE: u16 = 3;
+const VALUE_Y: u16 = 84;
+
+/// ゲージ。`bar_px` の 0..=308 がそのまま幅になる。
+const GAUGE_X: u16 = 6;
+const GAUGE_Y: u16 = 178;
+const GAUGE_H: u16 = 16;
+/// ゲージの色の区間（`bar_px` 上の終端と色）。-45..10 / ..30 / ..50 / ..175 °C。
+const ZONES: [(u16, u16); 4] = [(77, 0x041F), (105, 0x07E0), (133, 0xFFE0), (308, 0xF800)];
+/// 目盛り（`bar_px` 上の位置）。0 / 25 / 50 / 100 °C。
+const TICKS: [u16; 4] = [63, 98, 133, 203];
 
 /// SPI のクロック。
 const SPI_HZ: u32 = 24_000_000;
@@ -70,11 +99,7 @@ pub extern "C" fn run() {
     };
 
     let display = Display::new(&spi, &cs, &dc);
-    if display.init(&rst).is_err()
-        || display
-            .fill_rect(0, 0, ili9341::WIDTH, ili9341::HEIGHT, BG)
-            .is_err()
-    {
+    if display.init(&rst).is_err() || draw_frame(&display).is_err() {
         log::error("display failed");
         return;
     }
@@ -93,23 +118,68 @@ pub extern "C" fn run() {
 
     let temp = sht4x::temp_centi(reading.raw_t);
     let humidity = sht4x::humidity_centi(reading.raw_h);
+    if draw_values(&display, temp, humidity).is_err() {
+        log::error("display failed");
+    }
+}
 
+/// センサーを読む前に描ける部分。見出し・カード・ゲージの溝と目盛り。
+fn draw_frame(d: &Display) -> Result<(), ErrorCode> {
+    d.fill_rect(0, 0, ili9341::WIDTH, ili9341::HEIGHT, BG)?;
+
+    d.fill_rect(0, 0, ili9341::WIDTH, 28, HEADER)?;
+    d.draw_text(8, 6, b"WASMICON", 2, FG, HEADER)?;
+    d.draw_text(272, 10, b"SHT40", 1, FG, HEADER)?;
+
+    draw_card(d, TEMP_X, b"TEMP", b"C", TEMP_ACCENT)?;
+    draw_card(d, HUM_X, b"HUMIDITY", b"%", HUM_ACCENT)?;
+
+    d.fill_rect(4, 162, 312, 72, CARD)?;
+    d.fill_rect(GAUGE_X, GAUGE_Y, 308, GAUGE_H, TRACK)?;
+    for t in TICKS {
+        d.fill_rect(GAUGE_X + t, 196, 1, 5, MUTED)?;
+    }
+    d.draw_text(6, 206, b"-45", 1, MUTED, CARD)?;
+    d.draw_text(65, 206, b"0", 1, MUTED, CARD)?;
+    d.draw_text(131, 206, b"50", 1, MUTED, CARD)?;
+    d.draw_text(197, 206, b"100", 1, MUTED, CARD)?;
+    d.draw_text(282, 206, b"175C", 1, MUTED, CARD)
+}
+
+/// カード 1 枚。地・上端の差し色・ラベル・単位。
+fn draw_card(d: &Display, x: u16, label: &[u8], unit: &[u8], accent: u16) -> Result<(), ErrorCode> {
+    d.fill_rect(x, CARD_Y, CARD_W, CARD_H, CARD)?;
+    d.fill_rect(x, CARD_Y, CARD_W, 4, accent)?;
+    d.draw_text(x + 8, 48, label, 1, MUTED, CARD)?;
+    d.draw_text(x + CARD_W - 24, 46, unit, 2, accent, CARD)
+}
+
+/// 読んだ値。カードの数値とゲージの塗り。
+fn draw_values(d: &Display, temp: i32, humidity: i32) -> Result<(), ErrorCode> {
     let mut buf = [0u8; ili9341::MAX_TEXT];
-    let n = format_row(b'T', temp, b'C', &mut buf);
-    if display.draw_text(8, 40, &buf[..n], FG, BG).is_err() {
-        log::error("display failed");
-        return;
-    }
-    let n = format_row(b'H', humidity, b'%', &mut buf);
-    if display.draw_text(8, 60, &buf[..n], FG, BG).is_err() {
-        log::error("display failed");
-        return;
-    }
+    let n = format_value(temp, &mut buf);
+    draw_value(d, TEMP_X, &buf[..n])?;
+    let n = format_value(humidity, &mut buf);
+    draw_value(d, HUM_X, &buf[..n])?;
 
-    let bar = bar_px(temp);
-    if bar > 0 && display.fill_rect(8, 80, bar as u16, 8, BAR).is_err() {
-        log::error("display failed");
+    // 区間ごとに、塗る範囲 [0, bar) と重なる分だけ塗る。
+    let bar = bar_px(temp) as u16;
+    let mut start = 0;
+    for (end, color) in ZONES {
+        if bar > start {
+            let stop = if bar < end { bar } else { end };
+            d.fill_rect(GAUGE_X + start, GAUGE_Y, stop - start, GAUGE_H, color)?;
+        }
+        start = end;
     }
+    Ok(())
+}
+
+/// 数値をカードの横中央に描く。
+fn draw_value(d: &Display, card_x: u16, text: &[u8]) -> Result<(), ErrorCode> {
+    let w = text.len() as u16 * 8 * VALUE_SCALE;
+    let x = card_x + (CARD_W - w) / 2;
+    d.draw_text(x, VALUE_Y, text, VALUE_SCALE, FG, CARD)
 }
 
 /// 温度バーの長さ。**このアプリで唯一 f32 を使う場所**（`apps/README.md` §1）。
@@ -133,8 +203,8 @@ fn bar_px(temp_centi: i32) -> i32 {
     b as i32
 }
 
-/// `T 23.44C` の形に整形する。書けた長さを返す。
-fn format_row(label: u8, centi: i32, unit: u8, out: &mut [u8]) -> usize {
+/// `23.44` / `-5.07` の形に整形する。書けた長さを返す。
+fn format_value(centi: i32, out: &mut [u8]) -> usize {
     let mut n = 0;
     let put = |b: u8, out: &mut [u8], n: &mut usize| {
         if *n < out.len() {
@@ -142,8 +212,6 @@ fn format_row(label: u8, centi: i32, unit: u8, out: &mut [u8]) -> usize {
             *n += 1;
         }
     };
-    put(label, out, &mut n);
-    put(b' ', out, &mut n);
 
     let neg = centi < 0;
     let v = if neg { -centi } else { centi };
@@ -173,7 +241,6 @@ fn format_row(label: u8, centi: i32, unit: u8, out: &mut [u8]) -> usize {
     put(b'.', out, &mut n);
     put(b'0' + (frac / 10) as u8, out, &mut n);
     put(b'0' + (frac % 10) as u8, out, &mut n);
-    put(unit, out, &mut n);
     n
 }
 

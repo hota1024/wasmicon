@@ -404,6 +404,55 @@ fn sensor_display_agrees_at_humidity_clamp_bounds() {
     }
 }
 
+/// 温度を振っても Rust 版と AS 版が一致すること。
+///
+/// replay の 23.44 °C は正の 5 文字で、ゲージは 2 区間目の途中で止まる。
+/// 負の温度（6 文字の中央寄せ）、ゲージを塗らない端、区間をまたぐ塗りを
+/// 踏まないので別に見る。湿度は replay と同じ 51.08% に固定する。
+#[test]
+fn sensor_display_agrees_across_temperatures() {
+    let cases: [(&str, [u8; 6]); 5] = [
+        // -45.00 °C。bar_px == 0 でゲージを塗らない。
+        ("raw_t=0", [0x00, 0x00, 0x81, 0x74, 0xe9, 0x70]),
+        // -40.01 °C。1 区間目の途中。
+        ("raw_t=1872", [0x07, 0x50, 0x51, 0x74, 0xe9, 0x70]),
+        // -1.25 °C。負で整数部が 1 桁。
+        ("raw_t=16384", [0x40, 0x00, 0x08, 0x74, 0xe9, 0x70]),
+        // 60.00 °C。4 区間すべてにかかる。
+        ("raw_t=39321", [0x99, 0x99, 0xbe, 0x74, 0xe9, 0x70]),
+        // 130.00 °C。SHT4x の上限で 6 文字。
+        ("raw_t=65535", [0xff, 0xff, 0xac, 0x74, 0xe9, 0x70]),
+    ];
+    let rs_wasm = build_rust_app("sensor-display-rs");
+    let as_wasm = build_as_app("sensor-display-as", "sensor_display_as.wasm");
+    for (label, frame) in cases {
+        let go = |wasm: &[u8], lang: &str| -> String {
+            match wasmicon_host::run_wasm_with(wasm, true, vec![frame.to_vec()]) {
+                Ok(out) => out.trace,
+                Err(e) => panic!(
+                    "{lang} / {label} の実行に失敗: {} [{}]",
+                    e.reason(),
+                    e.kind().name()
+                ),
+            }
+        };
+        let rs = go(&rs_wasm, "sensor-display-rs");
+        let as_ = go(&as_wasm, "sensor-display-as");
+        assert!(
+            !rs.contains(r#"log(0, "sensor crc failed")"#),
+            "{label}: 合成応答の CRC が合っていない（テスト側の誤り）:\n{rs}"
+        );
+        // 画面外の矩形はゲストの中で弾かれて host call にならないので、
+        // assert_no_host_errors では見えない。ログで見る。
+        assert!(
+            !rs.contains(r#"log(0, "display failed")"#),
+            "{label}: 描画が画面に収まっていない:\n{rs}"
+        );
+        assert_no_host_errors(&rs, label);
+        assert_traces_equal(&rs, &as_);
+    }
+}
+
 /// 失敗経路でも Rust 版と AS 版が一致すること。
 ///
 /// Phase 5 の一致検査はハッピーパスしか通らないが、実機では

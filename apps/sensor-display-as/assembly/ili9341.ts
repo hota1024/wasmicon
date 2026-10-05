@@ -7,13 +7,11 @@ import { GLYPHS, indexOf } from "./font";
 export const WIDTH: u16 = 320;
 export const HEIGHT: u16 = 240;
 
-/// 文字列描画で一度に送れる最大文字数。
-export const MAX_TEXT: i32 = 12;
+/// 文字列描画で一度に送れる最大文字数（8 px × 40 = 画面の幅）。
+export const MAX_TEXT: i32 = 40;
 
 /// 1 行分のピクセルバッファ（320 px × 2 バイト）。
 const ROW = new Uint8Array(<i32>WIDTH * 2);
-/// 文字列描画のバッファ（MAX_TEXT×8 px × 8 行 × 2 バイト）。
-const TEXT = new Uint8Array(MAX_TEXT * 8 * 8 * 2);
 /// 引数が不正なときに返す。ErrorCode.InvalidArgument のステータス（discriminant+1）。
 const ERR_INVALID: u32 = 1;
 
@@ -31,7 +29,8 @@ const ERR_INVALID: u32 = 1;
 ///   範囲外書き込み**で、`asconfig.json` は `noAssert: true` なので
 ///   境界検査が無く、黙ってリニアメモリを壊す（Rust 側はトラップする）
 ///
-/// `drawText` は `w <= MAX_TEXT * 8 == 96` なので `TEXT` を超えられない。
+/// `drawText` は幅と高さを i32 で計算し、画面を超えたら u16 に落とす前に
+/// 弾くので、ここに折り返した値は来ない。
 /// Rust 版の `in_bounds()` と同じ形に揃えてある
 /// （`apps/sensor-display-rs/src/ili9341.rs`）。
 function inBounds(start: u16, len: u16, limit: u16): bool {
@@ -148,8 +147,11 @@ export class Display {
     return this.end();
   }
 
-  /// 等幅 8×8 で文字列を描く。0 なら成功。
-  drawText(x: u16, y: u16, text: Uint8Array, len: i32, fg: u16, bg: u16): u32 {
+  /// 等幅 8×8 の文字を `scale` 倍に拡大して描く。0 なら成功。
+  ///
+  /// フォントの 1 行を拡大した 1 ピクセル行を組み立て、それを `scale` 回
+  /// 送る。バッファは画面 1 行ぶん（ROW）で足りる。
+  drawText(x: u16, y: u16, text: Uint8Array, len: i32, scale: u16, fg: u16, bg: u16): u32 {
     if (len == 0) return 0;
     // **負の len を弾く。** Rust 版は `&[u8]` を取るので構造的に表現できない
     // 穴で、AS 側だけに開いていた。`len == -8192` だと `<u16>(n * 8) == 0` に
@@ -158,33 +160,43 @@ export class Display {
     // 今の呼び出し元は 0 から増やすだけなので到達しない。
     if (len < 0) return ERR_INVALID;
     // 黙って切り詰めない（apps/README.md §2）。
-    if (len > MAX_TEXT) return ERR_INVALID;
+    if (len > MAX_TEXT || scale == 0) return ERR_INVALID;
     const n = len;
-    const w = <u16>(n * 8);
-    if (!inBounds(x, w, WIDTH) || !inBounds(y, 8, HEIGHT)) return ERR_INVALID;
-    let st = this.window(x, y, w, 8);
+    const s = <i32>scale;
+    // u16 に落とす前に画面と比べる（inBounds のコメント）。
+    const wi = n * 8 * s;
+    const hi = 8 * s;
+    if (wi > <i32>WIDTH || hi > <i32>HEIGHT) return ERR_INVALID;
+    const w = <u16>wi;
+    const h = <u16>hi;
+    if (!inBounds(x, w, WIDTH) || !inBounds(y, h, HEIGHT)) return ERR_INVALID;
+    let st = this.window(x, y, w, h);
     if (st != 0) return st;
-
-    const stride = n * 8 * 2;
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < n; col++) {
-        const bits = GLYPHS[indexOf(text[col]) * 8 + row];
-        for (let bit = 0; bit < 8; bit++) {
-          const on = (<i32>bits & (0x80 >> bit)) != 0;
-          const c: u16 = on ? fg : bg;
-          const p = row * stride + (col * 8 + bit) * 2;
-          TEXT[p] = <u8>(c >> 8);
-          TEXT[p + 1] = <u8>c;
-        }
-      }
-    }
 
     st = this.begin();
     if (st != 0) return st;
     st = this.cmd(0x2c); // RAMWR
     if (st != 0) return st;
-    st = this.dataN(TEXT, stride * 8);
-    if (st != 0) return st;
+    const bytes = wi * 2;
+    for (let glyphRow = 0; glyphRow < 8; glyphRow++) {
+      let p = 0;
+      for (let col = 0; col < n; col++) {
+        const bits = GLYPHS[indexOf(text[col]) * 8 + glyphRow];
+        for (let bit = 0; bit < 8; bit++) {
+          const on = (<i32>bits & (0x80 >> bit)) != 0;
+          const c: u16 = on ? fg : bg;
+          for (let k = 0; k < s; k++) {
+            ROW[p] = <u8>(c >> 8);
+            ROW[p + 1] = <u8>c;
+            p += 2;
+          }
+        }
+      }
+      for (let k = 0; k < s; k++) {
+        st = this.dataN(ROW, bytes);
+        if (st != 0) return st;
+      }
+    }
     return this.end();
   }
 }

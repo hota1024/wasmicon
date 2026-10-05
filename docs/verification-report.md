@@ -78,7 +78,7 @@ wasmtime 45 で走らせ、トレースが完全一致する**ことを確認し
 | ゲスト | 行数 | 経路 |
 |---|---|---|
 | blink | 22 | 成功 |
-| sensor-display | 1215 | 成功 |
+| sensor-display | 4183 | 成功（2026-10-05 の画面デザイン変更前は 1215） |
 | sensor-display | 短 | SPI が `unsupported`（実機ポートの現状を模す） |
 | sensor-display | 短 | センサー無応答 |
 

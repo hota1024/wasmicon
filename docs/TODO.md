@@ -260,8 +260,9 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       - `types.error-code` に `timeout` は既にあるので型は足りている。
         ただし**今まで返らなかった状態を返すようになる**ので ABI の変更
 - [ ] **ゲストの `ili9341.rs` の重複を解消するか。** `apps/sensor-display-rs` と
-      `apps/lcd-demo-rs` に 228 行 / 233 行の写しがある（**差分は module
-      コメントだけ**。`diff -u` で 1 hunk に保ってある）。
+      `apps/lcd-demo-rs` に写しがある。**2026-10-05 から `draw_text` が
+      違う**（`sensor-display` だけ倍率付き。`lcd-demo-rs` は記録済みトレースを
+      守るため据え置き）。境界検査・初期化列・`fill_rect` は今も同一
       意図的に分けたが、**一度は実際に挙動が分岐した**: 境界検査の u16 折り返し
       バグを `321fe3d` で `lcd-demo-rs` 側だけ直し、しばらく振る舞いが違っていた
       （2026-09-28 に `sensor-display` の Rust / AS 両方を直して揃え直した）
@@ -324,7 +325,7 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 直す必要が出たときのために書いておく。
 
 - **`spi.transfer` と `i2c.write-read` は 128 バイトまで**（`ports/common` の `SCRATCH`）。送信元と受信先がどちらもゲストメモリにあり範囲が重なりうるので、送信側を一度写している。超えると `unsupported`。v0.1 の用途（SHT4x の 6 バイト、ILI9341 の ID 読み）には十分
-- **`draw_text` は 12 文字まで**（`apps/README.md` §2）。超えると描かずに失敗を返す
+- **`draw_text` は 40 文字まで**（`apps/README.md` §2。`lcd-demo-rs` の写しは 12 文字まで）。超えると描かずに失敗を返す
 - **`fill_rect` は行ごとに `dc` を high に上げ直している。** CS low の 1 トランザクション
   内で `dc` は RAMWR の後に 1 回上げれば足りるので、2 回目以降は無駄な host call。
   `lcd-demo-rs` では 7,176 回のうち約 2,659 回がこれで、トレースを出すビルドの

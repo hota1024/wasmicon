@@ -15,11 +15,8 @@ pub const HEIGHT: u16 = 240;
 /// 1 行分のピクセルバッファ（320 px × 2 バイト）。
 const ROW_BYTES: usize = WIDTH as usize * 2;
 
-/// 文字列描画で一度に送れる最大文字数。
-pub const MAX_TEXT: usize = 12;
-
-/// 文字列描画のバッファ（幅 MAX_TEXT×8 px × 8 行 × 2 バイト）。
-const TEXT_BYTES: usize = MAX_TEXT * 8 * 8 * 2;
+/// 文字列描画で一度に送れる最大文字数（8 px × 40 = 画面の幅）。
+pub const MAX_TEXT: usize = 40;
 
 type Result<T> = core::result::Result<T, ErrorCode>;
 
@@ -36,8 +33,8 @@ type Result<T> = core::result::Result<T, ErrorCode>;
 ///   `n = w * 2 == 1280` が 640 バイトの `row` を超える。**こちらだけが
 ///   範囲外書き込みになる**（`w > 320` が要る）
 ///
-/// `draw_text` は `w <= MAX_TEXT * 8 == 96` なので `buf` を超えられない
-/// （`p` の最大は 1534 < 1536）。反転した矩形を送るところまで。
+/// `draw_text` は幅と高さを usize で計算し、画面を超えたら u16 に落とす前に
+/// 弾くので、ここに折り返した値は来ない。
 fn in_bounds(start: u16, len: u16, limit: u16) -> bool {
     u32::from(start) + u32::from(len) <= u32::from(limit)
 }
@@ -144,50 +141,75 @@ impl<'a> Display<'a> {
         self.end()
     }
 
-    /// 等幅 8×8 で文字列を描く。`MAX_TEXT` 文字まで。
+    /// 等幅 8×8 の文字を `scale` 倍に拡大して描く。`MAX_TEXT` 文字まで。
+    ///
+    /// フォントの 1 行を拡大した 1 ピクセル行を組み立て、それを `scale` 回
+    /// 送る。バッファは画面 1 行ぶん（640 バイト）で足りる。
     ///
     /// # Errors
     /// GPIO か SPI が失敗したとき。
-    pub fn draw_text(&self, x: u16, y: u16, text: &[u8], fg: u16, bg: u16) -> Result<()> {
+    pub fn draw_text(
+        &self,
+        x: u16,
+        y: u16,
+        text: &[u8],
+        scale: u16,
+        fg: u16,
+        bg: u16,
+    ) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
         // 黙って切り詰めない（`apps/README.md` §2）。
-        if text.len() > MAX_TEXT {
+        if text.len() > MAX_TEXT || scale == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
         let len = text.len();
-        let w = (len * 8) as u16;
-        if !in_bounds(x, w, WIDTH) || !in_bounds(y, 8, HEIGHT) {
+        let s = scale as usize;
+        // u16 に落とす前に画面と比べる（`in_bounds` のコメント）。
+        let w = len * 8 * s;
+        let h = 8 * s;
+        if w > WIDTH as usize || h > HEIGHT as usize {
             return Err(ErrorCode::InvalidArgument);
         }
-        self.window(x, y, w, 8)?;
+        let (w, h) = (w as u16, h as u16);
+        if !in_bounds(x, w, WIDTH) || !in_bounds(y, h, HEIGHT) {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        self.window(x, y, w, h)?;
 
-        // 8 行ぶんをまとめて組み立てる。行の中は文字ごとに 8 px。
-        let mut buf = [0u8; TEXT_BYTES];
-        let stride = len * 8 * 2;
-        let mut row = 0;
-        while row < 8 {
+        self.begin()?;
+        self.cmd(0x2C)?; // RAMWR
+        let mut row = [0u8; ROW_BYTES];
+        let n = w as usize * 2;
+        let mut glyph_row = 0;
+        while glyph_row < 8 {
+            let mut p = 0;
             let mut col = 0;
             while col < len {
-                let bits = font::GLYPHS[font::index_of(text[col])][row];
+                let bits = font::GLYPHS[font::index_of(text[col])][glyph_row];
                 let mut bit = 0;
                 while bit < 8 {
                     let on = bits & (0x80 >> bit) != 0;
                     let c = if on { fg } else { bg };
-                    let p = row * stride + (col * 8 + bit) * 2;
-                    buf[p] = (c >> 8) as u8;
-                    buf[p + 1] = c as u8;
+                    let mut k = 0;
+                    while k < s {
+                        row[p] = (c >> 8) as u8;
+                        row[p + 1] = c as u8;
+                        p += 2;
+                        k += 1;
+                    }
                     bit += 1;
                 }
                 col += 1;
             }
-            row += 1;
+            let mut k = 0;
+            while k < s {
+                self.data(&row[..n])?;
+                k += 1;
+            }
+            glyph_row += 1;
         }
-
-        self.begin()?;
-        self.cmd(0x2C)?; // RAMWR
-        self.data(&buf[..stride * 8])?;
         self.end()
     }
 }
