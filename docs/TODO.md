@@ -346,6 +346,17 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 - Component Model の完全採用（resource type / async / component binary）
 - インタプリタの最適化。今は `match` ループのまま。RP2040 で ILI9341 のテキスト描画が
   1 秒以内という目標は未計測（`docs/handoff.md` §5 Phase 2）
+    - **速度は 2026-10-05 に初めて測った**（別リポジトリ `wasmicon-doom` の
+      `spike/`、C ゲスト、trace なし。数値の全体はその README）。整数ループで
+      **約 90 サイクル / Wasm 命令**で、RP2350（150 MHz）と ESP32-S3（240 MHz）で
+      ほぼ同じ（host では約 4 ns / 命令）
+    - `opt-level = "z"` を `3` にしても ESP32-S3 で 2 割しか速くならない。
+      効いていないのはディスパッチの構造の側（毎回の LEB128 デコード、
+      分岐ごとの side table の二分探索、u64 のスロット）と見ている。未検証
+    - [ ] **ESP32-S3 の CPU クロックを 240 MHz にするか**（オーナー判断）。
+      `ports/esp32s3` は `esp_hal::Config::default()` のままで **80 MHz** で
+      動いている。`with_cpu_clock(CpuClock::max())` で全計測がちょうど 3 倍に
+      なることは手元のビルドで確かめた（コミットはしていない）
 
 ---
 
