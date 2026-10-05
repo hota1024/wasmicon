@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-10-04
+最終更新: 2026-10-05
 
 **全 6 フェーズのソフトウェア側は完了**し、CI も green。残っているものをここに集約する。
 散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
@@ -15,8 +15,8 @@
 **温湿度センサーは SHT40 が手元にある**（2026-09-29。`docs/handoff.md` §2 の
 決定 9 を SHT31/SHT30 から SHT4x に変更し、ゲストのドライバを直した）。
 **未入手は Raspberry Pi Pico WH（RP2040）だけ**で、RP2040 の項目はここで止まって
-いる。I2C と sensor-display の**実装と動作確認は Pico 2 W と ESP32-S3 で進められる**
-ようになった（ポートの I2C 実装が §1.2 に残っている）。
+いる。I2C と sensor-display は **2026-10-05 に Pico 2 W と ESP32-S3 で動作を確認した**
+（`docs/verification-report.md` §11。RP2040 の I2C 実装は §1.2 に残っている）。
 **ただし Phase 4/5/6 の完了条件は §1.3 のとおり ESP32-S3 と Pico WH の 2 ボードで
 定義されており、変えない。**手元の 2 枚で通しても Phase 5/6 は完了にならない。
 
@@ -24,12 +24,12 @@
 
 - [ ] **実機の配線**。`docs/abi-spec.md` §8 の表（I2C/SPI のピン、役割名 → GPIO 番号）が実機と合っているか
       - RP2350 の LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、SCK=GP18 / MOSI=GP19）は
-        2026-09-26 に実機で確認済み。**残るのは `led`、I2C (SDA=GP4 / SCL=GP5)、
-        および RP2040 / ESP32-S3 の全て**
+        2026-09-26 に、I2C (SDA=GP4 / SCL=GP5) は 2026-10-05 に実機で確認済み
+        （`docs/verification-report.md` §11）。**残るのは `led` と RP2040 の全て**
       - ESP32-S3 の LCD 側（CS=GPIO10 / DC=GPIO14 / RST=GPIO15、SCK=GPIO12 /
         MOSI=GPIO11）は 2026-09-26 に実機で確認済み。配線表は
-        `apps/lcd-demo-rs/README.md`。**残るのは `led` と I2C
-        (SDA=GPIO8 / SCL=GPIO9)**
+        `apps/lcd-demo-rs/README.md`。I2C (SDA=GPIO8 / SCL=GPIO9) も
+        2026-10-05 に確認済み。**残るのは `led`**
       - **I2C は SDA / SCL に外部 10 kΩ のプルアップが要る。** 両ポートとも
         内部プルアップを有効にしているが（esp-hal の `connect_pin` が必ず
         `Pull::Up` を掛けるので rp2350 もそれに揃えた）、RP2350 は 50..80 kΩ、
@@ -108,12 +108,17 @@
 - [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
   - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
   - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
-- [ ] **SHT40 を実機で読む**（2026-10-04 時点で次の一手）。`ports/rp2350` と
-  `ports/esp32s3` の I2C は実装したが**一度も実機で動かしていない**。
-  sensor-display を Pico 2 W と ESP32-S3 で走らせ、host のトレースと
-  突き合わせる。最初に疑うところは §1.4 に足した
-  - **先に I2C アドレスの確認が要る**（§1.1）。ドライバは 0x44 のまま
+- [x] **SHT40 を実機で読む**（2026-10-05 達成。`docs/verification-report.md` §11）。
+  sensor-display-rs を ESP32-S3 と Pico 2 W で走らせ、どちらも 1 回目で読めて
+  画面に出た。**センサーを読むまでの 3,756 行は host・2 ボードの 3 者で完全一致**。
+  アドレスは 0x44 で合っていた
+- [ ] **AS 版（`sensor-display-as`）を実機で走らせる**。Rust 版と同じ
+  host call 列のはずだが、実機ではまだ一度も走らせていない（Phase 5 の 4 通り）
 - [ ] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
+  - **今のトレースからは記録できない。** `i2c.read` のトレースは `len=6` だけで、
+    読んだバイト列を出さない（`ports/common` の `I2cBusRead`）。出すには
+    abi-spec §9 のトレース形式を変える（オーナー判断）か、ゲストに `log` させる。
+    同じ理由で、値を描く部分のボード間一致（上の浮動小数）もまだ測れない
 - [ ] 結果を `docs/verification-report.md` に反映する
 
 ### 1.4 実機で最初に疑うところ
@@ -141,10 +146,10 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
   するのに ILI9341 が真白」。`docs/verification-report.md` §7
 - ESP32-S3: SPI2 は `esp-hal` のドライバ任せなので信号番号を自前で持たない。
   上のような取り違えは起きない
-- **I2C は 2 ポートとも一度も実機で動かしていない**（2026-10-04 に実装）。
-  コンパイルが通ることしか確かめていないので、ここが今いちばん疑わしい。
-  最初の期待値は「`i2c.bus.open` は成功するのに `write` が `nack` を返す」。
-  見る順番:
+- **I2C は 2026-10-05 に ESP32-S3 と RP2350 の両方で 1 回目から通った**
+  （`docs/verification-report.md` §11）。RP2040 に持って行くときや配線を
+  変えたときのために残しておく。失敗の最初の期待値は
+  「`i2c.bus.open` は成功するのに `write` が `nack` を返す」。見る順番:
   1. **外部プルアップ**（§1.1）。無いと SDA/SCL が high に戻れず、
      アドレスの ACK が取れない。内部プルだけでは弱い
   2. **アドレス**（§1.1）。SHT4x はサフィックスで変わる。`nack` が出たら
