@@ -293,6 +293,7 @@ pub fn crc32_end(crc: u32) -> u32 {
 }
 
 /// abi-spec §9 の `list<u8>` 表記。32 バイトを超えたら先頭 16 バイト + CRC-32。
+/// 引数と、読み出し系が受け取ったバイト列（結果の `data=`）の両方に使う。
 fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
     out.str("0x");
     if data.len() <= 32 {
@@ -563,6 +564,8 @@ impl<B: Board> Resolver for Hal<B> {
                                 put_u32(mem, args[5], got as u32)?;
                                 o.str("len=");
                                 o.u32(got as u32);
+                                o.str(" data=");
+                                write_bytes(&mut o, &self.scratch[..got]);
                                 0
                             }
                             Err(e) => e.status(),
@@ -616,6 +619,8 @@ impl<B: Board> Resolver for Hal<B> {
                                 put_u32(mem, args[7], got as u32)?;
                                 o.str("len=");
                                 o.u32(got as u32);
+                                o.str(" data=");
+                                write_bytes(&mut o, &self.scratch[..got]);
                                 0
                             }
                             Err(e) => e.status(),
@@ -717,6 +722,8 @@ impl<B: Board> Resolver for Hal<B> {
                                 put_u32(mem, args[5], got as u32)?;
                                 o.str("len=");
                                 o.u32(got as u32);
+                                o.str(" data=");
+                                write_bytes(&mut o, &self.scratch[..got]);
                                 0
                             }
                             Err(e) => e.status(),

@@ -305,7 +305,7 @@ fn sensor_display_rs_runs_on_host() {
     );
     assert!(
         trace.contains(&format!(
-            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6]"
+            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6421e074e970]"
         )),
         "SHT4x の読み出しが違う:\n{trace}"
     );
@@ -333,7 +333,7 @@ fn sensor_display_as_runs_on_host() {
     );
     assert!(
         trace.contains(&format!(
-            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6]"
+            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6421e074e970]"
         )),
         "SHT4x の読み出しが違う:\n{trace}"
     );

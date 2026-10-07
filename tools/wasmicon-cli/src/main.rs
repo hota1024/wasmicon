@@ -27,6 +27,7 @@ wasmicon — Wasmicon のアプリを検査・実行・配備する
     deploy <app.wasm>        検査してボードのスロットに焼く
     monitor                  シリアルを開いてトレースを取り込む
     trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
+    trace replay <log>       実機のトレースから I2C の応答を取り出す
     doctor                   道具が揃っているかを見る
 
 new のオプション:
@@ -57,6 +58,9 @@ monitor のオプション:
     -o <file>                標準出力とは別にファイルにも書く
     --idle <秒>              無音がこれだけ続いたら終わる（既定: 3。0 で無効）
     --timeout <秒>           全体の上限（既定: 無し）
+
+trace replay のオプション:
+    -o <file>                書き出し先（既定: 標準出力）。run --i2c-replay が読む形
 
 run のオプション:
     --trace                  全 host call を abi-spec §9 の形式で出す
@@ -108,7 +112,10 @@ fn dispatch() -> Result<bool> {
         "pack" => pack::run(&parse_pack(args)?),
         "deploy" => deploy::run(&parse_deploy(args)?),
         "monitor" => monitor::run(&parse_monitor(args)?),
-        "trace" => trace::diff(&parse_trace(args)?),
+        "trace" => match parse_trace(args)? {
+            TraceCmd::Diff(o) => trace::diff(&o),
+            TraceCmd::Replay(o) => trace::replay(&o),
+        },
         "doctor" => doctor::run(),
         other if other.starts_with('-') => {
             bail!("未知のオプション: {other}\n\n{USAGE}")
@@ -349,23 +356,46 @@ fn parse_monitor(args: impl Iterator<Item = String>) -> Result<monitor::Options>
     })
 }
 
-fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options> {
-    let sub = args.next().context("trace の後に diff が要る")?;
+enum TraceCmd {
+    Diff(trace::Options),
+    Replay(trace::ReplayOptions),
+}
+
+fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
+    let sub = args.next().context("trace の後に diff か replay が要る")?;
     // サブコマンドの判定より先に help を見る（`trace --help` が
     // 「diff だけ」で弾かれていた）。
     if sub == "-h" || sub == "--help" {
         help();
     }
-    if sub != "diff" {
-        bail!("trace のサブコマンドは diff だけ: {sub}");
+    if sub != "diff" && sub != "replay" {
+        bail!("trace のサブコマンドは diff と replay だけ: {sub}");
     }
     let mut files: Vec<PathBuf> = Vec::new();
-    for a in args {
+    let mut out: Option<PathBuf> = None;
+    while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => help(),
+            "-o" if sub == "replay" => {
+                out = Some(PathBuf::from(
+                    args.next().context("-o の後にファイルが要る")?,
+                ));
+            }
             other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
             other => files.push(PathBuf::from(other)),
         }
+    }
+    if sub == "replay" {
+        let [log] = files.as_slice() else {
+            bail!(
+                "取り出すログを 1 つ渡すこと（渡されたのは {} 個）",
+                files.len()
+            );
+        };
+        return Ok(TraceCmd::Replay(trace::ReplayOptions {
+            log: log.clone(),
+            out,
+        }));
     }
     let [a, b] = files.as_slice() else {
         bail!(
@@ -373,10 +403,10 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<trace::Options>
             files.len()
         );
     };
-    Ok(trace::Options {
+    Ok(TraceCmd::Diff(trace::Options {
         a: a.clone(),
         b: b.clone(),
-    })
+    }))
 }
 
 fn help() -> ! {
