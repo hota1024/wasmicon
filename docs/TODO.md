@@ -60,7 +60,7 @@ I2C と sensor-display は 2026-10-05 / 07 に 2 ボードで動作を確認し�
 - [x] **役割名**（2026-10-07 オーナー決定: 既定のまま確定）。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、`ports/common` の `profile`）。**番号を変えるだけなら `profile` の 1 箇所**で、語彙（名前）を増やすときは `ROLE_NAMES` にも足す（`assert_role_names` がコンパイル時に弾く）
 - [ ] **`led` に外付け LED を充てている**。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
 - [x] **RP2350 ボードの品種** → **Pico 2 W**（RP2350A、GP0..GP29）で確定。`NUM_GPIO` は 30 のままでよい
-- [ ] **RP2350 を Arm だけで見るか**。`ports/rp2350` は Cortex-M33（`thumbv8m.main-none-eabihf`）のみ。RISC-V (Hazard3) でも同じトレースが出るかは v0.1 の検証範囲に入れていない
+- [x] **RP2350 を Arm だけで見るか**（2026-10-07 オーナー決定: Arm（Cortex-M33）だけで確定。RISC-V の Hazard3 は対象外）。`ports/rp2350` は Cortex-M33（`thumbv8m.main-none-eabihf`）のみ。RISC-V (Hazard3) でも同じトレースが出るかは v0.1 の検証範囲に入れていない
 
 ### 1.2 実装
 
