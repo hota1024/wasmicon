@@ -1,13 +1,13 @@
 # Wasmicon
 
-マイコン（ESP32-S3 / RP2040 / RP2350）向けの WebAssembly 実行環境。
+マイコン（ESP32-S3 / RP2350）向けの WebAssembly 実行環境。RP2040 はポートだけあり、評価対象外（2026-10-07）。
 
 - **Runtime**: 自作の Core Wasm インタプリタ。`no_std`、依存クレートゼロ、`alloc` 不使用
 - **HAL**: GPIO / I2C / SPI / time / log / board を WIT で定義。**Component Model は使わない**。
   WIT は IDL としてのみ使い、`docs/abi-spec.md` の規則で Core Wasm の import に落とす
 - **Bindings**: Rust と AssemblyScript。WIT から生成する
 - **ゴール**: I2C 温湿度センサー（SHT4x）を読んで SPI ディスプレイ（ILI9341）に描くアプリを
-  Rust と AS で書き、**同一の Wasm バイナリ**を ESP32-S3 と Pico WH で動かして
+  Rust と AS で書き、**同一の Wasm バイナリ**を ESP32-S3 と Pico 2 W で動かして
   host call トレースが一致することを検証する
 
 ## 現在地
@@ -23,12 +23,14 @@
 host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出た
 （[`docs/verification-report.md`](docs/verification-report.md) §7）。
 **これで Phase 6「同一バイナリが 2 ボードで同じトレースを出す」は達成。**
-残っているのは sensor-display の実機確認。I2C は RP2350 / ESP32-S3 で実装済みだが
-**未検証**で、`ports/rp2040` は未実装（→ [`docs/TODO.md`](docs/TODO.md)）。
+**sensor-display も 2 ボードで動いた**（2026-10-05 / 07）。I2C で SHT40 を読み、
+Rust 版・AS 版の 4 通りとも表示が出て、実機が読んだ応答を host に食わせた
+トレースと全文一致した（§11 / §12）。**Phase 5 は達成。** 残りは Phase 4 の blink
+（外付け LED）と、Phase 6 を完了とみなすかの判断（→ [`docs/TODO.md`](docs/TODO.md)）。
 
 | 検証 | 状態 |
 |---|---|
-| **ファームを焼き直さずにアプリを差し替える**（アプリスロット） | **RP2350 と ESP32-S3 の実機で達成（2026-10-04）**。どちらもスロットから走らせたトレースが host と 14,352 行完全一致。**RP2040 は未検証**（Pico WH 未入手。コードは同じ経路） |
+| **ファームを焼き直さずにアプリを差し替える**（アプリスロット） | **RP2350 と ESP32-S3 の実機で達成（2026-10-04）**。どちらもスロットから走らせたトレースが host と 14,352 行完全一致。RP2040 は評価対象外 |
 | **フラッシュの読み方が違う 2 ボードでスロット経由のトレースが一致** | **達成（2026-10-04）**。Pico 2 W は XIP のスライスをそのまま decode に渡し、ESP32-S3 は `esp-storage` でヘッダを読んでから arena に写すが、同じ `.wasm` で 14,352 行一致 |
 | Wasm 仕様適合（spec testsuite コア 74 ファイル / 22507 コマンド） | 達成 |
 | インタプリタの正しさ（wasmtime との差分、4 ゲスト） | 達成 |
@@ -36,7 +38,9 @@ host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出
 | RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
 | ESP32-S3 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
 | 同一バイナリが 2 ボードで同じトレースを出す | 達成（2026-09-26、RP2350 と ESP32-S3） |
-| 4 通り（Rust/AS × 2 ボード）で表示が出る | **未達**（I2C は実装済み・未検証。sensor-display は未観測） |
+| I2C（SHT40）が 2 ボードで読める | 達成（2026-10-05） |
+| 4 通り（Rust/AS × 2 ボード）で表示が出る | **達成**（2026-10-07、ESP32-S3 と Pico 2 W） |
+| 実機が読んだ値で、値の描画（f32 を含む）まで host と一致する | **達成**（2026-10-07、4 通りとも） |
 
 詳細は [`docs/verification-report.md`](docs/verification-report.md)。
 
@@ -53,7 +57,7 @@ tools/wasmicon-cli/   アプリ作者が触る CLI（bin 名 wasmicon）。check
 runtime/              wasmicon-core。no_std / 依存ゼロ / alloc 不使用のインタプリタ
 ports/common/         ポート共通の HAL。ボード固有の操作だけ Board トレイトに切り出す
 ports/host/           PC 用。mock HAL + トレース。CI はここで回す
-ports/rp2040/         Raspberry Pi Pico WH（別 workspace）
+ports/rp2040/         Raspberry Pi Pico WH（別 workspace。評価対象外、ビルドのみ）
 ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W（別 workspace、Cortex-M33）
 ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
 bindings/rust/        ゲスト向け Rust バインディング

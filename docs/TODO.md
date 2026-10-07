@@ -14,18 +14,18 @@
 `lcd-demo-rs` で動作確認済み。`docs/verification-report.md` §6 / §7）。
 **温湿度センサーは SHT40 が手元にある**（2026-09-29。`docs/handoff.md` §2 の
 決定 9 を SHT31/SHT30 から SHT4x に変更し、ゲストのドライバを直した）。
-**未入手は Raspberry Pi Pico WH（RP2040）だけ**で、RP2040 の項目はここで止まって
-いる。I2C と sensor-display は **2026-10-05 に Pico 2 W と ESP32-S3 で動作を確認した**
-（`docs/verification-report.md` §11。RP2040 の I2C 実装は §1.2 に残っている）。
-**ただし Phase 4/5/6 の完了条件は §1.3 のとおり ESP32-S3 と Pico WH の 2 ボードで
-定義されており、変えない。**手元の 2 枚で通しても Phase 5/6 は完了にならない。
+**RP2040（Pico WH）は評価対象から外した**（2026-10-07 オーナー決定。`docs/handoff.md` §0）。
+Phase 4/5/6 の完了条件の 2 ボードは **ESP32-S3 と Pico 2 W（RP2350）**。
+`ports/rp2040` のコードと CI のビルドは残すが、実機検証と I2C / SPI の実装はしない。
+I2C と sensor-display は 2026-10-05 / 07 に 2 ボードで動作を確認した
+（`docs/verification-report.md` §11 / §12）。
 
 ### 1.1 オーナーに聞くこと
 
 - [ ] **実機の配線**。`docs/abi-spec.md` §8 の表（I2C/SPI のピン、役割名 → GPIO 番号）が実機と合っているか
       - RP2350 の LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、SCK=GP18 / MOSI=GP19）は
         2026-09-26 に、I2C (SDA=GP4 / SCL=GP5) は 2026-10-05 に実機で確認済み
-        （`docs/verification-report.md` §11）。**残るのは `led` と RP2040 の全て**
+        （`docs/verification-report.md` §11）。**残るのは `led`**（RP2040 は評価対象外）
       - ESP32-S3 の LCD 側（CS=GPIO10 / DC=GPIO14 / RST=GPIO15、SCK=GPIO12 /
         MOSI=GPIO11）は 2026-09-26 に実機で確認済み。配線表は
         `apps/lcd-demo-rs/README.md`。I2C (SDA=GPIO8 / SCL=GPIO9) も
@@ -58,8 +58,8 @@
 
 ### 1.2 実装
 
-- [ ] **`ports/rp2040` の I2C / SPI**。現在は `unsupported` を返す。Pico WH が
-      未入手なので着手していない。足すときは rp2350 の実装をそのまま持って
+- ~~`ports/rp2040` の I2C / SPI~~ → **評価対象外**（2026-10-07）。`unsupported` を
+      返したまま残す。戻すときのための記録: 足すなら rp2350 の実装をそのまま持って
       これる（RP2040 と RP2350 の I2C は同じ DW_apb_i2c で、SPI も同じ PL022。
       違いは PADS の `ISO` が無いことと FUNCSEL の綴りだけ）
 - [x] **`ports/rp2350` の SPI**。SPI0 (PL022) をレジスタ直叩きで実装した。
@@ -91,27 +91,33 @@
 - [x] **`lcd-demo-rs` が Pico 2 W で表示される**（2026-09-26 達成。詳細は
       `docs/verification-report.md` §6）。トレースが host ポートと 14,352 行完全一致し、
       画面にも絵が出た。**残るのは I2C 側**
-- [ ] 両ボードで `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致（Phase 4）
+- [ ] **両ボード（ESP32-S3 と Pico 2 W）で `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致（Phase 4）**。
+  GPIO 自体は 2 ボードとも `lcd-demo-rs` / `sensor-display` で動いているが、blink は
+  まだ焼いていない。`led` 役の外付け LED（§1.1）が要る。**Phase 4 で残っているのはこれだけ**
 - [x] **`lcd-demo-rs` が ESP32-S3 で表示される**（2026-09-26 達成。
       `docs/verification-report.md` §7）。トレースが host と 14,352 行完全一致し、
       画面にも絵が出た。**残るのは I2C 側**
-- [ ] 4 通り（Rust/AS × 2 ボード）で表示が出る（Phase 5）
+- [x] **4 通り（Rust/AS × ESP32-S3/Pico 2 W）で表示が出る（Phase 5）**。2026-10-07 達成
+  （`docs/verification-report.md` §12。下の AS 版の項目）
 - [x] 同一 `.wasm` を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致（Phase 6）
       → **2026-09-26 に RP2350 と ESP32-S3 で達成**（どちらも host リファレンスと
       14,352 行完全一致、`spi.write` の CRC-32 3,272 件を含む。
       `docs/verification-report.md` §6 / §7）。**表示の一致は別途**（上の項目）
+  - **sensor-display は「センサーを読むまで」の全行が 2 ボードで一致**。読んだ後は
+    値がボードごとに違うので、各ボード ≡ host（そのボードの応答を食わせた host）を
+    4 通りで確かめた（§11 / §12）。**同じ応答を 2 ボードに注入する手段は無い**
+  - [ ] **これで Phase 6 を完了とみなすか（オーナー判断）**。厳密に「sensor-display の
+    全文が 2 ボードで一致」まで求めるなら、実機の I2C 応答を差し替える仕組み
+    （ポートの replay モード）を足して、同じ応答を両ボードに食わせる必要がある
   - 手順は `docs/verification-report.md` §5
   - 突き合わせは `sh verify/diff-traces.sh a.log b.log`
-- [ ] **RP2350 も同じ 3 点を通す**。Phase 4/5/6 の完了条件そのものは ESP32-S3 と Pico WH の
-  2 ボードで定義されている（`docs/handoff.md` §5）。`ports/rp2350` は 3 つ目のポートなので、
-  完了条件は変えずに同じ検証を追加で回す
-- [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
+- [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象（RP2040 のソフトフロートは評価対象外になった）
   - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
   - **RP2350 は 2026-10-07 に 1 点測れた**（`docs/verification-report.md` §12）。
     Pico 2 W が読んだ応答を host に食わせると、温度バーを含むトレースが実機と
     全文一致した（Rust 版・AS 版とも）。**ESP32-S3 も同日に同じ結果**（4 通りとも）。
     **同じ入力を 2 ボードに食わせる手段はまだ無い**ので、言えるのは
-    「各ボード ≡ host」まで。RP2040（ソフトフロート）は Pico WH 待ち
+    「各ボード ≡ host」まで
   - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
 - [x] **SHT40 を実機で読む**（2026-10-05 達成。`docs/verification-report.md` §11）。
   sensor-display-rs を ESP32-S3 と Pico 2 W で走らせ、どちらも 1 回目で読めて
@@ -119,8 +125,7 @@
   アドレスは 0x44 で合っていた
 - [x] **AS 版（`sensor-display-as`）を実機で走らせる**（2026-10-07、Pico 2 W と
   ESP32-S3 の両方で達成。実機が読んだ応答を host の Rust 版・AS 版に食わせた
-  トレースと全文一致。`docs/verification-report.md` §12）。Phase 5 の 4 通りは
-  手元の 2 枚では揃ったが、完了条件は ESP32-S3 + Pico WH なので完了にはしない
+  トレースと全文一致。`docs/verification-report.md` §12）
 - [ ] **ESP32-S3 で USB からのリセットが効かなくなった原因を突き止める**（2026-10-07）。
   USB-OTG から焼くと書き込み待ち（`boot:0x21`）で止まり、CH343 の自動リセットは
   EN だけ効いて GPIO0 が効かない。§10（2026-10-04）では `deploy --monitor` が
@@ -142,8 +147,8 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 設定に関するもの**は RP2350 / ESP32-S3 では解消済み（`ARENA` とネイティブスタックの
 項目は解消ではなく、今も有効な注意書き）。ただし **ESP32-S3 は「トレースが完全一致
 するのにピンが動かない」を実際に踏んでいる**（`out_sel`。下の項目）ので、
-**トレースの一致だけでは GPIO が動いた証拠にならない**。**RP2040 は未観測のまま**で、
-「blink が光らない」を最初の期待値として想定すること。
+**トレースの一致だけでは GPIO が動いた証拠にならない**。**RP2040 は未観測のまま**
+（評価対象外。2026-10-07）。戻すなら「blink が光らない」を最初の期待値として想定すること。
 
 - RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）
 - RP2350: 同上。加えて **PADS_BANK0 の `ISO`（アイソレーションラッチ）のリセット値が 1**。
@@ -655,8 +660,9 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         `espflash` 側に出ているのが妥当か未決
 - [ ] **内蔵アプリを外す**（1 段。**3 ポートがスロットを読めるようになってから**
       — 先に外すとファームが何も走らせなくなる。**RP2350 と ESP32-S3 は
-      実機で確認済み、残るのは RP2040**（Pico WH 未入手。コードは同じ
-      `slot::read_xip` を通る）。それまではフォールバックとして残す）。`ports/*/src/main.rs` の `include_bytes!` と
+      実機で確認済み**。RP2040 は評価対象外になった（2026-10-07）ので、
+      **前提は満たした**。RP2040 はコードが同じ `slot::read_xip` を通るので
+      一緒に外してよい）。`ports/*/src/main.rs` の `include_bytes!` と
       `guest-lcd-demo` feature を落とし、空スロットは理由を出して idle、
       生存確認はポート層が LED を振る（`Board` 直叩きで Wasm を通らない）
       - **CI も同時に直す**: ポートのジョブから `apps` の先行ビルドが不要になり、
