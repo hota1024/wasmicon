@@ -128,8 +128,8 @@ f64 を速くする DCP は使っていない（`rp235x-hal` の `dcp-fast-f64` 
 
 ### 4.3 記録済み I2C 応答
 
-`verify/sht4x-replay.txt` は T=23.44°C / RH=51.08% になる**合成データ**。
-実機の SHT4x から記録したものへの差し替えが要る。
+**2026-10-07 に実機の SHT40 から記録したもの（T=25.63°C / RH=74.49%）に
+差し替えた**（§12）。それまでは T=23.44°C / RH=51.08% になる合成データだった。
 （バイト列は SHT31 前提だったころのまま。応答形式と CRC-8 は SHT3x / SHT4x で
 同一で、**湿度の換算式だけが違う**ので表示値が 45.66% → 51.08% に変わった。）
 
@@ -908,3 +908,56 @@ CP2102N を UART0（GPIO43/44）に繋いで**取った。この形だと `deplo
 
 ファームを `picotool load -u -v -t elf`（**`-x` を付けない**）で焼くと BOOTSEL の
 まま残るので、続けて `deploy` でスロットを焼けば、そこで初めて起動する。
+
+---
+
+## 12. 実機の応答で値の描画まで一致させる（2026-10-07、Pico 2 W）
+
+§11 では、トレースが `i2c.read` の長さしか出さなかったので、値を描く部分の
+一致を測れなかった。オーナー判断で、**読み出し系の結果に受け取ったバイト列を
+出す**ことにした（abi-spec §9。`< 0 [len=6 data=0x6754c0a4d840]`）。
+import 名・シグネチャ・エラーコードは変えていない。I2C を使わない
+`lcd-demo-rs` のトレース（14,352 行）はそのまま有効。
+
+### 手順
+
+```bash
+wasmicon monitor --port <CP2102N> --idle 0 -o pico.log    # 先に開く
+wasmicon deploy sensor_display_rs.wasm --board rp2350      # BOOTSEL で挿してから
+wasmicon trace replay pico.log -o pico.replay              # data= を取り出す
+wasmicon run sensor_display_rs.wasm --trace --i2c-replay pico.replay > host.log
+wasmicon trace diff host.log pico.log
+```
+
+### 結果
+
+| ゲスト | 実機が読んだ応答 | host に食わせたトレースと実機 |
+|---|---|---|
+| `sensor_display_rs.wasm`（`860e00b9…`） | `67 54 c0 a4 d8 40`（25.63 °C / 74.49 %） | **全文一致 4,182 行** |
+| `sensor_display_as.wasm`（6,969 B、`53013cbf…`） | `68 38 9f a0 c3 6a`（26.24 °C / 71.94 %） | **全文一致 4,182 行**（host の AS 版とも Rust 版とも） |
+
+**数値の描画と、温度バーの f32 計算を含むゲージの塗りまで、RP2350 が host と同じ
+ピクセルを出した。** AS 版を実機で走らせたのもこれが初めて。
+
+Rust 版の応答は `verify/sht4x-replay.txt` に入れた（合成データからの差し替え。§4.3）。
+
+### この実測が言っていないこと
+
+- **同じ入力での 2 ボードの直接比較。** 実機に応答を注入する手段は無いので、
+  ボードごとに読んだ値が違う。言えるのは「RP2350 ≡ host（その入力に対して）」。
+  ESP32-S3 で同じことをすれば「各ボード ≡ host」が揃う
+- **ESP32-S3。** `data=` を出すファームでまだ回していない
+- **非正規化数・範囲外のクランプ。** 25〜26 °C の 1 点だけ。端の値は host の
+  テスト（`sensor_display_agrees_across_temperatures`）で Rust / AS の一致を見ているが、
+  実機の FPU では見ていない
+
+### 取り込みで踏んだこと
+
+- **`monitor --idle` は最初の出力を待たずに数え始める。** 開いてから Pico を
+  挿し直すまでに 5 秒経つと、0 B で終わる。人がボードを触る手順では `--idle 0` にする
+- **取り込みを 2 本走らせると、同じ口のバイトを奪い合う**（§10 と同じ）。
+  `--idle 0 --timeout 600` の取り込みを残したまま次を開き、両方のログが欠けた。
+  アプリの最後の行（`[resource-drop]pin(1)`）が来たら止めるようにして解決した
+- **CP2102N の口の名前は USB の挿し方で変わる**（`usbserial-21420` →
+  `usbserial-1420`）。決め打ちせず `ls /dev/cu.usb*` で見る
+

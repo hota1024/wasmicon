@@ -107,19 +107,24 @@
   完了条件は変えずに同じ検証を追加で回す
 - [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。RP2040 はソフトフロート、ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象
   - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
+  - **RP2350 は 2026-10-07 に 1 点測れた**（`docs/verification-report.md` §12）。
+    Pico 2 W が読んだ応答を host に食わせると、温度バーを含むトレースが実機と
+    全文一致した（Rust 版・AS 版とも）。**同じ入力を 2 ボードに食わせる手段は
+    まだ無い**ので、言えるのは「各ボード ≡ host」まで。ESP32-S3 は新しいファームで
+    まだ回していない
   - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
 - [x] **SHT40 を実機で読む**（2026-10-05 達成。`docs/verification-report.md` §11）。
   sensor-display-rs を ESP32-S3 と Pico 2 W で走らせ、どちらも 1 回目で読めて
   画面に出た。**センサーを読むまでの 3,756 行は host・2 ボードの 3 者で完全一致**。
   アドレスは 0x44 で合っていた
-- [ ] **AS 版（`sensor-display-as`）を実機で走らせる**。Rust 版と同じ
-  host call 列のはずだが、実機ではまだ一度も走らせていない（Phase 5 の 4 通り）
-- [ ] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（現在は合成データ）
-  - **今のトレースからは記録できない。** `i2c.read` のトレースは `len=6` だけで、
-    読んだバイト列を出さない（`ports/common` の `I2cBusRead`）。出すには
-    abi-spec §9 のトレース形式を変える（オーナー判断）か、ゲストに `log` させる。
-    同じ理由で、値を描く部分のボード間一致（上の浮動小数）もまだ測れない
-- [ ] 結果を `docs/verification-report.md` に反映する
+- [ ] **AS 版（`sensor-display-as`）を実機で走らせる**。**Pico 2 W は 2026-10-07 に
+  達成**（実機が読んだ応答を host の Rust 版・AS 版に食わせたトレースと全文一致。
+  `docs/verification-report.md` §12）。**残るのは ESP32-S3**
+- [x] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（2026-10-07。
+  Pico 2 W の SHT40、T=25.63C / RH=74.49%）。オーナー判断でトレースに
+  読み出しのバイト列（`data=`）を出すことにし（abi-spec §9）、
+  `wasmicon trace replay` で取り出した
+- [x] 結果を `docs/verification-report.md` に反映する（§11 / §12）
 
 ### 1.4 実機で最初に疑うところ
 

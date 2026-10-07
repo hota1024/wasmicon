@@ -305,7 +305,7 @@ fn sensor_display_rs_runs_on_host() {
     );
     assert!(
         trace.contains(&format!(
-            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6421e074e970]"
+            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6754c0a4d840]"
         )),
         "SHT4x の読み出しが違う:\n{trace}"
     );
@@ -333,7 +333,7 @@ fn sensor_display_as_runs_on_host() {
     );
     assert!(
         trace.contains(&format!(
-            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6421e074e970]"
+            "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6754c0a4d840]"
         )),
         "SHT4x の読み出しが違う:\n{trace}"
     );
@@ -362,14 +362,14 @@ fn sensor_display_rs_and_as_agree() {
 
 /// 湿度のクランプで Rust 版と AS 版が一致すること。
 ///
-/// `verify/sht4x-replay.txt` の 1 件（raw_h = 0x74e9 → 51.08%）は**クランプの
-/// 上下端のちょうど中間**なので、`sensor_display_rs_and_as_agree` はクランプの
+/// `verify/sht4x-replay.txt` の 1 件（raw_h = 0xa4d8 → 74.49%）は**クランプの
+/// 上下端のどちらからも遠い**ので、`sensor_display_rs_and_as_agree` はクランプの
 /// どちらの分岐も踏まない。つまり片方の言語でクランプを落としても CI が通って
 /// しまう。境界を踏む合成応答で別に見る（`docs/TODO.md` §2.2 の非対称を埋める）。
 ///
 /// 応答は CRC-8 が合っていないとゲストが `sensor crc failed` で降りて
 /// クランプまで到達しないので、3 バイト目 / 6 バイト目は poly 0x31 / init 0xFF で
-/// 計算した値を置いてある。温度は replay と同じ 23.44 °C に固定し、湿度だけ動かす。
+/// 計算した値を置いてある。温度は 23.44 °C（raw_t = 0x6421）に固定し、湿度だけ動かす。
 #[test]
 fn sensor_display_agrees_at_humidity_clamp_bounds() {
     let cases: [(&str, [u8; 6]); 3] = [
@@ -406,9 +406,9 @@ fn sensor_display_agrees_at_humidity_clamp_bounds() {
 
 /// 温度を振っても Rust 版と AS 版が一致すること。
 ///
-/// replay の 23.44 °C は正の 5 文字で、ゲージは 2 区間目の途中で止まる。
+/// replay の 25.63 °C は正の 5 文字で、ゲージは 2 区間目の途中で止まる。
 /// 負の温度（6 文字の中央寄せ）、ゲージを塗らない端、区間をまたぐ塗りを
-/// 踏まないので別に見る。湿度は replay と同じ 51.08% に固定する。
+/// 踏まないので別に見る。湿度は 51.08%（raw_h = 0x74e9）に固定する。
 #[test]
 fn sensor_display_agrees_across_temperatures() {
     let cases: [(&str, [u8; 6]); 5] = [

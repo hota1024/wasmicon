@@ -110,10 +110,10 @@ pub fn humidity_centi(raw_h: u16) -> i32 {
 mod tests {
     use super::{crc8, humidity_centi, temp_centi};
 
-    /// `verify/sht4x-replay.txt` の合成応答の**写し**。
-    /// §1.3 であのファイルを実機記録に差し替えるときは、ここも一緒に直す
+    /// `verify/sht4x-replay.txt`（実機の SHT40 から記録した応答）の**写し**。
+    /// あのファイルを差し替えるときは、ここも一緒に直す
     /// （下の期待値は `FIXTURE` から導出しているので、片方だけ直すと落ちる）。
-    const FIXTURE: [u8; 6] = [0x64, 0x21, 0xe0, 0x74, 0xe9, 0x70];
+    const FIXTURE: [u8; 6] = [0x67, 0x54, 0xc0, 0xa4, 0xd8, 0x40];
 
     /// `FIXTURE` の生の測定値。`read` と同じ組み立て方をする。
     fn fixture_raw() -> (u16, u16) {
@@ -135,16 +135,16 @@ mod tests {
     /// **この値が動くと `bar_px` の f32 の題材も変わる**ので釘を打っておく。
     #[test]
     fn temperature_matches_fixture() {
-        assert_eq!(temp_centi(fixture_raw().0), 2344); // 23.44 °C
+        assert_eq!(temp_centi(fixture_raw().0), 2563); // 25.63 °C
         assert_eq!(temp_centi(0), -4500); // 下端 -45.00 °C
         assert_eq!(temp_centi(65535), 13000); // 上端 130.00 °C
     }
 
-    /// 湿度は SHT4x で式が変わった（SHT3x は `100·raw/65535` で 4566 になる）。
+    /// 湿度は SHT4x で式が変わった（SHT3x は `100·raw/65535` で 6439 になる）。
     #[test]
     fn humidity_uses_the_sht4x_formula() {
-        // SHT3x の式なら 4566 になる値。
-        assert_eq!(humidity_centi(fixture_raw().1), 5108); // 51.08 %
+        // SHT3x の式なら 6439 になる値。
+        assert_eq!(humidity_centi(fixture_raw().1), 7449); // 74.49 %
     }
 
     /// 素の式は 0 未満・100 超に振れるので、データシートどおりクランプする。
