@@ -662,7 +662,12 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         `Overlap` の検査は `read_xip` 側にしか無いので **ESP32-S3 には
         無い**（`esp-storage` 経由で読むため）。重なりを防ぐ責任が
         `espflash` 側に出ているのが妥当か未決
-- [ ] **内蔵アプリを外す**（1 段。**3 ポートがスロットを読めるようになってから**
+- [x] **内蔵アプリを外す**（2026-10-07 完了。ESP32-S3 の実機で「スロットのアプリが
+      走る」「空なら `slot empty, idle`」を確認。`docs/verification-report.md` §13。
+      LED の点滅は外付け LED が無いので未確認）。
+      空スロットは `wasmicon: slot empty, idle` と出して `ports/common` の
+      `idle::heartbeat` に入り、`led` 役を 1 Hz で点滅させる
+      （1 段。**3 ポートがスロットを読めるようになってから**
       — 先に外すとファームが何も走らせなくなる。**RP2350 と ESP32-S3 は
       実機で確認済み**。RP2040 は評価対象外になった（2026-10-07）ので、
       **前提は満たした**。RP2040 はコードが同じ `slot::read_xip` を通るので

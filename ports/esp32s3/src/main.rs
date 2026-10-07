@@ -1,17 +1,19 @@
 //! Wasmicon の ESP32-S3 (DevKitC-1) ポート。
 //!
-//! ゲストの `.wasm` はフラッシュに埋め込み、XIP 上のスライスをそのまま
-//! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
+//! ゲストの `.wasm` はアプリスロット（フラッシュ）から `esp-storage` で読み、
+//! arena に写してランタイムに渡す。ファームにアプリは入っていない
+//! （`docs/app-workflow.md` §3.3）。スロットが空なら理由を出して `led` を
+//! 点滅させて待つ（`wasmicon_port::idle`）。
 //! トレースは UART0 (GPIO43=TX, GPIO44=RX) 115200 8N1 に出す。
 //! DevKitC-1 では UART0 が USB シリアル変換に繋がっている。
 //!
-//! SPI2 は実装済み。I2C はまだ `unsupported`。
+//! SPI2 と I2C0 は実装済み（`esp-hal` のドライバ）。
 //!
 //! **DevKitC-1 実機で確認済み**（2026-09-26）。`ports/rp2350` と同じゲスト
-//! （`--features guest-lcd-demo` で埋め込む `lcd_demo_rs.wasm`、SHA-256
-//! `fc470947…`）を走らせ、トレースが host ポートと 14,352 行完全一致し、
-//! ILI9341 に絵が出た（docs/verification-report.md §7。手順は §5.1）。
-//! `led` の役割名と I2C の配線は未確認のまま（docs/TODO.md §1.1）。
+//! （`lcd_demo_rs.wasm`、SHA-256 `fc470947…`）を走らせ、トレースが host ポートと
+//! 14,352 行完全一致し、ILI9341 に絵が出た（docs/verification-report.md §7）。
+//! I2C（SHT40）も 2026-10-05 に確認した（同 §11）。`led` の配線は未確認のまま
+//! （docs/TODO.md §1.1）。
 //!
 //! ビルドには espup が入れる Xtensa の GCC が要る:
 //! `. ~/export-esp.sh && cargo build --release`
@@ -27,7 +29,7 @@ use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_storage::FlashStorage;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::fmt::Buf;
-use wasmicon_port::{slot, Hal};
+use wasmicon_port::{idle, slot, Hal};
 
 use board::{EspBoard, Serial};
 
@@ -35,18 +37,6 @@ use board::{EspBoard, Serial};
 // 中身はバージョンとビルド日時で、ランタイムからは使わない。espflash 4.5 以降は
 // これが無い ELF を受け付けない（RP2350 の `IMAGE_DEF` に当たるもの）。
 esp_bootloader_esp_idf::esp_app_desc!();
-
-/// ゲスト。`cd apps && cargo build --release` を先に実行しておく。
-///
-/// 既定は blink。`--features guest-lcd-demo` で ILI9341 のデモに差し替わる。
-/// **`ports/rp2350` と同じファイルを取り込む。** 2 ボードで同一バイナリを
-/// 走らせるのが目的なので、ボードごとに別のゲストを作らない。
-#[cfg(not(feature = "guest-lcd-demo"))]
-static BUILTIN: &[u8] =
-    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
-#[cfg(feature = "guest-lcd-demo")]
-static BUILTIN: &[u8] =
-    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm");
 
 /// アプリスロット（`ports/common` の `profile::ESP32S3`）。
 const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.slot {
@@ -111,6 +101,12 @@ fn main() -> ! {
 
     let outcome = run(&mut hal, p.FLASH, arena_buf, scratch_buf);
 
+    // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
+    // スロットが空・壊れているなら、理由は pick_guest が出している。
+    if let Ok(false) = outcome {
+        idle::heartbeat(hal.board_mut());
+    }
+
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
     // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
     // 先に回すとペリフェラルが固まったときに理由が出ないまま無言で止まる
@@ -137,7 +133,8 @@ fn main() -> ! {
 
 /// スロットから走らせるアプリを選ぶ。
 ///
-/// **スロットが優先、空なら内蔵アプリ。** ESP32-S3 は任意オフセットが XIP に
+/// 走らせるものが無ければ `None`（ファームにアプリは入っていない。
+/// `docs/app-workflow.md` §3.3）。ESP32-S3 は任意オフセットが XIP に
 /// マップされている前提を置けないので、Pico 系（`slot::read_xip`）と違って
 /// **RAM に写す**。写すのは**ヘッダが持つ長さの分だけ** —— スロットは
 /// 64 KiB だがアプリは数 KB で、DRAM はほぼ使い切っている
@@ -146,37 +143,38 @@ fn pick_guest<'a>(
     flash: esp_hal::peripherals::FLASH<'static>,
     arena: &mut Arena<'a>,
     serial: &mut SerialPort<'static>,
-) -> &'a [u8] {
+) -> Option<&'a [u8]> {
     let mut line = [0u8; 96];
     let mut out = Buf::new(&mut line);
     let mut storage = FlashStorage::new(flash);
 
     let mut head = [0u8; slot::HEADER_LEN];
     if storage.read(SLOT.offset, &mut head).is_err() {
-        serial.write(b"wasmicon: slot read failed, running built-in\r\n");
-        return BUILTIN;
+        serial.write(b"wasmicon: slot read failed, idle\r\n");
+        return None;
     }
     let header = match slot::parse_header(&head) {
         Ok(h) => h,
         Err(e) => {
             out.str("wasmicon: ");
             out.str(e.reason());
-            out.str(", running built-in");
+            out.str(", idle");
             serial.write(out.as_bytes());
             serial.write(b"\r\n");
-            return BUILTIN;
+            return None;
         }
     };
     if header.len > (SLOT.len as usize - slot::HEADER_LEN) {
-        serial.write(b"wasmicon: slot truncated, running built-in\r\n");
-        return BUILTIN;
+        serial.write(b"wasmicon: slot truncated, idle\r\n");
+        return None;
     }
 
     // **arena を取る前に CRC を確かめる。** `Arena` は bump で、返す手段が
-    // 無い（`runtime/src/arena.rs` に reset は無い）。壊れたスロットで
-    // 先に取ってしまうと、内蔵アプリへ落ちたあとも**その分 arena が減った
-    // まま**走ることになり、`wasmicon check` が見積もる余裕と実機がずれる。
-    // だから一度フラッシュから流して CRC だけ見る。
+    // 無い（`runtime/src/arena.rs` に reset は無い）。今は壊れていれば
+    // idle に入るだけなので実害は無いが、スーパーバイザのループ
+    // （`docs/TODO.md` §5）で同じ arena から次のアプリを走らせるようになると、
+    // **壊れたスロットの分だけ arena が減ったまま**になり、`wasmicon check` が
+    // 見積もる余裕と実機がずれる。だから一度フラッシュから流して CRC だけ見る。
     //
     // 読みは小さなバッファで分割する。`esp-storage` の `read` は**呼ぶたびに
     // 4 KiB のセクタバッファをスタックに作る**（あちらの実装）ので、
@@ -187,32 +185,36 @@ fn pick_guest<'a>(
     let mut left = header.len;
     let mut at = SLOT.offset + slot::HEADER_LEN as u32;
     while left > 0 {
-        let n = if left < chunk.len() { left } else { chunk.len() };
+        let n = if left < chunk.len() {
+            left
+        } else {
+            chunk.len()
+        };
         if storage.read(at, &mut chunk[..n]).is_err() {
-            serial.write(b"wasmicon: slot read failed, running built-in\r\n");
-            return BUILTIN;
+            serial.write(b"wasmicon: slot read failed, idle\r\n");
+            return None;
         }
         crc = wasmicon_port::crc32_update(crc, &chunk[..n]);
         at += n as u32;
         left -= n;
     }
     if wasmicon_port::crc32_end(crc) != header.crc {
-        serial.write(b"wasmicon: slot crc mismatch, running built-in\r\n");
-        return BUILTIN;
+        serial.write(b"wasmicon: slot crc mismatch, idle\r\n");
+        return None;
     }
 
     // CRC が合ったので、ここで初めて arena を取る。失敗する枝はもう
     // 「arena が足りない」だけ。
     let Ok(buf) = arena.alloc_bytes(header.len) else {
-        serial.write(b"wasmicon: arena too small for the slot app\r\n");
-        return BUILTIN;
+        serial.write(b"wasmicon: arena too small for the slot app, idle\r\n");
+        return None;
     };
     if storage
         .read(SLOT.offset + slot::HEADER_LEN as u32, buf)
         .is_err()
     {
-        serial.write(b"wasmicon: slot read failed, running built-in\r\n");
-        return BUILTIN;
+        serial.write(b"wasmicon: slot read failed, idle\r\n");
+        return None;
     }
     // **写したものをもう一度検査する。** 上で確かめたのは流し読みした
     // バイト列で、decode に渡すのはこの `buf`。2 度目の読みが壊れていたら
@@ -220,10 +222,10 @@ fn pick_guest<'a>(
     if let Err(e) = slot::verify(buf, &header) {
         out.str("wasmicon: ");
         out.str(e.reason());
-        out.str(", running built-in");
+        out.str(", idle");
         serial.write(out.as_bytes());
         serial.write(b"\r\n");
-        return BUILTIN;
+        return None;
     }
 
     out.str("wasmicon: slot ");
@@ -232,20 +234,24 @@ fn pick_guest<'a>(
     out.hex(header.crc, 8);
     serial.write(out.as_bytes());
     serial.write(b"\r\n");
-    buf
+    Some(buf)
 }
 
-/// デコードから `run` の呼び出しまで。
+/// スロットの読み出しから `run` の呼び出しまで。
+///
+/// 走らせるアプリが無ければ `Ok(false)`、走らせて戻ったら `Ok(true)`。
 fn run(
     hal: &mut Hal<EspBoard<SerialPort<'static>>>,
     flash: esp_hal::peripherals::FLASH<'static>,
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
-) -> Result<(), wasmicon_core::Error> {
+) -> Result<bool, wasmicon_core::Error> {
     let mut arena = Arena::new(arena_buf);
     let mut scratch = Arena::new(scratch_buf);
 
-    let guest = pick_guest(flash, &mut arena, hal.board_mut().serial());
+    let Some(guest) = pick_guest(flash, &mut arena, hal.board_mut().serial()) else {
+        return Ok(false);
+    };
     let m = decode::decode(guest, &mut arena)?;
     let v = validate::validate(&m, &MCU_CONFIG, &mut arena, &mut scratch)?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。
@@ -258,7 +264,8 @@ fn run(
     let entry = inst
         .export_func("run")
         .ok_or(wasmicon_core::Error::Unlinkable("export run が無い"))?;
-    invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])
+    invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])?;
+    Ok(true)
 }
 
 /// docs/handoff.md §3 #4 は「ログを出して停止、再起動しない」だが、**理由は出せない**。

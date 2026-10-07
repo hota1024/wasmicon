@@ -1,7 +1,9 @@
 //! Wasmicon の RP2350 (Raspberry Pi Pico 2 / Pico 2 W) ポート。
 //!
-//! ゲストの `.wasm` はフラッシュに埋め込み、XIP 上のスライスをそのまま
-//! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
+//! ゲストの `.wasm` はアプリスロット（フラッシュ）から読み、XIP 上のスライスを
+//! そのままランタイムに渡す（RAM にコピーしない。design-notes §4）。ファームに
+//! アプリは入っていない（`docs/app-workflow.md` §3.3）。スロットが空なら理由を
+//! 出して `led` を点滅させて待つ（`wasmicon_port::idle`）。
 //! トレースは UART0 (GP0=TX, GP1=RX) 115200 8N1 に出す。
 //!
 //! Cortex-M33 側だけを使う（RISC-V の Hazard3 は対象外）。hard-float ABI で
@@ -9,11 +11,12 @@
 //! 有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので
 //! IEEE 準拠。f64 はソフトフロートのまま（DCP は使わない。Cargo.toml 参照）。
 //!
-//! SPI0 は実装済み。I2C はまだ `unsupported`。
+//! SPI0 と I2C0 は実装済み（レジスタ直叩き）。
 //!
 //! **Pico 2 W 実機で確認済み**（2026-09-26）。`lcd-demo-rs` を走らせ、トレースが
 //! host ポートと完全一致し、ILI9341 に絵が出た（docs/verification-report.md §6）。
-//! `led` の役割名と I2C の配線は未確認のまま（docs/TODO.md §1.1）。
+//! I2C（SHT40）も 2026-10-05 に確認した（同 §11）。`led` の配線は未確認のまま
+//! （docs/TODO.md §1.1）。
 
 #![no_std]
 #![no_main]
@@ -29,7 +32,7 @@ use rp235x_hal::Clock;
 use rp235x_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::fmt::Buf;
-use wasmicon_port::{Hal, slot};
+use wasmicon_port::{Hal, idle, slot};
 
 use board::{Pico2Board, Serial};
 
@@ -42,22 +45,6 @@ pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
 /// Pico 2 の水晶振動子。
 const XTAL_HZ: u32 = 12_000_000;
-
-/// 内蔵のゲスト。**スロットが空のときだけ使う。**
-///
-/// `cd apps && cargo build --release` を先に実行しておく。既定は blink で、
-/// `--features guest-lcd-demo` で ILI9341 のデモに差し替わる。
-///
-/// **これは撤去する予定**（`docs/app-workflow.md` §3.3 の 2026-10-04 決定）。
-/// 3 ポートがスロットを読めるようになったら落とす。今は RP2350 だけが
-/// 読めるので、フォールバックとして残してある
-/// （スロットの読み出しに不備があっても焼き直しで戻れるように）。
-#[cfg(not(feature = "guest-lcd-demo"))]
-static BUILTIN: &[u8] =
-    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
-#[cfg(feature = "guest-lcd-demo")]
-static BUILTIN: &[u8] =
-    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm");
 
 /// XIP の先頭。フラッシュはここから memory-mapped で読める。
 const XIP_BASE: usize = 0x1000_0000;
@@ -179,7 +166,11 @@ fn main() -> ! {
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let guest = pick_guest(hal.board_mut().serial());
+    // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
+    // スロットが空・壊れているなら、理由は pick_guest が出している。
+    let Some(guest) = pick_guest(hal.board_mut().serial()) else {
+        idle::heartbeat(hal.board_mut());
+    };
     let outcome = run(&mut hal, guest, arena_buf, scratch_buf);
 
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
@@ -208,12 +199,13 @@ fn main() -> ! {
 
 /// スロットから走らせるアプリを選ぶ。
 ///
-/// **スロットが優先、空なら内蔵アプリ。** 読めない理由はシリアルに出す
-/// （`docs/app-workflow.md` §3.1。空は失敗ではないので、そのことも出す）。
+/// 走らせるものが無ければ `None`（ファームにアプリは入っていない。
+/// `docs/app-workflow.md` §3.3）。読めない理由はシリアルに出す
+/// （§3.1。空は失敗ではないので、そのことも出す）。
 ///
 /// スロットはフラッシュに memory-mapped で見えるので、**RAM に写さず
 /// スライスのまま `decode` に渡す**（design-notes §4）。
-fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
+fn pick_guest(serial: &mut impl Serial) -> Option<&'static [u8]> {
     // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
     // だけ（中身は見ない）。
     let fw_end = (&raw const __flash_binary_end) as usize;
@@ -231,15 +223,15 @@ fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
             out.hex(wasmicon_port::crc32(wasm), 8);
             serial.write(out.as_bytes());
             serial.write(b"\r\n");
-            wasm
+            Some(wasm)
         }
         Err(e) => {
             out.str("wasmicon: ");
             out.str(e.reason());
-            out.str(", running built-in");
+            out.str(", idle");
             serial.write(out.as_bytes());
             serial.write(b"\r\n");
-            BUILTIN
+            None
         }
     }
 }

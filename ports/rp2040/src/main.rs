@@ -1,11 +1,12 @@
 //! Wasmicon の RP2040 (Raspberry Pi Pico WH) ポート。
 //!
-//! ゲストの `.wasm` はフラッシュに埋め込み、XIP 上のスライスをそのまま
-//! ランタイムに渡す（RAM にコピーしない。design-notes §4）。
+//! ゲストの `.wasm` はアプリスロット（フラッシュ）から読み、XIP 上のスライスを
+//! そのままランタイムに渡す（RAM にコピーしない。design-notes §4）。ファームに
+//! アプリは入っていない（`docs/app-workflow.md` §3.3）。
 //! トレースは UART0 (GP0=TX, GP1=RX) 115200 8N1 に出す。
 //!
-//! **実機で動作確認していない**（docs/handoff.md §8 の配線とシリアル接続が未確認）。
-//! ビルドが通ることまでを確認した段階。
+//! **評価対象外**（2026-10-07。`docs/handoff.md` §0）。実機で動作確認しておらず、
+//! I2C / SPI は `unsupported` のまま。ビルドが通ることだけを CI で見ている。
 
 #![no_std]
 #![no_main]
@@ -21,7 +22,7 @@ use rp2040_hal::Clock;
 use rp2040_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::fmt::Buf;
-use wasmicon_port::{Hal, slot};
+use wasmicon_port::{Hal, idle, slot};
 
 use board::{PicoBoard, Serial};
 
@@ -32,16 +33,6 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 /// Pico の水晶振動子。
 const XTAL_HZ: u32 = 12_000_000;
-
-/// 内蔵のゲスト。**スロットが空のときだけ使う。**
-///
-/// `cd apps && cargo build --release` を先に実行しておく。
-///
-/// **これは撤去する予定**（`docs/app-workflow.md` §3.3 の 2026-10-04 決定）。
-/// 3 ポートがスロットを読めるようになったら落とす。今はスロットの読み出しが
-/// 実機で未検証なので、焼き直しで戻れるようフォールバックとして残してある。
-static BUILTIN: &[u8] =
-    include_bytes!("../../../apps/target/wasm32-unknown-unknown/release/blink_rs.wasm");
 
 /// XIP の先頭。フラッシュはここから memory-mapped で読める。
 /// RP2040 は先頭 256 バイトが二段目のブートローダ（`.boot2`）。
@@ -153,7 +144,11 @@ fn main() -> ! {
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let guest = pick_guest(hal.board_mut().serial());
+    // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
+    // スロットが空・壊れているなら、理由は pick_guest が出している。
+    let Some(guest) = pick_guest(hal.board_mut().serial()) else {
+        idle::heartbeat(hal.board_mut());
+    };
     let outcome = run(&mut hal, guest, arena_buf, scratch_buf);
 
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
@@ -182,10 +177,11 @@ fn main() -> ! {
 
 /// スロットから走らせるアプリを選ぶ。
 ///
-/// **スロットが優先、空なら内蔵アプリ。** 読めない理由はシリアルに出す
-/// （`docs/app-workflow.md` §3.1。空は失敗ではないので、そのことも出す）。
+/// 走らせるものが無ければ `None`（ファームにアプリは入っていない。
+/// `docs/app-workflow.md` §3.3）。読めない理由はシリアルに出す
+/// （§3.1。空は失敗ではないので、そのことも出す）。
 /// 読み出しは `ports/common` の `slot::read_xip`（RP2350 と同じ）。
-fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
+fn pick_guest(serial: &mut impl Serial) -> Option<&'static [u8]> {
     // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
     // だけ（中身は見ない）。
     let fw_end = (&raw const __flash_binary_end) as usize;
@@ -203,15 +199,15 @@ fn pick_guest(serial: &mut impl Serial) -> &'static [u8] {
             out.hex(wasmicon_port::crc32(wasm), 8);
             serial.write(out.as_bytes());
             serial.write(b"\r\n");
-            wasm
+            Some(wasm)
         }
         Err(e) => {
             out.str("wasmicon: ");
             out.str(e.reason());
-            out.str(", running built-in");
+            out.str(", idle");
             serial.write(out.as_bytes());
             serial.write(b"\r\n");
-            BUILTIN
+            None
         }
     }
 }

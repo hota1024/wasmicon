@@ -97,14 +97,11 @@ npm ci
 # ホストターゲットでだけ見える既知のもの（docs/TODO.md §2.2）
 (cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
 
-# 実機向け
+# 実機向けのファーム。アプリは入っていない（apps/ を先にビルドしなくてよい）。
+# アプリは下の「アプリをスロットに焼く」で別に焼く
 (cd ports/rp2040 && cargo build --release)
 (cd ports/rp2350 && cargo build --release)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
-# ILI9341 のデモを焼く場合（配線と書き込みは apps/lcd-demo-rs/README.md）。
-# rp2350 と esp32s3 が同じ lcd_demo_rs.wasm を埋め込む（rp2040 は SPI 未実装）
-(cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
-sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
 
 # wasmtime との差分テスト（インタプリタの正しさ）
 (cd verify/differential && cargo test)
@@ -113,11 +110,12 @@ sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
 sh verify/diff-traces.sh pico.log esp32s3.log
 ```
 
-### アプリをスロットに焼く（ファームの再ビルドが要らない道）
+### アプリをスロットに焼く
 
-上の `--features guest-lcd-demo` はアプリをファームに埋め込む古い道で、
-アプリを変えるたびにファームを焼き直す。**スロットを使えばファームは一度
-焼いたままでアプリだけ差し替えられる**（[`docs/app-workflow.md`](docs/app-workflow.md)）。
+**ファームにアプリは入っていない**（2026-10-07 に内蔵アプリを外した）。ファームを
+一度焼いたら、アプリはスロットに焼いて差し替える（[`docs/app-workflow.md`](docs/app-workflow.md)）。
+スロットが空のときは `wasmicon: slot empty, idle` と出して、`led` 役のピンを
+1 Hz で点滅させて待つ。
 
 ```bash
 # CLI を用意する。PATH に入れたいなら cargo install --path tools/wasmicon-cli

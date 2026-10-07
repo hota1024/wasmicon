@@ -129,65 +129,60 @@ USB-Serial-JTAG 経由で通る）。
 
 ## ビルドと書き込み
 
+**ファームにアプリは入っていない**（2026-10-07 に内蔵アプリを外した。
+`docs/app-workflow.md` §3.3）。ファームを一度焼き、このデモはスロットに焼く。
+**2 ボードに焼くのは同じ `lcd_demo_rs.wasm`**（ゲストは作り直さない）。
+
+```bash
+# ゲストと CLI を作る
+(cd apps && cargo build --release -p lcd-demo-rs)
+cargo build --release -p wasmicon-cli
+w=./target/release/wasmicon
+app=apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
+```
+
 ### Raspberry Pi Pico 2 (W)
 
 ```bash
-# 1. ゲストを作る（ports 側が include_bytes! で取り込む）
-cd apps && cargo build --release && cd ..
+# 1. ファームを作る（apps/ に依存しない）
+(cd ports/rp2350 && cargo build --release)
 
-# 2. ポートをデモ入りで作る
-cd ports/rp2350 && cargo build --release --features guest-lcd-demo
+# 2. BOOTSEL を押しながら USB を挿して、ファームを焼く。
+#    -x を付けないと BOOTSEL のまま残るので、続けて 3 が焼ける
+picotool load -u -v -t elf ports/rp2350/target/thumbv8m.main-none-eabihf/release/wasmicon-rp2350
 
-# 3. BOOTSEL を押しながら USB を挿して、焼く
-picotool load -u -v -x -t elf target/thumbv8m.main-none-eabihf/release/wasmicon-rp2350
+# 3. デモをスロットに焼く（ここで起動する）。トレースは UART0 から取る
+$w monitor --port /dev/cu.usbserial-XXXX --idle 0 -o pico.log &   # 先に開く
+$w deploy "$app" --board rp2350
 ```
 
 `picotool` は 2.0 以降が要る（RP2350 対応）。`elf2uf2-rs` は RP2040 用で使えない。
-
-`--features guest-lcd-demo` を外すと既定の blink に戻る。
+2 回目以降、ファームを変えないならスロットだけ焼き直せばよい（3 だけ）。
 
 ### ESP32-S3 DevKitC-1
 
-**手順 1 のゲストは作り直さない。Pico に焼いたものと同じ `.wasm` を埋め込む。**
-
 ```bash
-# 1. ゲストを作る（まだ作っていなければ）
-cd apps && cargo build --release && cd ..
-
-# 2. 焼いて、そのままトレースを見る（build.sh が ~/export-esp.sh を読む）
-sh ports/esp32s3/build.sh run --release --features guest-lcd-demo
-```
-
-`run` は `.cargo/config.toml` の runner（`espflash flash --monitor`）を呼ぶので、
-書き込みと monitor が続けて走る。焼くだけなら `build`。
-
-`espflash` が繋ぐ先は DevKitC-1 の **`USB-UART` ポート**。複数の USB シリアルが
-見えているときは環境変数で指定する（`ESPFLASH_PORT=$(ls /dev/cu.usb*)` の
-該当するもの。**ブリッジの型番で名前が変わる** — 上の「配線」参照）。
-
-#### トレースをファイルに落とす
-
-`espflash` 4.5 の monitor はトレース行（`>` / `<` で始まる）をそのまま流すので、
-`| tee esp32s3.log` で足りる。ただし `verify/diff-traces.sh` は行頭が `>` / `<`
-でない行を全部捨てるので、**monitor が色や接頭辞を付けた場合は 1 行も取れずに
-失敗する**（「トレース行を 1 行も取り出せない」と出る）。そうなったら monitor を
-使わず、生のシリアル端末で取る:
-
-```bash
-# 1. 焼くだけ（monitor を開かない）
-sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
+# 1. ファームを作って焼く（build.sh が ~/export-esp.sh を読む）
+sh ports/esp32s3/build.sh build --release
 espflash flash --non-interactive \
   ports/esp32s3/target/xtensa-esp32s3-none-elf/release/wasmicon-esp32s3
 
-# 2. 115200 8N1 で開いてから、基板の EN ボタンを押す
-#    （バナー `wasmicon esp32s3` から取り込めるようにするため）
-#    デバイス名はブリッジの型番で変わる。ls /dev/cu.usb* で確かめる
-cat /dev/cu.usbmodemXXXX | tee esp32s3.log
+# 2. デモをスロットに焼いて、そのままトレースを取り込む
+$w deploy "$app" --board esp32s3 --monitor -o esp32s3.log
 ```
 
-**取り込んだログに NUL が混ざっていても `verify/diff-traces.sh` は落とす。**
-リセットや電源投入の瞬間にライン・ノイズで出るもので、放っておくと `grep` が
-ファイルをバイナリと判断して 1 行しか返さない（スクリプト側で対処済み）。
+`espflash` が繋ぐ先は DevKitC-1 の **`USB-UART` ポート**。複数の USB シリアルが
+見えているときは `--port` で指定する（**ブリッジの型番で名前が変わる** — 上の
+「配線」参照）。
+
+**USB からのリセットが効かずに走らないことがある**（2026-10-07 に踏んだ。
+`docs/verification-report.md` §12「ESP32-S3 で詰まったこと」）。そのときは
+書き込みを `USB-OTG` 側から、トレースを `USB-UART` 側で取り、基板の **EN
+（`RST`）ボタン**で起動する。
+
+**取り込んだログに NUL が混ざっていても `wasmicon trace diff` /
+`verify/diff-traces.sh` は落とす。** リセットや電源投入の瞬間にライン・ノイズで
+出るもので、放っておくと `grep` がファイルをバイナリと判断して 1 行しか返さない。
 
 ### トレースを切ると速い
 
@@ -195,10 +190,11 @@ cat /dev/cu.usbmodemXXXX | tee esp32s3.log
 host call が約 7,200 件あるので、115200 baud では描き切るまで 1 分ほどかかる
 （画面が上から順に埋まっていく様子は見える）。
 
-絵だけ見たいなら切る:
+絵だけ見たいならファームから切る（アプリは焼き直さなくてよい）:
 
 ```bash
-cargo build --release --no-default-features --features guest-lcd-demo
+(cd ports/rp2350 && cargo build --release --no-default-features)
+sh ports/esp32s3/build.sh build --release --no-default-features
 ```
 
 逆に**最初のブリングアップではトレースを付けたまま**にする。

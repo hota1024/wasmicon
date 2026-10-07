@@ -11,6 +11,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod fmt;
+pub mod idle;
 pub mod profile;
 pub mod slot;
 
