@@ -12,6 +12,7 @@ use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::{self, ErrorCode};
 use wasmicon_core::instance::Resolver;
+use wasmicon_port::roles::{Limits, from_table};
 use wasmicon_port::{Board, BoardResult, Hal};
 
 /// 解放されたものを順番どおりに記録するだけのボード。
@@ -21,13 +22,6 @@ struct RecordingBoard {
 }
 
 impl Board for RecordingBoard {
-    fn pin_by_role(&self, role: &str) -> Option<u32> {
-        match role {
-            "led" => Some(2),
-            _ => None,
-        }
-    }
-
     fn gpio_count(&self) -> u32 {
         32
     }
@@ -229,7 +223,16 @@ fn the_role_table_survives_release_all() {
     // 役割と一致したときに `role:` 表記になり、トレースが変わる（§9）。
     let mut mem = vec![0u8; 64 * 1024];
     let mut out = [0u64; 1];
-    let mut hal = Hal::new(RecordingBoard::default(), true);
+    let limits = Limits {
+        gpio_count: 32,
+        reserved: &[],
+        bus_pins: &[],
+    };
+    let roles = match from_table(&[("led", 2)], &limits) {
+        Ok(m) => m,
+        Err(e) => panic!("{}", e.reason()),
+    };
+    let mut hal = Hal::new(RecordingBoard::default(), true).with_roles(roles);
 
     // pin-by-role("led") -> 2 を配る。role-ptr=0, role-len=3, out=16。
     mem[..3].copy_from_slice(b"led");

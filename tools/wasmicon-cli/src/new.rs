@@ -304,16 +304,24 @@ fn manifest_toml(name: &str, board: Option<&str>) -> String {
         "\
 # {name} の設定（docs/app-workflow.md §4.7）。
 #
-# 書くのは「アプリの性質」と「意図」だけ。アプリ名と言語は Cargo.toml /
+# 書くのは「アプリの性質」と「配線」。アプリ名と言語は Cargo.toml /
 # asconfig.json から取るので、ここには書かない。
 version = 1
 
 [requirements]
-# このアプリが board.pin-by-role で引く役割名。**番号は書かない。**
-# 書くと check の役割名の照合が「参考」から「保証」に変わる。
+# このアプリが board.pin-by-role で引く役割名（名前は自由。英小文字・数字・-）。
+# 番号はここではなく下の配線表に書く。check / deploy が配線表と突き合わせる。
 pin-roles = []
 
-{defaults}"
+{defaults}
+# ボードごとの配線表。deploy が設定スロットに書き、ファームはこの表だけで
+# pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
+# [board.rp2350.roles]
+# led = 15
+#
+# [board.esp32s3.roles]
+# led = 2
+"
     )
 }
 
@@ -371,7 +379,8 @@ pub extern \"C\" fn run() {{
 
     // ピン番号はボードごとに違うので**役割名で引く**（abi-spec §8）。
     // 同じ .wasm がどのボードでも動くのはこれがあるから。
-    // 使う役割は wasmicon.toml の [requirements] pin-roles に書くこと。
+    // 使う役割は wasmicon.toml の [requirements] pin-roles に、番号は
+    // [board.<name>.roles] に書くこと（ファームは既定の表を持たない）。
     //
     // use wasmicon_hal::gpio::{{Level, Pin, PinMode}};
     // use wasmicon_hal::board;
@@ -441,7 +450,8 @@ export function run(): void {{
   log.info(\"{name} start\");
 
   // ピン番号はボードごとに違うので**役割名で引く**（abi-spec §8）。
-  // 使う役割は wasmicon.toml の [requirements] pin-roles に書くこと。
+  // 使う役割は wasmicon.toml の [requirements] pin-roles に、番号は
+  // [board.<name>.roles] に書くこと（ファームは既定の表を持たない）。
   //
   // const index = board.pinByRole(\"led\");   // 割り当てが無ければ -1
   // if (index < 0) {{ log.error(\"led の割り当てが無い\"); return; }}

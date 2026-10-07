@@ -85,7 +85,7 @@ fn the_rust_template_builds_and_passes_check_on_every_board() {
     // **4 ボードすべてで通ること。** 雛形は log だけを使うので、SPI / I2C が
     // 未実装の rp2040 でも通るのが正しい。
     for p in profile::PROFILES {
-        let verdict = check::judge(&bytes, p, &facts, None);
+        let verdict = check::judge(&bytes, p, &facts, None, &[]);
         assert!(
             verdict.is_ok(),
             "雛形が {} で通らない（{} 件）",

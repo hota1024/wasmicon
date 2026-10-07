@@ -1,7 +1,8 @@
 //! `wasmicon.toml` — プロジェクトに 1 つ置く設定（`docs/app-workflow.md` §4.7）。
 //!
-//! **書くのは「アプリの性質」と「意図」だけ。** 真実がデバイス側にあるものは
-//! 宣言にとどめる（§3.9）。
+//! 書くのは「アプリの性質」と「配線」。**配線表（`[board.<name>.roles]`）は
+//! `deploy` が設定スロットに書き、ファームはその表だけで `pin-by-role` に
+//! 答える**（§3.9。ファームは既定の表を持たない）。
 //!
 //! ```toml
 //! version = 1
@@ -14,8 +15,10 @@
 //! board = "rp2350"
 //! i2c-replay = "fixtures/sht4x.txt"
 //!
-//! [board.rp2350.roles]   # 机の上の配線（= 意図）
-//! lcd-cs = 22
+//! [board.rp2350.roles]   # 机の上の配線。deploy が設定スロットに書く
+//! lcd-cs = 17
+//! lcd-dc = 20
+//! lcd-rst = 21
 //! ```
 //!
 //! 決めたこと（§4.7「スキーマの規則」）:
@@ -24,7 +27,9 @@
 //!   `asconfig.json` から取る（二重に持つと必ず drift する）
 //! - **1 アプリに 1 つ。** workspace でもアプリごとに置く
 //! - **必須のみ。** `led` が無くても動く degradation は v0.1 では表現しない
-//! - **「この役割は無い」は `"none"`。** キーを省略すればファームの既定どおり
+//! - **役割名は自由。** ファームに語彙は無い。英小文字で始まる 16 文字までの
+//!   `a-z` / `0-9` / `-`（`wasmicon_port::roles::valid_name`）
+//! - **「この役割は無い」は `"none"`**（キーを省略したのと同じで、配らない）
 //! - **パスは `wasmicon.toml` のあるディレクトリ基準。** CLI の cwd 基準に
 //!   すると、どこから呼んだかで壊れる
 //! - **未知のキーはエラー。** 黙って無視すると「設定したのに効いていない」に
@@ -37,7 +42,8 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use wasmicon_port::ROLE_NAMES;
+use wasmicon_port::profile::{self, Profile};
+use wasmicon_port::roles::{self, Limits, RoleMap};
 
 /// この CLI が読める `version`。
 pub const SUPPORTED_VERSION: u32 = 1;
@@ -86,14 +92,49 @@ struct RawBoard {
 pub struct Manifest {
     /// 読んだファイルの場所。相対パスの基準。
     pub dir: PathBuf,
-    /// このアプリが引く役割名（**宣言**。これがあると照合が保証になる）。
-    pub pin_roles: Vec<&'static str>,
+    /// このアプリが引く役割名（**宣言**。配線表にあることを check / deploy が見る）。
+    pub pin_roles: Vec<String>,
     /// `--board` が無いときに使うボード。
     pub default_board: Option<String>,
     /// `--i2c-replay` が無いときに使うファイル（`dir` 基準で解決済み）。
     pub default_i2c_replay: Option<PathBuf>,
-    /// 配線の**意図**（`config apply` が使う。§3.9。まだ未実装）。
-    pub board_roles: BTreeMap<String, BTreeMap<&'static str, Option<u32>>>,
+    /// ボードごとの配線表（`deploy` が設定スロットに書く。§3.9）。
+    /// 読んだ時点でボードの制約（範囲・予約ピン・バスのピン・重複）を検査済み。
+    pub board_roles: BTreeMap<String, BTreeMap<String, Option<u32>>>,
+}
+
+impl Manifest {
+    /// そのボードの配線表を、設定スロットに書く形にする。
+    ///
+    /// 表が無ければ空の表（役割を 1 つも配らない）。
+    ///
+    /// # Errors
+    /// 表がボードの制約に合わないとき（`load` で検査済みなので、実際には
+    /// プロファイルを差し替えたときだけ起きる）。
+    pub fn role_map(&self, board: &'static Profile) -> Result<RoleMap> {
+        match self.board_roles.get(board.name) {
+            Some(table) => build_map(table, board),
+            None => Ok(RoleMap::EMPTY),
+        }
+    }
+}
+
+/// `[board.<name>.roles]` の 1 枚を `RoleMap` にする。`"none"` は配らない。
+fn build_map(table: &BTreeMap<String, Option<u32>>, board: &'static Profile) -> Result<RoleMap> {
+    let limits = Limits::of(board);
+    let mut map = RoleMap::EMPTY;
+    for (role, pin) in table {
+        if let Some(pin) = *pin {
+            map.insert(role.as_bytes(), pin, &limits).map_err(|e| {
+                anyhow::anyhow!(
+                    "[board.{}.roles] {role} = {pin}: {}",
+                    board.name,
+                    e.reason()
+                )
+            })?;
+        }
+    }
+    Ok(map)
 }
 
 /// `dir` から上に向かって `wasmicon.toml` を探す。
@@ -117,7 +158,7 @@ pub fn find(from: &Path) -> Result<Option<Manifest>> {
 ///
 /// # Errors
 /// 読めない、TOML として壊れている、未知のキーがある、`version` が新しい、
-/// 役割名が語彙に無いとき。
+/// 役割名の書式が違う、配線表がボードの制約に合わないとき。
 pub fn load(path: &Path) -> Result<Manifest> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("{} を読めない", path.display()))?;
@@ -138,25 +179,31 @@ pub fn load(path: &Path) -> Result<Manifest> {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
-    // 役割名は語彙と突き合わせる。**デバイスに繋がなくてもタイポが止まる**
-    // （「このボードにあるか」はデバイスの申告が要るが、「そんな役割名は
-    // 存在しない」はここで分かる。§4.3）。
+    // 役割名は語彙と突き合わせない（ファームに語彙は無い）。書式だけ見る。
+    // **タイポは「宣言（pin-roles）と配線表の食い違い」として check / deploy が
+    // 止める**（デバイスに繋がなくてよい）。
     let mut pin_roles = Vec::new();
     for name in &raw.requirements.pin_roles {
-        pin_roles.push(
-            known_role(name)
-                .with_context(|| format!("{}: [requirements] pin-roles が不正", path.display()))?,
-        );
+        valid_role(name)
+            .with_context(|| format!("{}: [requirements] pin-roles が不正", path.display()))?;
+        pin_roles.push(name.clone());
     }
 
     let mut board_roles = BTreeMap::new();
     for (board, b) in raw.board {
+        let Some(p) = profile::by_name(&board) else {
+            bail!("{}: [board.{board}] というボードは無い", path.display());
+        };
         let mut map = BTreeMap::new();
         for (role, value) in b.roles {
-            let role = known_role(&role)
+            valid_role(&role)
                 .with_context(|| format!("{}: [board.{board}.roles] が不正", path.display()))?;
-            map.insert(role, role_number(&value, role, board.as_str())?);
+            let pin = role_number(&value, &role, board.as_str())?;
+            map.insert(role, pin);
         }
+        // ボードの制約（範囲・予約ピン・バスのピン・重複）はここで見る。
+        // ファームも起動時に同じ検査をするが、焼く前に止める方が早い。
+        build_map(&map, p).with_context(|| format!("{}: 配線表が不正", path.display()))?;
         board_roles.insert(board, map);
     }
 
@@ -169,18 +216,16 @@ pub fn load(path: &Path) -> Result<Manifest> {
     })
 }
 
-/// 語彙（`ports/common` の `ROLE_NAMES`）に無い名前を弾く。
-fn known_role(name: &str) -> Result<&'static str> {
-    ROLE_NAMES
-        .iter()
-        .copied()
-        .find(|r| *r == name)
-        .with_context(|| {
-            format!(
-                "{name} という役割名は無い（あるのは {}）",
-                ROLE_NAMES.join(" / ")
-            )
-        })
+/// 役割名の書式（`wasmicon_port::roles::valid_name`）。
+fn valid_role(name: &str) -> Result<()> {
+    if roles::valid_name(name.as_bytes()) {
+        Ok(())
+    } else {
+        bail!(
+            "{name:?} は役割名に使えない（英小文字で始まる {} 文字までの a-z / 0-9 / -）",
+            roles::MAX_NAME
+        )
+    }
 }
 
 /// 番号、または `"none"`（このボードにこの役割は無い）。
@@ -231,18 +276,53 @@ pin-roles = ["lcd-cs", "lcd-dc"]
     }
 
     #[test]
-    fn an_unknown_role_name_is_rejected_offline() {
-        // デバイスに繋がなくてもタイポが止まる（§4.3）。
+    fn a_malformed_role_name_is_rejected_offline() {
+        // 語彙は無いが、書式は見る（本文の `=` や改行、トレースの `role:` と
+        // 衝突させない）。
         let e = parse(
-            "unknown-role",
+            "bad-role",
             r#"
 version = 1
 [requirements]
-pin-roles = ["lcd-cd"]
+pin-roles = ["LCD_CS"]
 "#,
         )
         .expect_err("弾く");
-        assert!(format!("{e:#}").contains("lcd-cd"), "{e:#}");
+        assert!(format!("{e:#}").contains("LCD_CS"), "{e:#}");
+    }
+
+    #[test]
+    fn any_well_formed_role_name_is_accepted() {
+        // ファームに語彙は無いので、`status-led` のような名前も書ける。
+        let m = parse(
+            "free-role",
+            r#"
+version = 1
+[requirements]
+pin-roles = ["status-led"]
+[board.esp32s3.roles]
+status-led = 2
+"#,
+        )
+        .expect("読める");
+        let map = m.role_map(&profile::ESP32S3).expect("作れる");
+        assert_eq!(map.get(b"status-led"), Some(2));
+    }
+
+    #[test]
+    fn the_wiring_is_checked_against_the_board_offline() {
+        // トレースの UART（GP0）、I2C のピン（GP4）、同じ番号の二重割り当て、
+        // 存在しないボード。どれも焼く前に止まる。
+        for (name, text, needle) in [
+            ("reserved", "[board.rp2350.roles]\nx = 0\n", "reserved"),
+            ("bus", "[board.rp2350.roles]\nx = 4\n", "spi / i2c"),
+            ("dup", "[board.rp2350.roles]\na = 15\nb = 15\n", "share"),
+            ("range", "[board.rp2350.roles]\nx = 30\n", "out of range"),
+            ("board", "[board.nope.roles]\nx = 2\n", "ボードは無い"),
+        ] {
+            let e = parse(name, &format!("version = 1\n{text}")).expect_err(name);
+            assert!(format!("{e:#}").contains(needle), "{name}: {e:#}");
+        }
     }
 
     #[test]

@@ -16,7 +16,8 @@ use wasmicon_port::{Board, BoardResult};
 /// mock ボードの GPIO 本数。
 const NUM_GPIO: usize = 48;
 
-/// mock ボードの役割名 → GPIO 番号（abi-spec §8）。
+/// mock ボードの役割名 → GPIO 番号。実機と違い、host はフラッシュを持たない
+/// ので表をここに置く（`profile::HOST.roles`。`docs/app-workflow.md` §3.9）。
 const ROLES: &[(&str, u32)] = wasmicon_port::profile::HOST.roles;
 
 // 番号がこの mock で開けることをコンパイル時に確かめる。実機のポートと
@@ -92,11 +93,21 @@ fn is_output(mode: u32) -> bool {
     mode >= PinMode::Output as u32
 }
 
-impl Board for HostBoard {
-    fn pin_by_role(&self, role: &str) -> Option<u32> {
-        ROLES.iter().find(|(r, _)| *r == role).map(|(_, i)| *i)
+/// mock の配線表。`Hal::with_roles` に渡す。
+///
+/// # Panics
+/// `profile::HOST.roles` が検査に通らないとき（コンパイル時の
+/// `assert_roles_openable` と同じ条件なので、実際には起きない）。
+#[must_use]
+pub fn host_roles() -> wasmicon_port::roles::RoleMap {
+    let limits = wasmicon_port::roles::Limits::of(&wasmicon_port::profile::HOST);
+    match wasmicon_port::roles::from_table(ROLES, &limits) {
+        Ok(map) => map,
+        Err(e) => panic!("profile::HOST.roles が不正: {}", e.reason()),
     }
+}
 
+impl Board for HostBoard {
     fn gpio_count(&self) -> u32 {
         NUM_GPIO as u32
     }

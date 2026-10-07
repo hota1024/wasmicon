@@ -180,6 +180,26 @@ pub unsafe fn read_xip(
     slot: Slot,
     fw_end: usize,
 ) -> Result<&'static [u8], SlotError> {
+    // SAFETY: 呼び出し側の契約をそのまま渡す。
+    parse(unsafe { xip_region(xip_base, slot, fw_end) }?)
+}
+
+/// XIP にマップされたフラッシュの 1 領域を、中身を解釈せずにスライスで返す。
+///
+/// アプリスロット（`read_xip`）と設定スロット（`roles`）の両方が使う。
+/// **生スライスを作る `unsafe` はここ 1 箇所だけ**にしてある。
+///
+/// # Errors
+/// ファームの末尾が領域に食い込んでいるとき（`Overlap`）。
+///
+/// # Safety
+/// `read_xip` と同じ（`xip_base + slot.offset` から `slot.len` バイトが
+/// 読み出し可能な memory-mapped flash であること）。
+pub unsafe fn xip_region(
+    xip_base: usize,
+    slot: Slot,
+    fw_end: usize,
+) -> Result<&'static [u8], SlotError> {
     let slot_start = xip_base + slot.offset as usize;
     if fw_end > slot_start {
         // **ここで返るので、重なっているときはスライスを作らない。**
@@ -187,8 +207,7 @@ pub unsafe fn read_xip(
     }
     // SAFETY: 呼び出し側の契約（読み出し可能な memory-mapped flash）。
     // 上でファームの末尾より後ろだと確かめてある。
-    let bytes = unsafe { core::slice::from_raw_parts(slot_start as *const u8, slot.len as usize) };
-    parse(bytes)
+    Ok(unsafe { core::slice::from_raw_parts(slot_start as *const u8, slot.len as usize) })
 }
 
 /// ヘッダを組む（書く側が使う）。

@@ -34,22 +34,15 @@ use wasmicon_port::{Board, BoardResult};
 /// QFN-80 の RP2350B は GP0..GP47 だが、対象ボードには載っていない。
 const NUM_GPIO: u32 = 30;
 
-/// 役割名 → GPIO 番号（abi-spec §8 の表）。**正は `ports/common` の
-/// `profile::RP2350.roles`**（`ROLE_NAMES` から外れていないことを
-/// あちらがコンパイル時に検査する）。
-///
-/// Pico 2 / Pico 2 W はヘッダのピン配置が Pico / Pico WH と同じなので、
-/// RP2040 ポートと同じ番号にしてある。
-///
-/// `led` が外付けなのは、Pico 2 W のオンボード LED が CYW43439 側にあって
-/// RP2350 の GPIO では駆動できないため（Pico 2 は GP25 だが、両方で同じ
-/// 配線にするため外付けに揃える）。**実機の配線は未確認**（docs/TODO.md §1.1）。
-const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2350.roles;
-
-// 番号がこのボードで開けること（範囲内・予約ピンでない）をコンパイル時に
-// 確かめる。ROLES を profile に移して NUM_GPIO / RESERVED との隣接が
-// 切れたので、ここで繋ぎ直す。
-const _: () = wasmicon_port::profile::assert_roles_openable(ROLES, NUM_GPIO, RESERVED);
+// 配線表の検査（CLI とファーム。`wasmicon_port::roles`）はプロファイルの
+// `gpio_count` / `reserved` を使う。ここの値と食い違うと、検査を通った表で
+// `pin.open` が落ちるので、コンパイル時に突き合わせる。役割の表そのものは
+// ファームに無い（`docs/app-workflow.md` §3.9）。
+const _: () = assert!(NUM_GPIO == wasmicon_port::profile::RP2350.gpio_count);
+const _: () = assert!(wasmicon_port::profile::same_pins(
+    RESERVED,
+    wasmicon_port::profile::RP2350.reserved
+));
 
 /// ゲストに開放しない GPIO。
 ///
@@ -510,10 +503,6 @@ fn i2c_timing(clk_hz: u32, freq_hz: u32) -> Option<(u16, u16, u8, u16)> {
 }
 
 impl<S: Serial> Board for Pico2Board<S> {
-    fn pin_by_role(&self, role: &str) -> Option<u32> {
-        ROLES.iter().find(|(r, _)| *r == role).map(|(_, i)| *i)
-    }
-
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }

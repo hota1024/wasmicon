@@ -1,0 +1,23 @@
+# wasmicon.toml（docs/app-workflow.md §4.7）。
+# 配線表（[board.<name>.roles]）は deploy が設定スロットに書き、ファームは
+# この表だけで pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
+# 配線の図は apps/lcd-demo-rs/README.md。
+version = 1
+
+[requirements]
+pin-roles = ["lcd-cs", "lcd-dc", "lcd-rst"]
+
+[board.rp2350.roles]
+lcd-cs = 17
+lcd-dc = 20
+lcd-rst = 21
+
+[board.esp32s3.roles]
+lcd-cs = 10
+lcd-dc = 14
+lcd-rst = 15
+
+[board.rp2040.roles]
+lcd-cs = 17
+lcd-dc = 20
+lcd-rst = 21

@@ -144,3 +144,34 @@ fn a_flipped_bit_in_the_image_is_caught() {
     let e = parse_err(&image, "CRC が合わない");
     assert_eq!(e.reason(), "slot crc mismatch");
 }
+
+/// `deploy` が書く 1 本の画像（アプリスロット + 設定スロット）を、ファームが
+/// 読む経路でそれぞれ読み直す（`docs/app-workflow.md` §3.9）。
+#[test]
+fn the_deploy_image_carries_the_app_and_the_wiring() {
+    use wasmicon_port::profile;
+    use wasmicon_port::roles::{self, Limits, RoleMap};
+
+    let p = &profile::RP2350;
+    let limits = Limits::of(p);
+    let map = roles::from_table(&[("lcd-cs", 17), ("status-led", 15)], &limits)
+        .unwrap_or_else(|e| panic!("{}", e.reason()));
+    let wasm = b"\0asm\x01\0\0\0app";
+    let image = pack::with_roles(&pack::build(wasm), p, &map).expect("組める");
+
+    let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
+        panic!("rp2350 にはスロットがある");
+    };
+    // アプリスロットは先頭から、設定スロットはその直後から。
+    let app = slot::parse(&image[..sl.len as usize]).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(app, wasm);
+    let at = (rs.offset - sl.offset) as usize;
+    let back = roles::parse(&image[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.get(b"lcd-cs"), Some(17));
+    assert_eq!(back.get(b"status-led"), Some(15));
+
+    // 空の表も書く（前に焼いた表を残さない）。読むと「役割なし」。
+    let empty = pack::with_roles(&pack::build(wasm), p, &RoleMap::EMPTY).expect("組める");
+    let back = roles::parse(&empty[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert!(back.is_empty());
+}

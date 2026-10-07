@@ -5,12 +5,11 @@
 //! あとからの不注意な変更の両方がここで落ちる。`config` は validate の
 //! 上限なので、変わると**通るアプリが変わる**。
 //!
-//! 役割名の語彙の検査（`ROLE_NAMES` に無い名前を弾く）は `profile` 側で
-//! `const _: () = assert_role_names(..)` として**コンパイル時に**走る。
-//! ここではその関数が実際に弾くことだけを見る。
+//! **実機ボードは役割の既定の表を持たない**（2026-10-07 オーナー決定。
+//! 配線表は設定スロットから読む。`docs/app-workflow.md` §3.9）。ここでは
+//! 配線表の検査に使う GPIO の制約（本数・予約ピン・バスのピン）を固定する。
 
 use wasmicon_core::Config;
-use wasmicon_port::ROLE_NAMES;
 use wasmicon_port::profile::{self, Profile};
 
 /// 集める前に各 `main.rs` にあった値（`max_memory_pages` 以外は 3 ポート共通）。
@@ -155,19 +154,33 @@ fn host_is_looser_than_every_board() {
 }
 
 #[test]
-fn roles_are_what_the_ports_had() {
-    // abi-spec §8 の表。RP2040 と RP2350 はヘッダが同じなので同一。
-    let pico = [("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("lcd-rst", 21)];
-    assert_eq!(profile::RP2040.roles, pico);
-    assert_eq!(profile::RP2350.roles, pico);
-    assert_eq!(
-        profile::ESP32S3.roles,
-        [("led", 2), ("lcd-cs", 10), ("lcd-dc", 14), ("lcd-rst", 15)]
-    );
+fn only_the_host_mock_has_a_role_table() {
+    // 実機ボードは既定の表を持たない。host はフラッシュの無い mock なので
+    // 表をプロファイルに持つ（`wasmicon run` とテストが使う）。
+    for p in [&profile::RP2040, &profile::RP2350, &profile::ESP32S3] {
+        assert!(p.roles.is_empty(), "{} は既定の表を持たない", p.name);
+    }
     assert_eq!(
         profile::HOST.roles,
         [("led", 2), ("lcd-cs", 10), ("lcd-dc", 11), ("lcd-rst", 12)]
     );
+}
+
+#[test]
+fn gpio_limits_are_what_the_ports_have() {
+    // ポートの `board.rs` もコンパイル時に同じ値と突き合わせている。
+    let pico_reserved = [0, 1, 23, 24, 25, 29];
+    for p in [&profile::RP2040, &profile::RP2350] {
+        assert_eq!(p.gpio_count, 30, "{}", p.name);
+        assert_eq!(p.reserved, pico_reserved, "{}", p.name);
+        assert_eq!(p.bus_pins, [4, 5, 16, 18, 19], "{}", p.name);
+    }
+    assert_eq!(profile::ESP32S3.gpio_count, 49);
+    assert_eq!(
+        profile::ESP32S3.reserved,
+        [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 43, 44]
+    );
+    assert_eq!(profile::ESP32S3.bus_pins, [8, 9, 11, 12, 13]);
 }
 
 #[test]
@@ -187,28 +200,6 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
             p.name
         );
     }
-}
-
-#[test]
-fn every_role_name_is_in_the_vocabulary() {
-    // profile 側のコンパイル時検査と同じことを実行時にも見る
-    // （どのプロファイルも検査から漏れていないことの確認）。
-    for p in profile::PROFILES {
-        for (role, _) in p.roles {
-            assert!(
-                ROLE_NAMES.contains(role),
-                "{} の役割名 {role} が ROLE_NAMES に無い（abi-spec §9）",
-                p.name
-            );
-        }
-    }
-}
-
-#[test]
-#[should_panic(expected = "ROLE_NAMES")]
-fn assert_role_names_rejects_an_unknown_name() {
-    // コンパイル時の検査が本当に弾くことを、同じ関数を実行時に呼んで確かめる。
-    profile::assert_role_names(&[("buzzer", 22)]);
 }
 
 #[test]

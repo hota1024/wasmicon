@@ -14,18 +14,15 @@ use wasmicon_port::{Board, BoardResult};
 /// RP2040 の GPIO は GP0..GP29。
 const NUM_GPIO: u32 = 30;
 
-/// 役割名 → GPIO 番号（abi-spec §8 の表）。**正は `ports/common` の
-/// `profile::RP2040.roles`**（`ROLE_NAMES` から外れていないことを
-/// あちらがコンパイル時に検査する）。
-///
-/// `led` が外付けなのは、Pico W/WH のオンボード LED が CYW43439 側にあって
-/// RP2040 の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
-const ROLES: &[(&str, u32)] = wasmicon_port::profile::RP2040.roles;
-
-// 番号がこのボードで開けること（範囲内・予約ピンでない）をコンパイル時に
-// 確かめる。ROLES を profile に移して NUM_GPIO / RESERVED との隣接が
-// 切れたので、ここで繋ぎ直す。
-const _: () = wasmicon_port::profile::assert_roles_openable(ROLES, NUM_GPIO, RESERVED);
+// 配線表の検査（CLI とファーム。`wasmicon_port::roles`）はプロファイルの
+// `gpio_count` / `reserved` を使う。ここの値と食い違うと、検査を通った表で
+// `pin.open` が落ちるので、コンパイル時に突き合わせる。役割の表そのものは
+// ファームに無い（`docs/app-workflow.md` §3.9）。
+const _: () = assert!(NUM_GPIO == wasmicon_port::profile::RP2040.gpio_count);
+const _: () = assert!(wasmicon_port::profile::same_pins(
+    RESERVED,
+    wasmicon_port::profile::RP2040.reserved
+));
 
 // プロファイルの「実装済みインターフェース」と、下の `Board` 実装の
 // `unsupported` スタブを縛る。**片方だけ直すとここで落ちる。**
@@ -93,10 +90,6 @@ impl<S: Serial> PicoBoard<S> {
 }
 
 impl<S: Serial> Board for PicoBoard<S> {
-    fn pin_by_role(&self, role: &str) -> Option<u32> {
-        ROLES.iter().find(|(r, _)| *r == role).map(|(_, i)| *i)
-    }
-
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }

@@ -17,6 +17,7 @@ use wasmicon_port::profile::{Flasher, Profile, Slot};
 
 use crate::manifest::Manifest;
 use crate::{check, monitor, pack};
+use wasmicon_port::roles::RoleMap;
 
 pub struct Options {
     pub path: PathBuf,
@@ -49,6 +50,8 @@ pub struct Plan {
     pub wasm_len: usize,
     pub image_len: usize,
     pub crc: u32,
+    /// 一緒に書く配線表（`lcd-cs=17 …`）。`None` = 役割を配らない。
+    pub roles: Option<String>,
 }
 
 /// 焼き方の判断。**ボード名ではなくフラッシャで決まる。**
@@ -109,11 +112,12 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 
     // **走らないものを焼かない。** 役割名は宣言があれば保証になる（§4.7）。
     let facts = check::facts(&wasm)?;
-    let declared: Option<&[&'static str]> = opts
+    let declared: Option<&[String]> = opts
         .manifest
         .as_ref()
         .filter(|m| !m.pin_roles.is_empty())
         .map(|m| m.pin_roles.as_slice());
+    let provided = check::provided_roles(board, opts.manifest.as_ref());
     if facts.failures() > 0 {
         bail!(
             "check が落ちた（全ボード共通で {} 件）。`wasmicon check {}` を見ること",
@@ -121,7 +125,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
             opts.path.display()
         );
     }
-    let verdict = check::judge(&wasm, board, &facts, declared);
+    let verdict = check::judge(&wasm, board, &facts, declared, &provided);
     if !verdict.is_ok() {
         bail!(
             "check が落ちた（{} で {} 件）。`wasmicon check {} --board {}` を見ること",
@@ -132,8 +136,14 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         );
     }
 
-    let image = pack::build(&wasm);
-    let slot = pack::fits(board, image.len())?;
+    let app = pack::build(&wasm);
+    let slot = pack::fits(board, app.len())?;
+    // 配線表（§3.9）。ファームは既定の表を持たないので毎回書く。
+    let roles = match &opts.manifest {
+        Some(m) => m.role_map(board)?,
+        None => RoleMap::EMPTY,
+    };
+    let image = pack::with_roles(&app, board, &roles)?;
 
     // 画像はアプリの隣に置く（`pack` と同じ名前）。消さないのは、同じものを
     // もう一度焼いたり、デバイスのログと CRC を突き合わせたりするため。
@@ -147,8 +157,9 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         image: out,
         addr: pack::XIP_BASE + u64::from(slot.offset),
         wasm_len: wasm.len(),
-        image_len: image.len(),
+        image_len: app.len(),
         crc: pack::crc_of(&image),
+        roles: pack::describe_roles(&roles),
     })
 }
 
@@ -172,6 +183,13 @@ pub fn run(opts: &Options) -> Result<bool> {
         plan.wasm_len,
         plan.crc
     );
+    match &plan.roles {
+        Some(r) => println!("  配線表: {r}"),
+        None => println!(
+            "  配線表: なし（役割を配らない。wasmicon.toml の [board.{}.roles]）",
+            plan.board.name
+        ),
+    }
 
     let mode = Mode::of(opts, plan.slot.flasher);
 

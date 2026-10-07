@@ -280,7 +280,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 |---|---|---|
 | `pin-by-role` | `(param i32 i32 i32) (result i32)` | `(role-ptr, role-len, out-index) -> ec` |
 
-役割名は小文字の kebab-case。v0.1 で定めるもの: `led`, `lcd-cs`, `lcd-dc`, `lcd-rst`。
+役割名は**固定の語彙ではない**（2026-10-07 オーナー決定）。英小文字で始まる 16 文字までの `a-z` / `0-9` / `-`。どの名前にどの GPIO を割り当てるかは §8 の配線表で決まる。
 そのボードに割り当てが無ければ `unsupported` を返す。
 
 ### `wasmicon:hal/types@0.1.0`
@@ -314,19 +314,34 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 Pico 2 / Pico 2 W は Pico / Pico WH とヘッダのピン配置が同じなので、GP 番号も同じにしてある。
 
-`board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応。ポート層の `board` 設定に置く:
+`board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応（**配線表**）は、
+**ファームではなくデバイスの設定スロットに置く**（2026-10-07 オーナー決定。
+`docs/app-workflow.md` §3.9）。
 
-| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W | ホスト (mock) |
-|---|---|---|---|---|
-| `led` | GPIO2（外付け） | GP15（外付け） | GP15（外付け） | 2 |
-| `lcd-cs` | GPIO10 | GP17 | GP17 | 10 |
-| `lcd-dc` | GPIO14 | GP20 | GP20 | 11 |
-| `lcd-rst` | GPIO15 | GP21 | GP21 | 12 |
+- **役割名はファームの語彙ではない。** アプリ（`wasmicon.toml` の
+  `[requirements] pin-roles`）と配線（`[board.<name>.roles]`）の間の約束で、
+  `wasmicon deploy` が配線表を設定スロットに書き、ファームは起動時に読んだ
+  表のとおりに答える
+- **ファームは既定の表を持たない。** 設定スロットが空・壊れていれば役割は
+  1 つも配らず（`pin-by-role` は全て `unsupported`）、どのピンも勝手に駆動しない
+- 配線表に入れられない GPIO: 範囲外、予約ピン（トレースの UART、フラッシュ、
+  無線チップ）、**ポートが SPI / I2C に使うピン**（上の表）、同じ番号の重複。
+  CLI が焼く前に、ファームが起動時にもう一度弾く（`ports/common` の `roles`）
+- host（mock）だけは表をプロファイルに持つ（`led`=2 / `lcd-cs`=10 /
+  `lcd-dc`=11 / `lcd-rst`=12）。フラッシュを持たないため
 
-`led` に外付けを充てるのは、どのボードもオンボード LED が素の GPIO ではないため
-（Pico W/WH と Pico 2 W は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812）。
-Pico 2（無線なし）のオンボード LED は GP25 だが、Pico 2 W と同じ配線で
-動かせるよう外付けに揃えている。実機の配線は Phase 4 でオーナーに確認する。
+評価構成（SHT40 + ILI9341）で使っている配線は `apps/*/wasmicon.toml` にある:
+
+| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico 2 W | 使うアプリ |
+|---|---|---|---|
+| `lcd-cs` | GPIO10 | GP17 | lcd-demo / sensor-display |
+| `lcd-dc` | GPIO14 | GP20 | 同上 |
+| `lcd-rst` | GPIO15 | GP21 | 同上 |
+| `led` | GPIO2（外付け） | GP15（外付け） | blink |
+
+`led` は blink が引く名前の 1 つにすぎない（ファームにとって特別ではない）。
+どのボードもオンボード LED が素の GPIO ではないので外付けを充てている
+（Pico 2 W は CYW43439 側、ESP32-S3 DevKitC-1 は WS2812）。
 
 **GPIO 番号がボードごとに異なる**ため、目標アプリの「同一バイナリで同一結果」を実現するには、ゲストがピン番号をハードコードしない仕組みが要る。v0.1 では次のいずれかとする（未決、§10 参照）:
 

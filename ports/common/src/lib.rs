@@ -13,6 +13,7 @@
 pub mod fmt;
 pub mod idle;
 pub mod profile;
+pub mod roles;
 pub mod slot;
 
 use wasmicon_core::error::{Error, Result, Trap};
@@ -24,6 +25,7 @@ use wasmicon_core::generated::{self, ErrorCode, HostFn};
 use wasmicon_core::instance::{Extern, ExternType, Resolver};
 
 use fmt::Buf;
+use roles::{MAX_ROLES, RoleMap};
 
 /// abi-spec §5.3 が保証する同時ハンドル数。
 pub const MAX_PINS: usize = 16;
@@ -61,9 +63,6 @@ pub type BoardResult<T> = core::result::Result<T, ErrorCode>;
 /// 番号はいずれもボードの GPIO 番号・ペリフェラル番号で、ハンドルではない。
 /// ハンドルの管理は `Hal` 側が行う。
 pub trait Board {
-    /// 役割名から GPIO 番号を引く（abi-spec §8）。
-    fn pin_by_role(&self, role: &str) -> Option<u32>;
-
     /// GPIO の本数。範囲検査に使う。
     fn gpio_count(&self) -> u32;
 
@@ -128,13 +127,15 @@ pub struct Hal<B: Board> {
     pins: [PinSlot; MAX_PINS],
     i2c: [BusSlot; MAX_I2C],
     spi: [BusSlot; MAX_SPI],
-    /// `pin-by-role` で配った番号と役割名（abi-spec §9）。
-    roles: [(u32, &'static str); 8],
-    nroles: usize,
+    /// 配線表（`docs/app-workflow.md` §3.9）。`pin-by-role` はこれで答える。
+    role_map: RoleMap,
+    /// 表の各役割を `pin-by-role` で配ったか（abi-spec §9 の正規化に使う）。
+    handed: [bool; MAX_ROLES],
     scratch: [u8; SCRATCH],
 }
 
 impl<B: Board> Hal<B> {
+    /// 役割を 1 つも持たない `Hal`。配線表は `with_roles` で渡す。
     #[must_use]
     pub fn new(board: B, trace_on: bool) -> Self {
         Hal {
@@ -143,10 +144,19 @@ impl<B: Board> Hal<B> {
             pins: [PinSlot::default(); MAX_PINS],
             i2c: [BusSlot::default(); MAX_I2C],
             spi: [BusSlot::default(); MAX_SPI],
-            roles: [(0, ""); 8],
-            nroles: 0,
+            role_map: RoleMap::EMPTY,
+            handed: [false; MAX_ROLES],
             scratch: [0; SCRATCH],
         }
+    }
+
+    /// 配線表を渡す。実機はファームが設定スロットから読んだもの、host は
+    /// プロファイルの mock の表（`docs/app-workflow.md` §3.9）。
+    #[must_use]
+    pub fn with_roles(mut self, map: RoleMap) -> Self {
+        self.role_map = map;
+        self.handed = [false; MAX_ROLES];
+        self
     }
 
     /// ボードへの参照。ポートの後始末に使う。
@@ -170,7 +180,7 @@ impl<B: Board> Hal<B> {
     /// 解放の順序は **ハンドルの小さい順に gpio → i2c → spi** で固定する。
     /// ポートごとに違うと、トレースに出ない差がボード間に生まれる。
     ///
-    /// **ロール表（`pin-by-role` で配った番号の記録）はここでは消さない。**
+    /// **配った役割の記録（`handed`）はここでは消さない。**
     /// あれはハンドルではなく abi-spec §9 の正規化に使う状態で、§5.2 の
     /// 対象外。ローダが 1 つの `Hal` を使い回すなら**別に消す必要がある**
     /// （持ち越すと、次のアプリがハードコードした番号がたまたま前のアプリの
@@ -204,25 +214,20 @@ impl<B: Board> Hal<B> {
     ///
     /// 判断材料は数値だけなので、ゲストがハードコードした番号が役割割り当てと
     /// 一致していると、それも役割名になる。§9 がその前提を明記している。
+    ///
+    /// **配った役割だけを置き換える。** 表にあっても `pin-by-role` で引いて
+    /// いない番号は生の数値で出す（表を変えても、役割を使わないアプリの
+    /// トレースは変わらない）。表は同じ番号に 2 つの役割を持たない
+    /// （`RoleMap::insert` が弾く）ので、見つかるのは高々 1 つ。
     fn write_pin(&self, out: &mut Buf<'_>, index: u32) {
-        for &(i, role) in &self.roles[..self.nroles] {
-            if i == index {
+        for i in 0..self.role_map.len() {
+            if self.handed[i] && self.role_map.pin(i) == index {
                 out.str("role:");
-                out.str(role);
+                out.bytes(self.role_map.name(i));
                 return;
             }
         }
         out.u32(index);
-    }
-
-    fn remember_role(&mut self, index: u32, role: &'static str) {
-        if self.roles[..self.nroles].iter().any(|(i, _)| *i == index) {
-            return;
-        }
-        if self.nroles < self.roles.len() {
-            self.roles[self.nroles] = (index, role);
-            self.nroles += 1;
-        }
     }
 }
 
@@ -348,18 +353,14 @@ impl<B: Board> Resolver for Hal<B> {
         match f {
             HostFn::BoardPinByRole => {
                 let role = guest_slice(mem, args[0], args[1])?;
-                let role = core::str::from_utf8(role).unwrap_or("");
                 a.byte(b'"');
-                a.escaped(role.as_bytes());
+                a.escaped(role);
                 a.byte(b'"');
-                match self.board.pin_by_role(role) {
-                    Some(index) => {
-                        // 静的な役割名を覚えるため、ボードの表から名前を引き直す。
-                        let name = ROLE_NAMES.iter().find(|r| **r == role).copied();
+                match self.role_map.find(role) {
+                    Some(i) => {
+                        let index = self.role_map.pin(i);
                         put_u32(mem, args[2], index)?;
-                        if let Some(name) = name {
-                            self.remember_role(index, name);
-                        }
+                        self.handed[i] = true;
                         self.write_pin(&mut o, index);
                     }
                     None => status = ErrorCode::Unsupported.status(),
@@ -807,6 +808,3 @@ impl<B: Board> Resolver for Hal<B> {
         Ok(())
     }
 }
-
-/// abi-spec §8 が定める役割名。`'static` にするためここに置く。
-pub const ROLE_NAMES: &[&str] = &["led", "lcd-cs", "lcd-dc", "lcd-rst"];

@@ -1,0 +1,18 @@
+# wasmicon.toml（docs/app-workflow.md §4.7）。
+# 配線表（[board.<name>.roles]）は deploy が設定スロットに書き、ファームは
+# この表だけで pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
+version = 1
+
+[requirements]
+pin-roles = ["led"]
+
+# led は外付け（どのボードもオンボード LED が素の GPIO ではない）。
+# GPIO → 220〜330 Ω → LED → GND。
+[board.rp2350.roles]
+led = 15
+
+[board.esp32s3.roles]
+led = 2
+
+[board.rp2040.roles]
+led = 15

@@ -29,6 +29,7 @@ use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_storage::FlashStorage;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::fmt::Buf;
+use wasmicon_port::roles::{self, Limits, RoleMap};
 use wasmicon_port::{idle, slot, Hal};
 
 use board::{EspBoard, Serial};
@@ -37,6 +38,15 @@ use board::{EspBoard, Serial};
 // 中身はバージョンとビルド日時で、ランタイムからは使わない。espflash 4.5 以降は
 // これが無い ELF を受け付けない（RP2350 の `IMAGE_DEF` に当たるもの）。
 esp_bootloader_esp_idf::esp_app_desc!();
+
+/// 設定スロット（配線表。`docs/app-workflow.md` §3.9）。アプリスロットの直後。
+const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.role_slot {
+    Some(s) => s,
+    None => panic!("ESP32-S3 のプロファイルに設定スロットが無い"),
+};
+
+/// 配線表で割り当ててよい GPIO の制約。
+const LIMITS: Limits<'static> = Limits::of(&wasmicon_port::profile::ESP32S3);
 
 /// アプリスロット（`ports/common` の `profile::ESP32S3`）。
 const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.slot {
@@ -93,18 +103,25 @@ fn main() -> ! {
     #[cfg(feature = "hw-probe")]
     probe::run(&mut board);
 
+    // 設定スロットとアプリスロットの両方を読むので、ここで 1 回だけ作る。
+    let mut storage = FlashStorage::new(p.FLASH);
+
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
+    // 役割は設定スロットの表だけで決まる。ファームは既定の表を持たない
+    // （空・壊れていれば役割は 1 つも配らない。docs/app-workflow.md §3.9）。
+    let map = pick_roles(&mut storage, hal.board_mut().serial());
+    let mut hal = hal.with_roles(map);
 
     // SAFETY: 単一のタスクからしか触らないので、可変静的への参照はここでしか作らない。
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let outcome = run(&mut hal, p.FLASH, arena_buf, scratch_buf);
+    let outcome = run(&mut hal, &mut storage, arena_buf, scratch_buf);
 
     // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
     // スロットが空・壊れているなら、理由は pick_guest が出している。
     if let Ok(false) = outcome {
-        idle::heartbeat(hal.board_mut());
+        idle::park(hal.board_mut());
     }
 
     // **理由を先に出す。** 下の release_all は無制限に待ちうる
@@ -140,13 +157,12 @@ fn main() -> ! {
 /// 64 KiB だがアプリは数 KB で、DRAM はほぼ使い切っている
 /// （`docs/TODO.md` §1.4）。arena から取るので静的な領域を増やさない。
 fn pick_guest<'a>(
-    flash: esp_hal::peripherals::FLASH<'static>,
+    storage: &mut FlashStorage<'_>,
     arena: &mut Arena<'a>,
     serial: &mut SerialPort<'static>,
 ) -> Option<&'a [u8]> {
     let mut line = [0u8; 96];
     let mut out = Buf::new(&mut line);
-    let mut storage = FlashStorage::new(flash);
 
     let mut head = [0u8; slot::HEADER_LEN];
     if storage.read(SLOT.offset, &mut head).is_err() {
@@ -237,19 +253,50 @@ fn pick_guest<'a>(
     Some(buf)
 }
 
+/// 設定スロットから配線表を読む。読めた表（または読めない理由）をシリアルに出す。
+///
+/// 本文は `roles::MAX_BODY`（256 バイト）までなので、スタックに読む。
+fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> RoleMap {
+    let result = read_roles(storage);
+    let mut line = [0u8; 192];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&result, &mut out);
+    serial.write(out.as_bytes());
+    serial.write(b"\r\n");
+    result.unwrap_or(RoleMap::EMPTY)
+}
+
+fn read_roles(storage: &mut FlashStorage<'_>) -> Result<RoleMap, roles::RolesError> {
+    let mut head = [0u8; roles::HEADER_LEN];
+    if storage.read(ROLE_SLOT.offset, &mut head).is_err() {
+        // 読めないのは空と同じ扱いにする（役割を配らない側に倒す）。
+        return Err(roles::RolesError::Empty);
+    }
+    let header = roles::parse_header(&head)?;
+    let mut body = [0u8; roles::MAX_BODY];
+    let body = &mut body[..header.len];
+    if storage
+        .read(ROLE_SLOT.offset + roles::HEADER_LEN as u32, body)
+        .is_err()
+    {
+        return Err(roles::RolesError::Empty);
+    }
+    roles::parse_checked(body, &header, &LIMITS)
+}
+
 /// スロットの読み出しから `run` の呼び出しまで。
 ///
 /// 走らせるアプリが無ければ `Ok(false)`、走らせて戻ったら `Ok(true)`。
 fn run(
     hal: &mut Hal<EspBoard<SerialPort<'static>>>,
-    flash: esp_hal::peripherals::FLASH<'static>,
+    storage: &mut FlashStorage<'_>,
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) -> Result<bool, wasmicon_core::Error> {
     let mut arena = Arena::new(arena_buf);
     let mut scratch = Arena::new(scratch_buf);
 
-    let Some(guest) = pick_guest(flash, &mut arena, hal.board_mut().serial()) else {
+    let Some(guest) = pick_guest(storage, &mut arena, hal.board_mut().serial()) else {
         return Ok(false);
     };
     let m = decode::decode(guest, &mut arena)?;

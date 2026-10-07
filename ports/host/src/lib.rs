@@ -127,7 +127,8 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
             .with_i2c_replay(i2c_replay)
             .with_spi_unsupported(spi_unsupported),
         trace,
-    );
+    )
+    .with_roles(hal::host_roles());
 
     // ゲストが走り出す前の失敗（decode / validate / Exec / instantiate）では
     // トレースは空。走り出したあとの失敗では、そこまでの全行が hal に溜まる。

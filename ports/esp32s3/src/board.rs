@@ -88,29 +88,29 @@ const fn reserved(index: u32) -> bool {
     matches!(index, 22..=32 | 43 | 44)
 }
 
-/// 役割名 → GPIO 番号（abi-spec §8 の表）。**正は `ports/common` の
-/// `profile::ESP32S3.roles`**（`ROLE_NAMES` から外れていないことを
-/// あちらがコンパイル時に検査する）。
-///
-/// `led` が外付けなのは、DevKitC-1 のオンボード LED が WS2812 で
-/// 素の GPIO では駆動できないため。**実機の配線は未確認**（docs/handoff.md §8）。
-const ROLES: &[(&str, u32)] = wasmicon_port::profile::ESP32S3.roles;
-
-// 番号がこのボードで開けること（範囲内・予約ピンでない）をコンパイル時に
-// 確かめる。ROLES を profile に移して NUM_GPIO / reserved との隣接が切れたので、
-// ここで繋ぎ直す。`reserved` は範囲で判定していてスライスでないため、
-// ports/common の assert_roles_openable ではなく同じ検査をここに書く
-// （const fn から関数ポインタは呼べない）。
+// 配線表の検査（CLI とファーム。`wasmicon_port::roles`）はプロファイルの
+// `gpio_count` / `reserved` を使う。ここの `NUM_GPIO` / `reserved` と食い違うと、
+// 検査を通った表で `pin.open` が落ちるので、コンパイル時に突き合わせる。
+// `reserved` は範囲で判定しているので、全番号を 1 つずつ比べる。役割の表
+// そのものはファームに無い（`docs/app-workflow.md` §3.9）。
 const _: () = {
-    let mut i = 0;
-    while i < ROLES.len() {
-        let n = ROLES[i].1;
-        assert!(n < NUM_GPIO, "役割の GPIO 番号がボードの本数を超えている");
+    let p = &wasmicon_port::profile::ESP32S3;
+    assert!(NUM_GPIO == p.gpio_count);
+    let mut n = 0;
+    while n < NUM_GPIO {
+        let mut listed = false;
+        let mut j = 0;
+        while j < p.reserved.len() {
+            if p.reserved[j] == n {
+                listed = true;
+            }
+            j += 1;
+        }
         assert!(
-            !reserved(n),
-            "役割の GPIO 番号が予約ピンに当たっている（ゲストは開けない）"
+            listed == reserved(n),
+            "profile::ESP32S3.reserved と board.rs の reserved が食い違う"
         );
-        i += 1;
+        n += 1;
     }
 };
 
@@ -212,10 +212,6 @@ fn bank(index: u32) -> (bool, u32) {
 }
 
 impl<S: Serial> Board for EspBoard<S> {
-    fn pin_by_role(&self, role: &str) -> Option<u32> {
-        ROLES.iter().find(|(r, _)| *r == role).map(|(_, i)| *i)
-    }
-
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }

@@ -38,12 +38,11 @@ Rust 版のみ。AssemblyScript の対になるものは用意していない
 
 ### Raspberry Pi Pico 2 W
 
-`docs/abi-spec.md` §8 の既定のまま。**この配線は 2026-09-26 に Pico 2 W 実機で
-確認済み**（`docs/verification-report.md` §6）。
+**この配線は 2026-09-26 に Pico 2 W 実機で確認済み**（`docs/verification-report.md` §6）。
 違うピンに繋ぎたいときは、役割（`lcd-cs` / `lcd-dc` / `lcd-rst`）は
-`ports/common/src/profile.rs` の `RP2350.roles`、SPI のピンは
-`ports/rp2350/src/board.rs` の `SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` を直す
-（abi-spec §8 の表も合わせる）。
+**`wasmicon.toml` の `[board.rp2350.roles]`**（`deploy` が設定スロットに書く。
+ファームは焼き直さなくてよい）、SPI のピンは `ports/rp2350/src/board.rs` の
+`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` を直す。
 
 | ILI9341 モジュール | Pico 2 W | ピン番号（物理） |
 |---|---|---|
@@ -80,11 +79,9 @@ GND は 8 本ある（3 / 8 / 13 / 18 / 23 / 28 / 33 / 38）。
 
 ### ESP32-S3 DevKitC-1
 
-`docs/abi-spec.md` §8 の既定のまま。**この配線は 2026-09-26 に DevKitC-1 実機で
-確認済み**（`docs/verification-report.md` §7）。違うピンに繋ぎたいときは
-役割は `ports/common/src/profile.rs` の `ESP32S3.roles`、SPI のピンは
-`ports/esp32s3/src/board.rs` の `SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` を直す
-（abi-spec §8 の表も合わせる）。
+**この配線は 2026-09-26 に DevKitC-1 実機で確認済み**（`docs/verification-report.md` §7）。
+違うピンに繋ぎたいときは、役割は **`wasmicon.toml` の `[board.esp32s3.roles]`**、
+SPI のピンは `ports/esp32s3/src/board.rs` の `SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` を直す。
 
 | ILI9341 モジュール | ESP32-S3 DevKitC-1 |
 |---|---|
@@ -237,14 +234,16 @@ drop する」とも定めているので、解放は必ず起きる。
 
 1. **UART に何も出ない** — 配線（TX/RX の向き、GND）と 115200 8N1、
    焼けているか。バナー `wasmicon rp2350` が最初に出る
-2. **`spi open failed` / `gpio open failed` が出る** — ポート側。
-   役割名が `profile::<board>.roles` に無いか、GPIO 番号が `RESERVED` に入っている
-3. **トレースは最後まで流れるのに画面が真っ暗** — バックライト（`LED` ピン）、
+2. **`role not found` が出る** — 配線表が設定スロットに無い。バナーの
+   `wasmicon: roles …` の行を見る。`roles empty, no roles` なら、
+   `wasmicon.toml` のあるディレクトリから `deploy` し直す（表も一緒に書かれる）
+3. **`spi open failed` / `gpio open failed` が出る** — ポート側
+4. **トレースは最後まで流れるのに画面が真っ暗** — バックライト（`LED` ピン）、
    `RESET` の配線、電源。ILI9341 は 3.3 V
-4. **表示が出るが化けている** — DC の配線を最初に疑う。次に SPI のクロック。
+5. **表示が出るが化けている** — DC の配線を最初に疑う。次に SPI のクロック。
    `SPI_HZ`（`src/lib.rs`）を 4 MHz あたりまで落として切り分ける。
    配線が長いブレッドボードだと 15 MHz は通らないことがある
-5. **赤と青が逆、または色が反転** — MADCTL (`0x36`) の値。
+6. **赤と青が逆、または色が反転** — MADCTL (`0x36`) の値。
    `src/ili9341.rs` の `init` が `0x28`（横向き・BGR）を送っている
 
 ### ESP32-S3 でだけ出ないとき

@@ -10,10 +10,14 @@
 //!   `ports/rp2040` は SPI / I2C が `unsupported` を返すので、これが無いと
 //!   静的検査は通って実機で初めて落ちる
 //!
+//! - **アプリが宣言した役割（`wasmicon.toml` の `[requirements] pin-roles`）が、
+//!   そのボードの配線表にあるか。** 配線表は実機なら `[board.<name>.roles]`
+//!   （`deploy` が設定スロットに書く）、host なら mock の表。ファームは既定の
+//!   表を持たないので、表に無い役割は実機で `unsupported` になる（§3.9）
+//!
 //! **できないこと: 役割名の列挙。** `pin-by-role` の引数は実行時に渡る
-//! `string` なので、`.wasm` から確実には取れない。ここでは既知の役割名が
-//! バイト列に現れるかを見るだけで、**参考**であって保証ではない
-//! （`wasmicon.toml` の `[requirements] pin-roles` が入れば保証になる。§4.7）。
+//! `string` なので、`.wasm` から確実には取れない。宣言が無いアプリの役割は
+//! 照合しない。
 //!
 //! 判定（`facts` / `judge`）と印字を分けてあるのは、判定だけをテストから
 //! 呼べるようにするため。
@@ -26,8 +30,8 @@ use crate::manifest::Manifest;
 use crate::pack;
 use wasmicon_core::module::{ExportDesc, ImportDesc};
 use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
+use wasmicon_port::Hal;
 use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
-use wasmicon_port::{Hal, ROLE_NAMES};
 
 /// 事実を取り出すだけの decode に使う作業領域（ボードに依存しない）。
 ///
@@ -83,8 +87,6 @@ pub struct Facts {
     pub has_memory_export: bool,
     pub mem_pages: Option<u32>,
     pub table_elems: Option<u32>,
-    /// バイト列に現れた既知の役割名（**参考**）。
-    pub roles_seen: Vec<&'static str>,
 }
 
 impl Facts {
@@ -140,11 +142,8 @@ pub struct Verdict {
     pub stage: Stage,
     /// 使っているのにそのポートで未実装のインターフェース。
     pub unimplemented: Vec<String>,
-    /// プロファイルに無い役割名（**参考**。`fails()` には数えない）。
-    pub missing_roles: Vec<&'static str>,
-    /// `wasmicon.toml` が宣言した役割のうち、このボードに無いもの。
-    /// **こちらは宣言なので `fails()` に数える。**
-    pub missing_declared_roles: Vec<&'static str>,
+    /// `wasmicon.toml` が宣言した役割のうち、このボードの配線表に無いもの。
+    pub missing_declared_roles: Vec<String>,
 }
 
 impl Verdict {
@@ -163,9 +162,6 @@ impl Verdict {
     /// import や export の不備はボードに依存しないので、ここには入れない
     /// （モジュールの節で 1 回だけ数える。`Facts::failures`）。全ボードに
     /// 同じ数を足すと、どれがボード固有の問題なのか読めなくなる。
-    ///
-    /// **役割名は数えない。** 走査は参考（部分一致で誤検出し、
-    /// AssemblyScript には当たらない）なので、終了コードを左右させない。
     #[must_use]
     pub fn fails(&self) -> usize {
         usize::from(self.validate.is_err())
@@ -183,8 +179,8 @@ pub struct Options {
     pub path: PathBuf,
     /// `--board`。`None` なら全ボードを見る（同一バイナリが本題なので既定）。
     pub board: Option<String>,
-    /// `wasmicon.toml`（§4.7）。**`[requirements] pin-roles` があると
-    /// 役割の照合が「参考」から「保証」に変わる。**
+    /// `wasmicon.toml`（§4.7）。`[requirements] pin-roles` と
+    /// `[board.<name>.roles]` を突き合わせる。
     pub manifest: Option<Manifest>,
 }
 
@@ -201,7 +197,7 @@ pub fn run(opts: &Options) -> Result<bool> {
     };
 
     let facts = facts(&wasm)?;
-    let declared: Option<&[&'static str]> = opts
+    let declared: Option<&[String]> = opts
         .manifest
         .as_ref()
         .filter(|m| !m.pin_roles.is_empty())
@@ -210,7 +206,8 @@ pub fn run(opts: &Options) -> Result<bool> {
 
     let mut all_ok = facts.failures() == 0;
     for board in boards {
-        let v = judge(&wasm, board, &facts, declared);
+        let provided = provided_roles(board, opts.manifest.as_ref());
+        let v = judge(&wasm, board, &facts, declared, &provided);
         println!();
         print_verdict(&v, &facts, board, declared);
         all_ok &= v.is_ok();
@@ -280,20 +277,21 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
         has_memory_export,
         mem_pages: m.mems.first().map(|l| l.min),
         table_elems: m.tables.first().map(|l| l.min),
-        roles_seen: roles_in_bytes(wasm),
     })
 }
 
 /// 1 ボード分を判定する。
 ///
-/// `declared` は `wasmicon.toml` の `[requirements] pin-roles`。
-/// **宣言があるときだけ役割の不足を失敗として数える**（走査の結果は参考）。
+/// `declared` は `wasmicon.toml` の `[requirements] pin-roles`、`provided` は
+/// そのボードが配る役割（`provided_roles`）。宣言した役割が配られなければ
+/// 失敗として数える。
 #[must_use]
 pub fn judge(
     wasm: &[u8],
     p: &'static Profile,
     f: &Facts,
-    declared: Option<&[&'static str]>,
+    declared: Option<&[String]>,
+    provided: &[String],
 ) -> Verdict {
     let (validate, stage) = match instantiate_with(wasm, p) {
         Ok(()) => (Ok(p.config.max_memory_pages), Stage::Instantiate),
@@ -307,18 +305,11 @@ pub fn judge(
         .cloned()
         .collect();
 
-    let missing_roles = f
-        .roles_seen
-        .iter()
-        .copied()
-        .filter(|r| !p.roles.iter().any(|(name, _)| name == r))
-        .collect();
-
     let missing_declared_roles = declared
         .unwrap_or(&[])
         .iter()
-        .copied()
-        .filter(|r| !p.roles.iter().any(|(name, _)| name == r))
+        .filter(|r| !provided.contains(r))
+        .cloned()
         .collect();
 
     Verdict {
@@ -326,7 +317,6 @@ pub fn judge(
         validate,
         stage,
         unimplemented,
-        missing_roles,
         missing_declared_roles,
     }
 }
@@ -371,7 +361,8 @@ pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (St
         .map_err(|e| (Stage::Validate, reason(e)))?;
     // Exec は線形メモリ（arena の残り全部）より先に確保する。ポートと同じ順番。
     let _exec = Exec::new(&p.config, &mut arena).map_err(|e| (Stage::Instantiate, reason(e)))?;
-    let mut hal = Hal::new(wasmicon_host::hal::HostBoard::new(), false);
+    let mut hal = Hal::new(wasmicon_host::hal::HostBoard::new(), false)
+        .with_roles(wasmicon_host::hal::host_roles());
     // 線形メモリはここで arena の残りから取られる。足りなければ実機と同じ
     // ように落ちる（それがこの関数の目的）。
     let _inst = instantiate(m, v, &p.config, &mut arena, &mut hal)
@@ -421,27 +412,25 @@ fn iface_of(module: &str) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-/// 既知の役割名がバイト列に現れるかを見る（**参考**。§4.3）。
+/// そのボードが配る役割名。
 ///
-/// 部分一致なので、ログ文字列の中の `led`（`failed` など）も拾う。境界を
-/// 見ないのは、データセグメントの文字列が長さ前置で**隣と連結して**置かれる
-/// ため（`lcd-cslcd-dc…`）。境界を要求すると本物を落とす。
-/// **AssemblyScript のゲストには原理的に当たらない。** AS の文字列リテラルは
-/// UTF-16 で置かれるので、ASCII の部分一致では見つからない（実測:
-/// `sensor_display_as.wasm` は「見つからない」になる）。バインディングが
-/// 呼び出し時に UTF-8 へ変換するため、UTF-8 の役割名はバイナリに現れない。
-///
-/// どちらに転んでも保証にはならないので、精度を上げるより
-/// `wasmicon.toml` の宣言（§4.7）に寄せる。
-fn roles_in_bytes(wasm: &[u8]) -> Vec<&'static str> {
-    ROLE_NAMES
-        .iter()
-        .copied()
-        .filter(|role| {
-            let pat = role.as_bytes();
-            wasm.windows(pat.len()).any(|w| w == pat)
+/// host は mock の表（`profile::HOST.roles`）。実機ボードは既定の表を持たない
+/// ので、`wasmicon.toml` の `[board.<name>.roles]` で番号を与えたものだけ
+/// （`deploy` がそれを設定スロットに書く。§3.9）。
+#[must_use]
+pub fn provided_roles(p: &Profile, manifest: Option<&Manifest>) -> Vec<String> {
+    if !p.roles.is_empty() {
+        return p.roles.iter().map(|(n, _)| (*n).to_string()).collect();
+    }
+    manifest
+        .and_then(|m| m.board_roles.get(p.name))
+        .map(|t| {
+            t.iter()
+                .filter(|(_, pin)| pin.is_some())
+                .map(|(n, _)| n.clone())
+                .collect()
         })
-        .collect()
+        .unwrap_or_default()
 }
 
 fn implemented(i: &Interfaces, iface: &str) -> Option<bool> {
@@ -465,7 +454,7 @@ fn reason(e: wasmicon_core::Error) -> String {
 
 // ---- 印字 ----
 
-fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[&'static str]>) {
+fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[String]>) {
     let name = path.file_name().unwrap_or(path.as_os_str());
     println!("{}  {} B", name.to_string_lossy(), thousands(wasm.len()));
     println!();
@@ -534,15 +523,11 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[&'static
     }
 
     match declared {
-        Some(roles) => row(
-            "roles",
-            &roles.join(", "),
-            "wasmicon.toml の宣言（照合は保証）",
-        ),
+        Some(roles) => row("roles", &roles.join(", "), "wasmicon.toml の宣言"),
         None => row(
             "roles",
             "宣言が無い",
-            "wasmicon.toml に書くと照合が保証になる",
+            "役割を引くなら wasmicon.toml の pin-roles に書く",
         ),
     }
 
@@ -553,7 +538,7 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[&'static
     }
 }
 
-fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[&'static str]>) {
+fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[String]>) {
     println!("[{}]", v.board);
 
     match (&v.validate, f.mem_pages) {
@@ -582,31 +567,22 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[&'stati
     }
 
     if let Some(declared) = declared {
-        // 宣言があるなら走査は出さない（保証の方が強い）。
         if v.missing_declared_roles.is_empty() {
-            row("roles", &declared.join(", "), &format!("{} にある", p.name));
+            row(
+                "roles",
+                &declared.join(", "),
+                &format!("{} の配線表にある", p.name),
+            );
         } else {
             row(
                 "roles",
                 &declared.join(", "),
                 &format!(
-                    "{} に無い: {}  ← 落ちる",
+                    "{} の配線表に無い: {}  ← 落ちる（[board.{}.roles] に書く）",
                     p.name,
-                    v.missing_declared_roles.join(", ")
+                    v.missing_declared_roles.join(", "),
+                    p.name
                 ),
-            );
-        }
-    } else if f.roles_seen.is_empty() {
-        row("roles", "見つからない", "（参考）");
-    } else {
-        let seen = f.roles_seen.join(", ");
-        if v.missing_roles.is_empty() {
-            row("roles", &seen, &format!("{} にある（参考）", p.name));
-        } else {
-            row(
-                "roles",
-                &seen,
-                &format!("{} に無い: {}（参考）", p.name, v.missing_roles.join(", ")),
             );
         }
     }
@@ -694,26 +670,6 @@ mod tests {
         assert_eq!(implemented(&i, "gpio"), Some(true));
         // types は関数を持たないので import に現れない。
         assert_eq!(implemented(&i, "types"), None);
-    }
-
-    #[test]
-    fn role_scan_is_a_substring_match() {
-        // 本物は拾う。
-        assert_eq!(roles_in_bytes(b"....lcd-cs...."), vec!["lcd-cs"]);
-        // 連結していても拾う（データセグメントは長さ前置で隣と繋がる）。
-        let all = roles_in_bytes(b"ledlcd-cslcd-dclcd-rst");
-        assert_eq!(all, vec!["led", "lcd-cs", "lcd-dc", "lcd-rst"]);
-        // ログ文字列の中の led も拾ってしまう。**だから（参考）**。
-        assert_eq!(roles_in_bytes(b"sensor crc failed"), vec!["led"]);
-    }
-
-    #[test]
-    fn role_scan_is_blind_to_assemblyscript_strings() {
-        // AS の文字列リテラルは UTF-16 で置かれるので ASCII の部分一致では
-        // 当たらない。実測でも sensor_display_as.wasm は「見つからない」になる。
-        // **これが（参考）の限界で、wasmicon.toml の宣言が要る理由**（§4.7）。
-        let utf16: Vec<u8> = "lcd-cs".encode_utf16().flat_map(u16::to_le_bytes).collect();
-        assert!(roles_in_bytes(&utf16).is_empty());
     }
 
     #[test]

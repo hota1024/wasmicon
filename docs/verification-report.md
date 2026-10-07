@@ -1025,3 +1025,36 @@ USB-UART 側（CH343）**で取り、起動は **`RST`（EN）ボタン**で行�
 （`docs/TODO.md` §1.1）。RP2350 / RP2040 は同じ `idle::heartbeat` を呼ぶが、
 実機では回していない（RP2350 はビルドと clippy、RP2040 は評価対象外）。
 
+---
+
+## 14. 配線表をファームの外に出したファーム（2026-10-07、ESP32-S3）
+
+役割名の固定の語彙とファームの既定の表を廃止し、配線表を設定スロットに置いた
+（`docs/app-workflow.md` §3.9）。`apps/sensor-display-rs` のディレクトリから
+`wasmicon deploy --board esp32s3` し、`wasmicon.toml` の配線表をアプリと一緒に
+1 本の画像で書いた（`配線表: lcd-cs=10 lcd-dc=14 lcd-rst=15` と表示）。
+
+```
+wasmicon esp32s3
+wasmicon: roles lcd-cs=10 lcd-dc=14 lcd-rst=15
+wasmicon: slot 6039 B crc32=909e18cd
+```
+
+`pin-by-role` は 3 つとも配線表から答え、トレースは `role:lcd-cs` などに正規化された。
+実機が読んだ応答（`67 af a8 a4 42 a2`）を食わせた host と**全文一致 4,182 行**。
+**配線をファームの外に出してもトレースは変わらない**（abi-spec §9 の正規化が役割名で
+出すため）。CLI 側の往復（`deploy` の画像からアプリと配線表を読み直す）は
+`tools/wasmicon-cli/tests/pack.rs`、形式と検査は `ports/common/tests/roles.rs`。
+
+### ESP32-S3 の「USB からのリセットが効かない」の切り分け（同日）
+
+**`USB-OTG` 側（USB-Serial-JTAG）が Mac に繋がっていると、`RST` ボタンで起動しても
+書き込み待ちに入る**（`rst:0x1 (POWERON),boot:0x20 (DOWNLOAD(USB/UART0))`）。
+`USB-UART` 側だけを挿すと、同じ `RST` で `boot:0x8 (SPI_FAST_FLASH_BOOT)` で普通に
+起動した。§12 で「USB からのリセットが効かない」と書いた症状の大部分はこれで、
+USB-OTG 側を挿したまま回していたことが原因だったと見ている（仕組みは未確認）。
+
+また、`USB-UART` 側（CH343）からの書き込みは、**CP2102N を外したら通るようになった**
+（§12 の GPIO44 の取り合い）。残っている症状は、`deploy --monitor`（`espflash monitor`）
+のリセットでアプリが走らないことだけで、今は `RST` ボタンで代えている。
+

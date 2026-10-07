@@ -114,8 +114,12 @@ sh verify/diff-traces.sh pico.log esp32s3.log
 
 **ファームにアプリは入っていない**（2026-10-07 に内蔵アプリを外した）。ファームを
 一度焼いたら、アプリはスロットに焼いて差し替える（[`docs/app-workflow.md`](docs/app-workflow.md)）。
-スロットが空のときは `wasmicon: slot empty, idle` と出して、`led` 役のピンを
-1 Hz で点滅させて待つ。
+スロットが空のときは `wasmicon: slot empty, idle` と出して待つ（ピンは駆動しない）。
+
+**配線（役割名 → GPIO）もファームには入っていない**（2026-10-07）。アプリの
+`wasmicon.toml` の `[board.<name>.roles]` に書くと、`deploy` がアプリと一緒に
+デバイスの設定スロットへ書く。起動時のバナーに `wasmicon: roles lcd-cs=17 …` と出る
+（[`docs/app-workflow.md`](docs/app-workflow.md) §3.9）。`apps/` の 5 つは書いてある。
 
 ```bash
 # CLI を用意する。PATH に入れたいなら cargo install --path tools/wasmicon-cli

@@ -22,6 +22,7 @@ use rp2040_hal::Clock;
 use rp2040_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::fmt::Buf;
+use wasmicon_port::roles::{self, Limits, RoleMap};
 use wasmicon_port::{Hal, idle, slot};
 
 use board::{PicoBoard, Serial};
@@ -39,6 +40,15 @@ const XTAL_HZ: u32 = 12_000_000;
 const XIP_BASE: usize = 0x1000_0000;
 
 /// アプリスロット（`ports/common` の `profile::RP2040`）。
+/// 設定スロット（配線表。`docs/app-workflow.md` §3.9）。アプリスロットの直後。
+const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2040.role_slot {
+    Some(s) => s,
+    None => panic!("RP2040 のプロファイルに設定スロットが無い"),
+};
+
+/// 配線表で割り当ててよい GPIO の制約。
+const LIMITS: Limits<'static> = Limits::of(&wasmicon_port::profile::RP2040);
+
 const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2040.slot {
     Some(s) => s,
     None => panic!("RP2040 のプロファイルにスロットが無い"),
@@ -138,6 +148,10 @@ fn main() -> ! {
     // 割り当てた GPIO とは重ねていない。
     let board = unsafe { PicoBoard::new(serial) };
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
+    // 役割は設定スロットの表だけで決まる。ファームは既定の表を持たない
+    // （空・壊れていれば役割は 1 つも配らない。docs/app-workflow.md §3.9）。
+    let map = pick_roles(hal.board_mut().serial());
+    let mut hal = hal.with_roles(map);
 
     // SAFETY: シングルコアで割り込みからも触らないので、可変静的への参照は
     // ここでしか作らない。
@@ -147,7 +161,7 @@ fn main() -> ! {
     // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
     // スロットが空・壊れているなら、理由は pick_guest が出している。
     let Some(guest) = pick_guest(hal.board_mut().serial()) else {
-        idle::heartbeat(hal.board_mut());
+        idle::park(hal.board_mut());
     };
     let outcome = run(&mut hal, guest, arena_buf, scratch_buf);
 
@@ -173,6 +187,23 @@ fn main() -> ! {
     loop {
         cortex_m::asm::wfi();
     }
+}
+
+/// 設定スロットから配線表を読む。読めた表（または読めない理由）をシリアルに出す。
+fn pick_roles(serial: &mut impl Serial) -> RoleMap {
+    // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
+    // だけ（中身は見ない）。
+    let fw_end = (&raw const __flash_binary_end) as usize;
+    // SAFETY: XIP は読み出し専用でマップされていて、設定スロット
+    // （アプリスロットの直後の 4 KiB）はフラッシュに収まる。ファームとの
+    // 重なりは xip_region が fw_end で弾く。
+    let result = unsafe { roles::read_xip(XIP_BASE, ROLE_SLOT, fw_end, &LIMITS) };
+    let mut line = [0u8; 192];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&result, &mut out);
+    serial.write(out.as_bytes());
+    serial.write(b"\r\n");
+    result.unwrap_or(RoleMap::EMPTY)
 }
 
 /// スロットから走らせるアプリを選ぶ。

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use wasmicon_port::profile;
 use wasmicon_port::profile::Flasher;
+use wasmicon_port::roles::{self, RoleMap};
 use wasmicon_port::slot;
 
 pub struct Options {
@@ -105,6 +106,43 @@ pub fn build(wasm: &[u8]) -> Vec<u8> {
 /// 画像のヘッダに入っている CRC（§3.4 の 12..16）。
 ///
 /// デバイス側のログと突き合わせられるよう、同じ値を出すために使う。
+/// アプリスロットの画像の後ろに設定スロット（配線表）を足して、1 回で書ける
+/// 1 本の画像にする（`deploy` が使う。`docs/app-workflow.md` §3.9）。
+///
+/// アプリの後ろはスロットの終わりまで `0xff`（消去済みと同じ）で埋める。
+/// **配線表は毎回書く。** 表が空でも書くので、`deploy` の結果はその時の
+/// `wasmicon.toml` だけで決まる（前に焼いた表が残らない）。
+///
+/// # Errors
+/// 設定スロットがアプリスロットの直後に無いとき（プロファイルの誤り）。
+pub fn with_roles(app: &[u8], p: &profile::Profile, map: &RoleMap) -> Result<Vec<u8>> {
+    let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
+        bail!("{} にはスロットか設定スロットが無い", p.name);
+    };
+    if rs.offset != sl.offset + sl.len {
+        bail!("{} の設定スロットがアプリスロットの直後に無い", p.name);
+    }
+    let mut body = [0u8; roles::MAX_BODY];
+    let n = roles::encode_body(map, &mut body);
+    let mut image = app.to_vec();
+    image.resize(sl.len as usize, 0xff);
+    image.extend_from_slice(&roles::header(&body[..n]));
+    image.extend_from_slice(&body[..n]);
+    Ok(image)
+}
+
+/// 表を 1 行で表す（`lcd-cs=17 lcd-dc=20`、空なら `None`）。
+#[must_use]
+pub fn describe_roles(map: &RoleMap) -> Option<String> {
+    if map.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = (0..map.len())
+        .map(|i| format!("{}={}", String::from_utf8_lossy(map.name(i)), map.pin(i)))
+        .collect();
+    Some(parts.join(" "))
+}
+
 #[must_use]
 pub fn crc_of(image: &[u8]) -> u32 {
     u32::from_le_bytes([image[12], image[13], image[14], image[15]])

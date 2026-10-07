@@ -1,5 +1,5 @@
-//! ボードプロファイル。ランタイムの上限、実装済みインターフェース、役割名の
-//! 割り当てを 1 箇所に集める（`docs/app-workflow.md` §4.3）。
+//! ボードプロファイル。ランタイムの上限、実装済みインターフェース、GPIO の
+//! 制約、スロットの置き場所を 1 箇所に集める（`docs/app-workflow.md` §4.3）。
 //!
 //! **値はポートの `main.rs` / `board.rs` にあったものをそのまま移したもの。**
 //! `config` は validate の上限なので、変えると通るアプリが変わる。値は
@@ -11,19 +11,15 @@
 //!   上限と実装状況を知らないと「host では通るのに実機で落ちる」を先に言えない。
 //!   `ports/host` は `Config::DEFAULT`（`max_memory_pages` = 65536）で走るので
 //!   **全ボードより緩い**
-//! - **役割名を 1 箇所にする。** `ROLE_NAMES` から外れた名前を割り当てると、
-//!   `pin-by-role` は成功するのにトレースが `role:` に正規化されず、生の GPIO
-//!   番号が出る。番号はボードごとに違うので **2 ボードのトレースが食い違う**
-//!   （abi-spec §9）。この表が `ports/common` にあるので、
-//!   `assert_role_names` がコンパイル時に検査できる
-//! - 役割名は `.wasm` から静的に列挙できないので、CLI は
-//!   `wasmicon.toml` の `[requirements] pin-roles` と**この表**を突き合わせる
-//!   （`docs/app-workflow.md` §4.7）
+//! - **配線表（役割マップ）を書く前に検査できるようにする。** 実機ボードは
+//!   役割の既定の表を持たない（`roles` モジュール、2026-10-07 オーナー決定）。
+//!   CLI は `wasmicon.toml` の `[board.<name>.roles]` を、ここにある
+//!   `gpio_count` / `reserved` / `bus_pins` で検査してから設定スロットに書き、
+//!   ファームは起動時に同じ検査（`roles::Limits`）をもう一度かける
 //!
-//! 番号そのものの検査（範囲外・予約ピン）は**デバイス側の責務**で、ここには
-//! 置かない。ポートが `gpio_count` と `gpio_reserved` で持っている。
+//! ポートは自分の `NUM_GPIO` / 予約ピンを持っていて、ここの値と一致することを
+//! コンパイル時に確かめている（`board.rs`）。
 
-use crate::ROLE_NAMES;
 use wasmicon_core::Config;
 
 /// そのポートが実装している HAL インターフェース（abi-spec §7）。
@@ -61,11 +57,19 @@ pub struct Profile {
     pub config: Config,
     /// 実装済みインターフェース。
     pub interfaces: Interfaces,
-    /// 役割名 → GPIO 番号の既定（abi-spec §8）。
+    /// mock の役割名 → GPIO 番号。**host だけが持つ。**
     ///
-    /// **既定**であって固定ではない。デバイス側で上書きできるようにするのは
-    /// 別の話（`docs/app-workflow.md` §3.9、`docs/TODO.md` §5-9）。
+    /// 実機ボードは空。配線表は `deploy` が設定スロット（`role_slot`）に書き、
+    /// ファームが起動時に読む（`docs/app-workflow.md` §3.9）。host はフラッシュを
+    /// 持たない mock なので、ここに表を置いて `wasmicon run` とテストが使う。
     pub roles: &'static [(&'static str, u32)],
+    /// GPIO の本数。配線表の範囲検査に使う。
+    pub gpio_count: u32,
+    /// ゲストに開放しない GPIO（トレースの UART、フラッシュ、無線チップなど）。
+    pub reserved: &'static [u32],
+    /// ポートが SPI / I2C に使う GPIO。配線表に入れるとバスが黙って壊れる
+    /// （`docs/app-workflow.md` §3.9。実行時の `reserved` には入れていない）。
+    pub bus_pins: &'static [u32],
     /// ランタイムに渡す arena の大きさ。**ポートの `static ARENA` がこれを使う。**
     ///
     /// 線形メモリは arena の残り全部を取る（`Arena::alloc_rest`）ので、
@@ -83,6 +87,11 @@ pub struct Profile {
     /// `factory` がフラッシュ末尾まで伸びる）、フラッシュ容量が
     /// `docs/TODO.md` §5-2 の未決。
     pub slot: Option<Slot>,
+    /// 設定スロット（配線表）の置き場所。**アプリスロットの直後**に 4 KiB。
+    ///
+    /// `deploy` はアプリスロットとこれを 1 本の画像にして 1 回で書く
+    /// （`pack::build`）。`None` = フラッシュを持たない（host）。
+    pub role_slot: Option<Slot>,
 }
 
 /// アプリスロットの位置と大きさ、読み方、焼き方。
@@ -140,17 +149,41 @@ const MCU: Config = Config {
     operand_stack_slots: 1024,
 };
 
-/// Pico 系の役割割り当て（abi-spec §8）。
-/// RP2040 と RP2350 はヘッダのピン配置が同じなので GP 番号も同じ。
-const PICO_ROLES: &[(&str, u32)] = &[("led", 15), ("lcd-cs", 17), ("lcd-dc", 20), ("lcd-rst", 21)];
-
-/// ESP32-S3 DevKitC-1 の役割割り当て（abi-spec §8）。
-const ESP32S3_ROLES: &[(&str, u32)] =
-    &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 14), ("lcd-rst", 15)];
-
-/// host の mock の役割割り当て（abi-spec §8）。実機とは別の番号でよい
+/// host の mock の役割割り当て。実機とは別の番号でよい
 /// （トレースは `role:` に正規化されるので一致する）。
 const HOST_ROLES: &[(&str, u32)] = &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 11), ("lcd-rst", 12)];
+
+/// Pico / Pico 2 系（RP2040 / RP2350A）の予約ピン。
+/// GP0/GP1 はトレースの UART0、GP23/24/25/29 は CYW43439 または電源まわり。
+const PICO_RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
+
+/// Pico / Pico 2 系のバスのピン。I2C0 = GP4/GP5、SPI0 = GP16/GP18/GP19。
+const PICO_BUS_PINS: &[u32] = &[4, 5, 16, 18, 19];
+
+/// ESP32-S3 の予約ピン。22..=25 は欠番、26..=32 は SPI フラッシュ / PSRAM、
+/// 43/44 はトレースの UART0。
+const ESP32S3_RESERVED: &[u32] = &[22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 43, 44];
+
+/// ESP32-S3 のバスのピン。I2C0 = GPIO8/9、SPI2 = GPIO11/12/13。
+const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13];
+
+/// アプリスロットの直後に置く設定スロット。
+const fn role_slot_after(app: Slot) -> Slot {
+    Slot {
+        offset: app.offset + app.len,
+        len: crate::roles::SLOT_LEN,
+        read: app.read,
+        flasher: app.flasher,
+    }
+}
+
+/// Pico 系のアプリスロット（RP2040 / RP2350 で同じ置き方）。
+const PICO_SLOT: Slot = Slot {
+    offset: 1 << 20,
+    len: 64 * 1024,
+    read: SlotRead::Xip,
+    flasher: Flasher::Picotool,
+};
 
 /// Raspberry Pi Pico WH。
 pub const RP2040: Profile = Profile {
@@ -166,18 +199,17 @@ pub const RP2040: Profile = Profile {
         spi: false,
         ..Interfaces::ALL
     },
-    roles: PICO_ROLES,
+    roles: &[],
+    gpio_count: 30,
+    reserved: PICO_RESERVED,
+    bus_pins: PICO_BUS_PINS,
     // SRAM 264 KB のうち 160 KB。2 ページ (128 KiB) + ランタイムの構造体。
     arena: 160 * 1024,
     scratch: 8 * 1024,
     // フラッシュ 2 MB（Pico / Pico W(H)）。RP2350 と同じ置き方
     // （XIP で読める）で、オフセットも揃えてある。
-    slot: Some(Slot {
-        offset: 1 << 20,
-        len: 64 * 1024,
-        read: SlotRead::Xip,
-        flasher: Flasher::Picotool,
-    }),
+    slot: Some(PICO_SLOT),
+    role_slot: Some(role_slot_after(PICO_SLOT)),
 };
 
 /// Raspberry Pi Pico 2 / Pico 2 W。
@@ -185,19 +217,18 @@ pub const RP2350: Profile = Profile {
     name: "rp2350",
     config: MCU,
     interfaces: Interfaces::ALL,
-    roles: PICO_ROLES,
+    roles: &[],
+    gpio_count: 30,
+    reserved: PICO_RESERVED,
+    bus_pins: PICO_BUS_PINS,
     // SRAM 520 KB のうち 320 KB。4 ページ (256 KiB) が収まる。
     arena: 320 * 1024,
     scratch: 8 * 1024,
     // フラッシュ 4 MB（Pico 2 W で確定。docs/TODO.md §1.1）。ファームは
     // 先頭から数百 KB なので、1 MiB から先を空けてある。**ファームの末尾と
     // 重ならないことは起動時に検査する**（重なれば自分を壊す）。
-    slot: Some(Slot {
-        offset: 1 << 20,
-        len: 64 * 1024,
-        read: SlotRead::Xip,
-        flasher: Flasher::Picotool,
-    }),
+    slot: Some(PICO_SLOT),
+    role_slot: Some(role_slot_after(PICO_SLOT)),
 };
 
 /// ESP32-S3 DevKitC-1。
@@ -205,7 +236,10 @@ pub const ESP32S3: Profile = Profile {
     name: "esp32s3",
     config: MCU,
     interfaces: Interfaces::ALL,
-    roles: ESP32S3_ROLES,
+    roles: &[],
+    gpio_count: 49,
+    reserved: ESP32S3_RESERVED,
+    bus_pins: ESP32S3_BUS_PINS,
     // DRAM 512 KB のうち 300 KB。増やすとネイティブスタックが削れる
     // （docs/TODO.md §1.4）。
     arena: 300 * 1024,
@@ -217,12 +251,16 @@ pub const ESP32S3: Profile = Profile {
     // フラッシュ末尾まで伸びるが、`espflash flash` はアプリのセクタしか
     // 消さない —— 7 MB 地点に目印を書いてファームを焼き、残っていることを
     // 実測した（docs/verification-report.md §10）。
-    slot: Some(Slot {
-        offset: 1 << 20,
-        len: 64 * 1024,
-        read: SlotRead::Copy,
-        flasher: Flasher::Espflash,
-    }),
+    slot: Some(ESP32S3_SLOT),
+    role_slot: Some(role_slot_after(ESP32S3_SLOT)),
+};
+
+/// ESP32-S3 のアプリスロット。
+const ESP32S3_SLOT: Slot = Slot {
+    offset: 1 << 20,
+    len: 64 * 1024,
+    read: SlotRead::Copy,
+    flasher: Flasher::Espflash,
 };
 
 /// PC 上の mock。**全ボードより緩い**ので、これで通っても実機で通るとは限らない。
@@ -231,11 +269,15 @@ pub const HOST: Profile = Profile {
     config: Config::DEFAULT,
     interfaces: Interfaces::ALL,
     roles: HOST_ROLES,
+    gpio_count: 48,
+    reserved: &[],
+    bus_pins: &[],
     // PC なので潤沢に取る。
     arena: 16 << 20,
     scratch: 4 << 20,
     // mock にフラッシュは無い。
     slot: None,
+    role_slot: None,
 };
 
 /// 名前で引くための表。CLI と `info`（`docs/app-workflow.md` §3.8）が使う。
@@ -252,38 +294,6 @@ pub fn by_name(name: &str) -> Option<&'static Profile> {
         i += 1;
     }
     None
-}
-
-/// 役割名が全て `ROLE_NAMES` にあることを確かめる。
-///
-/// **外れるとトレースが壊れる。** `Hal` は `pin-by-role` が返した名前が
-/// `ROLE_NAMES` にあるときだけ番号を覚え、トレースを `role:led` の形に
-/// 正規化する（abi-spec §9）。無い名前だと正規化されず生の GPIO 番号が出て、
-/// 番号はボードごとに違うので **2 ボードのトレースが一致しなくなる**。
-///
-/// `const fn` なので、各プロファイルの宣言の隣で `const _: () = ...` として
-/// **コンパイル時に**検査している。
-///
-/// # Panics
-/// `ROLE_NAMES` に無い役割名があるとき。
-pub const fn assert_role_names(roles: &[(&str, u32)]) {
-    let mut i = 0;
-    while i < roles.len() {
-        let mut found = false;
-        let mut j = 0;
-        while j < ROLE_NAMES.len() {
-            if str_eq(roles[i].0, ROLE_NAMES[j]) {
-                found = true;
-            }
-            j += 1;
-        }
-        assert!(
-            found,
-            "役割名が ROLE_NAMES に無い。トレースが role: に正規化されず \
-             ボード間で食い違う（abi-spec §9）"
-        );
-        i += 1;
-    }
 }
 
 /// 役割の GPIO 番号がそのボードで開けることを確かめる。
@@ -316,9 +326,14 @@ pub const fn assert_roles_openable(roles: &[(&str, u32)], gpio_count: u32, reser
     }
 }
 
-/// `const` 文脈で使える文字列比較（`==` は const ではない）。
-const fn str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
+/// 2 つのピンの並びが同じか（`const` 文脈用）。
+///
+/// ポートは自分の予約ピンを持っていて、配線表の検査（CLI とファーム）は
+/// プロファイルの `reserved` を使う。**食い違うと、CLI が通した表で実機の
+/// `pin.open` が落ちる**ので、各ポートの `board.rs` がこれでコンパイル時に
+/// 突き合わせる。
+#[must_use]
+pub const fn same_pins(a: &[u32], b: &[u32]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -331,8 +346,3 @@ const fn str_eq(a: &str, b: &str) -> bool {
     }
     true
 }
-
-// コンパイル時の検査。役割名を足すときは ROLE_NAMES（crate root）にも足す。
-const _: () = assert_role_names(PICO_ROLES);
-const _: () = assert_role_names(ESP32S3_ROLES);
-const _: () = assert_role_names(HOST_ROLES);

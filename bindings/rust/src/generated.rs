@@ -340,7 +340,7 @@ pub mod log {
 }
 
 /// ボード固有のピン割り当てを役割名で引く。
-/// 同一の Wasm バイナリを ESP32-S3 と RP2040 の両方で動かすために必要
+/// 同一の Wasm バイナリを複数のボードで動かすために必要
 /// （docs/handoff.md §3 #2、abi-spec §8）。
 pub mod board {
     #[link(wasm_import_module = "wasmicon:hal/board@0.1.0")]
@@ -348,11 +348,9 @@ pub mod board {
         /// 役割名から GPIO 番号を引く。
         /// そのボードに割り当てが無ければ unsupported を返す。
         ///
-        /// 役割名は小文字の kebab-case。v0.1 で定めるもの:
-        /// - `led`      オンボード LED
-        /// - `lcd-cs`   ILI9341 のチップセレクト
-        /// - `lcd-dc`   ILI9341 のデータ/コマンド切り替え
-        /// - `lcd-rst`  ILI9341 のリセット
+        /// 役割名はファームの語彙ではなく、アプリと配線の間の約束。
+        /// 英小文字で始まる 16 文字までの a-z / 0-9 / -。割り当ては
+        /// デバイスの設定スロットにある配線表で決まる（abi-spec §8）。
         #[link_name = "pin-by-role"]
         pub fn pin_by_role(role_ptr: *const u8, role_len: u32, out: *mut u32) -> u32;
     }

@@ -197,7 +197,7 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
     let mut store = Store::new(
         &engine,
         State {
-            hal: Hal::new(board, true),
+            hal: Hal::new(board, true).with_roles(wasmicon_host::hal::host_roles()),
         },
     );
     let instance = linker
