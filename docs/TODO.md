@@ -109,17 +109,24 @@
   - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
   - **RP2350 は 2026-10-07 に 1 点測れた**（`docs/verification-report.md` §12）。
     Pico 2 W が読んだ応答を host に食わせると、温度バーを含むトレースが実機と
-    全文一致した（Rust 版・AS 版とも）。**同じ入力を 2 ボードに食わせる手段は
-    まだ無い**ので、言えるのは「各ボード ≡ host」まで。ESP32-S3 は新しいファームで
-    まだ回していない
+    全文一致した（Rust 版・AS 版とも）。**ESP32-S3 も同日に同じ結果**（4 通りとも）。
+    **同じ入力を 2 ボードに食わせる手段はまだ無い**ので、言えるのは
+    「各ボード ≡ host」まで。RP2040（ソフトフロート）は Pico WH 待ち
   - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
 - [x] **SHT40 を実機で読む**（2026-10-05 達成。`docs/verification-report.md` §11）。
   sensor-display-rs を ESP32-S3 と Pico 2 W で走らせ、どちらも 1 回目で読めて
   画面に出た。**センサーを読むまでの 3,756 行は host・2 ボードの 3 者で完全一致**。
   アドレスは 0x44 で合っていた
-- [ ] **AS 版（`sensor-display-as`）を実機で走らせる**。**Pico 2 W は 2026-10-07 に
-  達成**（実機が読んだ応答を host の Rust 版・AS 版に食わせたトレースと全文一致。
-  `docs/verification-report.md` §12）。**残るのは ESP32-S3**
+- [x] **AS 版（`sensor-display-as`）を実機で走らせる**（2026-10-07、Pico 2 W と
+  ESP32-S3 の両方で達成。実機が読んだ応答を host の Rust 版・AS 版に食わせた
+  トレースと全文一致。`docs/verification-report.md` §12）。Phase 5 の 4 通りは
+  手元の 2 枚では揃ったが、完了条件は ESP32-S3 + Pico WH なので完了にはしない
+- [ ] **ESP32-S3 で USB からのリセットが効かなくなった原因を突き止める**（2026-10-07）。
+  USB-OTG から焼くと書き込み待ち（`boot:0x21`）で止まり、CH343 の自動リセットは
+  EN だけ効いて GPIO0 が効かない。§10（2026-10-04）では `deploy --monitor` が
+  1 コマンドで通っていたので、何かが変わっている。今は `RST` ボタンで起動して
+  回避している（`docs/verification-report.md` §12「ESP32-S3 で詰まったこと」）。
+  直るまで ESP32-S3 の `deploy` は「焼く → `RST` を押す」の 2 手になる
 - [x] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（2026-10-07。
   Pico 2 W の SHT40、T=25.63C / RH=74.49%）。オーナー判断でトレースに
   読み出しのバイト列（`data=`）を出すことにし（abi-spec §9）、
