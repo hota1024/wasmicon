@@ -71,7 +71,8 @@ run のオプション:
     -V, --version            版を出す
 
 `wasmicon.toml` があれば読む（カレントから上に探す）。
-`[requirements] pin-roles` を書くと、役割名の照合が参考から保証に変わる。
+`[requirements] pin-roles` と `[board.<name>.roles]` を突き合わせ、deploy は
+配線表をアプリと一緒にデバイスの設定スロットに書く（ファームは既定の表を持たない）。
 
 検査の中身は実ランタイムの decode / validate と、wit/ から生成した import 表。
 host は全ボードより緩いので、`--board` でボードを指定したものだけが
