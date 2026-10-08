@@ -7,15 +7,19 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# runner は ubuntu-24.04 に固定する（2026-10-08）。ubuntu-latest は 2026-10-19 から
+# Ubuntu 26 に移るので、rust-toolchain.toml と同じく勝手に変わらないようにする。
+# actions は Node.js 24 で動く v5 を使う（v4 は Node.js 20 向けで非推奨）。
+
 jobs:
   # root workspace: ランタイムコア、ジェネレータ、host ポート
   # host ポートのテストは apps/ のゲストをビルドして動かすので、
   # Rust の wasm32 ターゲットと AssemblyScript もここで要る。
   root:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm ci
@@ -41,24 +45,24 @@ jobs:
 
   # guest workspace: wasm32-unknown-unknown 向けのバインディングとアプリ
   guest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: apps
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --release
 
   # RP2040 ポート。thumbv6m のビルドが通ることだけを見る（実機は回せない）。
   rp2040:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ports/rp2040
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup target add thumbv6m-none-eabi
       # ファームにアプリは入っていない（docs/app-workflow.md §3.3）ので、
       # apps/ を先にビルドする必要は無い。
@@ -68,12 +72,12 @@ jobs:
 
   # RP2350 ポート。thumbv8m のビルドが通ることだけを見る（実機は回せない）。
   rp2350:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ports/rp2350
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup target add thumbv8m.main-none-eabihf
       # ファームにアプリは入っていない（docs/app-workflow.md §3.3）ので、
       # apps/ を先にビルドする必要は無い。
@@ -90,10 +94,10 @@ jobs:
   # wasmtime との差分テスト（docs/handoff.md §5 Phase 6 の (3)）。
   # wasmtime は依存が大きいので別 workspace・別ジョブにしてある。
   differential:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm ci

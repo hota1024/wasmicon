@@ -1,4 +1,7 @@
 [toolchain]
-channel = "stable"
+# 固定する（2026-10-08）。浮動の stable だと、clippy の新しい lint や rustfmt の
+# 出力変化で CI が突然落ちる。上げるときは 4 つの rust-toolchain.toml を揃える
+# （ルート / apps / ports/rp2040 / ports/rp2350。esp32s3 は espup の "esp"）。
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]

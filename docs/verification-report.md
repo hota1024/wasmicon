@@ -203,8 +203,10 @@ LCD 側だけ先に測れる**。ゲストを 1 回だけ作り、2 ボードに
 ```bash
 (cd apps && cargo build --release)
 shasum -a 256 apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
-# 期待値（この記録を取った時点）:
+# 期待値（この記録を取った時点。Rust 1.97.1）:
 # fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453
+# 2026-10-08 に toolchain を 1.99.0 に固定してからは 84d6de0f…（同じ 4,088 B）。
+# コード生成が変わっただけで、host のトレースは 1.97.1 版と 14,352 行完全一致する
 
 (cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
 picotool load -u -v -x -t elf \

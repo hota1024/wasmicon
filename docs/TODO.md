@@ -212,7 +212,7 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
 
 ## 2. 実機なしで判断できること
 
-- [ ] **toolchain を固定するか**。`rust-toolchain.toml` は `channel = "stable"` の浮動。clippy の新しい lint や rustfmt の出力変化で CI が突然落ちる（初回 CI がまさにそれ: 手元 1.97.1 / CI 1.98.0）。特に「生成物 diff ゼロ」の検査は rustfmt の出力に依存するので、手元で通って CI で落ちる形で効く。固定すると手動でのバージョン上げが要る
+- [x] **toolchain を固定するか** → **1.99.0 に固定した**（2026-10-08 オーナー決定。CI が通っていた stable と同じ版）。4 つの `rust-toolchain.toml`（ルート / `apps` / `ports/rp2040` / `ports/rp2350`）を揃えて上げる。CI の runner も `ubuntu-24.04` に固定し、actions を Node.js 24 で動く v5 に上げた。**1.99.0 では `lcd_demo_rs.wasm` のバイト列が変わる**（`fc470947…` → `84d6de0f…`、大きさは同じ 4,088 B）が、host のトレースは 1.97.1 版と 14,352 行完全一致した（記録済みのトレースは有効。`docs/verification-report.md` §5.1）。以下は当初の記録: `rust-toolchain.toml` は `channel = "stable"` の浮動。clippy の新しい lint や rustfmt の出力変化で CI が突然落ちる（初回 CI がまさにそれ: 手元 1.97.1 / CI 1.98.0）。特に「生成物 diff ゼロ」の検査は rustfmt の出力に依存するので、手元で通って CI で落ちる形で効く。固定すると手動でのバージョン上げが要る
 - [ ] **`abi-spec.md` §8 の表に `lcd-rst` の外部プルアップを明記するか。**
       `pin.drop` は §5.2 どおりピンを入力・プル無しに戻すので、**デモが描き
       終わると LCD の `RESET` が浮く**。モジュール側にプルアップが無いと
