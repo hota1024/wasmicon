@@ -22,6 +22,7 @@ use rp2040_hal::Clock;
 use rp2040_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::fmt::Buf;
+use wasmicon_port::identity::{self, Identity};
 use wasmicon_port::roles::{self, Limits, RoleMap};
 use wasmicon_port::{Hal, idle, slot};
 
@@ -142,6 +143,23 @@ fn main() -> ! {
 
     let mut serial = Uart(uart);
     serial.write(b"wasmicon rp2040\r\n");
+    // 自分が何者かを 1 行で名乗る（docs/app-workflow.md §3.8）。版・git・ABI・
+    // 構成をトレースの取り込みに残し、どのビルドで取ったかを後から追えるようにする。
+    {
+        let mut line = [0u8; 192];
+        let mut out = Buf::new(&mut line);
+        identity::describe(
+            &Identity {
+                profile: &wasmicon_port::profile::RP2040,
+                fw: env!("CARGO_PKG_VERSION"),
+                git: env!("WASMICON_GIT"),
+                trace: cfg!(feature = "trace"),
+            },
+            &mut out,
+        );
+        serial.write(out.as_bytes());
+        serial.write(b"\r\n");
+    }
 
     // SAFETY: PicoBoard がこれ以降 SIO / IO_BANK0 / PADS_BANK0 / TIMER を
     // 排他的に使う。上で取った Pins は UART の GP0/GP1 だけで、役割名に

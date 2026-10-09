@@ -1076,3 +1076,29 @@ USB-OTG 側を挿したまま回していたことが原因だったと見てい
 UART に出すのに 10 秒ほどかかり、実行時間がそこで頭打ちになる。3 倍になることは
 2026-10-05 にトレースを切った計測で確かめてある（`docs/TODO.md` §4）。
 
+---
+
+## 16. ファームが名乗るようにした（2026-10-09、ESP32-S3）
+
+起動時、バナーの次の行に版・git・ABI・構成を 1 行で出すようにした
+（`docs/app-workflow.md` §3.8）。**これ以降の記録はファームの由来をこの行で残す。**
+
+```
+wasmicon esp32s3
+wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board slot=v1/65536 roles=v1/4096
+wasmicon: roles lcd-cs=10 lcd-dc=14 lcd-rst=15
+wasmicon: slot 6039 B crc32=909e18cd
+```
+
+sensor-display のトレースは、実機の応答を食わせた host と**全文一致 4,182 行**。
+`git=` だけを書き換えたログと `trace diff` すると、判定は一致のまま警告が出る。
+
+### ESP32-S3 のシリアルが 128 バイトで切れていた（同日に直した）
+
+最初に焼いたファームでは、名乗りの行が `slot=v1/65` で切れた。`esp-hal` の
+`Uart::write` は**送信 FIFO（128 バイト）に入る分だけ書いて、書けたバイト数を返す**
+が、ポートの `SerialPort::write` は戻り値を捨てていた。それまでの行はたまたま
+128 バイトに収まっていたので表に出なかったが、トレース行は最大 160 バイトあるので、
+長い 16 進ダンプ（32 バイトの `list<u8>` や `data=`）で同じように切れていたはず。
+書き切るまで繰り返すように直した。Pico 系は `write_full_blocking` なので影響しない。
+

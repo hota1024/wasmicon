@@ -179,6 +179,13 @@ pub fn runtime_rs(hal: &Hal) -> String {
     }
     let _ = writeln!(out);
 
+    let _ = writeln!(
+        out,
+        "/// HAL のパッケージ名と版（ABI 版）。ファームが起動時に名乗るのに使う。"
+    );
+    let _ = writeln!(out, "pub const PACKAGE: &str = \"{}\";", hal.package);
+    let _ = writeln!(out);
+
     let _ = writeln!(out, "/// HAL import 1 つの記述子。");
     let _ = writeln!(out, "pub struct ImportDesc {{");
     let _ = writeln!(out, "    /// import モジュール名（abi-spec §3.1）。");

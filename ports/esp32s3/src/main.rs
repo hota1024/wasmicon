@@ -30,6 +30,7 @@ use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_storage::FlashStorage;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::fmt::Buf;
+use wasmicon_port::identity::{self, Identity};
 use wasmicon_port::roles::{self, Limits, RoleMap};
 use wasmicon_port::{idle, slot, Hal};
 
@@ -74,8 +75,18 @@ const MCU_CONFIG: Config = wasmicon_port::profile::ESP32S3.config;
 struct SerialPort<'a>(Uart<'a, esp_hal::Blocking>);
 
 impl Serial for SerialPort<'_> {
+    /// **全部書き切る。** `Uart::write` は送信 FIFO（128 バイト）に入る分だけ書いて
+    /// 書けたバイト数を返すので、戻り値を捨てると 128 バイトを超える行の後ろが
+    /// 黙って落ちる（2026-10-09 に名乗りの行で踏んだ。トレース行は最大 160 バイト）。
     fn write(&mut self, bytes: &[u8]) {
-        let _ = self.0.write(bytes);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match self.0.write(rest) {
+                Ok(n) if n > 0 => rest = &rest[n..],
+                // 書けない（エラーか 0）なら諦める。シリアルの失敗を出す先は無い。
+                _ => break,
+            }
+        }
         let _ = self.0.flush();
     }
 }
@@ -94,6 +105,23 @@ fn main() -> ! {
         .with_rx(p.GPIO44);
     let mut serial = SerialPort(uart);
     serial.write(b"wasmicon esp32s3\r\n");
+    // 自分が何者かを 1 行で名乗る（docs/app-workflow.md §3.8）。版・git・ABI・
+    // 構成をトレースの取り込みに残し、どのビルドで取ったかを後から追えるようにする。
+    {
+        let mut line = [0u8; 192];
+        let mut out = Buf::new(&mut line);
+        identity::describe(
+            &Identity {
+                profile: &wasmicon_port::profile::ESP32S3,
+                fw: env!("CARGO_PKG_VERSION"),
+                git: env!("WASMICON_GIT"),
+                trace: cfg!(feature = "trace"),
+            },
+            &mut out,
+        );
+        serial.write(out.as_bytes());
+        serial.write(b"\r\n");
+    }
 
     // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX / SPI2 / I2C0 と、SPI2 と I2C0 に
     // 割り当てたピンを排他的に使う。UART は GPIO43/44 を占有するが、役割名に

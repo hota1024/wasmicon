@@ -706,7 +706,15 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         `--monitor` は `espflash monitor` に委譲する
         （`monitor::capture_cmd`）。**1 コマンドで焼いて取り込み、
         host と 14,352 行一致**。Pico と違い**ボタン操作が要らない**
-- [ ] **ファームが自分を名乗るようにする**（`info` とバナー。
+- [x] **ファームが自分を名乗るようにする**（2026-10-09、**バナーの部分**。`info` は
+      USB 制御チャネル（2 段）と一緒に）。バナーの次の行に
+      `wasmicon id <board> fw=… git=…(-dirty) abi=… trace=on|off pages=… if=… slot=v1/… roles=v1/…`
+      を出す（`ports/common` の `identity`。git は `ports/common/build/git.rs` を
+      各ポートの `build.rs` が読んで埋める。ABI 版は `wit/` から生成した
+      `generated::PACKAGE`）。`trace diff` は 2 つのログの名乗りが食い違えば警告する
+      （判定は変えない）。**`monitor` の取り込みは生のシリアル出力なので、名乗りは
+      ログの先頭に自然に残る**。ESP32-S3 の実機で確認（`docs/verification-report.md` §16）。
+      以下は当初の記録: （`info` とバナー。
       `docs/app-workflow.md` §3.8）。今バナーは `wasmicon rp2350` の 1 行だけで
       **版も git も入っていない**（`ports/rp2350/src/main.rs:140`）。
       `docs/verification-report.md` は**ゲストの SHA-256 は記録しているのに

@@ -17,6 +17,11 @@
 //!   ボードごとに違うので捨てる。捨ててよいのは、同じ内容が `log` の
 //!   host call としてトレースに出ているため
 //!
+//! **ファームの名乗り（`wasmicon id …`。`docs/app-workflow.md` §3.8）は比べないが、
+//! 2 つのログで食い違えば警告する。** 一致・不一致の判定は変えない
+//! （`verify/diff-traces.sh` と同じ判定を保つ）。「同じ `.wasm` なのにトレースが違う」
+//! の原因がファームの差かどうかを、ここで先に言う。
+//!
 //! **トレース行が 1 行も無ければ失敗にする。** 空同士は文字列として一致して
 //! しまうが、それは「一致した」ではなく「何も比較していない」。ここは完了条件の
 //! 判定に使うので、黙って成功を返すのが最悪の壊れ方になる。
@@ -86,6 +91,7 @@ pub fn first_divergence(a: &Trace, b: &Trace) -> Option<usize> {
 pub fn diff(opts: &Options) -> Result<bool> {
     let a = read(&opts.a)?;
     let b = read(&opts.b)?;
+    warn_on_firmware_mismatch(opts)?;
 
     match first_divergence(&a, &b) {
         None => {
@@ -112,6 +118,40 @@ pub fn diff(opts: &Options) -> Result<bool> {
             Ok(false)
         }
     }
+}
+
+/// ログの中のファームの名乗り（最後に出たもの）。無ければ `None`。
+///
+/// 1 本のログに起動が何回か入ることがある（書き込み後の自動リセットと RST など）
+/// ので、トレースに近い最後のものを取る。host の `run --trace` には無い。
+#[must_use]
+pub fn firmware_identity(bytes: &[u8]) -> Option<String> {
+    let prefix = wasmicon_port::identity::PREFIX.as_bytes();
+    bytes
+        .split(|b| *b == b'\n')
+        .rev()
+        .map(|l| {
+            l.iter()
+                .copied()
+                .filter(|b| *b != b'\r' && *b != 0)
+                .collect::<Vec<u8>>()
+        })
+        .find(|l| l.starts_with(prefix))
+        .map(|l| String::from_utf8_lossy(&l).into_owned())
+}
+
+/// 2 つのログのファームの名乗りが食い違えば警告する（判定は変えない）。
+fn warn_on_firmware_mismatch(opts: &Options) -> Result<()> {
+    let ida = firmware_identity(&std::fs::read(&opts.a)?);
+    let idb = firmware_identity(&std::fs::read(&opts.b)?);
+    if let (Some(x), Some(y)) = (&ida, &idb)
+        && x != y
+    {
+        eprintln!("警告: 2 つのログはファームが違う（トレースの差の原因になりうる）");
+        eprintln!("    {}  {x}", short(&opts.a));
+        eprintln!("    {}  {y}", short(&opts.b));
+    }
+    Ok(())
 }
 
 /// 詳細行はファイル名だけにする（絶対パスは見出しに出ている）。
@@ -333,5 +373,18 @@ mod tests {
               < 0 [len=40 data=0x00112233445566778899aabbccddeeff..len=40 crc32=01234567]\n",
         );
         assert!(i2c_reads(&t).is_err());
+    }
+
+    #[test]
+    fn the_last_firmware_identity_is_taken() {
+        // 書き込み後の自動リセットと RST で起動が 2 回入ったログ。
+        let log = b"wasmicon esp32s3\r\nwasmicon id esp32s3 fw=0.1.0 git=aaaaaaa\r\n\0\
+                    wasmicon esp32s3\r\nwasmicon id esp32s3 fw=0.1.0 git=bbbbbbb-dirty\r\n> a/b(1)\r\n";
+        assert_eq!(
+            firmware_identity(log).as_deref(),
+            Some("wasmicon id esp32s3 fw=0.1.0 git=bbbbbbb-dirty")
+        );
+        // host の run --trace には名乗りが無い。
+        assert_eq!(firmware_identity(b"> a/b(1)\n< 0\n"), None);
     }
 }

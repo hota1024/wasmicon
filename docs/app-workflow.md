@@ -371,14 +371,29 @@ ABI を触らずにコマンドを 1 つ足せばプロトコル版だけが上�
 |---|---|---|
 | ABI 版 `wasmicon:hal@0.1.0` | import のモジュール名（完全一致。abi-spec §3.1） | 全アプリが `unknown import` で落ちる |
 | ボードプロファイル（`Config` + **実装済みインターフェース**） | 各 `main.rs`（RP2040 = 2 ページ、他 = 4）と各 `board.rs`（RP2040 は SPI / I2C が未実装） | 大きいアプリが validate で落ちる / 実機で `unsupported` が返る |
-| 役割名（`led` / `lcd-cs` …） | `ports/common` の `profile::<board>.roles`（abi-spec §8） | `pin-by-role` が `unsupported` を返す |
+| 役割名（自由。2026-10-07 から） | アプリの `wasmicon.toml` → デバイスの設定スロット（§3.9） | `pin-by-role` が `unsupported` を返す |
 | プロトコル版 | フレームの `ver u8`（§3.6） | CLI が喋れない |
 | スロット形式版 | スロットヘッダ（§3.4、= 1） | 古いファームが新しいスロットを読む |
 
 **ファーム版を 1 本持って範囲比較させる設計にすると必ず嘘になる。** `info` は
 **軸ごとに申告**し、CLI は軸ごとに判定する。ファーム版は**由来（provenance）専用**。
 
-#### 今、ファームは何も名乗っていない
+#### ファームはバナーで名乗る（2026-10-09 に実装）
+
+起動時、バナーの次の行に 1 行で名乗る（`ports/common` の `identity`）:
+
+```
+wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board slot=v1/65536 roles=v1/4096
+```
+
+- `git` はビルド時の `git describe --always --dirty`（各ポートの `build.rs` が
+  `ports/common/build/git.rs` を読んで埋める）。ABI 版は `wit/` から生成した
+  `generated::PACKAGE`。役割の一覧は次の行（`wasmicon: roles …`）に出る
+- `monitor` の取り込みは生のシリアル出力なので、名乗りはログの先頭に残る。
+  `trace diff` は 2 つのログの名乗りが食い違えば警告する（判定は変えない）
+- **プロトコル版はまだ無い**（プロトコル自体が 2 段で入る）。`info` も 2 段
+
+以下は実装前（2026-10-04）の状態:
 
 - バナーは `wasmicon rp2350` の 1 行だけで、**版も git も入っていない**
   （`ports/rp2350/src/main.rs:140`、`ports/esp32s3/src/main.rs:87`、
