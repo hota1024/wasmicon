@@ -713,7 +713,7 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       各ポートの `build.rs` が読んで埋める。ABI 版は `wit/` から生成した
       `generated::PACKAGE`）。`trace diff` は 2 つのログの名乗りが食い違えば警告する
       （判定は変えない）。**`monitor` の取り込みは生のシリアル出力なので、名乗りは
-      ログの先頭に自然に残る**。ESP32-S3 の実機で確認（`docs/verification-report.md` §16）。
+      ログの先頭に自然に残る**。ESP32-S3 と Pico 2 W の実機で確認（`docs/verification-report.md` §16 / §17）。
       以下は当初の記録: （`info` とバナー。
       `docs/app-workflow.md` §3.8）。今バナーは `wasmicon rp2350` の 1 行だけで
       **版も git も入っていない**（`ports/rp2350/src/main.rs:140`）。

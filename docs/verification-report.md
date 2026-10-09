@@ -1102,3 +1102,28 @@ sensor-display のトレースは、実機の応答を食わせた host と**全
 長い 16 進ダンプ（32 バイトの `list<u8>` や `data=`）で同じように切れていたはず。
 書き切るまで繰り返すように直した。Pico 系は `write_full_blocking` なので影響しない。
 
+---
+
+## 17. 最近の変更を Pico 2 W で確かめた（2026-10-09）
+
+§13（内蔵アプリの撤去）・§14（配線表）・§16（名乗り）は ESP32-S3 でしか見ていなかった。
+`14713cb` のファームを Pico 2 W に焼いて、同じ点を確かめた。Pico は `deploy --monitor`
+の 1 コマンドで、焼く → 起動 → 取り込みまで通る（ESP32-S3 のような RST は要らない）。
+
+| 確かめたこと | 出力 | 結果 |
+|---|---|---|
+| 名乗り | `wasmicon id rp2350 fw=0.1.0 git=14713cb abi=wasmicon:hal@0.1.0 trace=on pages=4 …` | 最後まで出る |
+| 配線表を読む（`apps/sensor-display-rs` から deploy） | `wasmicon: roles lcd-cs=17 lcd-dc=20 lcd-rst=21` | `pin-by-role` は 3 つとも成功し `role:lcd-cs` などに正規化 |
+| トレースの一致 | センサーが応答しない経路 | host（応答なし）と**全文一致 3,734 行** |
+| 配線表なしで deploy（toml の無い場所から） | `wasmicon: roles none` → `[wasm] role not found` | `pin-by-role` は `unsupported`（7）。ピンは駆動しない |
+| アプリと配線表を消去 | `wasmicon: roles empty, no roles` / `wasmicon: slot empty, idle` | トレース 0 行で待機 |
+
+### SHT40 が応答しなかった（ハードウェア側と切り分けた）
+
+この日の Pico 2 W では、SHT40 への書き込みが毎回 `nack` になった（`bus.write(1, 68, 0xfd)`
+→ `< 5`）。配線を確認し直しても変わらず、**10/07 に同じ Pico で読めたときのファーム
+（`7b15465`、Rust 1.97.1）を焼いても `nack`** だったので、ファームの変更ではなく
+配線・接触・センサー側の問題と判断した。センサーが読めた状態での全文一致
+（実機の応答を食わせた host との比較）は Pico 2 W では取り直していない
+（10/07 に §12 で取ったものが最後）。
+
