@@ -25,6 +25,7 @@ mod board;
 #[cfg(feature = "hw-probe")]
 mod probe;
 
+use esp_hal::clock::CpuClock;
 use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_storage::FlashStorage;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
@@ -81,7 +82,11 @@ impl Serial for SerialPort<'_> {
 
 #[esp_hal::main]
 fn main() -> ! {
-    let p = esp_hal::init(esp_hal::Config::default());
+    // CPU は 240 MHz（2026-10-09 オーナー決定。既定は 80 MHz）。インタプリタが
+    // そのまま 3 倍速くなる。SPI / I2C / UART は APB（80 MHz のまま）から作るので
+    // 変わらず、`time` はトレースに出ないので記録済みのトレースとの一致も保たれる。
+    // プリセットは PLL を 480 MHz のまま分周だけ変える（USB-Serial-JTAG を壊さない）。
+    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     let uart = Uart::new(p.UART0, UartConfig::default())
         .unwrap()

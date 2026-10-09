@@ -389,7 +389,7 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
     - `opt-level = "z"` を `3` にしても ESP32-S3 で 2 割しか速くならない。
       効いていないのはディスパッチの構造の側（毎回の LEB128 デコード、
       分岐ごとの side table の二分探索、u64 のスロット）と見ている。未検証
-    - [ ] **ESP32-S3 の CPU クロックを 240 MHz にするか**（オーナー判断）。
+    - [x] **ESP32-S3 の CPU クロックを 240 MHz にするか** → **240 MHz にした**（2026-10-09 オーナー決定。`ports/esp32s3/src/main.rs` の `with_cpu_clock(CpuClock::max())`）。実機で sensor-display が host と全文一致することを確かめた（`docs/verification-report.md` §15）。以下は当初の記録:
       `ports/esp32s3` は `esp_hal::Config::default()` のままで **80 MHz** で
       動いている。`with_cpu_clock(CpuClock::max())` で全計測がちょうど 3 倍に
       なることは手元のビルドで確かめた（コミットはしていない）
