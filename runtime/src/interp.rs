@@ -271,7 +271,16 @@ pub fn invoke(
     }
 
     let mut nframes = 0usize;
-    let mut cur = enter(inst, stack, &mut sp, func, args.len(), &mut nframes, frames)?;
+    let mut cur = enter(
+        inst,
+        stack,
+        &mut sp,
+        func,
+        args.len(),
+        ty.result_count(),
+        &mut nframes,
+        frames,
+    )?;
 
     run(
         inst,
@@ -300,12 +309,17 @@ struct Cursor<'m> {
 }
 
 /// 関数に入る。引数は既にスタック上位に積まれている。
+///
+/// `nparams` / `nresults` は `func` の型から呼び出し側が引いた値
+/// （呼び出しごとに型を 2 度引かないため）。
+#[allow(clippy::too_many_arguments)]
 fn enter<'m>(
     inst: &Instance<'m, '_>,
     stack: &mut [u64],
     sp: &mut usize,
     func: u32,
     nparams: usize,
+    nresults: usize,
     nframes: &mut usize,
     frames: &mut [Frame],
 ) -> Result<Cursor<'m>> {
@@ -322,10 +336,6 @@ fn enter<'m>(
         .module
         .code
         .get(defined)
-        .ok_or(Error::Invalid("unknown function"))?;
-    let ty = inst
-        .module
-        .func_type(func)
         .ok_or(Error::Invalid("unknown function"))?;
 
     let locals = *sp - nparams;
@@ -347,7 +357,7 @@ fn enter<'m>(
         pc: 0,
         info,
         locals,
-        ret: ty.result_count(),
+        ret: nresults,
     })
 }
 
@@ -894,7 +904,7 @@ fn call<'m>(
         ret: cur.ret as u32,
     };
     *nframes += 1;
-    *cur = enter(inst, stack, sp, f, nparams, nframes, frames)?;
+    *cur = enter(inst, stack, sp, f, nparams, nresults, nframes, frames)?;
     Ok(())
 }
 

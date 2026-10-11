@@ -427,9 +427,20 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       `time.now-us` 13.78 → 10.75 µs、`gpio.write` 12.43 → 9.85 µs、`spi.write` 1 B
       19.55 → 15.33 µs / 98 B 81.52 → 74.59 µs。O3 でもネイティブのスタック（約 17 KB）は
       あふれず最後まで走った
-    - 次の候補（未着手）: host のプロファイルで残るのは `run` 本体 24%、
-      `func_type` 3%（呼び出しのたびに引く → キャッシュできる）。分岐の side table の
-      二分探索は 1% 未満で、今は律速ではない。熱い命令の近道も候補
+    - [x] **`func_type` を走査せずに引く**（2026-10-12）。import 関数の型は呼び出しの
+      たびに import 表を頭から走査していたので、デコード時に `imported_func_types`
+      （import 1 つにつき 4 B）を作る。定義関数は `call` と `enter` で 2 度引いていたのを
+      1 度にした。ESP32-S3 で全項目が 0.2〜4.2% 縮んだ（fib −2.6%、`spi.write` 1 B
+      −4.2%）。Pico 2 W は fib −4.9%、`spi.write` 1 B −6.1% だが、`spi.write` 98 B は
+      +11.6%（下）
+    - **Pico 2 W の数値はコードの置き場所で ±1 割ほど動く**（2026-10-12）。上の変更で
+      `spi.write` 98 B が 91.7 → 102.3 µs になったが、ポートの `spi_write` の機械語は
+      1 命令も変わっておらず、関数が 88 B 前にずれただけだった（前のファームに戻すと
+      91.7 µs が再現）。XIP で走るので、置き場所でキャッシュの当たり方が変わる。
+      **Pico で 1 割未満の差を変更の効果と読まないこと**（ESP32-S3 と並べて判断する）。
+      安定させるなら熱いループを RAM に置く（上の RAM 実行の実験。今は取り込まない）
+    - 次の候補（未着手）: host のプロファイルで残るのは `run` 本体 24%。熱い命令の
+      近道が候補。分岐の side table の二分探索は 1% 未満で、今は律速ではない
     - [x] **ESP32-S3 の CPU クロックを 240 MHz にするか** → **240 MHz にした**（2026-10-09 オーナー決定。`ports/esp32s3/src/main.rs` の `with_cpu_clock(CpuClock::max())`）。実機で sensor-display が host と全文一致することを確かめた（`docs/verification-report.md` §15）。以下は当初の記録:
       `ports/esp32s3` は `esp_hal::Config::default()` のままで **80 MHz** で
       動いている。`with_cpu_clock(CpuClock::max())` で全計測がちょうど 3 倍に

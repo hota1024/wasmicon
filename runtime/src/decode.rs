@@ -63,6 +63,7 @@ pub fn decode<'m, 'a>(bytes: &'m [u8], arena: &mut Arena<'a>) -> Result<Module<'
         imported_tables: 0,
         imported_mems: 0,
         imported_globals: 0,
+        imported_func_types: &[],
         imported_global_types: &[],
         data_count: None,
     };
@@ -99,6 +100,7 @@ pub fn decode<'m, 'a>(bytes: &'m [u8], arena: &mut Arena<'a>) -> Result<Module<'
                 m.imported_tables = counts.1;
                 m.imported_mems = counts.2;
                 m.imported_globals = counts.3;
+                m.imported_func_types = decode_imported_func_types(imports, arena)?;
                 m.imported_global_types = decode_imported_global_types(imports, arena)?;
             }
             3 => m.funcs = decode_u32_vec(&mut s, arena)?,
@@ -202,6 +204,25 @@ fn decode_imports<'m, 'a>(
         *slot = Import { module, name, desc };
     }
     Ok((out, counts))
+}
+
+fn decode_imported_func_types<'a>(
+    imports: &[Import<'_>],
+    arena: &mut Arena<'a>,
+) -> Result<&'a [u32]> {
+    let n = imports
+        .iter()
+        .filter(|i| matches!(i.desc, ImportDesc::Func(_)))
+        .count();
+    let out = arena.alloc(n, 0u32)?;
+    let mut i = 0;
+    for im in imports {
+        if let ImportDesc::Func(t) = im.desc {
+            out[i] = t;
+            i += 1;
+        }
+    }
+    Ok(out)
 }
 
 fn decode_imported_global_types<'a>(

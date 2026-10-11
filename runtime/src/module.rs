@@ -106,6 +106,9 @@ pub struct Module<'m, 'a> {
     pub imported_tables: u32,
     pub imported_mems: u32,
     pub imported_globals: u32,
+    /// import された関数の型インデックス（import 順）。`func_type` を
+    /// import の走査なしで引くため（呼び出しのたびに引くので）。
+    pub imported_func_types: &'a [u32],
     /// import されたグローバルの型（定数式の検証で使う）。
     pub imported_global_types: &'a [GlobalType],
     /// DataCount セクションの値。`memory.init` / `data.drop` に必要。
@@ -141,18 +144,7 @@ impl<'m> Module<'m, '_> {
     #[must_use]
     pub fn func_type(&self, idx: u32) -> Option<FuncType<'m>> {
         let type_idx = if idx < self.imported_funcs {
-            let mut seen = 0;
-            let mut found = None;
-            for im in self.imports {
-                if let ImportDesc::Func(t) = im.desc {
-                    if seen == idx {
-                        found = Some(t);
-                        break;
-                    }
-                    seen += 1;
-                }
-            }
-            found?
+            *self.imported_func_types.get(idx as usize)?
         } else {
             *self.funcs.get((idx - self.imported_funcs) as usize)?
         };
