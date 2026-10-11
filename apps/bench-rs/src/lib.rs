@@ -13,7 +13,8 @@
 //! （いちばん軽い）、`gpio.write`、`spi.write`（1 バイトと 98 バイト）を回す。
 //! 時間を測る `time.now-us` 自体の呼び出し（項目ごとに 2 回）は誤差として無視する。
 //!
-//! 走り終えると `bench done` を出して `run` から戻る。
+//! 全項目を `ROUNDS` 周し（周の頭に `bench round=N`）、走り終えると `bench done` を
+//! 出して `run` から戻る。
 
 #![no_std]
 
@@ -40,11 +41,24 @@ const SIEVE_ROUNDS: u32 = 40;
 const LIFE_GENS: u32 = 200;
 /// host call の回数。
 const CALLS: u32 = 1000;
+/// 計測を何周するか（ばらつきを見るため）。
+const ROUNDS: u32 = 2;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run() {
     log::info("bench start");
+    // 2 周して、ばらつきの幅も見られるようにする。
+    for round in 0..ROUNDS {
+        let mut l = Line::new();
+        l.s("bench round=").n(u64::from(round));
+        log::info(l.as_str());
+        suite();
+    }
+    log::info("bench done");
+}
 
+/// 1 周分の計測。
+fn suite() {
     measure("loop", LOOP_ITERS, || {
         let mut x: u32 = 1;
         for i in 0..black_box(LOOP_ITERS) {
@@ -118,8 +132,6 @@ pub extern "C" fn run() {
         }
         Err(_) => log::error("bench spi skipped (open failed)"),
     }
-
-    log::info("bench done");
 }
 
 fn fib(n: u32) -> u32 {
