@@ -40,9 +40,58 @@ impl<'a> Exec<'a> {
 
 // ---------------------------------------------------------------- 読み出し補助
 
-/// 検証済みなので LEB は必ず正しい。範囲外だけ 0 で受け止める。
-#[inline]
+/// LEB128 を読む。**1 バイトで収まる値（即値のほとんど）はその場で返し**、
+/// 2 バイト以上だけ遅い道（`*_slow`）に回す。毎回ループに入っていたのが、
+/// host のプロファイルで時間の 1 割強だった（2026-10-11。docs/TODO.md §4）。
+#[inline(always)]
 fn leb_u32(body: &[u8], pc: &mut usize) -> u32 {
+    match body.get(*pc) {
+        Some(&b) if b < 0x80 => {
+            *pc += 1;
+            u32::from(b)
+        }
+        _ => leb_u32_slow(body, pc),
+    }
+}
+
+#[inline(always)]
+fn leb_u64(body: &[u8], pc: &mut usize) -> u64 {
+    match body.get(*pc) {
+        Some(&b) if b < 0x80 => {
+            *pc += 1;
+            u64::from(b)
+        }
+        _ => leb_u64_slow(body, pc),
+    }
+}
+
+/// 1 バイトの符号付き LEB は 7 ビットの 2 の補数（ビット 6 が符号）。
+#[inline(always)]
+fn leb_i32(body: &[u8], pc: &mut usize) -> i32 {
+    match body.get(*pc) {
+        Some(&b) if b < 0x80 => {
+            *pc += 1;
+            (i32::from(b) << 25) >> 25
+        }
+        _ => leb_i32_slow(body, pc),
+    }
+}
+
+#[inline(always)]
+fn leb_i64(body: &[u8], pc: &mut usize) -> i64 {
+    match body.get(*pc) {
+        Some(&b) if b < 0x80 => {
+            *pc += 1;
+            (i64::from(b) << 57) >> 57
+        }
+        _ => leb_i64_slow(body, pc),
+    }
+}
+
+/// 2 バイト以上の LEB（遅い道）。検証済みなので必ず正しい。範囲外だけ 0 で受け止める。
+#[cold]
+#[inline(never)]
+fn leb_u32_slow(body: &[u8], pc: &mut usize) -> u32 {
     let mut r = 0u32;
     let mut s = 0u32;
     loop {
@@ -59,8 +108,9 @@ fn leb_u32(body: &[u8], pc: &mut usize) -> u32 {
     }
 }
 
-#[inline]
-fn leb_u64(body: &[u8], pc: &mut usize) -> u64 {
+#[cold]
+#[inline(never)]
+fn leb_u64_slow(body: &[u8], pc: &mut usize) -> u64 {
     let mut r = 0u64;
     let mut s = 0u32;
     loop {
@@ -77,8 +127,9 @@ fn leb_u64(body: &[u8], pc: &mut usize) -> u64 {
     }
 }
 
-#[inline]
-fn leb_i32(body: &[u8], pc: &mut usize) -> i32 {
+#[cold]
+#[inline(never)]
+fn leb_i32_slow(body: &[u8], pc: &mut usize) -> i32 {
     let mut r = 0u32;
     let mut s = 0u32;
     loop {
@@ -98,8 +149,9 @@ fn leb_i32(body: &[u8], pc: &mut usize) -> i32 {
     }
 }
 
-#[inline]
-fn leb_i64(body: &[u8], pc: &mut usize) -> i64 {
+#[cold]
+#[inline(never)]
+fn leb_i64_slow(body: &[u8], pc: &mut usize) -> i64 {
     let mut r = 0u64;
     let mut s = 0u32;
     loop {
@@ -131,7 +183,7 @@ fn skip_block_type(body: &[u8], pc: &mut usize) {
 }
 
 /// `memarg` を読む。align は使わないので捨てる。
-#[inline]
+#[inline(always)]
 fn memarg(body: &[u8], pc: &mut usize) -> u32 {
     leb_u32(body, pc);
     leb_u64(body, pc) as u32

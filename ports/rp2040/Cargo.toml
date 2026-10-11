@@ -25,7 +25,11 @@ panic-halt = "1"
 embedded-hal = "1"
 
 [profile.release]
-opt-level = "z"
+# 速度優先（2026-10-11。docs/TODO.md §4）。rp2350 の実機で、z と比べて計算が
+# 16〜35%、host call が 7〜37% 速くなった（コードは 71 → 116 KB。フラッシュは
+# 十分に余っている）。インタプリタとポートの HAL だけ 3 にする上書きも試したが、
+# fat LTO の最後の最適化が z で走るせいか、呼び出しと host call が速くならなかった。
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
