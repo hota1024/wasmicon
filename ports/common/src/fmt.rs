@@ -7,12 +7,38 @@
 pub struct Buf<'a> {
     buf: &'a mut [u8],
     len: usize,
+    /// `false` なら何も書かない（`off`）。
+    on: bool,
 }
 
 impl<'a> Buf<'a> {
     #[must_use]
     pub fn new(buf: &'a mut [u8]) -> Self {
-        Buf { buf, len: 0 }
+        Buf {
+            buf,
+            len: 0,
+            on: true,
+        }
+    }
+
+    /// 何も書かないバッファ。トレースを切っているときに使う。
+    ///
+    /// 呼び出し側は書くかどうかを毎回分岐しなくてよい（どのメソッドも
+    /// 入り口で戻る）。**引数を作るのに重い計算が要るもの**（CRC-32 や
+    /// 16 進ダンプ）だけは、呼び出し側が `is_on` を見て飛ばす。
+    #[must_use]
+    pub fn off(buf: &'a mut [u8]) -> Self {
+        Buf {
+            buf,
+            len: 0,
+            on: false,
+        }
+    }
+
+    /// 書くバッファか。
+    #[must_use]
+    pub fn is_on(&self) -> bool {
+        self.on
     }
 
     /// 書けた分。溢れた場合は切り詰められている。
@@ -32,7 +58,7 @@ impl<'a> Buf<'a> {
     }
 
     pub fn byte(&mut self, b: u8) {
-        if self.len < self.buf.len() {
+        if self.on && self.len < self.buf.len() {
             self.buf[self.len] = b;
             self.len += 1;
         }
@@ -43,6 +69,9 @@ impl<'a> Buf<'a> {
     }
 
     pub fn bytes(&mut self, s: &[u8]) {
+        if !self.on {
+            return;
+        }
         for &b in s {
             self.byte(b);
         }
@@ -51,6 +80,9 @@ impl<'a> Buf<'a> {
     /// トレースに埋め込む文字列。改行や `"` をそのまま出すと abi-spec §9 の
     /// 1 行 1 レコードという形が壊れ、両ボードの diff が行単位でずれる。
     pub fn escaped(&mut self, s: &[u8]) {
+        if !self.on {
+            return;
+        }
         for &b in s {
             match b {
                 b'\n' => self.str("\\n"),
@@ -70,6 +102,9 @@ impl<'a> Buf<'a> {
 
     /// 10 進。
     pub fn u64(&mut self, mut v: u64) {
+        if !self.on {
+            return;
+        }
         let mut digits = [0u8; 20];
         let mut n = 0;
         loop {
@@ -92,6 +127,9 @@ impl<'a> Buf<'a> {
 
     /// 幅を固定した 16 進（`width` 桁、0 埋め）。
     pub fn hex(&mut self, v: u32, width: usize) {
+        if !self.on {
+            return;
+        }
         const D: &[u8; 16] = b"0123456789abcdef";
         let mut i = width;
         while i > 0 {

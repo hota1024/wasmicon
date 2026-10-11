@@ -1,0 +1,12 @@
+[package]
+name = "bench-rs"
+description = "インタプリタと host call の速さを測る。host でも実機でも同じ .wasm を走らせる"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasmicon-hal.workspace = true

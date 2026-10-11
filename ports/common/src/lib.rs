@@ -302,6 +302,9 @@ pub fn crc32_end(crc: u32) -> u32 {
 /// abi-spec §9 の `list<u8>` 表記。32 バイトを超えたら先頭 16 バイト + CRC-32。
 /// 引数と、読み出し系が受け取ったバイト列（結果の `data=`）の両方に使う。
 fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
+    if !out.is_on() {
+        return;
+    }
     out.str("0x");
     if data.len() <= 32 {
         for &b in data {
@@ -346,8 +349,14 @@ impl<B: Board> Resolver for Hal<B> {
 
         let mut argbuf = [0u8; LINE];
         let mut outbuf = [0u8; LINE];
-        let mut a = Buf::new(&mut argbuf);
-        let mut o = Buf::new(&mut outbuf);
+        // **トレースを切っているときは整形しない。** 以前は毎回組み立てて
+        // 捨てていて、host のプロファイルで時間の 2 割強が `spi.write` の
+        // CRC-32 だった（2026-10-11。docs/TODO.md §4）。
+        let (mut a, mut o) = if self.trace_on {
+            (Buf::new(&mut argbuf), Buf::new(&mut outbuf))
+        } else {
+            (Buf::off(&mut argbuf), Buf::off(&mut outbuf))
+        };
         let mut status: u32 = 0;
         let mut result64: u64 = 0;
 
@@ -674,7 +683,9 @@ impl<B: Board> Resolver for Hal<B> {
                 // abi-spec §9: spi.write の data は CRC-32 のみ。
                 a.u64(args[0]);
                 a.str(", crc32=");
-                a.hex(crc32(data), 8);
+                if a.is_on() {
+                    a.hex(crc32(data), 8);
+                }
                 let n = data.len();
                 status = match slot_of(args[0], MAX_SPI) {
                     Err(e) => e,
@@ -697,7 +708,9 @@ impl<B: Board> Resolver for Hal<B> {
                     let data = guest_slice(mem, args[1], args[2])?;
                     a.u64(args[0]);
                     a.str(", crc32=");
-                    a.hex(crc32(data), 8);
+                    if a.is_on() {
+                        a.hex(crc32(data), 8);
+                    }
                 }
                 status = match slot_of(args[0], MAX_SPI) {
                     Err(e) => e,

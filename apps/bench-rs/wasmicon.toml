@@ -1,0 +1,15 @@
+# wasmicon.toml（docs/app-workflow.md §4.7）。
+# gpio.write の計測に led 役のピンを 1 本使う（何も繋がっていなくてよい）。
+version = 1
+
+[requirements]
+pin-roles = ["led"]
+
+[board.rp2350.roles]
+led = 15
+
+[board.esp32s3.roles]
+led = 2
+
+[board.rp2040.roles]
+led = 15

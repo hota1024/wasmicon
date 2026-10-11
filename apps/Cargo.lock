@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "bench-rs"
+version = "0.1.0"
+dependencies = [
+ "wasmicon-hal",
+]
+
+[[package]]
 name = "blink-rs"
 version = "0.1.0"
 dependencies = [
