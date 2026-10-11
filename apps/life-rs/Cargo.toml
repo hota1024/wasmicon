@@ -1,0 +1,17 @@
+[package]
+name = "life-rs"
+description = "ILI9341 にライフゲームを描き続けるデモ。センサーは要らない"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasmicon-hal.workspace = true
+
+[features]
+# 計測モード。同じ種で 200 世代を、SPI のクロックを変えながら回し、
+# 世代の計算と描画の時間を UART のログに出す（src/bench.rs）。
+bench = []

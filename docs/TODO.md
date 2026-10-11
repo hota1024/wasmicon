@@ -386,6 +386,14 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
       `spike/`、C ゲスト、trace なし。数値の全体はその README）。整数ループで
       **約 90 サイクル / Wasm 命令**で、RP2350（150 MHz）と ESP32-S3（240 MHz）で
       ほぼ同じ（host では約 4 ns / 命令）
+    - **host call 1 回が重い**（2026-10-11、`apps/life-rs` の計測モード
+      `--features bench`。Pico 2 W 150 MHz、trace=off）。ライフゲームの描画は
+      1 セル 14 回の host call で **950 µs / セル**、時間の 93% が描画。SPI を
+      16 → 48 MHz にしても 4% しか縮まず（転送は 1 セル約 60 µs）、**残りの
+      約 890 µs = host call 1 回あたり約 63 µs（約 9,500 サイクル）**。内訳は未測
+      （バインディングの Wasm を回す時間か、import の経路か、ポートの待ちか）。
+      ついでに見つけたこと: `ports/common` の `Hal::call` は **trace を切っていても
+      トレース用の文字列と `spi.write` の CRC-32 を毎回作っている**（数 % の見込み）
     - `opt-level = "z"` を `3` にしても ESP32-S3 で 2 割しか速くならない。
       効いていないのはディスパッチの構造の側（毎回の LEB128 デコード、
       分岐ごとの side table の二分探索、u64 のスロット）と見ている。未検証

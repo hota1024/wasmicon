@@ -64,6 +64,7 @@ bindings/rust/        ゲスト向け Rust バインディング
 bindings/assemblyscript/  同 AssemblyScript
 apps/                 ゲスト（別 workspace）。blink と sensor-display の Rust / AS 版
                       lcd-demo-rs は ILI9341 だけを使うデモ（センサー不要）
+                      life-rs は ILI9341 にライフゲームを描き続けるデモ（FPS 表示つき）
 verify/               検証の道具。wasmtime との差分テスト、トレース diff
 docs/                 仕様・設計・検証レポート・残作業
 ```

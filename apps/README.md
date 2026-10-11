@@ -17,6 +17,11 @@
 | `apps/sensor-display-as/assembly/ili9341.ts` | 同上 |
 | `apps/lcd-demo-rs/src/ili9341.rs` | **自動検査が無い**（このアプリは AS 版を持たない） |
 
+`apps/life-rs/src/ili9341.rs` は**写しではない別の最小ドライバ**（初期化・矩形塗り・
+`blit`・`draw_text` だけ）。初期化列は §2 と同じだが、画素を 1 回の SPI 転送に
+まとめて送るので、送り方は §2 と違う（ライフゲームは毎世代何十ものセルを描き直すため）。
+初期化列を直すときは、ここも見る。
+
 **Rust の 2 つは 2026-10-05 から `draw_text` が違う。** `sensor-display` は
 倍率付き（下の §2）、`lcd-demo-rs` は 8×8 等倍・12 文字までのまま。
 `lcd-demo-rs` は 14,352 行のトレースと `.wasm` の SHA-256 を
