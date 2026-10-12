@@ -60,6 +60,7 @@ ports/host/           PC 用。mock HAL + トレース。CI はここで回す
 ports/rp2040/         Raspberry Pi Pico WH（別 workspace。評価対象外、ビルドのみ）
 ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W（別 workspace、Cortex-M33）
 ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
+ports/esp32c5/        ESP32-C5（Waveshare ESP32-C5-WIFI6-KIT。別 workspace、RISC-V。実機は段階的に確認中）
 bindings/rust/        ゲスト向け Rust バインディング
 bindings/assemblyscript/  同 AssemblyScript
 apps/                 ゲスト（別 workspace）。blink と sensor-display の Rust / AS 版
@@ -70,7 +71,7 @@ verify/               検証の道具。wasmtime との差分テスト、トレ�
 docs/                 仕様・設計・検証レポート・残作業
 ```
 
-`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `apps` / `verify/differential` は
+`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `ports/esp32c5` / `apps` / `verify/differential` は
 ターゲットも toolchain も profile も違うので**別 workspace**にしてある。
 
 ## ビルドと検証
@@ -104,6 +105,7 @@ npm ci
 (cd ports/rp2040 && cargo build --release)
 (cd ports/rp2350 && cargo build --release)
 sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
+(cd ports/esp32c5 && cargo build --release)  # RISC-V。upstream の Rust でよい
 
 # wasmtime との差分テスト（インタプリタの正しさ）
 (cd verify/differential && cargo test)

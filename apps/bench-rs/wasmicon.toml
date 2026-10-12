@@ -11,5 +11,9 @@ led = 15
 [board.esp32s3.roles]
 led = 2
 
+[board.esp32c5.roles]
+# GPIO4 は基板上に 10 kΩ のプルアップがある（入力のとき LED がわずかに光ることがある）。
+led = 4
+
 [board.rp2040.roles]
 led = 15

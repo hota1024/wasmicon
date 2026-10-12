@@ -167,6 +167,13 @@ const ESP32S3_RESERVED: &[u32] = &[22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 4
 /// ESP32-S3 のバスのピン。I2C0 = GPIO8/9、SPI2 = GPIO11/12/13。
 const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13];
 
+/// ESP32-C5 の予約ピン。11/12 はトレースの UART0（CH343 に直結）、
+/// 13/14 はネイティブ USB（Type-C に直結）、15..=22 は SPI フラッシュ / PSRAM。
+const ESP32C5_RESERVED: &[u32] = &[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
+
+/// ESP32-C5 のバスのピン。I2C0 = GPIO8/9、SPI2 = GPIO24 (SCK) / 23 (MOSI) / 5 (MISO)。
+const ESP32C5_BUS_PINS: &[u32] = &[5, 8, 9, 23, 24];
+
 /// アプリスロットの直後に置く設定スロット。
 const fn role_slot_after(app: Slot) -> Slot {
     Slot {
@@ -263,6 +270,36 @@ const ESP32S3_SLOT: Slot = Slot {
     flasher: Flasher::Espflash,
 };
 
+/// ESP32-C5（Waveshare ESP32-C5-WIFI6-KIT、ESP32-C5-WROOM-1 搭載）。
+pub const ESP32C5: Profile = Profile {
+    name: "esp32c5",
+    config: MCU,
+    interfaces: Interfaces::ALL,
+    roles: &[],
+    gpio_count: 29,
+    reserved: ESP32C5_RESERVED,
+    bus_pins: ESP32C5_BUS_PINS,
+    // esp-hal のリンカスクリプトで使える RAM は 314 KiB（0x4E5A0）しかない
+    // （HP SRAM 384 KB からキャッシュとブートローダの分が引かれる）。S3 と同じ
+    // 300 KiB にするとネイティブスタックが入らないので、4 ページ（256 KiB）に
+    // 下限の 32 KiB を足した大きさにしてある。scratch はポートがブートローダから
+    // 取り戻した 64 KiB（`ram(reclaimed)`）に置くので、スタックは約 20 KiB 残る
+    // （S3 は約 17 KB で足りている。docs/TODO.md §1.4）。
+    arena: 288 * 1024,
+    scratch: 8 * 1024,
+    // フラッシュ 16 MB（N16R4）。他のポートと同じ 1 MiB から取る。
+    slot: Some(ESP32C5_SLOT),
+    role_slot: Some(role_slot_after(ESP32C5_SLOT)),
+};
+
+/// ESP32-C5 のアプリスロット。S3 と同じく RAM に写して読む。
+const ESP32C5_SLOT: Slot = Slot {
+    offset: 1 << 20,
+    len: 64 * 1024,
+    read: SlotRead::Copy,
+    flasher: Flasher::Espflash,
+};
+
 /// PC 上の mock。**全ボードより緩い**ので、これで通っても実機で通るとは限らない。
 pub const HOST: Profile = Profile {
     name: "host",
@@ -281,7 +318,7 @@ pub const HOST: Profile = Profile {
 };
 
 /// 名前で引くための表。CLI と `info`（`docs/app-workflow.md` §3.8）が使う。
-pub const PROFILES: &[&Profile] = &[&RP2040, &RP2350, &ESP32S3, &HOST];
+pub const PROFILES: &[&Profile] = &[&RP2040, &RP2350, &ESP32S3, &ESP32C5, &HOST];
 
 /// `--board <name>` を解決する。
 #[must_use]

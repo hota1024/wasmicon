@@ -151,6 +151,32 @@ I2C と sensor-display は 2026-10-05 / 07 に 2 ボードで動作を確認し�
   `wasmicon trace replay` で取り出した
 - [x] 結果を `docs/verification-report.md` に反映する（§11 / §12）
 
+### 1.3.1 ESP32-C5 対応（2026-10-12 着手。Waveshare ESP32-C5-WIFI6-KIT）
+
+`ports/esp32c5` は `ports/esp32s3` と同じ作り（GPIO はレジスタ直叩き、SPI / I2C は
+`esp-hal` 1.2 のドライバ）。ピンは abi-spec §8。段階ごとに実機で確かめてコミットする。
+
+- [x] **① ファームが起動して名乗る**（2026-10-12。チップは ESP32-C5 rev v1.0、フラッシュ 16 MB。
+  ESP-IDF の 2 段目ブートローダが通り、`wasmicon id esp32c5 …` を出した。スロットと
+  設定スロットが空なら `magic mismatch` を出して待つ）
+- [x] **② `deploy` でスロットから blink が走る**（2026-10-12。配線表 `led`=GPIO4 を読み、
+  blink-rs のトレースが host と 20 行完全一致）
+- [ ] **③ SPI: lcd-demo-rs / life-rs が ILI9341 に描ける**（lcd-demo のトレースが host と一致）
+- [ ] **④ I2C: sensor-display-rs / -as が SHT40 を読み、トレースが host と全文一致**
+- 決めたこと・分かっていること:
+  - **RAM が S3 より小さい。** esp-hal のリンカスクリプトで使える主 RAM は 314 KiB。
+    arena を 288 KiB（4 ページ ＋ 下限の 32 KiB）にし、scratch（8 KiB）は
+    ブートローダから取り戻した領域（`ram(reclaimed)`）に置いた。ネイティブ
+    スタックは 20,168 B（S3 は約 17 KB で足りている）
+  - **FPU が無い**（RV32IMAC）。f32 はソフトウェア演算になる。sensor-display の
+    温度バーが host と一致するかは ④ で見る（§1.3 の浮動小数の項目）
+  - 書き込みは「UART」側の Type-C（CH343。自動ダウンロード回路あり）を使う。
+    ネイティブ USB 側を繋いだまま起動すると、S3 と同じく書き込み待ちに入るかもしれない（未確認）
+  - **ファームが一度走ってシリアルを読んだあとは、`espflash` が `Failed to connect` で
+    繋がらない**（S3 と同じ症状。§1.3 の S3 のリセットの項目）。USB を抜き差しすると戻る。
+    DTR/RTS を落とす・`-c esp32c5`・`--before usb-reset` では直らなかった。
+    `espflash reset` のあとは ROM の 1 行目の途中で出力が止まり、RESET ボタンでは普通に起動する
+
 ### 1.4 実機で最初に疑うところ
 
 **RP2350 と ESP32-S3 は観測済み**（どちらも 2026-09-26）。`lcd-demo-rs` を Pico 2 W と

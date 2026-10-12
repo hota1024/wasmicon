@@ -1,0 +1,39 @@
+# ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT、ESP32-C5-WROOM-1) 用ポート。
+# C5 は RISC-V なので upstream Rust の riscv32imac-unknown-none-elf で組める。
+# root workspace とはターゲットも profile も違うので別 workspace。
+[workspace]
+
+[package]
+name = "wasmicon-esp32c5"
+description = "Wasmicon の ESP32-C5 ポート"
+version = "0.1.0"
+edition = "2021"
+# esp-hal 1.2 と esp-bootloader-esp-idf 0.6 がどちらも 1.95 を要求する。
+rust-version = "1.95"
+
+[features]
+# docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+default = ["trace"]
+trace = []
+
+[dependencies]
+wasmicon-core = { path = "../../runtime" }
+wasmicon-port = { path = "../common" }
+# esp32c5 の feature は esp-hal 1.2 から。
+esp-hal = { version = "1.2", features = ["esp32c5", "unstable"] }
+# ESP-IDF の 2 段目ブートローダが要求する app descriptor（`esp_app_desc!`）のため。
+# これが無いと espflash 4.5 が「App Descriptor missing」で書き込みを拒否する。
+esp-bootloader-esp-idf = { version = "0.6", default-features = false, features = [
+    "esp32c5",
+] }
+# アプリスロットと設定スロットをフラッシュから読む（docs/app-workflow.md §3.3）。
+# ESP32-S3 と同じく RAM に写す（任意オフセットが XIP にマップされている前提を置かない）。
+esp-storage = { version = "0.10", features = ["esp32c5"] }
+# 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
+# panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
+
+[profile.release]
+# 速度優先。他のポートと揃える（docs/TODO.md §4）。
+opt-level = 3
+lto = "fat"
+codegen-units = 1

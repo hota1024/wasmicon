@@ -1,0 +1,11 @@
+# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
+# ビルドは `cd ports/esp32c5 && cargo build --release`。
+#
+# ESP32-C5 の HP コアは RV32IMAC（FPU 無し）。upstream Rust に core の
+# プリビルドがあるので ESP32-S3 のような build-std は要らない。
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor"
+rustflags = ["-Clink-arg=-Tlinkall.x"]

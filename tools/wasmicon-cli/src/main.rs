@@ -37,7 +37,7 @@ new のオプション:
 
 check のオプション:
     --board <name>           検査するボード
-                             rp2040 / rp2350 / esp32s3 / host
+                             rp2040 / rp2350 / esp32s3 / esp32c5 / host
                              既定: wasmicon.toml の [defaults] board、
                              無ければ全ボード
 

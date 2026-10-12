@@ -29,6 +29,7 @@ fn mcu_configs_are_what_the_ports_had() {
     assert_mcu_limits(&profile::RP2040, 2);
     assert_mcu_limits(&profile::RP2350, 4);
     assert_mcu_limits(&profile::ESP32S3, 4);
+    assert_mcu_limits(&profile::ESP32C5, 4);
 }
 
 #[test]
@@ -38,6 +39,7 @@ fn arenas_are_what_the_ports_had() {
     assert_eq!(profile::RP2040.arena, 160 * 1024);
     assert_eq!(profile::RP2350.arena, 320 * 1024);
     assert_eq!(profile::ESP32S3.arena, 300 * 1024);
+    assert_eq!(profile::ESP32C5.arena, 288 * 1024);
     for p in profile::PROFILES {
         assert_eq!(p.scratch, if p.name == "host" { 4 << 20 } else { 8 * 1024 });
     }
@@ -90,12 +92,13 @@ fn host_promises_more_pages_than_its_arena_can_hold() {
 
 #[test]
 fn every_board_has_a_decided_slot() {
-    // 3 ポートとも同じ置き方（1 MiB から 64 KiB）。読み方だけが違う
-    // （Pico 系は XIP のスライス、ESP32-S3 は RAM への写し）。
+    // 4 ポートとも同じ置き方（1 MiB から 64 KiB）。読み方だけが違う
+    // （Pico 系は XIP のスライス、ESP32-S3 / C5 は RAM への写し）。
     for (p, flash) in [
         (&profile::RP2040, 2usize << 20),
         (&profile::RP2350, 4usize << 20),
         (&profile::ESP32S3, 8usize << 20),
+        (&profile::ESP32C5, 16usize << 20),
     ] {
         let sl = p
             .slot
@@ -157,7 +160,12 @@ fn host_is_looser_than_every_board() {
 fn only_the_host_mock_has_a_role_table() {
     // 実機ボードは既定の表を持たない。host はフラッシュの無い mock なので
     // 表をプロファイルに持つ（`wasmicon run` とテストが使う）。
-    for p in [&profile::RP2040, &profile::RP2350, &profile::ESP32S3] {
+    for p in [
+        &profile::RP2040,
+        &profile::RP2350,
+        &profile::ESP32S3,
+        &profile::ESP32C5,
+    ] {
         assert!(p.roles.is_empty(), "{} は既定の表を持たない", p.name);
     }
     assert_eq!(
@@ -181,6 +189,12 @@ fn gpio_limits_are_what_the_ports_have() {
         [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 43, 44]
     );
     assert_eq!(profile::ESP32S3.bus_pins, [8, 9, 11, 12, 13]);
+    assert_eq!(profile::ESP32C5.gpio_count, 29);
+    assert_eq!(
+        profile::ESP32C5.reserved,
+        [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    );
+    assert_eq!(profile::ESP32C5.bus_pins, [5, 8, 9, 23, 24]);
 }
 
 #[test]
@@ -192,7 +206,12 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
     assert!(!i.spi, "rp2040 の SPI は未実装");
     assert!(i.gpio && i.time && i.log && i.board);
 
-    for p in [&profile::RP2350, &profile::ESP32S3, &profile::HOST] {
+    for p in [
+        &profile::RP2350,
+        &profile::ESP32S3,
+        &profile::ESP32C5,
+        &profile::HOST,
+    ] {
         let i = p.interfaces;
         assert!(
             i.gpio && i.i2c && i.spi && i.time && i.log && i.board,

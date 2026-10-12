@@ -85,6 +85,22 @@ jobs:
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
 
+  # ESP32-C5 ポート。RISC-V なので upstream の Rust で組める（espup は要らない）。
+  # riscv32imac のビルドが通ることだけを見る（実機は回せない）。
+  esp32c5:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ports/esp32c5
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup target add riscv32imac-unknown-none-elf
+      # ファームにアプリは入っていない（docs/app-workflow.md §3.3）ので、
+      # apps/ を先にビルドする必要は無い。
+      - run: cargo fmt --check
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo build --release
+
   # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
   # ローカルで次の 2 つを見る（rp2350 ジョブと同じ組み合わせ + 切り分け feature）:
   #   sh ports/esp32s3/build.sh clippy --release -- -D warnings

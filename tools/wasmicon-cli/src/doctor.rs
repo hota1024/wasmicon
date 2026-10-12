@@ -103,7 +103,11 @@ pub fn run() -> Result<bool> {
     }
     match &espflash {
         Some(v) => line("espflash", &strip_name("espflash", v), true),
-        None => line("espflash", "無い（esp32s3 を焼くなら要る）", false),
+        None => line(
+            "espflash",
+            "無い（esp32s3 / esp32c5 を焼くなら要る）",
+            false,
+        ),
     }
     match &probe_rs {
         Some(v) => line("probe-rs", &strip_name("probe-rs", v), true),
@@ -118,6 +122,7 @@ pub fn run() -> Result<bool> {
     }
     if espflash.is_some() {
         boards.push("esp32s3");
+        boards.push("esp32c5");
     }
     if boards.is_empty() {
         println!("→ ファームを焼けるボードは無い。アプリの build / check / run はできる");

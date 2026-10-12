@@ -21,6 +21,11 @@ lcd-cs = 10
 lcd-dc = 14
 lcd-rst = 15
 
+[board.esp32c5.roles]
+lcd-cs = 10
+lcd-dc = 0
+lcd-rst = 1
+
 [board.rp2040.roles]
 lcd-cs = 17
 lcd-dc = 20

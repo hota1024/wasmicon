@@ -304,15 +304,21 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 
 `index` の解釈と SDA/SCL/SCK/MOSI/MISO のピン割り当てはポート層のボード設定で決める。ゲストからは `index` だけが見える。目標アプリ向けの初期割り当て案:
 
-| 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
-|---|---|---|---|---|
-| I2C バス (SHT4x) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
-| SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
-| ILI9341 CS | `gpio.pin` | GPIO10 | GP17 | GP17 |
-| ILI9341 DC | `gpio.pin` | GPIO14 | GP20 | GP20 |
-| ILI9341 RST | `gpio.pin` | GPIO15 | GP21 | GP21 |
+| 用途 | WIT 上の指定 | ESP32-S3 (DevKitC-1) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
+|---|---|---|---|---|---|
+| I2C バス (SHT4x) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
+| SPI バス (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | SPI2: SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
+| ILI9341 CS | `gpio.pin` | GPIO10 | GPIO10 | GP17 | GP17 |
+| ILI9341 DC | `gpio.pin` | GPIO14 | GPIO0 | GP20 | GP20 |
+| ILI9341 RST | `gpio.pin` | GPIO15 | GPIO1 | GP21 | GP21 |
 
 Pico 2 / Pico 2 W は Pico / Pico WH とヘッダのピン配置が同じなので、GP 番号も同じにしてある。
+
+ESP32-C5 は Waveshare ESP32-C5-WIFI6-KIT（ESP32-C5-WROOM-1）の回路図で決めた（2026-10-12）。
+**GPIO6 は基板上で電池電圧の分圧に 0Ω で繋がっている**ので使わない。GPIO27 は RGB LED
+（WS2812）、GPIO28 は BOOT ボタン、GPIO2/3/7/25/26 はストラッピングピンなので避けた。
+GPIO11/12 はトレースの UART0（CH343）、13/14 はネイティブ USB、15..=22 はフラッシュ /
+PSRAM で、ゲストに開放しない。
 
 `board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応（**配線表**）は、
 **ファームではなくデバイスの設定スロットに置く**（2026-10-07 オーナー決定。
@@ -332,12 +338,12 @@ Pico 2 / Pico 2 W は Pico / Pico WH とヘッダのピン配置が同じなの�
 
 評価構成（SHT40 + ILI9341）で使っている配線は `apps/*/wasmicon.toml` にある:
 
-| 役割名 | ESP32-S3 (DevKitC-1) | Raspberry Pi Pico 2 W | 使うアプリ |
-|---|---|---|---|
-| `lcd-cs` | GPIO10 | GP17 | lcd-demo / sensor-display |
-| `lcd-dc` | GPIO14 | GP20 | 同上 |
-| `lcd-rst` | GPIO15 | GP21 | 同上 |
-| `led` | GPIO2（外付け） | GP15（外付け） | blink |
+| 役割名 | ESP32-S3 (DevKitC-1) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico 2 W | 使うアプリ |
+|---|---|---|---|---|
+| `lcd-cs` | GPIO10 | GPIO10 | GP17 | lcd-demo / sensor-display |
+| `lcd-dc` | GPIO14 | GPIO0 | GP20 | 同上 |
+| `lcd-rst` | GPIO15 | GPIO1 | GP21 | 同上 |
+| `led` | GPIO2（外付け） | GPIO4（外付け。基板上に 10 kΩ のプルアップ） | GP15（外付け） | blink |
 
 `led` は blink が引く名前の 1 つにすぎない（ファームにとって特別ではない）。
 どのボードもオンボード LED が素の GPIO ではないので外付けを充てている

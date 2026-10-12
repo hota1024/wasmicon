@@ -10,7 +10,7 @@ members = [
 # ターゲット / toolchain / profile が異なるものは別 workspace にする（docs/handoff.md §3 #9）。
 # bindings/rust は guest workspace の root、apps/*-rs は Phase 3 でそこに加わる。
 # ports/rp2040 と ports/esp32s3 は Phase 4 で作る。
-exclude = ["bindings/rust", "apps", "ports/rp2040", "ports/esp32s3"]
+exclude = ["bindings/rust", "apps", "ports/rp2040", "ports/esp32s3", "ports/esp32c5"]
 
 [workspace.package]
 version = "0.1.0"
