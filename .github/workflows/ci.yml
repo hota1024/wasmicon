@@ -62,9 +62,9 @@ jobs:
       - run: sh tools/check-english.sh
       - run: sh tools/check-citations.sh
       # The runtime core has no dependency crates (docs/decisions.md D-11).
-      - run: test "$(cargo tree -p wasmicon-core --edges normal --depth 1       # Rustdoc builds without warnings (broken intra-doc links are warnings).
+      - run: test "$(cargo tree -p wasmicon-core --edges normal --depth 1 | wc -l)" -eq 1
+      # Rustdoc builds without warnings (broken intra-doc links are warnings).
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
-| wc -l)" -eq 1
       # Self-test of the trace-diff script's normalization.
       - run: sh verify/diff-traces.sh --self-test
 
