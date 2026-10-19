@@ -1,3 +1,18 @@
+# CI: six jobs, one per Cargo workspace that can be built on a stock Linux runner.
+#
+#   root          runtime core, generator, host port (fmt, clippy, tests, generated-file
+#                 and signature checks, trace-diff self-test)
+#   guest         bindings and apps for wasm32-unknown-unknown
+#   rp2040        ports/rp2040 builds for thumbv6m (build-only; no hardware in CI)
+#   rp2350        ports/rp2350 builds for thumbv8m (build-only)
+#   esp32c5       ports/esp32c5 builds for riscv32imac (build-only)
+#   differential  wasmicon-core vs. wasmtime on the same .wasm
+#
+# ESP32-S3 has no job: it needs the Xtensa toolchain that espup installs, which is not
+# available on the runner. Check it locally with
+#   sh ports/esp32s3/build.sh clippy --release -- -D warnings
+#   sh ports/esp32s3/build.sh clippy --release --features hw-probe -- -D warnings
+# (the second keeps src/probe.rs, used only for hardware triage, from rotting).
 name: ci
 
 on:
@@ -7,14 +22,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# runner は ubuntu-24.04 に固定する（2026-10-08）。ubuntu-latest は 2026-10-19 から
-# Ubuntu 26 に移るので、rust-toolchain.toml と同じく勝手に変わらないようにする。
-# actions は Node.js 24 で動く v5 を使う（v4 は Node.js 20 向けで非推奨）。
+# The runner is pinned to ubuntu-24.04 (2026-10-08). ubuntu-latest moves to Ubuntu 26 on
+# 2026-10-19; like rust-toolchain.toml, the runner must not change under us.
+# The actions are the v5 releases, which run on Node.js 24 (v4 targets Node.js 20, deprecated).
 
 jobs:
-  # root workspace: ランタイムコア、ジェネレータ、host ポート
-  # host ポートのテストは apps/ のゲストをビルドして動かすので、
-  # Rust の wasm32 ターゲットと AssemblyScript と clang もここで要る。
+  # root workspace: runtime core, generator, host port.
+  # The host-port tests build and run the guests under apps/, so the Rust wasm32 target,
+  # AssemblyScript and clang are needed here too.
   root:
     runs-on: ubuntu-24.04
     steps:
@@ -23,30 +38,30 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      # ports/host のテストが apps/ のゲストをビルドするので必要。
-      # 入れ子の cargo には rust-toolchain.toml が効かない場合があるため明示する。
+      # Needed because the ports/host tests build the guests under apps/.
+      # rust-toolchain.toml does not always reach a nested cargo, so add the target explicitly.
       - run: rustup target add wasm32-unknown-unknown
-      # ports/host のテストが apps/blink-c を bindings/c/build.sh でビルドするので必要。
-      # clang の wasm32 ターゲットと wasm-ld（lld）を使う。
+      # Needed because the ports/host tests build apps/blink-c through bindings/c/build.sh,
+      # which uses clang's wasm32 target and wasm-ld (lld).
       - run: sudo apt-get update && sudo apt-get install -y clang lld
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # wasm-tools は check-sigs.sh、spec テスト、ゲストの機能検査が使う
+      # wasm-tools is used by check-sigs.sh, the spec tests and the guest feature check.
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-tools
-      # spec testsuite（固定 SHA）。runtime/tests/spec.rs が使う
+      # The spec testsuite (pinned SHA); runtime/tests/spec.rs uses it.
       - run: sh tools/fetch-testsuite.sh
-      # 生成物の diff ゼロ検査（Phase 1）、spec テスト（Phase 2）、
-      # blink と sensor-display の Rust 版 / AS 版のトレース一致（Phase 3 / 5）を含む
+      # Includes the generated-file diff check, the spec tests, and the trace-equality
+      # tests of the Rust and AS versions of blink and sensor-display.
       - run: cargo test
       - run: cargo run -p wasmicon-gen -- --check
-      # 参照実装 tools/wit2sig.py との突き合わせ（docs/handoff.md §5 Phase 1）
+      # Cross-checks the generated signatures against the reference tools/wit2sig.py.
       - run: sh tools/check-sigs.sh
-      # トレース diff スクリプトの正規化（docs/handoff.md §5 Phase 6 の (2)）
+      # Self-test of the trace-diff script's normalization.
       - run: sh verify/diff-traces.sh --self-test
 
-  # guest workspace: wasm32-unknown-unknown 向けのバインディングとアプリ
+  # guest workspace: bindings and apps for wasm32-unknown-unknown.
   guest:
     runs-on: ubuntu-24.04
     defaults:
@@ -58,7 +73,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --release
 
-  # RP2040 ポート。thumbv6m のビルドが通ることだけを見る（実機は回せない）。
+  # RP2040 port. Only checks that the thumbv6m build passes (no hardware in CI).
   rp2040:
     runs-on: ubuntu-24.04
     defaults:
@@ -67,13 +82,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup target add thumbv6m-none-eabi
-      # ファームにアプリは入っていない（docs/app-workflow.md §3.3）ので、
-      # apps/ を先にビルドする必要は無い。
+      # The firmware contains no app (docs/app-workflow.md §3.3), so apps/ need not be
+      # built first.
       - run: cargo fmt --check
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
 
-  # RP2350 ポート。thumbv8m のビルドが通ることだけを見る（実機は回せない）。
+  # RP2350 port. Only checks that the thumbv8m build passes (no hardware in CI).
   rp2350:
     runs-on: ubuntu-24.04
     defaults:
@@ -82,14 +97,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup target add thumbv8m.main-none-eabihf
-      # ファームにアプリは入っていない（docs/app-workflow.md §3.3）ので、
-      # apps/ を先にビルドする必要は無い。
+      # The firmware contains no app (docs/app-workflow.md §3.3), so apps/ need not be
+      # built first.
       - run: cargo fmt --check
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
 
-  # ESP32-C5 ポート。RISC-V なので upstream の Rust で組める（espup は要らない）。
-  # riscv32imac のビルドが通ることだけを見る（実機は回せない）。
+  # ESP32-C5 port. RISC-V, so upstream Rust builds it (no espup needed).
+  # Only checks that the riscv32imac build passes (no hardware in CI).
   esp32c5:
     runs-on: ubuntu-24.04
     defaults:
@@ -98,20 +113,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup target add riscv32imac-unknown-none-elf
-      # ファームにアプリは入っていない（docs/app-workflow.md §3.3）ので、
-      # apps/ を先にビルドする必要は無い。
+      # The firmware contains no app (docs/app-workflow.md §3.3), so apps/ need not be
+      # built first.
       - run: cargo fmt --check
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
 
-  # ESP32-S3 は espup の Xtensa ツールチェーンが要るので CI では回さない。
-  # ローカルで次の 2 つを見る（rp2350 ジョブと同じ組み合わせ + 切り分け feature）:
-  #   sh ports/esp32s3/build.sh clippy --release -- -D warnings
-  #   sh ports/esp32s3/build.sh clippy --release --features hw-probe -- -D warnings
-  # 2 つ目は src/probe.rs（切り分け専用）が腐るのを防ぐためだけのもの。
+  # ESP32-S3 is not built in CI: it needs the Xtensa toolchain from espup.
+  # Check it locally with the two commands in the file header (the same combination as the
+  # rp2350 job, plus the hw-probe triage feature).
 
-  # wasmtime との差分テスト（docs/handoff.md §5 Phase 6 の (3)）。
-  # wasmtime は依存が大きいので別 workspace・別ジョブにしてある。
+  # Differential test against wasmtime: the same .wasm must produce the same trace in
+  # wasmicon-core and in wasmtime (docs/verification-report.md §2).
+  # wasmtime has a large dependency tree, so it lives in its own workspace and job.
   differential:
     runs-on: ubuntu-24.04
     steps:
