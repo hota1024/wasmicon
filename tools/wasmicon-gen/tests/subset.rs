@@ -1,10 +1,10 @@
-//! サブセット（`docs/abi-spec.md` §2.2）の外にある WIT を拒否することを検査する。
+//! Checks that WIT outside the subset of docs/abi-spec.md §2.2 is rejected.
 //!
-//! 通してしまうと、ランタイム・Rust・AS の 3 箇所で lowering がずれる。
+//! Letting it through would make the runtime, Rust and AS lowerings drift apart.
 
 use std::path::PathBuf;
 
-/// 一時ディレクトリに 1 ファイルの WIT を書いて lowering を試す。
+/// Writes a one-file WIT package to a temporary directory and tries to lower it.
 fn try_load(tag: &str, body: &str) -> anyhow::Result<wasmicon_gen::model::Hal> {
     let dir: PathBuf = std::env::temp_dir().join(format!("wasmicon-gen-subset-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -35,12 +35,12 @@ fn try_load(tag: &str, body: &str) -> anyhow::Result<wasmicon_gen::model::Hal> {
 
 fn assert_rejected(tag: &str, body: &str) {
     match try_load(tag, body) {
-        Ok(_) => panic!("{tag}: サブセット外の WIT が通ってしまった"),
+        Ok(_) => panic!("{tag}: WIT outside the subset was accepted"),
         Err(e) => {
             let msg = format!("{e:#}");
             assert!(
-                msg.contains("サブセット外") || msg.contains("未実装"),
-                "{tag}: 拒否はされたが理由が不明瞭: {msg}"
+                msg.contains("outside the WIT subset") || msg.contains("not implemented"),
+                "{tag}: rejected, but the reason is unclear: {msg}"
             );
         }
     }
@@ -56,17 +56,17 @@ fn accepts_the_subset() {
          \x20       recv: func(len: u32) -> result<list<u8>, error-code>;\n\
          \x20   }",
     )
-    .expect("サブセット内の WIT が通らない");
+    .expect("WIT inside the subset was rejected");
 }
 
-/// abi-spec §2.1 は flags を許可している。ジェネレータもそれに追随する。
+/// docs/abi-spec.md §2.1 allows flags; the generator follows.
 #[test]
 fn accepts_flags_and_emits_masks() {
     let hal = try_load(
         "flags",
         "    flags perm { read, write, exec }\n             f: func(p: perm) -> result<_, error-code>;",
     )
-    .expect("flags が通らない（abi-spec §2.1 は許可している）");
+    .expect("flags were rejected (docs/abi-spec.md §2.1 allows them)");
 
     let rs = wasmicon_gen::emit::runtime_rs(&hal);
     assert!(rs.contains("pub const Read: u32 = 1 << 0;"), "{rs}");
@@ -77,7 +77,7 @@ fn accepts_flags_and_emits_masks() {
     assert!(ts.contains("export const BadPermExec: u32 = 0x4;"), "{ts}");
     assert!(ts.contains("export const BadPermAll: u32 = 0x7;"), "{ts}");
 
-    // flags 引数は i32 1 つに落ちる（abi-spec §4.1）。
+    // A flags parameter lowers to a single i32 (docs/abi-spec.md §4.1).
     assert_eq!(
         wasmicon_gen::sig_dump(&hal)
             .trim_end()
@@ -87,7 +87,7 @@ fn accepts_flags_and_emits_masks() {
     );
 }
 
-/// abi-spec §3.3 は run を func() -> () と定めている。
+/// docs/abi-spec.md §3.3 defines run as func() -> ().
 #[test]
 fn rejects_run_with_wrong_signature() {
     let dir = std::env::temp_dir().join("wasmicon-gen-subset-run");
@@ -105,10 +105,10 @@ fn rejects_run_with_wrong_signature() {
     .unwrap();
     let r = wasmicon_gen::lower::load(&dir);
     let _ = std::fs::remove_dir_all(&dir);
-    let e = r.expect_err("run の型違いが通ってしまった");
+    let e = r.expect_err("run with the wrong signature was accepted");
     assert!(
         format!("{e:#}").contains("func() -> ()"),
-        "拒否理由が不明瞭: {e:#}"
+        "the reason for rejection is unclear: {e:#}"
     );
 }
 

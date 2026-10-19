@@ -1,6 +1,6 @@
 [package]
 name = "wasmicon-gen"
-description = "wit/ から runtime / bindings の生成物を出力するジェネレータ"
+description = "Generates the runtime import table and the guest bindings from wit/"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

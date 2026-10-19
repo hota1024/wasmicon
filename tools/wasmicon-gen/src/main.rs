@@ -1,28 +1,28 @@
-//! `wit/` を読み、`docs/abi-spec.md` の規則で生成物を出力する（docs/handoff.md §5 Phase 1）。
+//! Writes the generated files from `wit/` by the rules of `docs/abi-spec.md`.
 //!
-//! 出力:
+//! Outputs:
 //! - `runtime/src/generated.rs`
 //! - `bindings/rust/src/generated.rs`
 //! - `bindings/assemblyscript/assembly/generated.ts`
 //! - `bindings/c/generated.h`
 //!
-//! サブセット（abi-spec §2）外の WIT 構文はエラーで拒否する。
+//! WIT syntax outside the subset of docs/abi-spec.md §2 is rejected with an error.
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use wasmicon_gen::{lower, outputs, sig_dump};
 
 const USAGE: &str = "\
-wasmicon-gen — wit/ から runtime / bindings の生成物を出力する
+wasmicon-gen - writes the generated files of runtime/ and bindings/ from wit/
 
-使い方:
-    cargo run -p wasmicon-gen -- [オプション]
+Usage:
+    cargo run -p wasmicon-gen -- [options]
 
-オプション:
-    --root <dir>   リポジトリのルート（既定: カレントディレクトリ）
-    --check        書き込まず、生成物が最新かどうかだけ検査する（古ければ終了コード 1）
-    --sigs         シグネチャ表を stdout に出す（tools/check-sigs.sh が使う）
-    -h, --help     このヘルプ
+Options:
+    --root <dir>   repository root (default: the current directory)
+    --check        write nothing; exit 1 if a generated file is out of date
+    --sigs         print the signature table to stdout (used by tools/check-sigs.sh)
+    -h, --help     show this help
 ";
 
 fn main() -> Result<()> {
@@ -33,14 +33,14 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--root" => root = PathBuf::from(args.next().context("--root に値が無い")?),
+            "--root" => root = PathBuf::from(args.next().context("`--root` needs a value")?),
             "--check" => check = true,
             "--sigs" => sigs = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return Ok(());
             }
-            other => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => bail!("unknown option `{other}`\n\n{USAGE}"),
         }
     }
 
@@ -60,25 +60,25 @@ fn main() -> Result<()> {
             .collect();
         if !stale.is_empty() {
             for p in &stale {
-                eprintln!("生成物が wit/ と一致しない: {}", p.display());
+                eprintln!("out of date: {}", p.display());
             }
             bail!(
-                "`cargo run -p wasmicon-gen` で再生成すること（{} 件）",
+                "{} generated file(s) out of date; run `cargo run -p wasmicon-gen`",
                 stale.len()
             );
         }
-        println!("生成物は最新（{} ファイル）", outputs.len());
+        println!("generated files are up to date ({} files)", outputs.len());
         return Ok(());
     }
 
     for o in &outputs {
         if let Some(dir) = o.path.parent() {
             std::fs::create_dir_all(dir)
-                .with_context(|| format!("{} を作れない", dir.display()))?;
+                .with_context(|| format!("cannot create `{}`", dir.display()))?;
         }
         std::fs::write(&o.path, &o.contents)
-            .with_context(|| format!("{} を書けない", o.path.display()))?;
-        println!("生成: {}", o.path.display());
+            .with_context(|| format!("cannot write `{}`", o.path.display()))?;
+        println!("wrote {}", o.path.display());
     }
     Ok(())
 }

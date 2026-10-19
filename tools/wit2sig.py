@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Wasmicon ジェネレータの種。
-`wasm-tools component wit --json wit/` の出力から、abi-spec.md §4 の規則で
-Core Wasm の import シグネチャを導出して表示する。
-abi-spec.md §7 の表と一致することが検証済み (2026-09-10)。
+"""Reference derivation of the Core Wasm import signatures.
 
-使い方:
+Reads the output of `wasm-tools component wit --json wit/` and derives the
+signature of every import by the rules of docs/abi-spec.md §4. The result must
+match the table of docs/abi-spec.md §7; tools/check-sigs.sh cross-checks it
+against wasmicon-gen.
+
+Usage:
     wasm-tools component wit --json wit > /tmp/hal.json
     python3 tools/wit2sig.py /tmp/hal.json
 
-sig 表記: params:results, i=i32 I=i64 f=f32 F=f64
+Notation: params:results, i=i32 I=i64 f=f32 F=f64
 """
 import json, sys
 
@@ -22,7 +24,7 @@ SCALAR = {'bool': 'i', 'u8': 'i', 'u16': 'i', 'u32': 'i', 's32': 'i',
           'u64': 'I', 's64': 'I', 'f32': 'f', 'f64': 'F', 'string': 'ii'}
 
 def flat(t):
-    """引数位置の lowering (abi-spec §4.1, §4.2)"""
+    """Lowers one parameter (docs/abi-spec.md §4.1, §4.2)."""
     if isinstance(t, str):
         return SCALAR[t]
     k = kind(t)
@@ -32,14 +34,14 @@ def flat(t):
     if key in ('enum', 'flags', 'handle', 'own', 'borrow'):
         return 'i'
     if key == 'list':
-        assert k['list'] == 'u8', 'list<u8> 以外は未対応'
+        assert k['list'] == 'u8', 'only list<u8> is supported'
         return 'ii'
     if key == 'type':
         return flat(k['type'])
-    raise SystemExit(f'未対応の型: {k}')
+    raise SystemExit(f'unsupported type: {k}')
 
 def outp(t):
-    """result<T,_> の T を out ポインタに落とす (abi-spec §4.4)"""
+    """Lowers the T of result<T,_> to an out-pointer (docs/abi-spec.md §4.4)."""
     if not isinstance(t, str) and 'list' in kind(t):
         return 'iii'  # buf, cap, len-out
     return 'i'

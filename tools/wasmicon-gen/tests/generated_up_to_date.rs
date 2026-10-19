@@ -1,7 +1,7 @@
-//! コミット済みの生成物が `wit/` と一致することを検査する。
+//! Checks that the committed generated files match `wit/`.
 //!
-//! docs/handoff.md §5 Phase 1 の完了条件「CI で WIT 変更時に再生成して diff がゼロ」に対応する。
-//! `cargo run -p wasmicon-gen -- --check` と同じ検査をテストとして回す。
+//! Locks in that a WIT change is never committed without regenerating: the same check
+//! as `cargo run -p wasmicon-gen -- --check`, run as a test.
 
 use std::path::{Path, PathBuf};
 
@@ -9,22 +9,22 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
 #[test]
 fn committed_outputs_match_wit() {
     let root = repo_root();
-    let outputs = wasmicon_gen::outputs(&root).expect("生成に失敗した");
-    assert_eq!(outputs.len(), 4, "生成物は 4 ファイル");
+    let outputs = wasmicon_gen::outputs(&root).expect("generation failed");
+    assert_eq!(outputs.len(), 4, "expected 4 generated files");
 
     for o in &outputs {
         let on_disk = std::fs::read_to_string(&o.path)
-            .unwrap_or_else(|e| panic!("{} を読めない: {e}", o.path.display()));
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", o.path.display()));
         assert_eq!(
             on_disk,
             o.contents,
-            "{} が wit/ と一致しない。`cargo run -p wasmicon-gen` で再生成すること",
+            "{} does not match wit/; run `cargo run -p wasmicon-gen`",
             o.path.display()
         );
     }

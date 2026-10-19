@@ -1,6 +1,6 @@
-//! `wit/` を読み、`docs/abi-spec.md` の規則で生成物を組み立てるライブラリ。
+//! Reads `wit/` and builds the generated files by the rules of `docs/abi-spec.md`.
 //!
-//! CLI は `src/main.rs`。テストからも同じ経路を使えるようにここに置く。
+//! The CLI is `src/main.rs`; the logic lives here so that tests use the same path.
 
 pub mod emit;
 pub mod lower;
@@ -9,13 +9,13 @@ pub mod model;
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 
-/// 生成物 1 ファイル。
+/// One generated file.
 pub struct Output {
     pub path: PathBuf,
     pub contents: String,
 }
 
-/// リポジトリルートから 4 つの生成物を組み立てる。
+/// Builds the four generated files from the repository root.
 pub fn outputs(root: &Path) -> Result<Vec<Output>> {
     let hal = lower::load(&root.join("wit"))?;
     Ok(vec![
@@ -38,8 +38,8 @@ pub fn outputs(root: &Path) -> Result<Vec<Output>> {
     ])
 }
 
-/// `module\tname\tsig` を辞書順に並べたもの。`tools/check-sigs.sh` が
-/// `tools/wit2sig.py` の出力と突き合わせる。
+/// `module\tname\tsig` lines in sorted order. `tools/check-sigs.sh` cross-checks
+/// them against the output of `tools/wit2sig.py`.
 pub fn sig_dump(hal: &model::Hal) -> String {
     let mut lines: Vec<String> = hal
         .imports()
@@ -49,16 +49,18 @@ pub fn sig_dump(hal: &model::Hal) -> String {
     lines.join("\n") + "\n"
 }
 
-/// 生成した Rust を rustfmt に通す。`cargo fmt --check` と生成物の diff ゼロ検査を
-/// 同時に満たすために必須（rustfmt は rust-toolchain.toml で保証されている）。
+/// Runs rustfmt over generated Rust. Required so that `cargo fmt --check` and the
+/// zero-diff check of the generated files hold at the same time (rust-toolchain.toml
+/// guarantees that rustfmt is installed).
 ///
-/// rustfmt は設定ファイルを「整形対象のファイルが置かれた場所」から上に向かって探す。
-/// 一時ディレクトリに置くとリポジトリの `rustfmt.toml` が効かず `cargo fmt` と
-/// 食い違うので、`root/target/`（.gitignore 済み）の下で整形して探索させる。
-/// `--config-path` にディレクトリを渡す方法は、設定ファイルが無いとエラーになるため使わない。
+/// rustfmt looks for its config file upward from the directory of the file it formats.
+/// A file in a temporary directory would miss the repository's `rustfmt.toml` and disagree
+/// with `cargo fmt`, so the file is formatted under `root/target/` (gitignored) instead.
+/// Passing a directory to `--config-path` is not used because it errors when no config
+/// file exists.
 pub fn rustfmt(root: &Path, src: &str) -> Result<String> {
     let dir = root.join("target/wasmicon-gen");
-    std::fs::create_dir_all(&dir).with_context(|| format!("{} を作れない", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create `{}`", dir.display()))?;
     let path = dir.join(format!("fmt-{}-{:p}.rs", std::process::id(), src.as_ptr()));
     std::fs::write(&path, src)?;
 
@@ -72,7 +74,7 @@ fn run_rustfmt(path: &Path) -> Result<()> {
         .args(["--edition", "2024", "--quiet"])
         .arg(path)
         .status()
-        .context("rustfmt を起動できない（rust-toolchain.toml の components を確認）")?;
-    ensure!(status.success(), "rustfmt が失敗した: {}", path.display());
+        .context("cannot run rustfmt (check the components in rust-toolchain.toml)")?;
+    ensure!(status.success(), "rustfmt failed on `{}`", path.display());
     Ok(())
 }

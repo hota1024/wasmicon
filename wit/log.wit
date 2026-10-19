@@ -1,6 +1,6 @@
 package wasmicon:hal@0.1.0;
 
-/// デバッグ出力。ホストは通常シリアルコンソールへ出力する。
+/// Debug output. The host usually writes it to the serial console.
 interface log {
     enum level {
         error,
@@ -9,6 +9,6 @@ interface log {
         debug,
     }
 
-    /// message は UTF-8。改行はホストが付加する。
+    /// `message` is UTF-8. The host appends the newline.
     log: func(level: level, message: string);
 }

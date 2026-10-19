@@ -1,13 +1,13 @@
 package wasmicon:hal@0.1.0;
 
-/// 時間。
+/// Monotonic time and blocking delays.
 interface time {
-    /// 起動からの単調増加マイクロ秒。ラップアラウンドは考慮しなくてよい（u64）。
+    /// Monotonic microseconds since boot. The u64 does not wrap in practice.
     now-us: func() -> u64;
 
-    /// ms ミリ秒ブロッキング待機。
+    /// Blocks for `ms` milliseconds.
     sleep-ms: func(ms: u32);
 
-    /// us マイクロ秒ブロッキング待機。ホストの分解能に依存する。
+    /// Blocks for `us` microseconds. The accuracy depends on the host's timer resolution.
     sleep-us: func(us: u32);
 }

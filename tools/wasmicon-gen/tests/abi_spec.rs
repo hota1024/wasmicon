@@ -1,7 +1,7 @@
-//! ジェネレータの導出結果が `docs/abi-spec.md` §7 の正規表と一致することを検査する。
+//! Checks that the generator's derivation matches the normative table of docs/abi-spec.md §7.
 //!
-//! §7 が正なので、期待値は WIT からではなく仕様書から転記する。
-//! ここが落ちたら、WIT か lowering 規則か仕様書のどれかがずれている。
+//! The table is normative, so the expected values are copied from the spec, not from the WIT.
+//! A failure here means the WIT, the lowering rules or the spec drifted apart.
 
 use std::path::{Path, PathBuf};
 
@@ -9,11 +9,11 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
-/// abi-spec §7「v0.1 import 一覧（正規表）」からの転記。
-/// sig 表記: `params:results`、`i`=i32 `I`=i64 `f`=f32 `F`=f64。
+/// Copied from the v0.1 import table of docs/abi-spec.md §7.
+/// Signature notation: `params:results`, `i` = i32, `I` = i64, `f` = f32, `F` = f64.
 const SPEC_SECTION_7: &[(&str, &str, &str)] = &[
     // wasmicon:hal/gpio@0.1.0
     ("wasmicon:hal/gpio@0.1.0", "[static]pin.open", "iii:i"),
@@ -47,7 +47,7 @@ const SPEC_SECTION_7: &[(&str, &str, &str)] = &[
     ("wasmicon:hal/board@0.1.0", "pin-by-role", "iii:i"),
 ];
 
-/// abi-spec §7 の error-code の表。ステータス値は discriminant + 1。
+/// The `error-code` table of docs/abi-spec.md §7. The status value is discriminant + 1.
 const SPEC_ERROR_CODE: &[&str] = &[
     "InvalidArgument",
     "InvalidHandle",
@@ -61,7 +61,7 @@ const SPEC_ERROR_CODE: &[&str] = &[
 
 #[test]
 fn import_table_matches_abi_spec_section_7() {
-    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("wit/ を読めない");
+    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("cannot read wit/");
 
     let mut expected: Vec<String> = SPEC_SECTION_7
         .iter()
@@ -74,38 +74,41 @@ fn import_table_matches_abi_spec_section_7() {
         .map(str::to_string)
         .collect();
 
-    assert_eq!(expected, actual, "abi-spec §7 の表と一致しない");
+    assert_eq!(
+        expected, actual,
+        "does not match the table of docs/abi-spec.md §7"
+    );
 }
 
 #[test]
 fn error_code_discriminants_match_abi_spec_section_7() {
-    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("wit/ を読めない");
+    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("cannot read wit/");
     let types = hal
         .interfaces
         .iter()
         .find(|i| i.name == "types")
-        .expect("interface types が無い");
+        .expect("interface types is missing");
     let ec = types
         .enums
         .iter()
         .find(|e| e.wit_name == "error-code")
-        .expect("error-code が無い");
+        .expect("error-code is missing");
 
     let actual: Vec<&str> = ec.cases.iter().map(|c| c.ident.as_str()).collect();
     assert_eq!(
         SPEC_ERROR_CODE,
         actual.as_slice(),
-        "error-code の並びが違う"
+        "error-code cases are in the wrong order"
     );
 }
 
 #[test]
 fn interfaces_follow_world_import_order() {
-    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("wit/ を読めない");
+    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("cannot read wit/");
     let names: Vec<&str> = hal.interfaces.iter().map(|i| i.name.as_str()).collect();
     assert_eq!(
         names,
         ["types", "gpio", "i2c", "spi", "time", "log", "board"],
-        "world app の import 宣言順と一致しない"
+        "does not follow the import order of world app"
     );
 }

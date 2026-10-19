@@ -1,16 +1,17 @@
 package wasmicon:hal@0.1.0;
 
-/// ボード固有のピン割り当てを役割名で引く。
-/// 同一の Wasm バイナリを複数のボードで動かすために必要
-/// （docs/handoff.md §3 #2、abi-spec §8）。
+/// Board-specific pin assignment, looked up by role name.
+/// Lets the same Wasm binary run on several boards
+/// (docs/app-workflow.md §3.9, docs/abi-spec.md §8).
 interface board {
     use types.{error-code};
 
-    /// 役割名から GPIO 番号を引く。
-    /// そのボードに割り当てが無ければ unsupported を返す。
+    /// Looks up the GPIO number of a role name.
+    /// Returns `unsupported` if the board has no assignment for the role.
     ///
-    /// 役割名はファームの語彙ではなく、アプリと配線の間の約束。
-    /// 英小文字で始まる 16 文字までの a-z / 0-9 / -。割り当ては
-    /// デバイスの設定スロットにある配線表で決まる（abi-spec §8）。
+    /// Role names are not a firmware vocabulary; they are a contract between the app
+    /// and its wiring. A role name starts with a lowercase letter and is at most
+    /// 16 characters of a-z, 0-9 and `-`. The assignment comes from the wiring table
+    /// in the device's config slot (docs/abi-spec.md §8).
     pin-by-role: func(role: string) -> result<u32, error-code>;
 }

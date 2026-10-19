@@ -1,8 +1,9 @@
 #!/bin/sh
-# 参照実装 tools/wit2sig.py と wasmicon-gen のシグネチャ導出が一致することを確認する。
-# docs/handoff.md §5 Phase 1「まず wit2sig.py の出力と一致することをテストにする」に対応。
+# Cross-checks the signature derivation of wasmicon-gen against the reference
+# implementation tools/wit2sig.py.
 #
-# 必要: wasm-tools, python3, cargo
+# Requires: wasm-tools, python3, cargo
+# Usage: sh tools/check-sigs.sh
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -11,7 +12,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 wasm-tools component wit --json "$root/wit" > "$tmp/hal.json"
 
-# wit2sig.py の出力を module<TAB>name<TAB>sig に正規化する。
+# Normalize the wit2sig.py output to module<TAB>name<TAB>sig.
 python3 "$root/tools/wit2sig.py" "$tmp/hal.json" | awk '
   /^--- / { mod = $2; next }
   NF >= 2 { print mod "\t" $1 "\t" $2 }
@@ -20,8 +21,8 @@ python3 "$root/tools/wit2sig.py" "$tmp/hal.json" | awk '
 (cd "$root" && cargo run -q -p wasmicon-gen -- --sigs) | sort > "$tmp/gen.txt"
 
 if diff -u "$tmp/ref.txt" "$tmp/gen.txt"; then
-    echo "一致: $(wc -l < "$tmp/gen.txt" | tr -d ' ') imports"
+    echo "match: $(wc -l < "$tmp/gen.txt" | tr -d ' ') imports"
 else
-    echo "不一致: wit2sig.py と wasmicon-gen の導出が違う" >&2
+    echo "mismatch: wit2sig.py and wasmicon-gen derive different signatures" >&2
     exit 1
 fi

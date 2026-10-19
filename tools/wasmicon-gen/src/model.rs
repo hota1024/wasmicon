@@ -1,9 +1,9 @@
-//! ABI のモデル。`docs/abi-spec.md` の lowering 規則を適用した結果を保持する。
+//! The ABI model: the result of applying the lowering rules of `docs/abi-spec.md`.
 //!
-//! WIT の型はここで「Core Wasm の引数列」まで落ちきっており、
-//! 各エミッタは言語ごとの表記に変換するだけでよい。
+//! WIT types are already lowered to Core Wasm parameter lists here, so each
+//! emitter only translates them into the notation of its language.
 
-/// Core Wasm の値型。
+/// Core Wasm value type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmTy {
     I32,
@@ -13,7 +13,7 @@ pub enum WasmTy {
 }
 
 impl WasmTy {
-    /// `tools/wit2sig.py` と同じシグネチャ表記の 1 文字。
+    /// One character of the signature notation shared with `tools/wit2sig.py`.
     pub fn sig_char(self) -> char {
         match self {
             WasmTy::I32 => 'i',
@@ -24,7 +24,7 @@ impl WasmTy {
     }
 }
 
-/// abi-spec §4.1 のスカラー。`enum` / `flags` は WIT 上の型名を持つ。
+/// Scalar of docs/abi-spec.md §4.1. `Enum` and `Flags` carry the WIT type name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scalar {
     Bool,
@@ -50,7 +50,7 @@ impl Scalar {
         }
     }
 
-    /// バインディングの extern 宣言で使う Rust 型。enum / flags は生の `u32`。
+    /// Rust type in the binding's extern declaration. Enums and flags are a raw `u32`.
     pub fn rust(&self) -> &'static str {
         match self {
             Scalar::S32 => "i32",
@@ -62,12 +62,12 @@ impl Scalar {
         }
     }
 
-    /// AssemblyScript 型。
+    /// AssemblyScript type.
     pub fn assemblyscript(&self) -> &'static str {
         self.rust()
     }
 
-    /// C 型。enum / flags は Rust と同じく生の `uint32_t`。
+    /// C type. Enums and flags are a raw `uint32_t`, as in Rust.
     pub fn c(&self) -> &'static str {
         match self {
             Scalar::S32 => "int32_t",
@@ -80,36 +80,36 @@ impl Scalar {
     }
 }
 
-/// Core Wasm の引数 1 つが何を表すか。abi-spec §4.2 / §4.4。
+/// What one Core Wasm parameter stands for (docs/abi-spec.md §4.2, §4.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
-    /// resource ハンドル（`self` を含む）。
+    /// Resource handle, including `self`.
     Handle,
-    /// スカラー・enum・flags。
+    /// Scalar, enum or flags.
     Scalar(Scalar),
-    /// `list<u8>` 引数のポインタ。
+    /// Pointer of a `list<u8>` parameter.
     DataPtr,
-    /// `string` 引数のポインタ。Core Wasm 上は `DataPtr` と同じで、
-    /// C バインディングが `const char *` にするためだけに分けてある。
+    /// Pointer of a `string` parameter. Identical to `DataPtr` in Core Wasm; kept apart
+    /// only so that the C binding can declare it as `const char *`.
     StrPtr,
-    /// `list<u8>` / `string` 引数の長さ。
+    /// Length of a `list<u8>` or `string` parameter.
     DataLen,
-    /// `result<T,_>` の T が スカラー・enum・flags のときの out ポインタ。
+    /// Out-pointer for the `T` of `result<T, _>` when `T` is a scalar, enum or flags.
     OutScalar(Scalar),
-    /// `result<T,_>` の T が resource ハンドルのときの out ポインタ。
+    /// Out-pointer for the `T` of `result<T, _>` when `T` is a resource handle.
     OutHandle,
-    /// `result<list<u8>,_>` の書き込み先バッファ。
+    /// Destination buffer of a `result<list<u8>, _>`.
     OutBuf,
-    /// `result<list<u8>,_>` のバッファ容量。
+    /// Buffer capacity of a `result<list<u8>, _>`.
     OutCap,
-    /// `result<list<u8>,_>` の書き込みバイト数の out ポインタ。
+    /// Out-pointer for the number of bytes written of a `result<list<u8>, _>`.
     OutLen,
 }
 
-/// lowering 済みの引数 1 つ。
+/// One lowered parameter.
 #[derive(Debug, Clone)]
 pub struct Param {
-    /// kebab-case の論理名（`self`, `data-ptr`, `len-out` など）。
+    /// Logical name in kebab-case (`self`, `data-ptr`, `len-out`, ...).
     pub name: String,
     pub role: Role,
 }
@@ -122,7 +122,7 @@ impl Param {
         }
     }
 
-    /// バインディングの extern 宣言で使う Rust 型。
+    /// Rust type in the binding's extern declaration.
     pub fn rust(&self) -> String {
         match &self.role {
             Role::Handle | Role::DataLen | Role::OutCap => "u32".to_string(),
@@ -134,7 +134,7 @@ impl Param {
         }
     }
 
-    /// AssemblyScript 型。ポインタは全て `usize`。
+    /// AssemblyScript type. Every pointer is a `usize`.
     pub fn assemblyscript(&self) -> String {
         match &self.role {
             Role::Handle | Role::DataLen | Role::OutCap => "u32".to_string(),
@@ -148,7 +148,7 @@ impl Param {
         }
     }
 
-    /// C 型。ポインタは Wasm32 なので i32 に落ちる。
+    /// C type. Pointers lower to i32 because the target is wasm32.
     pub fn c(&self) -> String {
         match &self.role {
             Role::Handle | Role::DataLen | Role::OutCap => "uint32_t".to_string(),
@@ -162,14 +162,14 @@ impl Param {
     }
 }
 
-/// 関数の戻り値。
+/// Return value of a function.
 #[derive(Debug, Clone)]
 pub enum Ret {
-    /// 戻り値なし。
+    /// No return value.
     None,
-    /// abi-spec §4.4 の単一 i32 ステータス。
+    /// The single i32 status of docs/abi-spec.md §4.4.
     Status,
-    /// `result` を経由しないスカラー戻り値。
+    /// A scalar returned without a `result`.
     Scalar(Scalar),
 }
 
@@ -199,24 +199,24 @@ impl Ret {
     }
 }
 
-/// Core Wasm の import 1 つ。
+/// One Core Wasm import.
 #[derive(Debug, Clone)]
 pub struct Import {
-    /// import フィールド名（`[static]pin.open` など。abi-spec §3.2）。
+    /// Import field name, such as `[static]pin.open` (docs/abi-spec.md §3.2).
     pub name: String,
     pub docs: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Ret,
-    /// `wasmicon-core` 側のスロット識別子（`GpioPinOpen`）。
+    /// Slot identifier on the `wasmicon-core` side (`GpioPinOpen`).
     pub slot: String,
-    /// Rust バインディングの関数名（`pin_open`）。
+    /// Function name in the Rust binding (`pin_open`).
     pub rust_name: String,
-    /// AssemblyScript バインディングの関数名（`gpio_pin_open`）。
+    /// Function name in the AssemblyScript binding (`gpio_pin_open`).
     pub as_name: String,
 }
 
 impl Import {
-    /// `tools/wit2sig.py` と同じ `params:results` 表記。
+    /// The `params:results` notation shared with `tools/wit2sig.py`.
     pub fn sig(&self) -> String {
         let mut s: String = self.params.iter().map(|p| p.wasm().sig_char()).collect();
         s.push(':');
@@ -227,58 +227,59 @@ impl Import {
     }
 }
 
-/// enum のケース。
+/// One enum case.
 #[derive(Debug, Clone)]
 pub struct EnumCase {
     pub docs: Vec<String>,
-    /// WIT 上の名前（`input-pull-up`）。C の定数名に使う。
+    /// WIT name (`input-pull-up`), used for the C constant name.
     pub wit_name: String,
-    /// PascalCase（Rust / AssemblyScript 共通）。
+    /// PascalCase identifier, shared by Rust and AssemblyScript.
     pub ident: String,
 }
 
-/// enum 定義。
+/// One enum definition.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub docs: Vec<String>,
-    /// WIT 上の名前（`pin-mode`）。
+    /// WIT name (`pin-mode`).
     pub wit_name: String,
-    /// Rust の型名（`PinMode`）。
+    /// Rust type name (`PinMode`).
     pub rust_name: String,
-    /// AssemblyScript の型名（`GpioPinMode`）。インターフェース名で前置する。
+    /// AssemblyScript type name (`GpioPinMode`), prefixed with the interface name.
     pub as_name: String,
     pub cases: Vec<EnumCase>,
 }
 
-/// flags の 1 ビット。
+/// One bit of a flags type.
 #[derive(Debug, Clone)]
 pub struct FlagBit {
     pub docs: Vec<String>,
-    /// WIT 上の名前。C の定数名に使う。
+    /// WIT name, used for the C constant name.
     pub wit_name: String,
-    /// PascalCase（Rust / AssemblyScript 共通）。
+    /// PascalCase identifier, shared by Rust and AssemblyScript.
     pub ident: String,
 }
 
-/// flags 定義。abi-spec §4.1 により宣言順にビット 0 から割り当てる。
+/// One flags definition. Bits are assigned from bit 0 in declaration order
+/// (docs/abi-spec.md §4.1).
 #[derive(Debug, Clone)]
 pub struct FlagsDef {
     pub docs: Vec<String>,
-    /// WIT 上の名前。
+    /// WIT name.
     pub wit_name: String,
-    /// Rust の型名。
+    /// Rust type name.
     pub rust_name: String,
-    /// AssemblyScript の定数名の前置。
+    /// Prefix of the AssemblyScript constant names.
     pub as_name: String,
     pub bits: Vec<FlagBit>,
 }
 
-/// 1 インターフェース。
+/// One interface.
 #[derive(Debug, Clone)]
 pub struct Iface {
-    /// WIT 上の名前（`gpio`）。
+    /// WIT name (`gpio`).
     pub name: String,
-    /// Core Wasm の import モジュール名（`wasmicon:hal/gpio@0.1.0`）。
+    /// Core Wasm import module name (`wasmicon:hal/gpio@0.1.0`).
     pub module: String,
     pub docs: Vec<String>,
     pub enums: Vec<EnumDef>,
@@ -286,7 +287,7 @@ pub struct Iface {
     pub imports: Vec<Import>,
 }
 
-/// HAL 全体。
+/// The whole HAL.
 #[derive(Debug, Clone)]
 pub struct Hal {
     /// `wasmicon:hal@0.1.0`
@@ -295,7 +296,7 @@ pub struct Hal {
 }
 
 impl Hal {
-    /// 全インターフェースの import を宣言順に並べたもの。
+    /// All imports of all interfaces, in declaration order.
     pub fn imports(&self) -> impl Iterator<Item = (&Iface, &Import)> {
         self.interfaces
             .iter()

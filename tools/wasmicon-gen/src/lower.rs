@@ -1,6 +1,6 @@
-//! WIT を読み、`docs/abi-spec.md` の規則で ABI モデルへ落とす。
+//! Reads `wit/` and lowers it to the ABI model by the rules of `docs/abi-spec.md`.
 //!
-//! サブセット（abi-spec §2）の外にある構文は全てエラーにする。
+//! Any syntax outside the subset of docs/abi-spec.md §2 is an error.
 
 use anyhow::{Context, Result, bail, ensure};
 use wit_parser::{
@@ -12,25 +12,25 @@ use crate::model::{
     EnumCase, EnumDef, FlagBit, FlagsDef, Hal, Iface, Import, Param, Ret, Role, Scalar,
 };
 
-/// `wit/` を読んで ABI モデルを組み立てる。
+/// Reads `wit/` and builds the ABI model.
 pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
     let mut resolve = Resolve::default();
     let (pkg_id, _) = resolve
         .push_dir(wit_dir)
-        .with_context(|| format!("{} の解析に失敗した", wit_dir.display()))?;
+        .with_context(|| format!("cannot parse `{}`", wit_dir.display()))?;
 
     let pkg = &resolve.packages[pkg_id];
     let version = pkg
         .name
         .version
         .as_ref()
-        .context("パッケージにバージョンが無い。abi-spec §3.1 はバージョン必須")?;
+        .context("package has no version; docs/abi-spec.md §3.1 requires one")?;
     let package = format!("{}:{}@{}", pkg.name.namespace, pkg.name.name, version);
 
     let world_id = *pkg
         .worlds
         .get("app")
-        .context("world app が見つからない（abi-spec §2.3）")?;
+        .context("world `app` not found (docs/abi-spec.md §2.3)")?;
     let world = &resolve.worlds[world_id];
 
     let run = world
@@ -40,30 +40,30 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
             WorldItem::Function(f) if f.name == "run" => Some(f),
             _ => None,
         })
-        .context("world app が run を export していない（abi-spec §3.3）")?;
+        .context("world `app` does not export `run` (docs/abi-spec.md §3.3)")?;
     ensure!(
         run.params.is_empty() && run.result.is_none(),
-        "export run は func() -> () でなければならない（abi-spec §3.3）"
+        "export `run` must be `func() -> ()` (docs/abi-spec.md §3.3)"
     );
 
-    // インターフェースの順序は world app の import 宣言順に従う。
+    // Interfaces keep the import order of `world app`.
     let mut interfaces = Vec::new();
     for (key, item) in &world.imports {
         let WorldItem::Interface { id, .. } = item else {
-            bail!("world app の import {key:?} がインターフェースではない（abi-spec §2.3）");
+            bail!("import {key:?} of world `app` is not an interface (docs/abi-spec.md §2.3)");
         };
         let iface = &resolve.interfaces[*id];
         let name = iface
             .name
             .clone()
-            .context("無名のインターフェースは使わない")?;
+            .context("anonymous interfaces are not supported")?;
         let module = format!(
             "{}:{}/{}@{}",
             pkg.name.namespace, pkg.name.name, name, version
         );
         interfaces.push(
             lower_interface(&resolve, *id, iface, &name, module)
-                .with_context(|| format!("interface {name} の lowering に失敗した"))?,
+                .with_context(|| format!("cannot lower interface `{name}`"))?,
         );
     }
 
@@ -87,7 +87,7 @@ fn lower_interface(
     for (ty_name, ty_id) in &iface.types {
         let td = &resolve.types[*ty_id];
         match &td.kind {
-            // `use` で持ち込んだ型は別のインターフェースで定義されるので飛ばす。
+            // Types brought in with `use` are defined in another interface; skip them.
             TypeDefKind::Type(_) => {}
             TypeDefKind::Resource => resources.push(ty_name.clone()),
             TypeDefKind::Enum(e) => enums.push(EnumDef {
@@ -108,7 +108,7 @@ fn lower_interface(
             TypeDefKind::Flags(f) => {
                 ensure!(
                     f.flags.len() <= 32,
-                    "flags {ty_name} のケース数が 32 を超えている（abi-spec §2.1）"
+                    "flags `{ty_name}` has more than 32 cases (docs/abi-spec.md §2.1)"
                 );
                 flags.push(FlagsDef {
                     docs: docs(&td.docs),
@@ -127,14 +127,14 @@ fn lower_interface(
                 });
             }
             other => bail!(
-                "型 {ty_name} の種類 {} はサブセット外（abi-spec §2.2）",
+                "type `{ty_name}` of kind {} is outside the WIT subset (docs/abi-spec.md §2.2)",
                 other.as_str()
             ),
         }
         if let TypeDefKind::Enum(e) = &td.kind {
             ensure!(
                 e.cases.len() <= 256,
-                "enum {ty_name} のケース数が 256 を超えている（abi-spec §2.1）"
+                "enum `{ty_name}` has more than 256 cases (docs/abi-spec.md §2.1)"
             );
         }
     }
@@ -143,15 +143,15 @@ fn lower_interface(
     for (fn_name, func) in &iface.functions {
         imports.push(
             lower_function(resolve, id, name, fn_name, func)
-                .with_context(|| format!("関数 {fn_name} の lowering に失敗した"))?,
+                .with_context(|| format!("cannot lower function `{fn_name}`"))?,
         );
     }
-    // 暗黙の drop は宣言順の最後に置く（abi-spec §3.2）。
+    // The implicit drop goes after the declared functions (docs/abi-spec.md §3.2).
     for r in &resources {
         imports.push(Import {
             name: format!("[resource-drop]{r}"),
             docs: vec![format!(
-                "{r} のハンドルを解放する。無効なハンドルは無視される（abi-spec §5.2）。"
+                "Releases a `{r}` handle. Invalid handles are ignored (docs/abi-spec.md §5.2)."
             )],
             params: vec![Param {
                 name: "self".to_string(),
@@ -184,16 +184,18 @@ fn lower_function(
     match func.kind {
         FunctionKind::Freestanding | FunctionKind::Method(_) | FunctionKind::Static(_) => {}
         FunctionKind::Constructor(_) => {
-            bail!("constructor はサブセット外。static open を使う（abi-spec §2.2）")
+            bail!(
+                "constructors are outside the WIT subset; use a static `open` (docs/abi-spec.md §2.2)"
+            )
         }
-        _ => bail!("async 関数はサブセット外（abi-spec §2.2）"),
+        _ => bail!("async functions are outside the WIT subset (docs/abi-spec.md §2.2)"),
     }
 
     let is_method = matches!(func.kind, FunctionKind::Method(_));
     let mut params = Vec::new();
     for (i, p) in func.params.iter().enumerate() {
         if i == 0 && is_method {
-            // メソッドの第 1 引数は暗黙の borrow ハンドル。
+            // The first parameter of a method is the implicit borrowed handle.
             params.push(Param {
                 name: "self".to_string(),
                 role: Role::Handle,
@@ -201,7 +203,7 @@ fn lower_function(
             continue;
         }
         lower_param(resolve, &p.name, p.ty, &mut params)
-            .with_context(|| format!("引数 {} の lowering に失敗した", p.name))?;
+            .with_context(|| format!("cannot lower parameter `{}`", p.name))?;
     }
 
     let ret = match func.result {
@@ -210,20 +212,20 @@ fn lower_function(
             Some((ok, err)) => {
                 ensure!(
                     err.is_some_and(|e| is_error_code(resolve, e)),
-                    "result のエラー型は types.error-code でなければならない（abi-spec §4.4）"
+                    "the error type of `result` must be `types.error-code` (docs/abi-spec.md §4.4)"
                 );
                 if let Some(ok) = ok {
                     lower_out(resolve, ok, &mut params)?;
                 }
                 Ret::Status
             }
-            None => {
-                Ret::Scalar(scalar_of(resolve, ty).context("戻り値がスカラーでも result でもない")?)
-            }
+            None => Ret::Scalar(
+                scalar_of(resolve, ty).context("return type is neither a scalar nor a `result`")?,
+            ),
         },
     };
 
-    // wit-parser の関数名は既に `[static]pin.open` 形式（abi-spec §3.2 と同一）。
+    // wit-parser already names functions `[static]pin.open`, the form of docs/abi-spec.md §3.2.
     let base = fn_name
         .strip_prefix("[static]")
         .or_else(|| fn_name.strip_prefix("[method]"))
@@ -241,7 +243,7 @@ fn lower_function(
     })
 }
 
-/// 引数位置の lowering（abi-spec §4.1, §4.2）。
+/// Lowers one parameter (docs/abi-spec.md §4.1, §4.2).
 fn lower_param(resolve: &Resolve, name: &str, ty: Type, out: &mut Vec<Param>) -> Result<()> {
     if let Type::Id(id) = ty {
         match &resolve.types[id].kind {
@@ -255,7 +257,7 @@ fn lower_param(resolve: &Resolve, name: &str, ty: Type, out: &mut Vec<Param>) ->
             TypeDefKind::List(elem) => {
                 ensure!(
                     matches!(elem, Type::U8),
-                    "list<u8> 以外のリストはサブセット外（abi-spec §2.2）"
+                    "lists other than `list<u8>` are outside the WIT subset (docs/abi-spec.md §2.2)"
                 );
                 out.push(Param {
                     name: format!("{name}-ptr"),
@@ -282,7 +284,8 @@ fn lower_param(resolve: &Resolve, name: &str, ty: Type, out: &mut Vec<Param>) ->
         });
         return Ok(());
     }
-    let s = scalar_of(resolve, ty).context("引数の型がサブセット外（abi-spec §2.2）")?;
+    let s = scalar_of(resolve, ty)
+        .context("parameter type is outside the WIT subset (docs/abi-spec.md §2.2)")?;
     out.push(Param {
         name: name.to_string(),
         role: Role::Scalar(s),
@@ -290,7 +293,7 @@ fn lower_param(resolve: &Resolve, name: &str, ty: Type, out: &mut Vec<Param>) ->
     Ok(())
 }
 
-/// `result<T,_>` の T を末尾 out ポインタに落とす（abi-spec §4.4）。
+/// Lowers the `T` of `result<T, _>` to a trailing out-pointer (docs/abi-spec.md §4.4).
 fn lower_out(resolve: &Resolve, ty: Type, out: &mut Vec<Param>) -> Result<()> {
     if let Type::Id(id) = ty {
         match &resolve.types[id].kind {
@@ -305,7 +308,7 @@ fn lower_out(resolve: &Resolve, ty: Type, out: &mut Vec<Param>) -> Result<()> {
             TypeDefKind::List(elem) => {
                 ensure!(
                     matches!(elem, Type::U8),
-                    "list<u8> 以外のリストはサブセット外（abi-spec §2.2）"
+                    "lists other than `list<u8>` are outside the WIT subset (docs/abi-spec.md §2.2)"
                 );
                 out.push(Param {
                     name: "buf".to_string(),
@@ -322,15 +325,18 @@ fn lower_out(resolve: &Resolve, ty: Type, out: &mut Vec<Param>) -> Result<()> {
                 return Ok(());
             }
             TypeDefKind::Type(inner) => return lower_out(resolve, *inner, out),
-            TypeDefKind::Result(_) => bail!("ネストした result はサブセット外（abi-spec §2.2）"),
+            TypeDefKind::Result(_) => {
+                bail!("nested `result` is outside the WIT subset (docs/abi-spec.md §2.2)")
+            }
             _ => {}
         }
     }
     ensure!(
         !matches!(ty, Type::String),
-        "string の戻り値はサブセット外（abi-spec §2.2）"
+        "`string` return values are outside the WIT subset (docs/abi-spec.md §2.2)"
     );
-    let s = scalar_of(resolve, ty).context("result の T がサブセット外（abi-spec §2.2）")?;
+    let s = scalar_of(resolve, ty)
+        .context("the `T` of `result` is outside the WIT subset (docs/abi-spec.md §2.2)")?;
     out.push(Param {
         name: "out".to_string(),
         role: Role::OutScalar(s),
@@ -338,7 +344,7 @@ fn lower_out(resolve: &Resolve, ty: Type, out: &mut Vec<Param>) -> Result<()> {
     Ok(())
 }
 
-/// `result<..>` なら (ok, err) を返す。
+/// Returns `(ok, err)` if `ty` is a `result<..>`.
 fn result_of(resolve: &Resolve, ty: Type) -> Option<(Option<Type>, Option<Type>)> {
     let Type::Id(id) = ty else { return None };
     match &resolve.types[id].kind {
@@ -348,7 +354,7 @@ fn result_of(resolve: &Resolve, ty: Type) -> Option<(Option<Type>, Option<Type>)
     }
 }
 
-/// スカラー・enum・flags なら対応する `Scalar` を返す。
+/// Returns the `Scalar` of a scalar, enum or flags type.
 fn scalar_of(resolve: &Resolve, ty: Type) -> Option<Scalar> {
     Some(match ty {
         Type::Bool => Scalar::Bool,
@@ -383,7 +389,7 @@ fn is_error_code(resolve: &Resolve, ty: Type) -> bool {
     matches!(td.kind, TypeDefKind::Enum(_)) && td.name.as_deref() == Some("error-code")
 }
 
-/// ドキュメントコメントを行の配列にする（abi-spec §2.3）。
+/// Splits a doc comment into lines (docs/abi-spec.md §2.3).
 fn docs(d: &Docs) -> Vec<String> {
     d.contents
         .as_deref()
@@ -391,7 +397,7 @@ fn docs(d: &Docs) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// `pin-mode` / `pin.open` → `PinMode` / `PinOpen`
+/// `pin-mode` / `pin.open` -> `PinMode` / `PinOpen`.
 pub fn pascal(s: &str) -> String {
     s.split(['-', '.'])
         .filter(|p| !p.is_empty())
@@ -405,13 +411,13 @@ pub fn pascal(s: &str) -> String {
         .collect()
 }
 
-/// `pin-mode` / `pin.open` → `pin_mode` / `pin_open`
+/// `pin-mode` / `pin.open` -> `pin_mode` / `pin_open`.
 pub fn snake(s: &str) -> String {
     s.replace(['-', '.'], "_")
 }
 
-/// AssemblyScript には名前空間を作らないので、型名をインターフェース名で前置する。
-/// 共通型を置く `types` だけは前置しない。
+/// Prefixes a type name with its interface name, because the AssemblyScript binding has no
+/// namespaces. Only `types`, which holds the shared types, stays unprefixed.
 fn as_type_name(iface: &str, ty: &str) -> String {
     if iface == "types" {
         pascal(ty)

@@ -1,9 +1,8 @@
 package wasmicon:hal@0.1.0;
 
-/// Wasmicon 上で動くアプリケーションの world。
-/// Wasmicon は Component Model を使わないため、この world は
-/// 「ゲストモジュールが import してよい関数の集合」と「ゲストが export すべき関数」を
-/// 記述するための IDL としてのみ使う。
+/// The world of an application that runs on Wasmicon.
+/// Wasmicon does not use the Component Model, so this world serves only as an IDL
+/// that lists the functions a guest module may import and the functions it must export.
 world app {
     import types;
     import gpio;
@@ -13,7 +12,7 @@ world app {
     import log;
     import board;
 
-    /// エントリポイント。ホストがインスタンス化後に 1 回呼ぶ。
-    /// 戻ると、ホストはインスタンスを破棄してよい。
+    /// Entry point. The host calls it once after instantiation.
+    /// When it returns, the host may destroy the instance.
     export run: func();
 }
