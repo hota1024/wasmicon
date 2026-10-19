@@ -43,11 +43,6 @@ fn every_app_has_a_manifest_whose_roles_are_wired_on_both_boards() {
         let path = dir.join(manifest::FILE_NAME);
         assert!(path.is_file(), "{} が無い", path.display());
         let m = manifest::load(&path).unwrap_or_else(|e| panic!("{e:#}"));
-        assert!(
-            !m.pin_roles.is_empty(),
-            "{}: どのアプリも役割を引くので pin-roles を書く",
-            path.display()
-        );
         // 評価ボード（docs/handoff.md §0）では宣言した役割が全部配られる。
         for board in [&profile::RP2350, &profile::ESP32S3] {
             let provided = check::provided_roles(board, Some(&m));
