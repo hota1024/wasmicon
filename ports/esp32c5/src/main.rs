@@ -124,8 +124,8 @@ fn main() -> ! {
 
     // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX / SPI2 / I2C0 と、SPI2 と I2C0 に
     // 割り当てたピンを排他的に使う。UART は GPIO11/12 を占有するが、役割名に
-    // 割り当てられる GPIO とも（予約ピン）、SPI2 のピン (GPIO24/23/5) とも
-    // I2C0 のピン (GPIO8/9) とも重ねていない。
+    // 割り当てられる GPIO とも（予約ピン）、SPI2 のピン (GPIO24/23/5 と
+    // RGB LED の GPIO27) とも I2C0 のピン (GPIO8/9) とも重ねていない。
     let board = unsafe { EspBoard::new(serial) };
 
     // 設定スロットとアプリスロットの両方を読むので、ここで 1 回だけ作る。

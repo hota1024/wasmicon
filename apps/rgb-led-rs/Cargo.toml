@@ -1,0 +1,13 @@
+[package]
+name = "rgb-led-rs"
+description = "ESP32-C5-WIFI6-KIT の基板の RGB LED（WS2812B）を spi.bus index 1 で光らせる"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+# cdylib にすると memory が "memory" として export される（abi-spec §3.3）。
+crate-type = ["cdylib"]
+
+[dependencies]
+wasmicon-hal.workspace = true

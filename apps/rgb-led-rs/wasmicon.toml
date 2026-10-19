@@ -1,0 +1,11 @@
+# wasmicon.toml（docs/app-workflow.md §4.7）。
+# ピンは使わない（役割名を引かない）。RGB LED は esp32c5 の spi.bus index 1 に
+# 繋がっている（abi-spec §8）。他のボードでは spi.bus index 1 が unsupported なので、
+# 理由をログに出して終わる。
+version = 1
+
+[defaults]
+board = "esp32c5"
+
+[requirements]
+pin-roles = []

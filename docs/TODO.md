@@ -161,6 +161,11 @@ I2C と sensor-display は 2026-10-05 / 07 に 2 ボードで動作を確認し�
   設定スロットが空なら `magic mismatch` を出して待つ）
 - [x] **② `deploy` でスロットから blink が走る**（2026-10-12。配線表 `led`=GPIO4 を読み、
   blink-rs のトレースが host と 20 行完全一致）
+- [ ] **基板の RGB LED（WS2812B、GPIO27）を `apps/rgb-led-rs` で光らせる**（2026-10-12 実装、
+  **実機では未確認**）。C5 の `spi.bus` index 1 を「SPI2 の MOSI だけを GPIO27 に出す」
+  バスにした（abi-spec §8。配線は要らない）。ファームとアプリは焼いてあるが、RESET を
+  押して走らせていない。赤 → 緑 → 青 → 白 → 虹色 → 消灯に光るか、トレースが host と
+  一致するかを見る
 - [ ] **③ SPI: lcd-demo-rs / life-rs が ILI9341 に描ける**（lcd-demo のトレースが host と一致）
 - [ ] **④ I2C: sensor-display-rs / -as が SHT40 を読み、トレースが host と全文一致**
 - 決めたこと・分かっていること:

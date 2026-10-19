@@ -67,6 +67,7 @@ apps/                 ゲスト（別 workspace）。blink と sensor-display �
                       lcd-demo-rs は ILI9341 だけを使うデモ（センサー不要）
                       life-rs は ILI9341 にライフゲームを描き続けるデモ（FPS 表示つき）
                       bench-rs はインタプリタと host call の速さを測る（host / 実機で同じ .wasm）
+                      rgb-led-rs は ESP32-C5-WIFI6-KIT の基板の RGB LED を光らせる（esp32c5 専用）
 verify/               検証の道具。wasmtime との差分テスト、トレース diff
 docs/                 仕様・設計・検証レポート・残作業
 ```

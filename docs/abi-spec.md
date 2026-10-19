@@ -311,6 +311,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory`（`memory.co
 | ILI9341 CS | `gpio.pin` | GPIO10 | GPIO10 | GP17 | GP17 |
 | ILI9341 DC | `gpio.pin` | GPIO14 | GPIO0 | GP20 | GP20 |
 | ILI9341 RST | `gpio.pin` | GPIO15 | GPIO1 | GP21 | GP21 |
+| 基板の RGB LED (WS2812B) | `spi.bus` index 1 | なし | SPI2: MOSI=GPIO27 のみ（SCK / MISO は出さない） | なし | なし |
 
 Pico 2 / Pico 2 W は Pico / Pico WH とヘッダのピン配置が同じなので、GP 番号も同じにしてある。
 
@@ -319,6 +320,12 @@ ESP32-C5 は Waveshare ESP32-C5-WIFI6-KIT（ESP32-C5-WROOM-1）の回路図で�
 （WS2812）、GPIO28 は BOOT ボタン、GPIO2/3/7/25/26 はストラッピングピンなので避けた。
 GPIO11/12 はトレースの UART0（CH343）、13/14 はネイティブ USB、15..=22 はフラッシュ /
 PSRAM で、ゲストに開放しない。
+
+ESP32-C5 の `spi.bus` index 1 は基板の RGB LED（WS2812B、GPIO27 に 0Ω で直結）向け
+（2026-10-12）。SPI2 の MOSI だけを GPIO27 に出すので配線は要らない。ゲストは WS2812 の
+1 ビットを SPI の数ビットに展開して `write` する（`apps/rgb-led-rs`）。index 0 と同じ
+SPI2 なので**同時には開けない**（後から開いた方が `busy`）。他のボードでは
+`unsupported`。
 
 `board.pin-by-role`（§7）が返す役割名と GPIO 番号の対応（**配線表**）は、
 **ファームではなくデバイスの設定スロットに置く**（2026-10-07 オーナー決定。

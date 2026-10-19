@@ -171,8 +171,9 @@ const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13];
 /// 13/14 はネイティブ USB（Type-C に直結）、15..=22 は SPI フラッシュ / PSRAM。
 const ESP32C5_RESERVED: &[u32] = &[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
-/// ESP32-C5 のバスのピン。I2C0 = GPIO8/9、SPI2 = GPIO24 (SCK) / 23 (MOSI) / 5 (MISO)。
-const ESP32C5_BUS_PINS: &[u32] = &[5, 8, 9, 23, 24];
+/// ESP32-C5 のバスのピン。I2C0 = GPIO8/9、SPI2 = GPIO24 (SCK) / 23 (MOSI) / 5 (MISO)、
+/// `spi.bus` index 1 = GPIO27（基板の RGB LED。SPI2 の MOSI だけを出す）。
+const ESP32C5_BUS_PINS: &[u32] = &[5, 8, 9, 23, 24, 27];
 
 /// アプリスロットの直後に置く設定スロット。
 const fn role_slot_after(app: Slot) -> Slot {

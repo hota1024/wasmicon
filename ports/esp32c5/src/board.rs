@@ -11,7 +11,8 @@
 //!   （`esp-metadata-generated` 0.5.1 の `gpio.gpio_function` と
 //!   `OutputSignal::GPIO`、esp32c5 PAC 0.3 のリセット値 0x1800）
 //! - ピンの割り当て（abi-spec §8）: I2C0 は SDA=GPIO8 / SCL=GPIO9、SPI2 は
-//!   SCK=GPIO24 / MOSI=GPIO23 / MISO=GPIO5。**GPIO6 は基板上で電池電圧の
+//!   SCK=GPIO24 / MOSI=GPIO23 / MISO=GPIO5。**`spi.bus` index 1 は基板の
+//!   RGB LED（WS2812B、GPIO27）向けで、SPI2 の MOSI だけを GPIO27 に出す**。**GPIO6 は基板上で電池電圧の
 //!   分圧に 0Ω で繋がっている**ので使わない（2026-10-12、回路図で確認）
 //!
 //! **実機では未検証**（docs/TODO.md §1）。
@@ -96,6 +97,15 @@ const SPI2_SCK: u8 = 24;
 const SPI2_MOSI: u8 = 23;
 const SPI2_MISO: u8 = 5;
 
+/// `spi.bus` index 1 の MOSI。基板の RGB LED（WS2812B）の DIN に 0Ω で
+/// 繋がっている（WIFI6-KIT の回路図の R3）。
+///
+/// SPI2 を **MOSI だけ**でこのピンに出す（SCK / MISO は出さない）。ゲストは
+/// WS2812 の 1 ビットを SPI の数ビットに展開して送る（`apps/rgb-led-rs`）。
+/// GPIO マトリクスでどのピンにも出せるので、配線は要らない。index 0 と同じ
+/// SPI2 を使うので、**同時には開けない**（後から開いた方が `busy`）。
+const SPI2_LED_MOSI: u8 = 27;
+
 /// I2C0 に割り当てるピン（abi-spec §8）。`SPI2_*` と同じ理由で
 /// `reserved` には入れていない。
 const I2C0_SDA: u8 = 8;
@@ -109,9 +119,10 @@ pub trait Serial {
 /// ESP32-C5-WIFI6-KIT のボード。
 pub struct EspBoard<S: Serial> {
     serial: S,
-    /// 開いている SPI2 のドライバ。`spi_close` で落とすと `Drop` が
-    /// ピンの配線とペリフェラルのクロックを戻す。
-    spi: Option<Spi<'static, Blocking>>,
+    /// 開いている SPI2 のドライバと、それを開いた `index`（0 = 汎用、
+    /// 1 = RGB LED）。`spi_close` で落とすと `Drop` がピンの配線と
+    /// ペリフェラルのクロックを戻す。
+    spi: Option<(u32, Spi<'static, Blocking>)>,
     /// 開いている I2C0 のドライバ。`spi` と同じく `Drop` 任せで、
     /// GPIO8/9 を自前で戻すことはしない。
     i2c: Option<I2c<'static, Blocking>>,
@@ -120,8 +131,8 @@ pub struct EspBoard<S: Serial> {
 impl<S: Serial> EspBoard<S> {
     /// # Safety
     /// GPIO / IO_MUX / SPI2 / I2C0、および SPI2 と I2C0 に割り当てた GPIO
-    /// (`SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` / `I2C0_SDA` / `I2C0_SCL`) を
-    /// このボードが排他的に使うこと。
+    /// (`SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` /
+    /// `I2C0_SCL`) をこのボードが排他的に使うこと。
     #[must_use]
     pub unsafe fn new(serial: S) -> Self {
         EspBoard {
@@ -134,6 +145,15 @@ impl<S: Serial> EspBoard<S> {
     /// シリアルへの参照。失敗の理由を出すのに使う。
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
+    }
+
+    /// `index` で開いている SPI2 のドライバ。開いていなければ（もう一方の
+    /// index が握っていても）`invalid-handle`。
+    fn open_spi(&mut self, index: u32) -> BoardResult<&mut Spi<'static, Blocking>> {
+        match self.spi.as_mut() {
+            Some((open, spi)) if *open == index => Ok(spi),
+            _ => Err(ErrorCode::InvalidHandle),
+        }
     }
 }
 
@@ -408,18 +428,27 @@ impl<S: Serial> Board for EspBoard<S> {
         self.i2c = None;
     }
 
-    // --- SPI。index 0 = SPI2 (SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5) ---
+    // --- SPI。どちらも SPI2 を使うので同時には開けない ---
+    //   index 0 = 汎用 (SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5)
+    //   index 1 = 基板の RGB LED (MOSI=GPIO27 だけ)
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
-        // SPI3 もあるが、v0.1 で割り当てているのは SPI2 だけ（abi-spec §8）。
-        // Hal 側で index < MAX_SPI は検査済み。
-        if index != 0 {
+        // 汎用の SPI は SPI2 しか無い（SPI0/1 はフラッシュ）。Hal 側で
+        // index < MAX_SPI は検査済み。
+        if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
         if frequency_hz == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
-        // Hal 側が二重 open を Busy で弾くので普通はここに残っていないが、
+        // もう一方の index が SPI2 を握っていれば `busy`。同じ index の
+        // 二重 open は Hal 側が `busy` で弾くので、ここに残っているのは
+        // 他方の index だけ。
+        if let Some((open, _)) = self.spi {
+            if open != index {
+                return Err(ErrorCode::Busy);
+            }
+        }
         // 残っていたら先に落とす（`steal` したペリフェラルを二重に持たない）。
         self.spi = None;
 
@@ -435,40 +464,43 @@ impl<S: Serial> Board for EspBoard<S> {
         // SAFETY: EspBoard::new の契約により、SPI2 と SPI2_* のピンはこのボード
         // だけが触る。self.spi を先に None にしてあるので、同じものを指す
         // ドライバは同時に 2 つ存在しない。
-        let (spi2, sck, mosi, miso) = unsafe {
-            (
-                SPI2::steal(),
-                AnyPin::steal(SPI2_SCK),
-                AnyPin::steal(SPI2_MOSI),
-                AnyPin::steal(SPI2_MISO),
-            )
+        let spi2 = unsafe { SPI2::steal() };
+        // 失敗するのは要求周波数が出せる範囲の外のときだけ。
+        let spi = Spi::new(spi2, config).map_err(|_| ErrorCode::Unsupported)?;
+        let spi = if index == 0 {
+            // SAFETY: 同上。
+            let (sck, mosi, miso) = unsafe {
+                (
+                    AnyPin::steal(SPI2_SCK),
+                    AnyPin::steal(SPI2_MOSI),
+                    AnyPin::steal(SPI2_MISO),
+                )
+            };
+            spi.with_sck(sck).with_mosi(mosi).with_miso(miso)
+        } else {
+            // SAFETY: 同上。
+            let mosi = unsafe { AnyPin::steal(SPI2_LED_MOSI) };
+            spi.with_mosi(mosi)
         };
-        // 失敗するのは要求周波数が出せる範囲の外のときだけ
-        // （上は APB、下は APB/1024）。
-        let spi = Spi::new(spi2, config)
-            .map_err(|_| ErrorCode::Unsupported)?
-            .with_sck(sck)
-            .with_mosi(mosi)
-            .with_miso(miso);
-        self.spi = Some(spi);
+        self.spi = Some((index, spi));
         Ok(())
     }
 
     fn spi_write(&mut self, index: u32, data: &[u8]) -> BoardResult<()> {
-        if index != 0 {
+        if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
-        let spi = self.spi.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        let spi = self.open_spi(index)?;
         // 64 バイト（FIFO）ごとに区切られるが、CS はゲストが握ったままなので
         // ILI9341 から見れば 1 回の転送のまま。区切りごとに flush が入る。
         spi.write(data).map_err(|_| ErrorCode::Io)
     }
 
     fn spi_transfer(&mut self, index: u32, data: &[u8], buf: &mut [u8]) -> BoardResult<usize> {
-        if index != 0 {
+        if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
-        let spi = self.spi.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        let spi = self.open_spi(index)?;
         let n = data.len().min(buf.len());
         // ドライバの全二重転送はその場置き換えなので、送る側を写してから渡す。
         buf[..n].copy_from_slice(&data[..n]);
@@ -477,14 +509,19 @@ impl<S: Serial> Board for EspBoard<S> {
     }
 
     fn spi_close(&mut self, index: u32) {
-        if index != 0 {
+        if !matches!(self.spi, Some((open, _)) if open == index) {
             return;
         }
         // Drop がピンの配線とペリフェラルのクロックを戻す。
         self.spi = None;
         // gpio_release と同じく入力・プル無しに戻す。ドライバの Drop は
         // GPIO マトリクスの信号を外すだけで、パッドの向きやプルは触らない。
-        for n in [SPI2_SCK, SPI2_MOSI, SPI2_MISO] {
+        let pins: &[u8] = if index == 0 {
+            &[SPI2_SCK, SPI2_MOSI, SPI2_MISO]
+        } else {
+            &[SPI2_LED_MOSI]
+        };
+        for &n in pins {
             let _ = self.gpio_configure(u32::from(n), PinMode::Input);
         }
     }

@@ -194,7 +194,7 @@ fn gpio_limits_are_what_the_ports_have() {
         profile::ESP32C5.reserved,
         [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
     );
-    assert_eq!(profile::ESP32C5.bus_pins, [5, 8, 9, 23, 24]);
+    assert_eq!(profile::ESP32C5.bus_pins, [5, 8, 9, 23, 24, 27]);
 }
 
 #[test]
