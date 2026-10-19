@@ -1,503 +1,538 @@
-# アプリ開発フローの設計（ローダと `wasmicon` CLI）
+# App development workflow design (loader and the `wasmicon` CLI)
 
-最終更新: 2026-10-04
+This document is the **design**. **Remaining work and open questions are owned by
+docs/TODO.md §5** and are not written here (scattered copies always go stale;
+`AGENTS.md`). The body refers to them by number, as in §5-1.
 
-この文書は**設計**。**残作業と未決は `docs/TODO.md` §5 が正**で、ここには書かない
-（散らすと必ず古くなる。CLAUDE.md）。本文からは §5-1 のように番号で参照する。
+Note: RP2040 (Pico WH) is build-only since 2026-10; the evaluated boards are ESP32-S3 and RP2350 (Pico 2 W).
 
-変えないものは §6 にまとめた。要するに **ABI（`docs/handoff.md` §2）、`wit/`、
-`docs/abi-spec.md` の規則、記録済みのトレースは動かさない。**
+What must not change is collected in §6. In short: **the ABI (docs/decisions.md
+D-02, D-03, D-05), `wit/`, the rules in docs/abi-spec.md, and the recorded traces
+do not move.**
 
 ---
 
-## 1. 何を変えるか
+## 1. What changes
 
-### 1.1 今のフロー（実体）
+### 1.1 The current flow (as it is)
 
-> **2026-10-07 追記**: 下は着手前（2026-10-04）の実体。今はアプリをスロットに
-> `deploy` し、ファームにアプリは入っていない（§3.3。内蔵アプリは 2026-10-07 に外した）。
+> **Added 2026-10-07**: the description below is the state before the work started
+> (2026-10-04). Today the app is `deploy`ed to a slot and the firmware contains no
+> app (§3.3; the built-in app was removed on 2026-10-07).
 
-アプリの `.wasm` は**ポートが `include_bytes!` でハードコードしたパスから焼き込む**
-（`ports/rp2350/src/main.rs:48`）。差し替えは cargo feature `guest-lcd-demo` の
-二択しかない。したがって:
+The app's `.wasm` is **baked in by the port from a path hardcoded with
+`include_bytes!`** (`ports/rp2350/src/main.rs:48`). The only alternative is the
+cargo feature `guest-lcd-demo`. So:
 
-| やりたいこと | 今やること |
+| Goal | What you do today |
 |---|---|
-| アプリを 1 行直して試す | `cd apps && cargo build --release` → ポートを再ビルド → 再書き込み（Pico は BOOTSEL 押下、ESP32-S3 は espflash） |
-| 別のアプリを動かす | ポートの `main.rs` を編集するか feature を足す |
-| リポジトリ外でアプリを書く | **できない**。ABI 準拠のビルドフラグが `apps/.cargo/config.toml` にしか無い |
-| ファームを焼く | ESP32-S3 は espup + Xtensa ツールチェーンが必須 |
+| Fix one line of the app and try it | `cd apps && cargo build --release` -> rebuild the port -> reflash (Pico: hold BOOTSEL; ESP32-S3: espflash) |
+| Run a different app | Edit the port's `main.rs` or add a feature |
+| Write an app outside the repository | **Not possible.** The ABI-conformant build flags exist only in `apps/.cargo/config.toml` |
+| Flash the firmware | ESP32-S3 requires espup and the Xtensa toolchain |
 
-つまり**アプリとファームが同じ成果物に固着している**。Wasm を使う動機
-（アプリだけを差し替える）がフローに現れていない。
+In other words, **the app and the firmware are fused into one deliverable**. The
+reason for using Wasm at all (replace only the app) does not show up in the flow.
 
-### 1.2 目標
+### 1.2 Goals
 
-- **ファームはボードごとに一度焼く。** 以降アプリ作者はファームをビルドしない
-- **アプリは独立した成果物**（`.wasm` 1 個）。USB か HTTP でファームに送る
-- アプリ作者が触る面は `wasmicon` CLI 1 つ。ABI 準拠のビルドフラグは CLI 側の責務
-- 1 サイクル: `wasmicon run`（host、秒）→ `wasmicon deploy`（実機、数秒）
+- **The firmware is flashed once per board.** After that, app authors never build firmware
+- **The app is an independent deliverable** (one `.wasm`), sent to the firmware over USB or HTTP
+- The only surface an app author touches is the `wasmicon` CLI. ABI-conformant build flags are the CLI's responsibility
+- One cycle: `wasmicon run` (host, seconds) -> `wasmicon deploy` (hardware, a few seconds)
 
-### 1.3 v0.1 の検証（TODO §1）との関係
+### 1.3 Relation to the v0.1 verification (docs/TODO.md §1)
 
-**この作業は TODO §1 を押し退けるのではなく、短くする。** §1.3 の次の一手は
-「SHT40 を実機で読む」で、手順は「ゲストをビルド → ファームを再ビルド → 焼く →
-シリアルを取り込む → host のトレースと突き合わせる」。このうち
-**ファーム再ビルドと取り込み・突き合わせは §5 の 0 段と 1 段がそのまま置き換える**
-（`monitor` は `/dev/cu.usb*` を列挙する。TODO §1.1 の CH343 の件がここに効く）。
+**This work does not push docs/TODO.md §1 aside; it shortens it.** The next step in
+§1.3 there is "read the SHT40 on hardware", and the procedure is "build the guest ->
+rebuild the firmware -> flash -> capture the serial output -> cross-check against the
+host trace". Of these, **the firmware rebuild and the capture / cross-check are
+replaced outright by stages 0 and 1 of §5** (`monitor` enumerates `/dev/cu.usb*`;
+the CH343 note in docs/TODO.md §1.1 matters here).
 
-**handoff §5 の Phase 4 / 5 / 6 の完了条件（ESP32-S3 と Pico WH の 2 ボードで定義）は
-動かさない。**
+**The Phase 4 / 5 / 6 completion criteria (docs/TODO.md §1.3; defined over the two
+boards ESP32-S3 and Pico WH) do not change.**
 
 ---
 
-## 2. 3 層の役割分担
+## 2. The three layers
 
-| 層 | 成果物 | 誰が作るか | 変更の頻度 |
+| Layer | Deliverable | Who produces it | How often it changes |
 |---|---|---|---|
-| ファームウェア | `wasmicon-rp2350.uf2` / `wasmicon-esp32s3.bin` | このリポジトリ（リリース成果物） | 稀 |
-| アプリ | `app.wasm` | アプリ作者 | 常時 |
-| CLI | `wasmicon` | このリポジトリ | — |
+| Firmware | `wasmicon-rp2350.uf2` / `wasmicon-esp32s3.bin` | This repository (release deliverable) | Rarely |
+| App | `app.wasm` | The app author | Constantly |
+| CLI | `wasmicon` | This repository | - |
 
-ファームウェアの中身は **ランタイム + HAL + ローダ/スーパーバイザ**。
-アプリの契約は `docs/abi-spec.md` §6（機能セット、`run` と `memory` の export、
-import の名前とシグネチャ）だけで、ボード固有のものは入らない
-（ピン番号は `board.pin-by-role` で引く。abi-spec §8）。
+The firmware is **runtime + HAL + loader / supervisor**. The app's contract is only
+docs/abi-spec.md §6 (feature set, the `run` and `memory` exports, import names and
+signatures); nothing board-specific is in it (pin numbers come from
+`board.pin-by-role`, docs/abi-spec.md §8).
 
 ---
 
-## 3. ファームウェア側: ローダとスーパーバイザ
+## 3. Firmware side: loader and supervisor
 
-### 3.1 スーパーバイザのループ
+### 3.1 The supervisor loop
 
 ```
-起動
- ├ バナー（例 "wasmicon rp2350"）を UART0 に出す
- ├ スロットを読む
- │   ├ 有効 → decode → validate → Exec → instantiate → start → run → 後始末 → idle
- │   └ 空 / 壊れている → 理由を出して idle（§3.3）
- └ idle: 制御チャネルのフレームを待つ（§3.6）
-        ポート層が LED を振って生存を示す（Wasm を通らない）
+boot
+ |- print the banner (e.g. "wasmicon rp2350") on UART0
+ |- read the slot
+ |   |- valid -> decode -> validate -> Exec -> instantiate -> start -> run -> cleanup -> idle
+ |   `- empty / corrupt -> print the reason and idle (§3.3)
+ `- idle: wait for a frame on the control channel (§3.6)
+        the port layer blinks the LED to show it is alive (does not go through Wasm)
 ```
 
-今の `main` は `run` のあと止まったままになる
-（`ports/rp2040/src/main.rs:146` と `ports/rp2350/src/main.rs:173` は
-`loop { wfi() }`、`ports/esp32s3/src/main.rs:117` は `loop { spin_loop() }`、
-host はプロセスが終わる）。handoff §3 #4「ログを出して停止、再起動しない」の
-とおりで、**この方針は変えない**（確定は `docs/abi-spec.md` §10 の未決 #3 が
-持っていて、TODO §2 に残っている）。
-「停止」の意味を「**同じアプリを勝手に再実行しない**」に保ったまま、
-「新しいアプリを受け付ける」状態を足す。`docs/abi-spec.md` §6.6 は
-トラップ後の挙動を「ポートが決める」としているので、**ABI の変更ではない**
-（確定は §5-1）。
+Today `main` stays stopped after `run`
+(`ports/rp2040/src/main.rs:146` and `ports/rp2350/src/main.rs:173` are
+`loop { wfi() }`, `ports/esp32s3/src/main.rs:117` is `loop { spin_loop() }`, and
+the host process exits). That follows docs/decisions.md A-04, "log and halt, no
+restart", and **this policy does not change** (the final decision is held by open
+question #3 in docs/abi-spec.md §10 and remains in docs/TODO.md §2).
+Keeping "halt" to mean "**never re-run the same app on its own**", we add a state
+that "accepts a new app". docs/abi-spec.md §6.6 leaves behavior after a trap to the
+port, so **this is not an ABI change** (to be settled under §5-1).
 
-サイクルごとに作り直すもの:
+Rebuilt on every cycle:
 
-- **arena**。`Arena` は bump なので解放は作り直しのみ（`runtime/src/arena.rs`）
-- **`Hal`**。`Hal::new(board, trace_on)` が board を所有する
-  （`ports/common/src/lib.rs:114`）ので、`into_board()` かハンドル表の
-  `reset()` が要る
-- **ロール表 `roles` / `nroles`**。`pin-by-role` で配った番号を覚えていて、
-  abi-spec §9 の正規化（番号 → `role:led`）に使う。**持ち越すと前のアプリで
-  配った番号が `role:` 表記になり、トレースが変わりうる**
+- **The arena.** `Arena` is a bump allocator, so the only way to free it is to rebuild it (`runtime/src/arena.rs`)
+- **The `Hal`.** `Hal::new(board, trace_on)` takes ownership of the board
+  (`ports/common/src/lib.rs:114`), so either `into_board()` or a `reset()` of the
+  handle tables is needed
+- **The role table `roles` / `nroles`.** It remembers the numbers handed out by
+  `pin-by-role` and is used for the docs/abi-spec.md §9 normalization (number ->
+  `role:led`). **If it carries over, a number handed out by the previous app is
+  printed as `role:` and the trace can change**
 
-アプリのバイト列は **arena の外**に置く。`decode` は
-`Module<'m, 'a>` を返し、**wasm バイト列 `'m` と arena `'a` を別に借りる**
-（`runtime/src/decode.rs:40`、`runtime/src/module.rs:92`）。XIP のスライスを
-そのまま渡す今の設計（design-notes §4）がこれに乗っている。
+The app bytes live **outside the arena**. `decode` returns `Module<'m, 'a>`, which
+**borrows the wasm bytes `'m` and the arena `'a` separately**
+(`runtime/src/decode.rs:40`, `runtime/src/module.rs:92`). The current design of
+passing an XIP slice straight in (docs/design-notes.md §4) rides on this.
 
-### 3.2 先に塞いだ穴: abi-spec §5.2 のハンドル掃除（2026-10-04 実装）
+### 3.2 A hole closed first: the docs/abi-spec.md §5.2 handle cleanup (implemented 2026-10-04)
 
-`docs/abi-spec.md` §5.2 は「**`run` から戻ったとき、ホストは残っている全ハンドルを
-drop する**」と定めているが、**どのポートもこれを実装していなかった**。
-`ports/host/src/lib.rs` の `run_wasm_opts` も各ポートの `main.rs` も `run` の
-あとに掃除をしておらず、見えていなかったのは Rust バインディングの `Drop`
-（`bindings/rust/src/hal.rs:90` / `:176` / `:236`）がゲスト側で解放していたから。
+docs/abi-spec.md §5.2 says "**when `run` returns, the host drops every remaining
+handle**", but **no port implemented it**. Neither `run_wasm_opts` in
+`ports/host/src/lib.rs` nor any port's `main.rs` cleaned up after `run`; it went
+unnoticed because the `Drop` impls in the Rust bindings
+(`bindings/rust/src/hal.rs:90` / `:176` / `:236`) released handles on the guest side.
 
-単発ファームでは無害（走り終わって止まるだけ）。**ローダでは次のアプリが
-`busy` を踏む**。ゲストがトラップするとハンドルが残るので確実に踏む。
+Harmless for a single-shot firmware (it runs and stops). **With a loader, the next
+app hits `busy`.** If the guest traps, handles are left behind, so it will hit it for
+sure.
 
-`ports/common` に `Hal::release_all()` を足し、**4 箇所（host と 3 ポート）で
-`run` の戻りを受けてから呼ぶ**ようにした。トラップで抜けた場合も通る。
-**仕様に既に書いてあることの実装で、ABI の変更ではない。**
+`Hal::release_all()` was added to `ports/common` and is **called in all four places
+(host and the three ports) once `run` has returned**. It also runs when `run` left by
+a trap. **This implements what the spec already says; it is not an ABI change.**
 
-- **掃除はトレース行を出さない。** ゲストの host call ではないし、出すと
-  記録済みの 14,352 行（verification-report §6 / §7）が変わる。
-  `board` を直接叩くので、トレースを書く `Hal::call` を通らない
-- **解放の順序はハンドルの小さい順に gpio → i2c → spi で固定**した。
-  ポートごとに違うと、トレースに出ない差がボード間に生まれる
-- 検査は `ports/common/tests/release_all.rs`（解放の順序、冪等、
-  **トレース行を出さないこと**、掃除後に再 `open` できること、
-  **ロール表は消えないこと**）。`release_all` を空にすると 3 件が落ちる
-- **ロール表は消さない。** あれはハンドルではなく §9 の正規化に使う状態。
-  ローダが 1 つの `Hal` を使い回すなら別に消す必要がある（§3.1）
-- **代償: トラップ後の画面が残らなくなった。** 掃除はピンを入力に戻すので
-  （§5.2）、`lcd-rst` が浮いてパネルが白に戻る（§3.3 の「描き終わると
-  白くなる」と同じ現象）。トラップした瞬間の表示を見て切り分けることは
-  できなくなる。それでも掃除を入れたのは **abi-spec §6.6 が
-  「ホストはインスタンスを破棄し、全ハンドルを drop し、ログに理由を出力する」
-  とトラップ時の drop を明示的に要求している**ため。**画面を見て切り分けたい
-  ときは `probe` コマンド（§3.6）側で行う**
-- **ただし順序は「理由を出してから掃除」にした。** §6.6 の文面は
-  drop → ログだが、掃除は**無制限に待ちうる**（`spi_close` の `BSY` 待ちなど。
-  TODO §2.1）。先に回すとペリフェラルが固まったときに理由が出ないまま
-  無言で止まり、handoff §3 #4「ログを出して停止する」が守れない。
-  §6.6 の順序をどう扱うかは TODO §2 に置いた
+- **The cleanup emits no trace lines.** It is not a guest host call, and printing
+  would change the recorded 14,352 lines (docs/verification-report.md §6, §7). It
+  talks to `board` directly, bypassing `Hal::call`, which writes the trace
+- **The release order is fixed: gpio -> i2c -> spi, ascending handle.** If it differed
+  per port, boards would differ in a way the trace does not show
+- Locked in by `ports/common/tests/release_all.rs` (release order, idempotence,
+  **no trace lines**, re-`open` works after cleanup, **the role table survives**).
+  Emptying `release_all` fails 3 of them
+- **The role table is not cleared.** It is not a handle; it is state for the
+  docs/abi-spec.md §9 normalization. If the loader reuses one `Hal`, it has to be
+  cleared separately (§3.1)
+- **The cost: the screen no longer survives a trap.** The cleanup returns pins to
+  input (docs/abi-spec.md §5.2), so `lcd-rst` floats and the panel goes back to white
+  (the same effect as "it goes white when drawing finishes" in §3.3). You can no
+  longer look at what was on screen at the moment of the trap. The cleanup went in
+  anyway because **docs/abi-spec.md §6.6 explicitly requires a drop on trap: "the
+  host destroys the instance, drops all handles and logs the reason"**. **To look at
+  the screen for diagnosis, use the `probe` command (§3.6)**
+- **The order, however, is "log the reason, then clean up".** docs/abi-spec.md §6.6
+  reads drop -> log, but cleanup **can wait indefinitely** (the `BSY` wait in
+  `spi_close`, for example; docs/TODO.md §2.1). Doing it first means that when a
+  peripheral hangs, the firmware stops silently with no reason printed, which breaks
+  docs/decisions.md A-04, "log and halt". How to treat the §6.6 order is placed in
+  docs/TODO.md §2
 
-### 3.3 アプリの置き場所
+### 3.3 Where the app lives
 
-2 通りあり、**両方要る**。
+Two places, and **both are needed**.
 
-**(S1) RAM スロット** — 受信して即実行。再起動で消える。dev ループ用。
+**(S1) RAM slot** - receive and run immediately. Lost on reboot. For the dev loop.
 
-**(S2) フラッシュスロット** — 電源投入で走る。永続。
+**(S2) Flash slot** - runs at power-on. Persistent.
 
 | | RP2040 | RP2350 | ESP32-S3 |
 |---|---|---|---|
-| SRAM | 264 KB（`ARENA` 160 KB） | 520 KB（`ARENA` 320 KB） | 512 KB（`ARENA` 300 KB、残り DRAM はほぼ無い。TODO §1.4） |
-| RAM スロットの取り方 | `ARENA` の先頭を `split_at_mut` で切る | 同じ | 同じ |
-| フラッシュ書き込み | `rom_data`（RP2350 と同系） | `rom_data::connect_internal_flash` / `flash_exit_xip` / `flash_range_erase` / `flash_range_program` / `flash_flush_cache`（rp235x-hal 0.4.0） | `esp-storage` 0.10 の `FlashStorage`（`SECTOR_SIZE` = 4096） |
-| フラッシュからの実行 | **2026-10-04 に実装**（XIP スライスをそのまま渡す。RAM コピー不要） | 同じ（`0x10100000` から 64 KiB。どちらも実機未検証） | **RAM にコピーする。** 任意オフセットが XIP にマップされている前提を置かない（MMU / DROM） |
+| SRAM | 264 KB (`ARENA` 160 KB) | 520 KB (`ARENA` 320 KB) | 512 KB (`ARENA` 300 KB; almost no DRAM left. docs/TODO.md §1.4) |
+| How the RAM slot is taken | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` |
+| Flash write | `rom_data` (same family as RP2350) | `rom_data::connect_internal_flash` / `flash_exit_xip` / `flash_range_erase` / `flash_range_program` / `flash_flush_cache` (rp235x-hal 0.4.0) | `FlashStorage` from `esp-storage` 0.10 (`SECTOR_SIZE` = 4096) |
+| Running from flash | **Implemented 2026-10-04** (the XIP slice is passed as is; no RAM copy) | **Implemented 2026-10-04**, the XIP slice passed as is (64 KiB from `0x10100000`; neither verified on hardware yet) | **Copied to RAM.** No assumption that an arbitrary offset is XIP-mapped (MMU / DROM) |
 
-- アプリは現状 775 B〜5.3 KB（`blink_rs` 775 B / `lcd_demo_rs` 4.0 KB /
-  `sensor_display_as` 5.3 KB）なので、64 KiB のスロットでも RP2350 / ESP32-S3 では
-  `ARENA` の 1/5 未満。**RP2040 は SRAM が厳しいので小さく取る**（16 KiB など）
-- RP2350 で消去・書き込みをするとき **XIP から実行しているコードは走れない**。
-  書き込みルーチンを RAM に置き（`#[link_section = ".data"]`）、割り込みを止めて
-  呼ぶ必要がある（**要確認** → §5-6）
-#### ファームにアプリは入らない（オーナー決定 2026-10-04）
+- Apps are currently 775 B to 5.3 KB (`blink_rs` 775 B / `lcd_demo_rs` 4.0 KB /
+  `sensor_display_as` 5.3 KB), so even a 64 KiB slot is under 1/5 of `ARENA` on
+  RP2350 / ESP32-S3. **RP2040 is tight on SRAM, so keep it small** (16 KiB or so)
+- On RP2350, **code executing from XIP cannot run while erasing or programming**.
+  The write routine has to be placed in RAM (`#[link_section = ".data"]`) and called
+  with interrupts off (**to be confirmed** -> §5-6)
+#### No app in the firmware (owner decision 2026-10-04)
 
-> **2026-10-07 に実施した。** 3 ポートの `include_bytes!` と `guest-lcd-demo` feature を
-> 落とし、CI の rp2040 / rp2350 ジョブから `apps` の先行ビルドを外した。空スロットは
-> `wasmicon: slot empty, idle` と出して `ports/common` の `idle::heartbeat` に入り、
-> `led` 役のピンを 1 Hz で点滅させる（`Board` 直叩き。トレースは出ない）。
+> **Done on 2026-10-07.** The `include_bytes!` and the `guest-lcd-demo` feature were
+> dropped from the three ports, and the CI rp2040 / rp2350 jobs no longer build `apps`
+> first. An empty slot prints `wasmicon: slot empty, idle`, enters
+> `idle::heartbeat` in `ports/common`, and blinks the pin with the `led` role at 1 Hz
+> (talking to `Board` directly; no trace).
 
-**`include_bytes!` の内蔵アプリは外す。** 空スロットのときは理由を UART に出して
-idle に入り、生存確認は**ポート層が直接 LED を振る**（`Board` を直叩きするので
-Wasm を通らない。`ports/esp32s3/src/probe.rs` と同じ層）。
+**The built-in `include_bytes!` app is removed.** On an empty slot the firmware
+prints the reason on the UART and idles; the liveness sign is **the port layer
+blinking the LED directly** (it talks to `Board`, so Wasm is not involved; the same
+layer as `ports/esp32s3/src/probe.rs`).
 
-理由は「アプリはファームに入らない」を例外なしにすることだけではない。
-**今の `include_bytes!` はファームのビルドを `apps/` のビルドに依存させている** —
-CI の rp2040 / rp2350 ジョブが `apps` を先にビルドしているのはこのためで、
-**ファームを単体のリリース成果物として作れない**（§4.5 の配布と正面からぶつかる）。
+The reason is not only to make "no app in the firmware" hold without exception.
+**The current `include_bytes!` makes the firmware build depend on the `apps/`
+build** - that is why the CI rp2040 / rp2350 jobs build `apps` first - and
+**the firmware cannot be produced as a standalone release deliverable** (a head-on
+conflict with the distribution in §4.5).
 
-- **外すのはスロットが入るのと同時**（§5 の 1 段）。先に外すとファームが
-  何も走らせなくなる
-- **CI も同時に直す**: ポートのジョブから `apps` の先行ビルドが要らなくなり、
-  `cargo clippy --features guest-lcd-demo` の行も消える（feature 自体が無くなる）
-- **失うもの**: 焼いた直後に「ランタイムが decode → run まで通る」ことを実機で
-  確かめる足場。host テストと最初の `deploy` で代替する。LED のハートビートが
-  示すのは「ファームが生きている」までで、ランタイムが動くことは示さない
-- **記録済みトレースは生き続ける。** `lcd_demo_rs.wasm`（`fc470947…`）を
-  スロットに `deploy` して走らせれば、**バイト列が同一なので host call 列も同一**
-  （ゲストは自分がどう届いたか知らない）。XIP のどの番地に載るか、RAM に
-  写されるかはトレースに出ない
+- **Remove it at the same time as the slot goes in** (stage 1 of §5). Removing it
+  first would leave the firmware running nothing
+- **Fix CI at the same time**: the port jobs no longer need the `apps` pre-build, and
+  the `cargo clippy --features guest-lcd-demo` line disappears (the feature itself is gone)
+- **What is lost**: the foothold of confirming on hardware, right after flashing, that
+  "the runtime gets from decode through run". The host tests and the first `deploy`
+  replace it. The LED heartbeat only shows "the firmware is alive", not that the
+  runtime works
+- **The recorded traces stay valid.** `deploy` `lcd_demo_rs.wasm` (`fc470947...`) to
+  the slot and run it: **the bytes are identical, so the host call sequence is
+  identical** (the guest does not know how it arrived). Which XIP address it sits at,
+  or whether it was copied to RAM, does not show in the trace
 
-スロットをフラッシュのどこに置くかは**ボードごとに別の問題**:
+Where the slot goes in flash is **a separate problem per board**:
 
-- **RP2350 / RP2040**: フラッシュ 4 MB。ファームの末尾は `__flash_binary_end`
-  （`ports/rp2350/memory.x`）。スロットは固定オフセット（例 先頭から 1 MB =
-  `0x1010_0000`）に置き、**ファームの末尾と重ならないことを起動時に検査して
-  UART に出す**。重なれば自分を壊す
-- **ESP32-S3**: **固定オフセットを決め打ちしてはいけない。** espflash の既定の
-  パーティションテーブルは `factory` をフラッシュ末尾まで広げるので、
-  「3 MB の位置」のような決め方では factory の中に入る。`partitions.csv` に
-  `wasmicon, data, …` の専用エントリを足し、`espflash --partition-table` で焼いて、
-  そのオフセットへ `write-bin` する。今は `esp-bootloader-esp-idf` を
-  `default-features = false` にしてパーティションテーブルの検査を切っている
-  （`ports/esp32s3/Cargo.toml`）ので、**整合は自分で取る**
-- フラッシュ容量と PSRAM の有無は手元のボードの品種で決まる → §5-2
+- **RP2350 / RP2040**: 4 MB flash. The firmware ends at `__flash_binary_end`
+  (`ports/rp2350/memory.x`). Put the slot at a fixed offset (e.g. 1 MB from the
+  start = `0x1010_0000`) and **check at boot that it does not overlap the end of the
+  firmware, printing the result on the UART**. An overlap destroys the firmware itself
+- **ESP32-S3**: **do not hardcode a fixed offset.** espflash's default partition
+  table extends `factory` to the end of flash, so a choice like "the 3 MB mark" lands
+  inside factory. Add a dedicated `wasmicon, data, ...` entry to `partitions.csv`,
+  flash with `espflash --partition-table`, and `write-bin` to that offset. Today
+  `esp-bootloader-esp-idf` is built with `default-features = false`, which turns the
+  partition-table check off (`ports/esp32s3/Cargo.toml`), so **consistency is our
+  own job**
+- Flash size and whether PSRAM is present depend on the exact board variant at hand -> §5-2
 
-### 3.4 スロットの形式
+### 3.4 Slot format
 
 ```
-offset  size  内容
-0       4     magic "WMCA"（Wasmicon App）
-4       2     フォーマット版（= 1）
-6       2     予約（0）
-8       4     wasm の長さ（u32 LE）
-12      4     wasm の CRC-32（u32 LE）
-16      n     wasm 本体
+offset  size  content
+0       4     magic "WMCA" (Wasmicon App)
+4       2     format version (= 1)
+6       2     reserved (0)
+8       4     wasm length (u32 LE)
+12      4     wasm CRC-32 (u32 LE)
+16      n     wasm body
 ```
 
-形の正は `ports/common` の `slot`（**書く側と読む側で 2 回書かない**）。
-CLI 側は `wasmicon pack` が画像を作る。
+The format is owned by `slot` in `ports/common` (**not written twice, once for the
+writer and once for the reader**). On the CLI side `wasmicon pack` builds the image.
 
-- wasm が 16 バイト境界から始まるので、スライスをそのまま `decode` に渡せる
-- CRC は「転送の事故」と「アプリのバグ」を切り分けるために入れる。TODO §1.4 の
-  「無言で止まる」を 1 つ減らせる
-- **空（消去済みの `0xff` / 未使用の `0x00`）は失敗ではない。** ファームは
-  これを見て idle に入る（§3.1）。magic 違い（別のものが書かれている）とは
-  区別する — ログの意味が変わる
-- スロット領域**全体**を渡してよい（長さはヘッダが持つので余りは無視する）。
-  4 KiB のセクタをまるごと読んで渡す使い方を想定している
-- **ABI バージョンはヘッダに入れない。** import のモジュール名
-  （`wasmicon:hal/gpio@0.1.0`）が既にバージョンを持ち、完全一致が要求される
-  （abi-spec §3.1 / §6.4）ので、不一致は `instantiate` が `unknown import` で弾く。
-  CLI は `info`（§3.6）が返す ABI バージョンで**送る前に**弾く
+- The wasm starts on a 16-byte boundary, so the slice can be passed straight to `decode`
+- The CRC distinguishes "transfer accident" from "app bug". One fewer "stops silently"
+  case from docs/TODO.md §1.4
+- **Empty (erased `0xff` / unused `0x00`) is not a failure.** The firmware sees it and
+  idles (§3.1). It is distinguished from a magic mismatch (something else was
+  written) - the log means something different
+- The **whole** slot region may be passed in (the header carries the length, so the
+  rest is ignored). The intended use is reading an entire 4 KiB sector and passing it in
+- **The ABI version is not in the header.** The import module name
+  (`wasmicon:hal/gpio@0.1.0`) already carries the version and must match exactly
+  (docs/abi-spec.md §3.1, §6.4), so a mismatch is rejected by `instantiate` with
+  `unknown import`. The CLI rejects it **before sending** using the ABI version that
+  `info` (§3.6) returns
 
-### 3.5 転送路
+### 3.5 Transport
 
-**制御は USB、トレースは UART0 に分ける。** 同じ UART に混ぜるとフレーム同期と
-ログ行がぶつかる。しかも**両ボードとも USB の口が空いている**
-（ESP32-S3 の `USB-OTG` 側は今のファームが何も出していない。
-`apps/lcd-demo-rs/README.md`。Pico は USB 未使用）。
+**Control goes over USB, the trace over UART0.** Mixing them on one UART makes frame
+sync and log lines collide. And **both boards have a free USB port** (the ESP32-S3
+`USB-OTG` side outputs nothing with the current firmware,
+`apps/lcd-demo-rs/README.md`; the Pico's USB is unused).
 
-| ボード | 制御チャネル | 根拠 |
+| Board | Control channel | Basis |
 |---|---|---|
-| ESP32-S3 | USB-Serial-JTAG（`USB-OTG` ポート） | `esp-hal` の `usb::usb_serial_jtag`。**追加クレート不要** |
-| RP2350 / RP2040 | USB CDC | `rp235x-hal::usb`（`usb-device` の `UsbBus` 実装）+ `usbd-serial` |
+| ESP32-S3 | USB-Serial-JTAG (the `USB-OTG` port) | `usb::usb_serial_jtag` in `esp-hal`. **No extra crate** |
+| RP2350 / RP2040 | USB CDC | `rp235x-hal::usb` (the `UsbBus` impl for `usb-device`) + `usbd-serial` |
 
-**USB スタックを入れる前の 0 段目**（既存のフラッシャでスロットだけ書く）:
+**Stage 0, before any USB stack** (write only the slot with the existing flasher):
 
-- ESP32-S3: `espflash write-bin <offset> app.bin`。DTR/RTS で ROM ブートローダに
-  落ちるので**ボタン操作が要らない**
-- RP2350 / RP2040: BOOTSEL + `picotool load -o <offset>`、または
-  **スロットのアドレスを指す UF2 を CLI が作って `RPI-RP2` ドライブにコピー**
-  （picotool 不要）。RP2350 で任意アドレスに absolute family ID
-  (0xe48bff57) が要るかは **要確認**（→ §5-6）
-- ファームが USB 制御チャネルを持てば
-  `reboot::RebootKind::BootSel`（rp235x-hal 0.4.0 `src/reboot.rs`）で自分を
-  BOOTSEL に落とせるので、Pico のボタン操作も消せる
+- ESP32-S3: `espflash write-bin <offset> app.bin`. DTR/RTS drops it into the ROM
+  bootloader, so **no button press is needed**
+- RP2350 / RP2040: BOOTSEL + `picotool load -o <offset>`, or **the CLI builds a UF2
+  that points at the slot address and copies it to the `RPI-RP2` drive** (no
+  picotool). Whether RP2350 needs the absolute family ID (0xe48bff57) for an
+  arbitrary address is **to be confirmed** (-> §5-6)
+- Once the firmware has a USB control channel it can drop itself into BOOTSEL with
+  `reboot::RebootKind::BootSel` (rp235x-hal 0.4.0 `src/reboot.rs`), which removes the
+  Pico's button press too
 
 **HTTP:**
 
-- **ESP32-S3 + `esp-wifi` から。RAM 予算が本題。** 今 DRAM はほぼ使い切っている
-  （`.bss` 315 KB / `ARENA` 300 KB / ネイティブスタック 17.4 KiB。TODO §1.4）。
-  esp-wifi はヒープを数十 KB 要求するので、**`max_memory_pages` を 4 → 2 に
-  落とすか、arena を PSRAM に移すかの二択**になる。前者は abi-spec §6.2 が
-  許す範囲（上限はポートが決める）だが、**「同一バイナリがどのボードでも通る」が
-  実質的に崩れる**。後者は DevKitC-1 の品種次第（N8R8 なら PSRAM 8 MB、
-  `esp-hal` に `psram` がある）で、**線形メモリを PSRAM に置くと遅くなる**
-  （未計測）→ §5-3
-- **Pico 2 W / Pico WH は CYW43439。** 実用的なドライバ `cyw43` は embassy
-  （async）前提で、今の blocking 構成からポートの作り直しになる。
-  **v1 の HTTP は ESP32-S3 だけ**を推す → §5-4
-- 向き（デバイスがサーバか、URL から pull するか）は §5-5。dev ループは
-  `POST /app` + mDNS が楽で、OTA は pull が楽
+- **Start with ESP32-S3 + `esp-wifi`. The RAM budget is the real issue.** DRAM is
+  nearly exhausted today (`.bss` 315 KB / `ARENA` 300 KB / native stack 17.4 KiB;
+  docs/TODO.md §1.4). esp-wifi wants tens of KB of heap, so it is **either lower
+  `max_memory_pages` from 4 to 2 or move the arena to PSRAM**. The former is within
+  what docs/abi-spec.md §6.2 allows (the port decides the limit) but **effectively
+  breaks "the same binary runs on every board"**. The latter depends on the DevKitC-1
+  variant (N8R8 has 8 MB PSRAM; `esp-hal` has `psram`), and **linear memory in PSRAM
+  is slower** (not measured) -> §5-3
+- **Pico 2 W / Pico WH have a CYW43439.** The usable driver `cyw43` assumes embassy
+  (async), which means rewriting the port away from the current blocking setup.
+  The recommendation is **HTTP in v1 on ESP32-S3 only** -> §5-4
+- Direction (device as server, or pull from a URL) is §5-5. For the dev loop
+  `POST /app` + mDNS is easiest; for OTA, pull is easiest
 
-### 3.6 プロトコル
+### 3.6 Protocol
 
-**CLI とファームが USB / HTTP 越しに話すための取り決め。** ゲストとランタイムの
-間の ABI（`wasmicon:hal@0.1.0`）とは相手も目的も別物で、**アプリは一切関与しない。**
+**The agreement for the CLI and the firmware to talk over USB / HTTP.** It is a
+different thing, with a different counterpart and purpose, from the ABI between
+guest and runtime (`wasmicon:hal@0.1.0`); **the app is not involved at all.**
 
 ```
-フレーム: "WMCN" | ver u8 | cmd u8 | len u32 LE | payload | crc32 LE
+frame: "WMCN" | ver u8 | cmd u8 | len u32 LE | payload | crc32 LE
 ```
 
-magic で resync する。コマンド:
+Resync on the magic. Commands:
 
-| cmd | 名前 | payload | 意味 |
+| cmd | name | payload | meaning |
 |---|---|---|---|
-| 0x01 | `info` | なし | ボードの申告を返す |
-| 0x02 | `load` | wasm | RAM スロットへ（S1） |
-| 0x03 | `store` | wasm | フラッシュスロットへ（S2） |
-| 0x04 | `run` | なし | スロットのアプリを走らせる |
-| 0x05 | `stop` | なし | 走行を終わらせて idle に戻す |
-| 0x06 | `reset` | なし | リセット |
-| 0x07 | `probe` | なし | ポート層を直接叩いて切り分ける（下記） |
-| 0x08 | `config` | 設定テキスト（空なら消去） | 役割マップを書く（§3.9）。実効値は `info` が返す |
+| 0x01 | `info` | none | return the board's self-description |
+| 0x02 | `load` | wasm | to the RAM slot (S1) |
+| 0x03 | `store` | wasm | to the flash slot (S2) |
+| 0x04 | `run` | none | run the app in the slot |
+| 0x05 | `stop` | none | end the run and return to idle |
+| 0x06 | `reset` | none | reset |
+| 0x07 | `probe` | none | drive the port layer directly for diagnosis (below) |
+| 0x08 | `config` | config text (empty = erase) | write the role map (§3.9). `info` returns the effective values |
 
-`info` が返すもの → **§3.8**（ボード名、ファーム版、ABI 版、`Config`、スロット容量と
-形式版、プロトコル版、役割名、構成）。**これで CLI がボードの上限をハードコード
-しなくなる**（§4.3）。
+What `info` returns -> **§3.8** (board name, firmware version, ABI version, `Config`,
+slot capacity and format version, protocol version, role names, configuration).
+**This is what stops the CLI from hardcoding board limits** (§4.3).
 
-`probe` は今の `hw-probe` feature（`ports/esp32s3/src/probe.rs`）をコマンドにした
-もの。**ゲストを走らせず `Board` を直接叩く**ので、「トレースが host と完全一致
-するのに画面が真白」— レジスタ設定がパッドまで届いているか — を見られる唯一の
-手段で、ESP32-S3 の `out_sel` で実際に効いた（verification-report §7）。
-**コマンドにすると焼き直さずに切り分けられ、build 構成が 1 つ減る**（§3.8）。
+`probe` is the current `hw-probe` feature (`ports/esp32s3/src/probe.rs`) turned into
+a command. **It drives `Board` directly without running a guest**, so it is the only
+way to look at "the trace matches the host exactly but the screen is white" - whether
+the register settings reach the pads - and it is what actually caught `out_sel` on
+ESP32-S3 (docs/verification-report.md §7). **As a command it diagnoses without
+reflashing, and there is one build configuration fewer** (§3.8).
 
-**走行中のアプリへの割り込みは素直にリセットで行う。** ゲストがいつ yield するか
-分からず、host call の中で USB をポーリングすると host call の所要時間が変わる
-（トレースの内容は変わらないが `time` の値は変わる）。dev ループは
-「リセット → idle → 送る」で足りる。
+**Interrupting a running app is done plainly by reset.** There is no knowing when the
+guest yields, and polling USB inside a host call changes how long host calls take
+(the trace content does not change, but `time` values do). For the dev loop,
+"reset -> idle -> send" is enough.
 
-HTTP は同じコマンドを別の殻に入れるだけ（`GET /info`、`POST /app`）。
-**プロトコル版はどちらの経路にも同じく効く**（版が縛るのはコマンドの集合と
-payload の形で、殻ではない）。
+HTTP is the same commands in a different shell (`GET /info`, `POST /app`). **The
+protocol version applies to both paths equally** (the version constrains the command
+set and payload shapes, not the shell).
 
-#### 版を持つ理由と、凍結する部分
+#### Why there is a version, and what is frozen
 
-**CLI とファームは別々に更新される。** ファームは一度焼いたら放置、CLI は
-`cargo install` で新しくなるので、「**新しい CLI が古いファームに話しかける**」が
-普通に起きる。`info` が `protocol 1` と返せば、CLI は「このファームは v1 しか
-喋れない → v2 の機能は使わない / 焼き直してくれと言う」を判断できる。
+**The CLI and the firmware are updated separately.** Firmware is flashed once and
+left alone; the CLI gets newer through `cargo install`, so "**a new CLI talks to an
+old firmware**" happens routinely. If `info` answers `protocol 1`, the CLI can decide
+"this firmware only speaks v1 -> do not use v2 features / ask for a reflash".
 
-そのためには **フレームの封筒（magic + `ver` + `cmd` + `len` + `crc`）を一度決めたら
-凍結する**必要がある。でないと版を問い合わせるフレーム自体が読めなくなる。
-版が付くのは封筒ではなく中身（コマンドの集合と payload の形）で、**未知の `ver` を
-受けたファームは封筒だけ読んで「その版は喋れない」と返す。**
+For that, **the frame envelope (magic + `ver` + `cmd` + `len` + `crc`) must be frozen
+once decided**. Otherwise the very frame that asks for the version becomes
+unreadable. The version applies not to the envelope but to the contents (command set
+and payload shapes), and **a firmware that receives an unknown `ver` reads only the
+envelope and answers "I do not speak that version".**
 
-#### 設計に出てくる「版」4 つ
+#### The four "versions" in this design
 
-混ざりやすいので並べておく。**上の 3 つは独立に動くので別々に持つ。**
+Easy to confuse, so here they are side by side. **The top three move independently,
+so they are held separately.**
 
-| 名前 | 誰と誰の間 | どこに実体があるか | 食い違うと |
+| Name | Between whom | Where it lives | On mismatch |
 |---|---|---|---|
-| **ABI 版** `wasmicon:hal@0.1.0` | ゲスト（`.wasm`）↔ ランタイム | import のモジュール名（完全一致。abi-spec §3.1）が強制。`info` も申告する（§3.8。`deploy` 前に弾くため） | 全アプリが `unknown import` で落ちる |
-| **プロトコル版** | CLI ↔ ファーム | フレームの `ver u8`（本節） | CLI が喋れない |
-| **スロット形式版** | 書き手 ↔ フラッシュ上のバイト列 | スロットヘッダ（§3.4） | 古いファームが新しいスロットを読む |
-| **ファーム版** | —（互換に関与しない） | `info` とバナー（§3.8） | 何も壊れない。由来の記録専用 |
+| **ABI version** `wasmicon:hal@0.1.0` | guest (`.wasm`) <-> runtime | Enforced by the import module name (exact match, docs/abi-spec.md §3.1). `info` declares it too (§3.8, to reject before `deploy`) | Every app fails with `unknown import` |
+| **Protocol version** | CLI <-> firmware | The frame's `ver u8` (this section) | The CLI cannot talk |
+| **Slot format version** | writer <-> the bytes in flash | The slot header (§3.4) | An old firmware reads a new slot |
+| **Firmware version** | - (not involved in compatibility) | `info` and the banner (§3.8) | Nothing breaks. Provenance only |
 
-ABI を触らずにコマンドを 1 つ足せばプロトコル版だけが上がり、**アプリは何の
-影響も受けない**。この切り分けが §3.8 の「版 1 本で範囲比較させると嘘になる」の
-中身で、ファーム版の振り方は §5-8。
+Adding one command without touching the ABI bumps only the protocol version, and
+**the app is not affected at all**. This separation is what §3.8 means by "a single
+version compared as a range would lie"; how firmware versions are assigned is §5-8.
 
-### 3.7 決定性との関係
+### 3.7 Relation to determinism
 
-- **ローダは host call を増やさない**ので abi-spec §9 のトレース行は変わらない。
-  記録済みの 14,352 行（verification-report §6 / §7）はそのまま有効
-- `verify/diff-traces.sh` は `>` / `<` で始まらない行を捨てるので、ローダのログ
-  （バナー、`loaded 4096 bytes crc=…` など）は混ざってよい
-- **壊れる経路は 2 つだけ**で、どちらも §3.1 / §3.2 で回避している:
-  ハンドル掃除がトレース行を出す / ロール表を持ち越す
-- **ただし「同じ `.wasm` なのにトレースが違う」の原因がファーム差になる**ので、
-  どのファームが出したトレースなのかを記録できる必要がある → §3.8
+- **The loader adds no host calls**, so the trace lines of docs/abi-spec.md §9 do not
+  change. The recorded 14,352 lines (docs/verification-report.md §6, §7) stay valid
+- `verify/diff-traces.sh` discards lines that do not start with `>` / `<`, so loader
+  log lines (the banner, `loaded 4096 bytes crc=...`, and so on) may be mixed in
+- **There are only two paths that break it**, both avoided in §3.1 / §3.2: the handle
+  cleanup emitting trace lines, and the role table carrying over
+- **But "same `.wasm`, different trace" can now be caused by a firmware difference**,
+  so it has to be possible to record which firmware produced a trace -> §3.8
 
 ---
 
-### 3.8 ファームウェアの identity と互換の軸
+### 3.8 Firmware identity and the axes of compatibility
 
-ファームは**ボードごとに別物**で、**版ごとにも違う**。そこで要るのは
-「ファームのパッケージマネージャ」ではなく、**ファームが自分を名乗ること**と、
-**送る前に突き合わせること**。
+Firmware is **different per board** and **different per version**. What is needed is
+not a "firmware package manager" but **the firmware stating who it is** and **a
+cross-check before sending**.
 
-#### 互換は版 1 本では表せない
+#### Compatibility is not one version number
 
-アプリから見た互換の軸は独立に 5 本ある。
+Seen from the app there are five independent axes.
 
-| 軸 | 今どこにあるか | 食い違うと何が起きるか |
+| Axis | Where it is today | What happens on mismatch |
 |---|---|---|
-| ABI 版 `wasmicon:hal@0.1.0` | import のモジュール名（完全一致。abi-spec §3.1） | 全アプリが `unknown import` で落ちる |
-| ボードプロファイル（`Config` + **実装済みインターフェース**） | 各 `main.rs`（RP2040 = 2 ページ、他 = 4）と各 `board.rs`（RP2040 は SPI / I2C が未実装） | 大きいアプリが validate で落ちる / 実機で `unsupported` が返る |
-| 役割名（自由。2026-10-07 から） | アプリの `wasmicon.toml` → デバイスの設定スロット（§3.9） | `pin-by-role` が `unsupported` を返す |
-| プロトコル版 | フレームの `ver u8`（§3.6） | CLI が喋れない |
-| スロット形式版 | スロットヘッダ（§3.4、= 1） | 古いファームが新しいスロットを読む |
+| ABI version `wasmicon:hal@0.1.0` | The import module name (exact match, docs/abi-spec.md §3.1) | Every app fails with `unknown import` |
+| Board profile (`Config` + **implemented interfaces**) | Each `main.rs` (RP2040 = 2 pages, others = 4) and each `board.rs` (RP2040 has no SPI / I2C) | A large app fails validate / `unsupported` on hardware |
+| Role names (free-form since 2026-10-07) | The app's `wasmicon.toml` -> the device's config slot (§3.9) | `pin-by-role` returns `unsupported` |
+| Protocol version | The frame's `ver u8` (§3.6) | The CLI cannot talk |
+| Slot format version | The slot header (§3.4, = 1) | An old firmware reads a new slot |
 
-**ファーム版を 1 本持って範囲比較させる設計にすると必ず嘘になる。** `info` は
-**軸ごとに申告**し、CLI は軸ごとに判定する。ファーム版は**由来（provenance）専用**。
+**A design that keeps one firmware version and compares it as a range will lie.**
+`info` **declares each axis** and the CLI judges each axis. The firmware version is
+**provenance only**.
 
-#### ファームはバナーで名乗る（2026-10-09 に実装）
+#### The firmware states who it is in the banner (implemented 2026-10-09)
 
-起動時、バナーの次の行に 1 行で名乗る（`ports/common` の `identity`）:
+At boot, the line after the banner is a one-line identity (`identity` in
+`ports/common`):
 
 ```
 wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board slot=v1/65536 roles=v1/4096
 ```
 
-- `git` はビルド時の `git describe --always --dirty`（各ポートの `build.rs` が
-  `ports/common/build/git.rs` を読んで埋める）。ABI 版は `wit/` から生成した
-  `generated::PACKAGE`。役割の一覧は次の行（`wasmicon: roles …`）に出る
-- `monitor` の取り込みは生のシリアル出力なので、名乗りはログの先頭に残る。
-  `trace diff` は 2 つのログの名乗りが食い違えば警告する（判定は変えない）
-- **プロトコル版はまだ無い**（プロトコル自体が 2 段で入る）。`info` も 2 段
+- `git` is `git describe --always --dirty` at build time (each port's `build.rs`
+  includes `ports/common/build/git.rs` to fill it in). The ABI version is
+  `generated::PACKAGE`, generated from `wit/`. The role list goes on the next line
+  (`wasmicon: roles ...`)
+- `monitor` captures the raw serial output, so the identity stays at the head of the
+  log. `trace diff` warns if the identities of the two logs differ (the verdict does
+  not change)
+- **There is no protocol version yet** (the protocol itself arrives in stage 2).
+  `info` is stage 2 as well
 
-以下は実装前（2026-10-04）の状態:
+Below is the state before implementation (2026-10-04):
 
-- バナーは `wasmicon rp2350` の 1 行だけで、**版も git も入っていない**
-  （`ports/rp2350/src/main.rs:140`、`ports/esp32s3/src/main.rs:87`、
-  `ports/rp2040/src/main.rs:124`）
-- `docs/verification-report.md` は**ゲストの SHA-256（`fc470947…`）は記録している
-  のに、ファーム側は何も記録していない**。どのビルドが 14,352 行を出したかは、
-  レポートの日付と git 履歴から推測するしかない
-- 単発ファームなら「焼いた本人が覚えている」で済むが、**ローダが入ると
-  「同じ `.wasm` なのにトレースが違う」の原因がファーム差になる**（§3.7）
+- The banner was the single line `wasmicon rp2350`, **with neither version nor git**
+  (`ports/rp2350/src/main.rs:140`, `ports/esp32s3/src/main.rs:87`,
+  `ports/rp2040/src/main.rs:124`)
+- docs/verification-report.md **records the guest's SHA-256 (`fc470947...`) but
+  nothing about the firmware**. Which build produced the 14,352 lines can only be
+  guessed from the report's date and the git history
+- For a single-shot firmware "the person who flashed it remembers" is enough, but
+  **once a loader is in, "same `.wasm`, different trace" can be caused by a firmware
+  difference** (§3.7)
 
-#### 載せるもの
+#### What it carries
 
-`info` と**バナーの 1 行**（シリアルしか無い場面で効く）に、同じものを出す:
+`info` and **the one-line banner** (useful where only serial is available) print the
+same thing:
 
-ボード名 / ファーム版 + `git describe` + dirty / ABI 版 / 構成（`trace` の有無）/
-`Config` / **実装済みインターフェース** / スロット容量と形式版 / プロトコル版 /
-役割名の一覧。
+board name / firmware version + `git describe` + dirty / ABI version / configuration
+(whether `trace` is on) / `Config` / **implemented interfaces** / slot capacity and
+format version / protocol version / list of role names.
 
-- `git describe` はビルド時に埋める（`build.rs`）。**dirty を落とさない。**
-  手元ビルドが名乗れないと検証の記録が曖昧になる
-- **変種（variant）は版ではなく構成**。`trace` を切って焼いたボードに `monitor` を
-  当てると無言で何も出ない（今なら配線から疑い始める）。`trace: off` と言えば一発
-- **variant は `trace` あり / なしの 2 つだけになる。** `guest-lcd-demo` は
-  内蔵アプリを外して消えた（§3.3、2026-10-07）。`hw-probe` は build 構成ではなく
-  `probe` コマンドになる（§3.6）。manifest とキャッシュの鍵は
-  **board × version × variant**（版だけでは一意にならない）
+- `git describe` is filled in at build time (`build.rs`). **Do not drop dirty.**
+  If a local build cannot say so, the verification record becomes ambiguous
+- **A variant is configuration, not a version.** Point `monitor` at a board flashed
+  without `trace` and nothing comes out (today you would start by suspecting the
+  wiring). `trace: off` says it at once
+- **There are only two variants: `trace` on / off.** `guest-lcd-demo` disappeared
+  with the built-in app (§3.3, 2026-10-07). `hw-probe` becomes the `probe` command
+  rather than a build configuration (§3.6). The manifest and cache key is
+  **board x version x variant** (the version alone is not unique)
 
-#### 使い道
+#### Uses
 
-- **`deploy` 前の照合**: ABI 版、初期ページ数 ≤ `max_memory_pages`、
-  **アプリが import するインターフェースがそのポートで実装済みか**、
-  サイズ ≤ スロット容量、スロット形式版。`check --board`（§4.3）の表を
-  デバイスの申告に差し替えるだけ
-  - **役割名は静的に列挙できない**（§4.3）。`info` が持つ役割名の一覧と
-    突き合わせられるのは、データセグメントから見つかった名前だけ
-  - 実装状況を持たせないと、`ports/rp2040` 向けの `check` は**静的には通って
-    しまう**（SPI / I2C が `unsupported` を返すのは実行時）。§4.6 の例がこれ
-- **トレースへのスタンプ**: `monitor` が取り込みログの先頭に identity を記録する。
-  `trace diff` は identity 行を比較から外すが、**食い違ったら警告する**
-  （`time` を除外しているのと同じ扱い。handoff §2-10）
-- **配布**: ボード × 版の成果物に manifest（ファイル + sha256 + 上の 5 軸）。
-  `wasmicon flash --board rp2350 [--fw 0.2.0]` とローカルキャッシュ、
-  `wasmicon fw list`（手元にある版と、デバイスに載っている版）。§4.5 と対になる
+- **Cross-check before `deploy`**: ABI version, initial pages <= `max_memory_pages`,
+  **whether the interfaces the app imports are implemented on that port**, size <=
+  slot capacity, slot format version. Just swap the table in `check --board` (§4.3)
+  for the device's self-description
+  - **Role names cannot be enumerated statically** (§4.3). Only names found in the
+    data segments can be cross-checked against the role list `info` holds
+  - Without the implementation status, `check` for `ports/rp2040` **passes
+    statically** (SPI / I2C returning `unsupported` happens at run time). The §4.6
+    example shows this
+- **A stamp on the trace**: `monitor` records the identity at the head of the captured
+  log. `trace diff` excludes the identity line from the comparison but **warns if it
+  differs** (same treatment as excluding `time`; docs/decisions.md D-10)
+- **Distribution**: a manifest per board x version deliverable (file + sha256 + the
+  five axes above). `wasmicon flash --board rp2350 [--fw 0.2.0]` with a local cache,
+  and `wasmicon fw list` (versions on hand, and the version on the device). The
+  counterpart of §4.5
 
-#### 作らないもの（今は）
+#### Not built (for now)
 
-A/B スロットでのロールバック、署名検証、HTTP 経由のファーム自己更新、
-デバイス台帳。1 人・3 枚・ケーブルが手元にある状況では過剰で、特に A/B は
-**フラッシュ予算とアプリスロットの配置を同時に複雑にする**（§3.3）。
+A/B slot rollback, signature verification, firmware self-update over HTTP, a device
+inventory. Overkill for one person, three boards and a cable on the desk; A/B in
+particular **complicates the flash budget and the app slot placement at the same
+time** (§3.3).
 
-**ただしスロット形式版とプロトコル版は最初から持つ。** 払うのは数バイトで、
-後から足せない。版番号の振り方（3 ポート共通の 1 本か、ポートごとか）は §5-8。
+**The slot format version and the protocol version are kept from the start, though.**
+They cost a few bytes and cannot be added later. How version numbers are assigned
+(one shared across the three ports, or per port) is §5-8.
 
 ---
 
-### 3.9 役割マップをデバイス側の設定にする
+### 3.9 The role map as device-side configuration
 
-> **2026-10-07 にオーナーが確定し、1 段の最小版を実装した**（TODO §5-9）。
-> 決めたこと: **役割名はファームの語彙ではない**（固定の語彙 `ROLE_NAMES` を廃止）／
-> **ファームは既定の表を持たない**／**空スロットの待機でピンを駆動しない**（LED の
-> 点滅をやめた）。
+> **The owner settled this on 2026-10-07 and the stage 1 minimum was implemented**
+> (docs/TODO.md §5-9). Decided: **role names are not firmware vocabulary** (the fixed
+> `ROLE_NAMES` vocabulary is gone) / **the firmware has no default table** /
+> **idling on an empty slot drives no pins** (the LED blink was removed).
 
-もともと役割 → GPIO 番号の対応は**ファームの中**にあった（`profile::<board>.roles`）。
-**配線を変えるとファームを焼き直す**ことになり、「ファームは一度だけ焼く」（§1.2）と
-衝突していた。LCD の CS を隣のピンに移したいだけでファームのリリースを待つのは筋が悪い。
+Originally the role -> GPIO mapping lived **inside the firmware**
+(`profile::<board>.roles`). **Changing the wiring meant reflashing the firmware**,
+which conflicted with "flash the firmware once" (§1.2). Waiting for a firmware
+release just to move the LCD's CS to the next pin is wrong.
 
-#### 役割名は「アプリと配線の間の約束」
+#### Role names are "an agreement between the app and the wiring"
 
-固定の語彙は、`alloc` が無い中でトレースの正規化（abi-spec §9）に `'static` な名前が
-欲しかったから入っていた近道で、設計上の要請ではなかった。役割名は:
+The fixed vocabulary was a shortcut: with no `alloc`, the trace normalization
+(docs/abi-spec.md §9) wanted `'static` names. It was not a design requirement. A
+role name is:
 
-- アプリが `wasmicon.toml` の `[requirements] pin-roles` で**宣言**し
-- 配線を `[board.<name>.roles]` に**番号で**書き
-- `deploy` がその表を設定スロットに書き、ファームは**読んだ表のとおりに**答える
+- **declared** by the app in `[requirements] pin-roles` of `wasmicon.toml`
+- wired **by number** in `[board.<name>.roles]`
+- written by `deploy` into the config slot, and the firmware answers **exactly as the
+  table it read says**
 
-名前は英小文字で始まる 16 文字までの `a-z` / `0-9` / `-`、8 個まで
-（`ports/common` の `roles::valid_name` / `MAX_ROLES`。`alloc` が無いので上限がある）。
-`led` もファームにとって特別な名前ではなくなった（blink が引く名前の 1 つ）。
+A name starts with a lowercase letter, is at most 16 characters of `a-z` / `0-9` /
+`-`, and there are at most 8 (`roles::valid_name` / `MAX_ROLES` in `ports/common`;
+the limit exists because there is no `alloc`). `led` is no longer special to the
+firmware either (it is just one of the names blink looks up).
 
-**タイポの検出**は語彙ではなく「宣言と配線表の食い違い」で行う。`check` / `deploy` は
-宣言した役割がそのボードの配線表に無ければ**焼く前に**落とす（デバイスに繋がなくてよい）。
+**Typos are caught** not by a vocabulary but by "the declaration and the wiring table
+disagree". `check` / `deploy` fail **before flashing** if a declared role is missing
+from that board's wiring table (no device connection needed).
 
-#### 何を設定可能にするか（最初は役割だけ）
+#### What is configurable (roles only, to begin with)
 
-| 対象 | 設定可能にするか | 理由 |
+| Target | Configurable? | Why |
 |---|---|---|
-| 役割 → GPIO | **する** | ゲストが直接振るピン。配線を変えたいのはここ |
-| バスのピン（SPI の SCK/MOSI/MISO、I2C の SDA/SCL） | **しない**（当面） | ハードの制約がチップごとに違う。RP2350 は PL022 の SPI0 が FUNCSEL で特定ピンに固定、ESP32-S3 は GPIO マトリクスでほぼ自由。**ポートごとに許可ピンの表が要る**ので別の話 |
-| バスの `index` | しない | ゲストに見えるのは `index` だけで、裏は元々ポートの責務（abi-spec §8） |
+| Role -> GPIO | **Yes** | Pins the guest drives directly. This is what people want to rewire |
+| Bus pins (SPI SCK/MOSI/MISO, I2C SDA/SCL) | **No** (for now) | Hardware constraints differ per chip. On RP2350 the PL022 SPI0 is fixed to specific pins by FUNCSEL; on ESP32-S3 the GPIO matrix allows almost anything. **It needs a table of allowed pins per port**, a separate topic |
+| Bus `index` | No | The guest sees only `index`; what is behind it has always been the port's job (docs/abi-spec.md §8) |
 
-#### 置き場所
+#### Where it lives
 
-**アプリスロットの直後に 4 KiB**（`profile::<board>.role_slot`。今は 3 ボードとも
-`0x110000`）。寿命は違うが、**`deploy` はアプリスロット（64 KiB）と設定スロットを
-1 本の画像にして 1 回で書く**（`pack::with_roles`）ので、書き込みの手間は増えない。
-アプリの後ろはスロットの終わりまで `0xff` で埋める。
+**4 KiB right after the app slot** (`profile::<board>.role_slot`; currently
+`0x110000` on all three boards). The lifetimes differ, but **`deploy` writes the app
+slot (64 KiB) and the config slot as one image in one go** (`pack::with_roles`), so
+flashing takes no extra step. The space after the app is filled with `0xff` to the
+end of the slot.
 
-**配線表は毎回書く。** 表が空でも書くので、`deploy` の結果はその時の
-`wasmicon.toml` だけで決まる（前に焼いた表が残らない）。
+**The wiring table is written every time.** Even an empty table is written, so the
+result of a `deploy` is determined by that moment's `wasmicon.toml` alone (no
+previously flashed table survives).
 
-#### 形式はテキスト
+#### The format is text
 
-ヘッダはアプリスロットと同じ作り（magic `"WMCR"` + 形式版 + 長さ + CRC-32）で、
-中身は 1 行 1 項目:
+The header is built like the app slot's (magic `"WMCR"` + format version + length +
+CRC-32); the body is one entry per line:
 
 ```
 lcd-cs=17
@@ -505,245 +540,260 @@ lcd-dc=20
 lcd-rst=21
 ```
 
-バイナリ（`[role_id u8, gpio u8]`）の方が小さいが、テキストにした。
+Binary (`[role_id u8, gpio u8]`) would be smaller, but text was chosen.
 
-- **役割 ID という新しい契約を作らずに済む。** ID を振ると「版ごとに ID がずれる」
-  という第 5 の互換軸（§3.6）が生まれる
-- `info` がそのまま読み上げられる。フラッシュを吸い出しても人間が読める
-- パースは `no_std` で済む（`=` で割って 10 進を読むだけ）。本文は 256 バイトまで
-- `wasmicon.toml` の `"none"` は「配らない」で、表には書かない
+- **No new "role ID" contract.** Assigning IDs creates a fifth compatibility axis
+  (§3.6), "IDs shift between versions"
+- `info` can read it out as is. Dump the flash and a human can read it
+- Parsing works in `no_std` (split on `=`, read a decimal). The body is at most 256 bytes
+- `"none"` in `wasmicon.toml` means "do not hand out" and is not written to the table
 
-#### 検証は 2 回（CLI とファーム）
+#### Checked twice (CLI and firmware)
 
-同じ検査（`roles::RoleMap::insert`）を、**CLI が焼く前に**（`wasmicon.toml` を読んだ
-時点）、**ファームが起動時に**もう一度かける。制約はプロファイルの `gpio_count` /
-`reserved` / `bus_pins` にあり、各ポートの `board.rs` が自分の値と一致することを
-コンパイル時に確かめている。
+The same check (`roles::RoleMap::insert`) runs **in the CLI before flashing** (when
+`wasmicon.toml` is read) and **again in the firmware at boot**. The constraints live
+in the profile's `gpio_count` / `reserved` / `bus_pins`, and each port's `board.rs`
+confirms at compile time that its own values agree.
 
-| 検査 | 弾く理由 |
+| Check | Why it rejects |
 |---|---|
-| 名前の書式 | 本文の `=` や改行、トレースの `role:` と衝突させない |
-| `番号 >= gpio_count` | 範囲外 |
-| **予約ピン** | GP0/GP1 は**トレースの UART0**。割り当てるとトレースが死ぬ。CYW43439 側（GP23/24/25/29）も同様 |
-| 同じ番号に 2 つの役割 | 実行時は `busy` になるだけだが原因が分かりにくい |
-| **ポートがバスに使う番号**（rp2350 の GP4/5・16/18/19、esp32s3 の GPIO8/9・11/12/13） | 割り当てると SPI / I2C が黙って壊れる |
+| Name format | Must not collide with `=` or newlines in the body, or with `role:` in the trace |
+| `number >= gpio_count` | Out of range |
+| **Reserved pins** | GP0/GP1 are **the trace UART0**. Assigning them kills the trace. Same for the CYW43439 side (GP23/24/25/29) |
+| Two roles on one number | At run time it is only `busy`, but the cause is hard to see |
+| **Numbers the port uses for a bus** (rp2350: GP4/5, 16/18/19; esp32s3: GPIO8/9, 11/12/13) | Assigning them silently breaks SPI / I2C |
 
-最後の行は注意が要る。abi-spec §8 の経緯で**バスのピンは意図的に `reserved` に
-入れていない**（入れると GPIO の開放可否が host の mock と食い違い、トレースの
-突き合わせがボードごとに別物になる）。**配線表の検査で弾くのは実行時の
-振る舞いを変えないので、この決定と衝突しない。**
+The last row needs care. For the reasons in docs/abi-spec.md §8, **bus pins are
+deliberately not in `reserved`** (putting them there makes "can this GPIO be opened"
+differ from the host mock, and the trace cross-check becomes a different thing per
+board). **Rejecting them in the wiring-table check does not change run-time behavior,
+so it does not conflict with that decision.**
 
-**壊れた表で勝手にピンを動かさない。** ファームは既定の表を持たないので、
-空・CRC 違い・制約違反のどれでも**役割を 1 つも配らずに起動**し、理由をバナーに
-出す（`wasmicon: roles crc mismatch, no roles`）。1 項目でもおかしければ表全体を
-捨てる。読めたときは `wasmicon: roles lcd-cs=17 lcd-dc=20 lcd-rst=21` と出す。
-どちらもトレース行ではないので `trace diff` は比べない。
+**A corrupt table never drives pins on its own.** The firmware has no default table,
+so for empty, CRC mismatch or a constraint violation alike it **boots handing out no
+roles** and prints the reason in the banner (`wasmicon: roles crc mismatch, no
+roles`). One bad entry discards the whole table. When it reads fine it prints
+`wasmicon: roles lcd-cs=17 lcd-dc=20 lcd-rst=21`. Neither is a trace line, so
+`trace diff` does not compare them.
 
-**適用は再起動後**（起動時に 1 回だけ読む）。`deploy` は書いたあとリセットするので、
-焼いた表がそのまま効く。
+**Applied after reboot** (read once at boot). `deploy` resets after writing, so the
+flashed table takes effect immediately.
 
-#### host は表をプロファイルに持つ
+#### The host keeps its table in the profile
 
-host（mock）はフラッシュを持たないので、表を `profile::HOST.roles` に置き、
-`wasmicon run` とテストが使う（`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`）。
-実機ボードの `roles` は空。
+The host (mock) has no flash, so its table is in `profile::HOST.roles`, used by
+`wasmicon run` and the tests (`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`). The real
+boards' `roles` is empty.
 
-#### なぜ決定性を壊さないか
+#### Why determinism is not broken
 
-abi-spec §9 が**役割で配った番号を `role:lcd-cs` に正規化して出す**ので、
-**対応表を変えてもトレース行は変わらない。** 役割という間接層が最初から
-この性質を持っていたということで、配線の自由度をファームから剥がしても
-Phase 6 は保てる。
+docs/abi-spec.md §9 **normalizes numbers handed out through a role to
+`role:lcd-cs`**, so **changing the mapping does not change a trace line.** The role
+indirection had this property from the start; stripping wiring freedom out of the
+firmware keeps the determinism criterion (docs/decisions.md D-10) intact.
 
-**ただし罠が 1 つ。** §9 はホストが引数の**数値からしか判断できない**とも書いて
-いて、ゲストがピン番号をハードコードしていてそれが役割の割り当てと一致すると、
-それも `role:` に置き換わる。したがって **役割マップを変えると、ハードコードして
-いるアプリのトレースが変わる**（`role:lcd-cs` だった行が生の番号になる）。
-そういうアプリは §9 が既に決定性検証の対象外だと言っているが、症状が
-「設定を変えたらトレースが変わった」になるので CLI が説明できるようにしておく。
+**One trap, though.** docs/abi-spec.md §9 also says the host can **only judge from
+the numeric argument**: if a guest hardcodes a pin number that happens to match a
+role assignment, that too is replaced by `role:`. So **changing the role map changes
+the trace of an app that hardcodes pins** (a line that was `role:lcd-cs` becomes a
+raw number). §9 already excludes such apps from determinism verification, but the
+symptom reads as "I changed the configuration and the trace changed", so the CLI
+should be able to explain it.
 
-#### identity に反映する（§3.8 の拡張）
+#### Reflected in the identity (an extension of §3.8)
 
-**同じファーム版でも配線が違えば別のセットアップ。** だから:
+**The same firmware version with different wiring is a different setup.** So:
 
-- `info` は**実効値**（既定 + 上書き）と、上書きされているかを申告する
-- `monitor` がログ先頭に刻む identity に、**実効マップの CRC-32 を入れる**
+- `info` declares the **effective values** (default + override) and whether an
+  override is in place
+- the identity that `monitor` stamps at the head of the log **includes the CRC-32 of
+  the effective map**
 
-入れないと、§3.8 で解こうとしていた「同じ `.wasm` なのにトレースが違う」の
-原因候補が 1 つ増えるだけになる。
+Without that, "same `.wasm`, different trace", which §3.8 set out to solve, just gets
+one more candidate cause.
 
-#### これでも解けないもの
+#### What this still does not solve
 
-- **バスのピン** → ポートごとの許可ピン表が要る。別件
-- **電気的な事実** — 外部プルアップ、`lcd-rst` が浮いて画面が白に戻る件
-  （TODO §2） → 設定の対象ではない
-- **プロトコル経由の書き換え**（`config apply`）は 2 段（USB 制御チャネル）。
-  今は `deploy` がアプリと一緒に外から書く（1 段）
+- **Bus pins** -> needs a per-port table of allowed pins. Separate topic
+- **Electrical facts** - external pull-ups, `lcd-rst` floating and the screen going
+  white (docs/TODO.md §2) -> not a configuration matter
+- **Rewriting over the protocol** (`config apply`) is stage 2 (USB control channel).
+  Today `deploy` writes it from outside together with the app (stage 1)
 
 ---
 
-## 4. `wasmicon` CLI
+## 4. The `wasmicon` CLI
 
-### 4.1 置き場所と流儀
+### 4.1 Location and style
 
-`tools/wasmicon-cli`（root workspace、bin 名 `wasmicon`）。依存クレートは入れてよい
-（前例: `wasmicon-gen` の anyhow / wit-parser）。**「依存ゼロ・`alloc` 不使用」は
-`runtime/` だけの制約**で、CLI には及ばない。引数パースは `wasmicon-gen` と同じ
-手書き + `USAGE` 定数（日本語）に揃える。フラッシャ（picotool / espflash /
-probe-rs）は**呼ぶだけで、自前実装しない**。
+`tools/wasmicon-cli` (root workspace, bin name `wasmicon`). Dependency crates are
+allowed (precedent: anyhow / wit-parser in `wasmicon-gen`). **"Zero dependencies, no
+`alloc`" is a constraint on `runtime/` only**, not on the CLI. Argument parsing
+follows `wasmicon-gen`: hand-written plus a `USAGE` constant. The flashers (picotool /
+espflash / probe-rs) are **invoked, never reimplemented**.
 
-### 4.2 コマンド
+### 4.2 Commands
 
-**どこまで実装されているかは `docs/TODO.md` §5 が正**（ここには書かない。
-CLAUDE.md「残作業を他の場所に書き足さない」）。「置き換える元」は、
-今その仕事をしている既存のものを指す。
+**How far each is implemented is owned by docs/TODO.md §5** (not written here;
+`AGENTS.md`: remaining work is not written anywhere else). "Replaces" names the
+existing thing that does the job today.
 
-| コマンド | 中身 | 置き換える元 |
+| Command | What it does | Replaces |
 |---|---|---|
-| `new <name> --lang rust\|as` | 雛形。ABI 準拠のビルドフラグを埋める（§4.4） | 無し |
-| ~~`build`~~ | **作らない。** `cargo build --release` / `npm run build` を言語で振り分けるだけの薄いラッパで、フラグは `new` が埋めたファイルが持つ（§4.4）ので足せるものが無い | —— |
-| `check <app.wasm> --board X` | **実ランタイムで** decode / validate / `Exec` / instantiate を**そのボードの arena の実寸で**通す（§4.3） | 無し（`wasm-tools validate` では import 表もボードの上限も見られない） |
-| `run <app.wasm> [--trace] [--i2c-replay f]` | host ポートで実行。`--i2c-replay` は既存の環境変数 `WASMICON_I2C_REPLAY` に対応する | `cargo run -p wasmicon-host`（crate は残して lib として使う） |
-| `deploy <app.wasm>` | USB / HTTP でアプリを送る。`--persist` でフラッシュスロット | 無し |
-| `flash --board X [--fw v]` | **ファームを**焼く（一度だけ）。版は manifest から引く（§3.8） | 手順書（`apps/lcd-demo-rs/README.md`） |
-| `fw list` | 手元にある版と、デバイスに載っている版を並べる（§3.8） | 無し |
-| `pack <app.wasm>` | スロット画像にする（§3.4）。1 段では外のフラッシャに渡す素材 | 無し |
-| `config show` / `set` / `apply` / `reset` | 役割マップを見る・書く・`wasmicon.toml` から押し込む・消す（§3.9 / §4.7） | 無し（今はファームを焼き直す） |
-| `monitor` | シリアルを開いてトレースを取る。`/dev/cu.usb*` を列挙し、**先頭に identity を記録する**（§3.8） | `cat /dev/cu.usbmodemXXXX \| tee` |
-| `trace diff a.log b.log` | 正規化して突き合わせ。**最初に食い違う行を出す**（トレースは追記しかされないので、そこが原因に最も近い） | `verify/diff-traces.sh`（**残す**。CLI と同じ判定を出すことをテストが突き合わせる） |
-| `size [target]` | コアのコードサイズ | `tools/measure-size.sh` |
-| `doctor` | ツールチェーンの検査 | 無し |
+| `new <name> --lang rust\|as` | Scaffold. Fills in the ABI-conformant build flags (§4.4) | Nothing |
+| ~~`build`~~ | **Not built.** It would be a thin wrapper that picks `cargo build --release` / `npm run build` by language; the flags live in the files `new` wrote (§4.4), so there is nothing to add | - |
+| `check <app.wasm> --board X` | Runs decode / validate / `Exec` / instantiate **on the real runtime**, **with that board's actual arena size** (§4.3) | Nothing (`wasm-tools validate` sees neither the import table nor the board limits) |
+| `run <app.wasm> [--trace] [--i2c-replay f]` | Runs on the host port. `--i2c-replay` corresponds to the existing env var `WASMICON_I2C_REPLAY` | `cargo run -p wasmicon-host` (the crate stays, used as a lib) |
+| `deploy <app.wasm>` | Sends the app over USB / HTTP. `--persist` for the flash slot | Nothing |
+| `flash --board X [--fw v]` | Flashes **the firmware** (once). The version comes from the manifest (§3.8) | The written procedure (`apps/lcd-demo-rs/README.md`) |
+| `fw list` | Lists the versions on hand and the version on the device (§3.8) | Nothing |
+| `pack <app.wasm>` | Builds the slot image (§3.4). In stage 1, the input for an external flasher | Nothing |
+| `config show` / `set` / `apply` / `reset` | View / write / push from `wasmicon.toml` / erase the role map (§3.9 / §4.7) | Nothing (today: reflash the firmware) |
+| `monitor` | Opens the serial port and captures the trace. Enumerates `/dev/cu.usb*` and **records the identity at the head** (§3.8) | `cat /dev/cu.usbmodemXXXX \| tee` |
+| `trace diff a.log b.log` | Normalizes and cross-checks. **Prints the first mismatching line** (traces are append-only, so that is closest to the cause) | `verify/diff-traces.sh` (**kept**; a test cross-checks that the CLI gives the same verdict) |
+| `size [target]` | Core code size | `tools/measure-size.sh` |
+| `doctor` | Toolchain check | Nothing |
 
-`monitor` は **`usbserial` を決め打ちしない**。手元の ESP32-S3 のブリッジは CH343 で
-`/dev/cu.usbmodem*` に見える（TODO §1.1）。
+`monitor` **does not assume `usbserial`**. The bridge on the ESP32-S3 at hand is a
+CH343 and shows up as `/dev/cu.usbmodem*` (docs/TODO.md §1.1).
 
-### 4.3 `check` が見るもの
+### 4.3 What `check` looks at
 
-**実ランタイムで検査するのが肝。** `wasm-tools validate --features=…` より強い:
+**The point is checking on the real runtime.** Stronger than
+`wasm-tools validate --features=...`:
 
-- import の**名前とシグネチャの完全一致**（abi-spec §6.4 / §7）。表は
-  `runtime/src/generated.rs`（= `wit/` 由来）
-- `run` と `memory` の export（abi-spec §3.3 / §6.2）。**`run` は型まで見る**
-  （`func()` 以外だと実行時に `wrong arity` で落ちるので、export の有無だけでは
-  素通りする）。memory の**定義**が無いのも落とす（§6.2 は 1 つ要求している）
-- **そのボードの `Config` での validate**（`max_memory_pages` など）
-- **アプリが import するインターフェースがそのポートで実装済みか**（§3.8）。
-  `ports/rp2040` は SPI / I2C が `unsupported` を返すので、これが無いと
-  静的検査は通って実機で初めて落ちる
+- **Exact match of import names and signatures** (docs/abi-spec.md §6.4, §7). The
+  table is `runtime/src/generated.rs` (= derived from `wit/`)
+- The `run` and `memory` exports (docs/abi-spec.md §3.3, §6.2). **`run` is checked
+  down to its type** (anything but `func()` fails at run time with `wrong arity`, so
+  checking only for the export's presence lets it through). A missing memory
+  **definition** fails too (§6.2 requires one)
+- **validate with that board's `Config`** (`max_memory_pages` and so on)
+- **Whether the interfaces the app imports are implemented on that port** (§3.8).
+  `ports/rp2040` returns `unsupported` for SPI / I2C, so without this the static
+  check passes and the failure appears only on hardware
 
-**できないこと: 役割名の列挙。** `pin-by-role` の引数は実行時に `(ptr, len)` で
-渡る `string` で（`wit/board.wit`）、語彙は WIT の型に入っていない。だから
-「このアプリがどの役割を引くか」を `.wasm` から**確実に列挙することはできない**。
-`check` は既知の名前がバイト列に現れるかを見るだけで、**参考**であって保証ではない。
-実測した限界は 2 つ:
+**What it cannot do: enumerate role names.** The argument of `pin-by-role` is a
+`string` passed at run time as `(ptr, len)` (`wit/board.wit`); the vocabulary is not
+in the WIT types. So "which roles does this app look up" **cannot be enumerated
+reliably from the `.wasm`**. `check` only looks for known names in the bytes, which is
+**informational**, not a guarantee. Two measured limits:
 
-- **ログ文字列の中の名前も拾う。** `sensor-display` は `led` を使っていないのに
-  `roles` に出る（`sensor crc failed` の中に `led` がある）
-- **AssemblyScript のゲストには当たらない。** AS の文字列リテラルは UTF-16 で
-  置かれ、UTF-8 への変換は呼び出し時に起きるので、UTF-8 の役割名がバイナリに
-  現れない（`sensor_display_as.wasm` は「見つからない」になる）確実に分かるのは実行時で、`pin-by-role` が
-`unsupported` を返した行がトレースに残る（§3.1）。
-**`wasmicon.toml` の `requirements.pin-roles`（§4.7）があれば、列挙が宣言に
-なるので保証に
-変わる。** プロジェクトの外から `.wasm` 単体を受け取ったときだけ参考に落ちる。
+- **It also picks up names inside log strings.** `sensor-display` does not use `led`,
+  yet `led` shows up in `roles` (it is inside `sensor crc failed`)
+- **It does not work on AssemblyScript guests.** AS stores string literals as UTF-16
+  and converts to UTF-8 at the call, so the UTF-8 role name never appears in the
+  binary (`sensor_display_as.wasm` reports "not found"). What is certain is only
+  known at run time, where a `pin-by-role` that returned `unsupported` leaves a line
+  in the trace (§3.1).
+**With `requirements.pin-roles` in `wasmicon.toml` (§4.7), the enumeration becomes a
+declaration and turns into a guarantee.** It drops back to informational only when a
+bare `.wasm` arrives from outside a project.
 
-**検査は CLI 側で組む。** `wasmicon_host::run_wasm_opts` は `run` まで
-呼ぶので検査には使えない。CLI が `wasmicon-core` + `wasmicon_port::Hal` +
-`wasmicon_host::hal::HostBoard` を直に組んで decode → validate → `Exec` →
-instantiate を並べる（host ポートを CLI のために太らせない）。
-`instantiate` はゲストを実行しないので、ボード実装は何でも結果が同じ。
+**The check is assembled on the CLI side.** `wasmicon_host::run_wasm_opts` calls
+all the way to `run`, so it cannot be used for a check. The CLI wires
+`wasmicon-core` + `wasmicon_port::Hal` + `wasmicon_host::hal::HostBoard` directly
+and lines up decode -> validate -> `Exec` -> instantiate (the host port is not
+fattened for the CLI). `instantiate` does not execute the guest, so the result is the
+same whatever the board implementation.
 
-**`Config` だけでは足りない。** 線形メモリは arena の残り全部を取るので
-（`Arena::alloc_rest`）、`max_memory_pages` に収まっていても
-「decode / validate / `Exec` が先に取った残りに `min_pages * 64 KiB` が
-入らない」ことがある。実機はそこで `instantiate` が落ちる。だから
-`Profile` は `arena` / `scratch` の実寸を持ち、`check` はそれで通す
-（`ports/rp2040` は 160 KiB しかなく、2 ページだと 20 KiB ほどしか余らない）。
-**ポートの `static ARENA` もこの値を使う**ので、2 箇所に分かれない。
+**`Config` alone is not enough.** Linear memory takes all of the remaining arena
+(`Arena::alloc_rest`), so even within `max_memory_pages` it can happen that
+"`min_pages * 64 KiB` does not fit in what is left after decode / validate / `Exec`
+took theirs". On hardware, `instantiate` fails right there. That is why `Profile`
+carries the actual `arena` / `scratch` sizes and `check` uses them (`ports/rp2040`
+has only 160 KiB; with 2 pages only about 20 KiB is left). **The port's
+`static ARENA` uses the same value**, so it is not split across two places.
 
-落ちた段（decode / validate / instantiate）は**区別して出す**。arena 不足は
-instantiate で出るので、「validate が落ちた」と言うと `max_memory_pages` を
-縮める方へ誘導してしまう（正しくは arena を増やす）。
+The failing stage (decode / validate / instantiate) is **reported distinctly**. Arena
+shortage shows up in instantiate; saying "validate failed" would steer people toward
+shrinking `max_memory_pages` (the right fix is a bigger arena).
 
-**host 実行は全ボードより緩い。** `ports/host` は `Config::default()`
-（`max_memory_pages` = 65536）で走るが、実機は RP2040 = 2 / RP2350 = 4 /
-ESP32-S3 = 4。**`wasmicon run` が通っても実機の validate で落ちるアプリが書ける。**
-これが `check --board` の存在理由。
+**Host execution is looser than every board.** `ports/host` runs with
+`Config::default()` (`max_memory_pages` = 65536), while hardware is RP2040 = 2 /
+RP2350 = 4 / ESP32-S3 = 4. **You can write an app that passes `wasmicon run` and
+fails validate on hardware.** That is why `check --board` exists.
 
-**ボードプロファイルは `ports/common` の `profile` に集めた**（2026-10-04）。
-散っていた `Config`（3 つの `main.rs`）と役割割り当て（各 `board.rs` の `ROLES`）、
-それに実装済みインターフェースを 1 箇所にしてある。各ポートはそこから引くので
-**CI の rp2040 / rp2350 ジョブの `cargo build` が値の一致を見てくれる**。
-値は `ports/common/tests/profiles.rs` に移す前の数値で固定した。
+**Board profiles were gathered into `profile` in `ports/common`** (2026-10-04). The
+scattered `Config` (three `main.rs`), the role assignments (`ROLES` in each
+`board.rs`) and the implemented interfaces are now in one place. Each port pulls from
+there, so **the `cargo build` in the CI rp2040 / rp2350 jobs checks that the values
+agree**. The values were locked in to the numbers from before the move, in
+`ports/common/tests/profiles.rs`.
 
 ```
-profile::RP2040   2 ページ / I2C と SPI は未実装 / GPIO の制約（予約・バスのピン）
-profile::RP2350   4 ページ / 全実装       / 同じ制約（ヘッダが同じ）
-profile::ESP32S3  4 ページ / 全実装       / DevKitC-1 の制約
-profile::HOST     Config::DEFAULT（緩い） / mock の役割の表（host だけが持つ）
+profile::RP2040   2 pages / I2C and SPI not implemented / GPIO constraints (reserved and bus pins)
+profile::RP2350   4 pages / everything implemented   / same constraints (same header)
+profile::ESP32S3  4 pages / everything implemented   / DevKitC-1 constraints
+profile::HOST     Config::DEFAULT (loose) / the mock role table (host only)
 ```
 
-`Config::DEFAULT` はこのために `runtime` に足した const で、`Default` が
-それを返す（二重に書くと必ず食い違う）。
+`Config::DEFAULT` is a const added to `runtime` for this, and `Default` returns it
+(written twice, it would inevitably diverge).
 
-**実機ボードは役割の表を持たない**（2026-10-07。§3.9）。プロファイルが持つのは
-配線表の検査に使う GPIO の制約（`gpio_count` / `reserved` / `bus_pins`）で、CLI は
-`wasmicon.toml` の配線表をこれで検査し、ファームは起動時に同じ検査をもう一度かける。
-（固定の語彙 `ROLE_NAMES` と、それをコンパイル時に見る `assert_role_names` は廃止した。）
+**Real boards have no role table** (2026-10-07; §3.9). What the profile holds is the
+GPIO constraints used to check the wiring table (`gpio_count` / `reserved` /
+`bus_pins`); the CLI checks the wiring table in `wasmicon.toml` against them, and the
+firmware runs the same check again at boot. (The fixed vocabulary `ROLE_NAMES` and
+`assert_role_names`, which checked it at compile time, were removed.)
 
-### 4.4 ビルドフラグの単一真実（腐ると静かに壊れる）
+### 4.4 A single source of truth for build flags (silent breakage when it rots)
 
-アプリの契約の実体はこの 2 つ:
+The app's contract is embodied in these two:
 
-- `apps/.cargo/config.toml` — `-Ctarget-feature=-reference-types` /
+- `apps/.cargo/config.toml` - `-Ctarget-feature=-reference-types` /
   `-Clink-arg=--initial-memory=65536` / `-Clink-arg=-zstack-size=8192`
-- `apps/*/asconfig.json` — `runtime: stub` / `disable: [..., reference-types]` /
+- `apps/*/asconfig.json` - `runtime: stub` / `disable: [..., reference-types]` /
   `enable: [sign-extension, nontrapping-f2i, bulk-memory, mutable-globals]`
 
-`wasmicon new` の雛形がこれを写すと **3 重化**する。食い違うと次の形で静かに壊れる:
-`reference-types` が混ざれば `call_indirect` のテーブル索引で弾かれ
-（abi-spec §6.1 の注）、`--initial-memory` が増えれば RP2040 の 2 ページを超える。
+If the `wasmicon new` scaffold copied these, there would be **three copies**. When
+they diverge, things break silently: `reference-types` slipping in gets rejected at
+the `call_indirect` table index (the note in docs/abi-spec.md §6.1), and a larger
+`--initial-memory` exceeds RP2040's 2 pages.
 
-**`wasmicon-gen --check` と同じ形にした**（2026-10-04 実装）。真実は
-`tools/wasmicon-cli/src/flags.rs` が持つ **ファイルの中身そのもの**で
-（値の表ではない）、`wasmicon new` はそれを書き出すだけ。`apps/` の実物との
-一致は `tools/wasmicon-cli/tests/flags.rs` が**バイトで**見る。
+**Done the same way as `wasmicon-gen --check`** (implemented 2026-10-04). The source
+of truth is **the file contents themselves** held in `tools/wasmicon-cli/src/flags.rs`
+(not a table of values), and `wasmicon new` only writes them out. Agreement with the
+real files in `apps/` is checked **byte for byte** by
+`tools/wasmicon-cli/tests/flags.rs`.
 
-- **コメント 1 文字の差でも落ちる。** 緩めると「値は合っているがどちらが
-  真実か分からない」状態に戻る
-- 検査は既に CI にある `cargo test` に乗るので、新しいジョブは要らない
-- `[profile.release]` はここに入れない。食い違ってもアプリが**大きくなる
-  だけ**で、静かには壊れない
-- あわせて **Rust 版と AS 版で初期メモリがページ単位で一致**していること、
-  **一番きついボード（`ports/rp2040` の 2 ページ）に収まる**ことも見る
-  （`profile::PROFILES` から引く）
+- **A one-character difference in a comment fails it.** Loosening that goes back to
+  "the values agree but nobody knows which is the truth"
+- The check rides on the `cargo test` already in CI; no new job
+- `[profile.release]` is not included. If it diverges the app only **gets bigger**; it
+  does not break silently
+- It also checks that **the Rust and AS initial memory agree at page granularity** and
+  **fits the tightest board (2 pages on `ports/rp2040`)** (taken from
+  `profile::PROFILES`)
 
-### 4.5 ファームウェアの配布
+### 4.5 Firmware distribution
 
-**アプリ作者にファームをビルドさせない。** でないと ESP32-S3 を焼くだけで
-espup と Xtensa ツールチェーンが要る（`ports/esp32s3/build.sh`）。
+**App authors do not build firmware.** Otherwise flashing an ESP32-S3 alone requires
+espup and the Xtensa toolchain (`ports/esp32s3/build.sh`).
 
-- ファームはリリース成果物（`wasmicon-rp2350.uf2` / `wasmicon-esp32s3.bin`）。
-  `wasmicon flash --board X` はそれを焼くだけ
-- `doctor` が要求するのは rustc + wasm32 ターゲット（または `asc`）とフラッシャだけ
-- 成果物には **manifest**（board → ファイル + sha256 + §3.8 の 5 軸）を付ける。
-  `flash --fw` と `fw list` がこれを読む
-- **CI は今 ESP32-S3 をビルドしていない**（Xtensa のため。`ci.yml` のコメント）。
-  リリース成果物を出すなら espup を入れるジョブが要る → §5-7
+- Firmware is a release deliverable (`wasmicon-rp2350.uf2` / `wasmicon-esp32s3.bin`).
+  `wasmicon flash --board X` only flashes it
+- `doctor` requires only rustc + the wasm32 target (or `asc`) and a flasher
+- The deliverables come with a **manifest** (board -> file + sha256 + the five axes of
+  §3.8). `flash --fw` and `fw list` read it
+- **CI does not build ESP32-S3 today** (because of Xtensa; see the comment in
+  `ci.yml`). Producing release deliverables needs a job that installs espup -> §5-7
 
 ---
 
-### 4.6 一通り（CLI の使用例）
+### 4.6 End to end (CLI usage example)
 
-**これは設計が全部入ったあとの姿。** どのコマンドがどの段で現れるかは末尾の表。
-出力は書式の例で、版や sha は実物ではない。**ただしアプリのサイズ・import 構成・
-トレース行・行数（1,214 行 / `spi.write` 277 件）は実物から取ってある**
-（`apps/sensor-display-rs` を host ポートで走らせた実測）。
+**This is the picture once the whole design is in.** Which command appears at which
+stage is in the table at the end. The output shows the format; versions and SHAs are
+not real. **The app size, import layout, trace lines and counts (1,214 lines /
+277 `spi.write` calls) are real, though**, measured by running
+`apps/sensor-display-rs` on the host port.
 
-題は「SHT4x を読んで ILI9341 に出すアプリを、Pico 2 W と ESP32-S3 の両方で
-動かし、トレースを突き合わせる」。TODO §1.3 の次の一手そのもの。
+The task: "run an app that reads the SHT4x and draws on the ILI9341 on both the
+Pico 2 W and the ESP32-S3, and cross-check the traces". Exactly the next step in
+docs/TODO.md §1.3.
 
-#### 0. 道具を確かめる
+#### 0. Check the tools
 
 ```
 $ wasmicon doctor
@@ -751,35 +801,36 @@ ok  rustc     1.97.1 (8bab26f4f 2026-07-14) + wasm32-unknown-unknown
 ok  asc       Version 0.28.20
 ok  picotool  v2.3.1 (Darwin, ...)
 ok  espflash  4.5.0
---  probe-rs  無い（任意。デバッガを使うなら）
+--  probe-rs  not found (optional; for a debugger)
 
-→ ファームを焼けるボード: rp2040 / rp2350 / esp32s3
-  Rust のアプリはビルドできる
-  AssemblyScript のアプリはビルドできる
+-> boards you can flash firmware to: rp2040 / rp2350 / esp32s3
+   Rust apps can be built
+   AssemblyScript apps can be built
 ```
 
-ファームはリリース成果物なので、**espup と Xtensa ツールチェーンは要らない**（§4.5）。
+Firmware is a release deliverable, so **espup and the Xtensa toolchain are not
+needed** (§4.5).
 
-#### 1. ファームを一度だけ焼く
+#### 1. Flash the firmware once
 
 ```
 $ wasmicon fw list
-手元     rp2350  0.1.0  (g6b1a2c3)  sha256 9c1f…
-         esp32s3 0.1.0  (g6b1a2c3)  sha256 4ab7…
-デバイス  繋がっていない
+local    rp2350  0.1.0  (g6b1a2c3)  sha256 9c1f...
+         esp32s3 0.1.0  (g6b1a2c3)  sha256 4ab7...
+device   not connected
 
 $ wasmicon flash --board rp2350
-BOOTSEL を押しながら USB を挿して、Enter を押してください… 
-RPI-RP2 に wasmicon-rp2350 0.1.0 (g6b1a2c3) を書き込んだ
-（焼いた直後はスロットが空。UART に "slot empty" が出て LED が点滅する）
+Hold BOOTSEL while plugging in USB, then press Enter...
+Wrote wasmicon-rp2350 0.1.0 (g6b1a2c3) to RPI-RP2
+(right after flashing the slot is empty: the UART prints "slot empty" and the LED blinks)
 
 $ wasmicon flash --board esp32s3
-/dev/cu.usbmodem1101 (CH343) に wasmicon-esp32s3 0.1.0 (g6b1a2c3) を書き込んだ
+Wrote wasmicon-esp32s3 0.1.0 (g6b1a2c3) to /dev/cu.usbmodem1101 (CH343)
 ```
 
-**ここから先、ファームには触らない。**
+**From here on, the firmware is not touched.**
 
-#### 2. ボードに名乗らせる（§3.8）
+#### 2. Let the board state who it is (§3.8)
 
 ```
 $ wasmicon info
@@ -787,49 +838,50 @@ board      rp2350 (Pico 2 W)
 firmware   0.1.0 (g6b1a2c3, clean)
 abi        wasmicon:hal@0.1.0
 protocol   1
-slot       65536 B / format 1 / 空
+slot       65536 B / format 1 / empty
 config     memory 4 pages, call depth 32, table 256 elems
 interfaces gpio, i2c, spi, time, log, board
 features   trace on
 roles      led, lcd-cs, lcd-dc, lcd-rst
 ```
 
-#### 3. アプリを作る
+#### 3. Create an app
 
 ```
 $ wasmicon new room-monitor --lang rust --board rp2350
 room-monitor/
-  wasmicon.toml        [requirements] pin-roles は空（使う役割を書き足す）
-  Cargo.toml           単体で立つ workspace + cdylib + profile.release
+  wasmicon.toml        [requirements] pin-roles is empty (add the roles you use)
+  Cargo.toml           standalone workspace + cdylib + profile.release
   .cargo/config.toml   -reference-types / --initial-memory=65536 / -zstack-size=8192
   rust-toolchain.toml
-  src/lib.rs           run() の雛形（log だけ使う。役割の例はコメント）
+  src/lib.rs           run() scaffold (uses only log; role usage is in a comment)
   .gitignore
 
-次にやること:
+Next:
     cd room-monitor && cargo build --release
-    wasmicon check <出力された .wasm> --board <ボード>
+    wasmicon check <the .wasm it produced> --board <board>
 ```
 
-`.cargo/config.toml` の中身は `apps/.cargo/config.toml` と**バイト一致**。
-一致は `cargo test` が見る（§4.4）。`--lang as` なら `asconfig.json` と
-`package.json` と `assembly/index.ts` が出る。
+The `.cargo/config.toml` is **byte-identical** to `apps/.cargo/config.toml`;
+`cargo test` checks that (§4.4). With `--lang as` you get `asconfig.json`,
+`package.json` and `assembly/index.ts`.
 
-**`wasmicon-hal` の依存はパスで書く。** crates.io / npm に出していないので
-（`docs/TODO.md` §5 の「`new` と bindings の配布」）、`--hal <bindings の
-置き場所>` を渡すか、省略時は**上に向かって `bindings/` を探す**。
-見つからなければ版指定を書いて**その旨を出す**（配布の決定を先取りしない）。
+**The `wasmicon-hal` dependency is written as a path.** It is not published to
+crates.io / npm (see "distributing `new` and the bindings" in docs/TODO.md §5), so
+pass `--hal <where the bindings are>` or, by default, **it searches upward for
+`bindings/`**. If none is found it writes a version requirement and **says so** (not
+pre-empting the distribution decision).
 
-`Cargo.toml` に `[workspace]` を入れてあるのは、既存の workspace の中に
-置いたときに cargo が「workspace に入っていない」で止まるのを避けるため。
-その場所では `.cargo/config.toml` の `rustflags` が**連結**されて同じ値が
-2 回効くので、`new` がそれも言う（害は無い）。
+`Cargo.toml` contains `[workspace]` so that cargo does not stop with "not in the
+workspace" when the project sits inside an existing workspace. In that position the
+`rustflags` from `.cargo/config.toml` are **concatenated** and the same value applies
+twice; `new` says that too (it is harmless).
 
-#### 4. 内側のループ — 実機を触らない（host、1〜2 秒）
+#### 4. The inner loop - no hardware (host, 1-2 seconds)
 
-**`wasmicon build` は作らない。** `cargo` / `npm` を言語で振り分けて包むだけの
-薄いラッパになり、ビルドフラグは `.cargo/config.toml` と `asconfig.json` が
-既に持っている（§4.4）ので、足せるものが無い。
+**`wasmicon build` is not built.** It would be a thin wrapper that picks `cargo` /
+`npm` by language, and the build flags are already in `.cargo/config.toml` and
+`asconfig.json` (§4.4), so there is nothing to add.
 
 ```
 $ cargo build --release
@@ -838,16 +890,16 @@ $ cargo build --release
 $ wasmicon check target/wasm32-unknown-unknown/release/room_monitor.wasm --board rp2350
 room_monitor.wasm  4,549 B
 
-abi      wasmicon:hal@0.1.0                          import 名で強制される
-imports  13 件すべて一致                             (board 1 / gpio 3 / i2c 4 / log 1 / spi 3 / time 1)
-exports  run, memory                                 あり
-memory   初期 1 ページ
-table    なし
+abi      wasmicon:hal@0.1.0                          enforced by the import names
+imports  13, all match                               (board 1 / gpio 3 / i2c 4 / log 1 / spi 3 / time 1)
+exports  run, memory                                 present
+memory   initial 1 page
+table    none
 
 [rp2350]
-validate 初期 1 ページ ≤ 4                           ok
-roles    led, lcd-cs, lcd-dc, lcd-rst                rp2350 にある（参考）
-→ 通る
+validate initial 1 page <= 4                         ok
+roles    led, lcd-cs, lcd-dc, lcd-rst                present on rp2350 (informational)
+-> pass
 
 $ wasmicon run target/wasm32-unknown-unknown/release/room_monitor.wasm --trace --i2c-replay sht4x-replay.txt > host.log
 $ head -6 host.log
@@ -859,41 +911,42 @@ $ head -6 host.log
 < 0 [1]
 ```
 
-`check` はボードを変えると結果が変わる。**ここが host 実行では分からない**（§4.3）。
-`ports/rp2040` は SPI / I2C が未実装（`spi_open` / `i2c_open` が `unsupported` を
-返す。TODO §1.2）なので、**静的検査だけでは通ってしまう**:
+`check` gives a different result for a different board. **Host execution cannot tell
+you this** (§4.3). `ports/rp2040` has no SPI / I2C (`spi_open` / `i2c_open` return
+`unsupported`; docs/TODO.md §1.2), so **a static check alone would pass**:
 
 ```
 $ wasmicon check target/wasm32-unknown-unknown/release/room_monitor.wasm --board rp2040
 [rp2040]
-validate 初期 1 ページ ≤ 2                           ok
-i2c      このポートは未実装（実機では unsupported）  ← 落ちる
-spi      このポートは未実装（実機では unsupported）  ← 落ちる
-roles    lcd-cs, lcd-dc, lcd-rst                     rp2040 の配線表にある
-→ 落ちる（このボードで 2 件）
+validate initial 1 page <= 2                         ok
+i2c      not implemented on this port (unsupported on hardware)  <- fails
+spi      not implemented on this port (unsupported on hardware)  <- fails
+roles    lcd-cs, lcd-dc, lcd-rst                     in the rp2040 wiring table
+-> fail (2 on this board)
 ```
 
-`roles` の行は、`wasmicon.toml` の `requirements.pin-roles`（宣言）が、そのボードの
-配線表（`[board.rp2040.roles]`）に揃っているかを見ている（§4.7）。宣言が無ければ
-役割は照合しない（`.wasm` から確実に列挙できないため。§4.3）。
+The `roles` line checks that `requirements.pin-roles` in `wasmicon.toml` (the
+declaration) agrees with that board's wiring table (`[board.rp2040.roles]`) (§4.7).
+Without a declaration, roles are not cross-checked (they cannot be enumerated
+reliably from the `.wasm`; §4.3).
 
-**これを言えるのはボードプロファイルが「実装済みインターフェース」を持つから**
-（§3.8）。持たせなければ `check` は通り、実機で `i2c.bus.open` が
-`unsupported` を返して初めて分かる。初期ページ数が収まり、配線表も揃って
-いるので、**他に落ちる要素が無い。**
+**This can be said only because the board profile holds "implemented interfaces"**
+(§3.8). Without it, `check` passes and you learn on hardware when `i2c.bus.open`
+returns `unsupported`. The initial pages fit and the wiring table agrees, so **nothing
+else fails.**
 
-#### 5. 外側のループ — 実機に送る（数秒）
+#### 5. The outer loop - send to hardware (seconds)
 
 ```
 $ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --monitor > pico.log
-rp2350 0.1.0 (g6b1a2c3) と照合
-  abi ok / 1 ページ ≤ 4 / roles ok / 4,549 B ≤ 65536 B / slot format 1
-RAM スロットへ 4,549 B 送った (crc32 1f3a9c21)
-run → UART0 115200 からトレースを取り込み中（Ctrl-C で止める）
+cross-checked against rp2350 0.1.0 (g6b1a2c3)
+  abi ok / 1 page <= 4 / roles ok / 4,549 B <= 65536 B / slot format 1
+sent 4,549 B to the RAM slot (crc32 1f3a9c21)
+run -> capturing the trace from UART0 115200 (Ctrl-C to stop)
 ```
 
-**制御は USB、トレースは UART0**（§3.5）なので CLI が両方を握る。`--monitor` を
-付けなければ送って走らせるだけ。ログの先頭には identity が入る:
+**Control over USB, the trace over UART0** (§3.5), so the CLI holds both. Without
+`--monitor` it only sends and runs. The head of the log carries the identity:
 
 ```
 $ head -2 pico.log
@@ -901,71 +954,72 @@ $ head -2 pico.log
 > wasmicon:hal/log@0.1.0/log(2, "sensor-display start")
 ```
 
-#### 6. 2 ボードで突き合わせる（このプロジェクトの本題）
+#### 6. Cross-check on two boards (the point of this project)
 
-ESP32-S3 に差し替えて、**同じ `.wasm` を**送る:
+Swap in the ESP32-S3 and send **the same `.wasm`**:
 
 ```
 $ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --board esp32s3 --monitor > esp32s3.log
 $ wasmicon trace diff pico.log esp32s3.log
-app       1f3a9c21 / 1f3a9c21                     同一バイナリ
+app       1f3a9c21 / 1f3a9c21                     same binary
 identity  rp2350 0.1.0 (g6b1a2c3) / esp32s3 0.1.0 (g6b1a2c3)
-time を除く 1,214 行                               一致
-spi.write の CRC-32 277 件                        一致
-→ 一致
+1,214 lines excluding time                        match
+277 spi.write CRC-32 values                       match
+-> match
 ```
 
-ファームの版が食い違っていたら、落とさずに警告する（§3.8）:
+If the firmware versions differ, it warns without failing (§3.8):
 
 ```
-identity  rp2350 0.1.0 (g6b1a2c3) / esp32s3 0.1.0 (g7f09de1)   版が違う
+identity  rp2350 0.1.0 (g6b1a2c3) / esp32s3 0.1.0 (g7f09de1)   versions differ
 ```
 
-#### 7. 焼き付ける（電源投入で走る）
+#### 7. Persist (runs at power-on)
 
 ```
 $ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --persist
-フラッシュスロット 0x1010_0000 に 4,549 B 書いた (crc32 1f3a9c21, format 1)
-次の電源投入から走る
+wrote 4,549 B to the flash slot at 0x1010_0000 (crc32 1f3a9c21, format 1)
+runs from the next power-on
 ```
 
-#### 2 つのループ
+#### The two loops
 
-| ループ | 何を回すか | 頻度 |
+| Loop | What it cycles | How often |
 |---|---|---|
-| 内側 | `cargo build` → `check` → `run`（host、mock HAL とリプレイ） | 常時 |
-| 外側 | `deploy --monitor` → `trace diff` | 内側が通ったら |
-| ファーム | `flash` | 稀（版を上げるときだけ） |
+| Inner | `cargo build` -> `check` -> `run` (host, mock HAL and replay) | Constantly |
+| Outer | `deploy --monitor` -> `trace diff` | Once the inner loop passes |
+| Firmware | `flash` | Rarely (only on a version bump) |
 
-#### どのコマンドがどの段か（§5）
+#### Which command at which stage (§5)
 
-| 段 | 使えるようになるもの |
+| Stage | What becomes available |
 |---|---|
-| 0 | `doctor` / `new` / `check` / `run` / `trace diff` / `monitor`（identity 無し） |
-| 1 | `flash`（ファーム）/ `deploy --persist`（既存フラッシャ経由。**Pico は BOOTSEL 押下が残る**） |
-| 2 | `info` / `deploy`（USB、ボタン不要）/ `deploy --monitor` / `monitor` の identity / `fw list` |
-| 3 | `deploy --via http`（ESP32-S3） |
+| 0 | `doctor` / `new` / `check` / `run` / `trace diff` / `monitor` (without identity) |
+| 1 | `flash` (firmware) / `deploy --persist` (through the existing flasher; **the Pico still needs BOOTSEL**) |
+| 2 | `info` / `deploy` (USB, no button) / `deploy --monitor` / identity in `monitor` / `fw list` |
+| 3 | `deploy --via http` (ESP32-S3) |
 
 ---
 
 ### 4.7 `wasmicon.toml`
 
-プロジェクトに 1 つ置く。**ここに書くのは「アプリの性質」と「配線」。**
-配線表は `deploy` が設定スロットに書き、ファームはその表だけで役割に答える（§3.9）。
+One per project. **What goes here is "properties of the app" and "wiring".**
+`deploy` writes the wiring table to the config slot, and the firmware answers roles
+from that table alone (§3.9).
 
 ```toml
-# wasmicon.toml — プロジェクトに 1 つ
+# wasmicon.toml - one per project
 version = 1
 
 [requirements]
-# このアプリが `board.pin-by-role` で引く役割名（名前は自由）。番号は下に書く
+# The role names this app looks up with `board.pin-by-role` (any names). Numbers go below
 pin-roles = ["lcd-cs", "lcd-dc", "lcd-rst"]
 
 [defaults]
 board = "rp2350"
 i2c-replay = "fixtures/sht4x.txt"
 
-# ボードごとの配線表。deploy が設定スロットに書く（§3.9）
+# Wiring table per board. deploy writes it to the config slot (§3.9)
 [board.rp2350.roles]
 lcd-cs = 17
 lcd-dc = 20
@@ -977,151 +1031,163 @@ lcd-dc = 14
 lcd-rst = 15
 ```
 
-#### 何がどこの真実か
+#### What is the source of truth for what
 
-| 情報 | 真実はどこか | toml の役割 |
+| Information | Source of truth | Role of the toml |
 |---|---|---|
-| 必要な役割名（`requirements.pin-roles`） | **toml**。アプリの性質 | 真実そのもの |
-| 役割 → GPIO | **toml**（`deploy` が設定スロットに書く。§3.9） | 真実そのもの。デバイスはそれを読むだけ |
-| ABI 準拠のビルドフラグ | **`.cargo/config.toml` / `asconfig.json`** | **書かせない**（下記） |
+| Required role names (`requirements.pin-roles`) | **The toml.** A property of the app | The truth itself |
+| Role -> GPIO | **The toml** (`deploy` writes it to the config slot; §3.9) | The truth itself. The device only reads it |
+| ABI-conformant build flags | **`.cargo/config.toml` / `asconfig.json`** | **Not allowed here** (below) |
 
-#### `requirements.pin-roles` と配線表を突き合わせる
+#### Cross-checking `requirements.pin-roles` against the wiring table
 
-§4.3 のとおり、役割名は実行時に文字列で渡るので `.wasm` から確実に列挙できない。
-宣言があれば列挙が確定するので、**送る前に**「このボードの配線表に `lcd-rst` が
-無いのでこのアプリは動かない」と言える。
+As in §4.3, role names are passed as strings at run time, so they cannot be
+enumerated reliably from the `.wasm`. With a declaration the enumeration is settled,
+so **before sending** we can say "this board's wiring table has no `lcd-rst`, so this
+app will not work".
 
-**節に分けてあるのは、同じ性質の未宣言項目がもう 1 つあるから。**
-`i2c.bus.open` / `spi.bus.open` の `index` も実行時の整数引数で、`.wasm` から
-静的に列挙できない（バスが 1 本のボードに index 1 を開くアプリを送ると実機で
-`unsupported`）。v0.1 では書かないが、必要になれば
-`[requirements]` に `i2c-buses = [0]` を足すだけで済む。
-**インターフェースの実装状況は import から分かる**ので宣言は要らない（§4.3）。
+**It has its own section because there is one more undeclared item of the same
+kind.** The `index` of `i2c.bus.open` / `spi.bus.open` is also a run-time integer
+argument that cannot be enumerated statically from the `.wasm` (send an app that
+opens index 1 to a board with one bus and you get `unsupported` on hardware). v0.1
+does not write it, but when needed it is just `i2c-buses = [0]` under
+`[requirements]`. **Interface implementation status is visible from the imports**, so
+it needs no declaration (§4.3).
 
-名前は `requirements.pin-roles`。`requires` だと何が必要なのか読めず、
-`required-pin-roles` のような平坦なキーは項目が増えるたびに長くなる。
+The key is named `requirements.pin-roles`. `requires` does not say what is required,
+and a flat key like `required-pin-roles` gets longer with every item.
 
-**タイポはデバイスに繋がなくても止まる。** 語彙は無いので名前の書式だけを見るが、
-宣言（`pin-roles`）と配線表のどちらかでタイポすれば両者が食い違い、`check` /
-`deploy` が「配線表に無い」と言う。
+**A typo stops you without a device connected.** There is no vocabulary, so only the
+name format is checked, but a typo in either the declaration (`pin-roles`) or the
+wiring table makes the two disagree, and `check` / `deploy` say "not in the wiring
+table".
 
-#### スキーマの規則
+#### Schema rules
 
-| 決め | 内容 |
+| Rule | Content |
 |---|---|
-| **導出できるものは書かない** | アプリ名と言語は `Cargo.toml` の `package.name` / `asconfig.json` の有無から取る。toml に書くのは上書きとしてだけ。§4.4 と同じ理由で、二重に持つと必ず drift する |
-| **1 アプリに 1 つ** | workspace でも**アプリごとに置く**。この repo の `apps/` をドッグフードするなら 5 つになる。`wasmicon new` が 1 つ出す形と揃う |
-| **必須のみ** | `pin-roles` は「無ければ動かない」ものだけを並べる。`led` が無くても動く degradation は v0.1 では表現しない（`optional-pin-roles` は実例が出てから） |
-| **「この役割は無い」は `"none"`** | `lcd-rst = "none"`。キーを省略したのと同じで、配らない（ファームに既定の表は無い）。`false` や `0` より誤読しにくい |
-| **パスは toml のあるディレクトリ基準** | `i2c-replay = "fixtures/sht4x.txt"`。CLI の cwd 基準にすると、どこから呼んだかで壊れる |
-| **未知のキーはエラー** | 黙って無視すると「設定したのに効いていない」に気付けない。タイポはここで止める |
-| **`version`** | CLI の対応より新しければエラー、古ければ受ける |
-| **toml は任意（ただし実機で役割を使うなら要る）** | `check` / `run` は **toml が無くても動く**。ただし実機ボードは既定の表を持たないので、toml が無いまま `deploy` したアプリは役割を 1 つも引けない |
+| **Do not write what can be derived** | The app name and language come from `package.name` in `Cargo.toml` / the presence of `asconfig.json`. The toml only overrides. Same reason as §4.4: two copies always drift |
+| **One per app** | Even in a workspace, **one per app**. Dogfooding this repo's `apps/` means five. Matches the one that `wasmicon new` writes |
+| **Required only** | `pin-roles` lists only what the app "cannot run without". Degradation such as "works without `led`" is not expressed in v0.1 (`optional-pin-roles` waits for a real case) |
+| **"This role does not exist" is `"none"`** | `lcd-rst = "none"`. Same as omitting the key: not handed out (the firmware has no default table). Harder to misread than `false` or `0` |
+| **Paths are relative to the toml's directory** | `i2c-replay = "fixtures/sht4x.txt"`. Relative to the CLI's cwd, it would break depending on where you call from |
+| **Unknown keys are errors** | Silently ignoring them hides "I set it but it has no effect". Typos stop here |
+| **`version`** | Newer than the CLI supports: error. Older: accepted |
+| **The toml is optional (but required to use roles on hardware)** | `check` / `run` **work without a toml**. Real boards have no default table, though, so an app `deploy`ed without a toml gets no roles at all |
 
-- **プロジェクトの中で `check` / `deploy`** → 宣言と配線表を突き合わせる
-- **`.wasm` 単体を受け取って** → 役割は照合しない（列挙できないので）
+- **`check` / `deploy` inside a project** -> declaration and wiring table are cross-checked
+- **A bare `.wasm` received on its own** -> roles are not cross-checked (they cannot be enumerated)
 
-`wasmicon.toml` は**カレントから上に向かって探す**（cargo と同じ）。
-宣言と配線表が食い違えば、**デバイスに繋がなくても焼く前に止まる**:
+`wasmicon.toml` is **searched for upward from the current directory** (like cargo).
+If the declaration and the wiring table disagree, **it stops before flashing, with no
+device connected**:
 
 ```
 $ wasmicon check app.wasm --board rp2350
 ...
-roles    lcd-cs, lcd-dc, lcd-rst    rp2350 の配線表に無い: lcd-rst  ← 落ちる（[board.rp2350.roles] に書く）
+roles    lcd-cs, lcd-dc, lcd-rst    not in the rp2350 wiring table: lcd-rst  <- fails (add it to [board.rp2350.roles])
 ```
 
-バイナリと一緒に運びたくなったら、そこで初めてカスタムセクション
-（`wasmicon.roles`）か `wasmicon pack` で束ねる話になる。ランタイムは custom
-セクションを読み飛ばすので実行には影響しないが（`runtime/src/decode.rs:79`）、
-**`.wasm` のバイト列が変わる**ので記録済みハッシュ（`fc470947…`）を取り直すことに
-なる。それが要るまで入れない。
+Only when it needs to travel with the binary does a custom section
+(`wasmicon.roles`) or bundling with `wasmicon pack` come up. The runtime skips custom
+sections, so execution is unaffected (`runtime/src/decode.rs:79`), but **the `.wasm`
+bytes change**, so the recorded hash (`fc470947...`) would have to be retaken. Not
+until it is needed.
 
-#### `deploy` は配線表を毎回書き、書く前に表示する
+#### `deploy` writes the wiring table every time and shows it before writing
 
-> 2026-10-07 に方針を変えた。以前は「デバイスの表と toml を照合し、食い違えば止めて
-> `config apply` で明示的に押し込む」としていたが、**ファームが既定の表を持たず、
-> 表の真実が toml になった**ので、`deploy` が毎回書く（§3.9）。
+> The policy changed on 2026-10-07. Previously, "cross-check the device's table
+> against the toml, stop on mismatch, and push explicitly with `config apply`";
+> now **the firmware has no default table and the toml is the table's truth**, so
+> `deploy` writes it every time (§3.9).
 
 ```
 $ wasmicon deploy app.wasm --board rp2350
-app.bin → rp2350 のスロット（+0x100000）  4565 B（wasm 4549 B、crc32 c1cbe3c1）
-  配線表: lcd-cs=17 lcd-dc=20 lcd-rst=21
+app.bin -> rp2350 slot (+0x100000)  4565 B (wasm 4549 B, crc32 c1cbe3c1)
+  wiring: lcd-cs=17 lcd-dc=20 lcd-rst=21
 ```
 
-**役割マップを書き換えると実際に駆動されるピンが変わる**ので、繋いでいる物に
-よっては物理的に危ない、という懸念は残る。今の扱い:
+**Rewriting the role map changes which pins are actually driven**, which can be
+physically dangerous depending on what is connected; that concern remains. Current
+handling:
 
-- 表は**そのアプリ自身の `wasmicon.toml`** から来る（他人の設定が混ざらない）
-- `deploy` は**書く前に表を 1 行で表示する**
-- 予約ピン・バスのピン・重複は CLI とファームの両方が弾く
-- 表が壊れていれば**どのピンも駆動しない**側に倒れる
+- the table comes **from the app's own `wasmicon.toml`** (nobody else's configuration gets mixed in)
+- `deploy` **shows the table on one line before writing**
+- reserved pins, bus pins and duplicates are rejected by both the CLI and the firmware
+- a corrupt table fails toward **driving no pins at all**
 
-デバイスにある今の表との差分を出して確認を求める（以前の「照合」）には、
-デバイスから表を読み戻す手段（2 段の USB 制御チャネルの `info`）が要る。それまでは
-上の表示で代える。
+Showing a diff against the table currently on the device and asking for confirmation
+(the earlier "cross-check") needs a way to read the table back from the device
+(`info` over the stage 2 USB control channel). Until then, the display above stands in.
 
-#### 書かせないもの
+#### Not allowed in the toml
 
-- **ABI 準拠のビルドフラグ。** §4.4 で「`apps/.cargo/config.toml` と
-  `asconfig.json` と雛形で 3 重化する、腐ると静かに壊れる」と書いたものを
-  **4 重にしてしまう**。toml に `initial-memory` を書けるようにすると
-  「RP2040 で validate に落ちるアプリ」が作れて、しかも原因が分散する
-- **マシン固有の値**（`/dev/cu.usbmodem1101` など）。ブリッジの型番で名前が
-  変わるので（TODO §1.1 の CH343）、コミットすると他人のマシンで壊れる
+- **ABI-conformant build flags.** §4.4 called `apps/.cargo/config.toml`,
+  `asconfig.json` and the scaffold "three copies that break silently when they rot";
+  this would make it **four**. If `initial-memory` could go in the toml, you could
+  build "an app that fails validate on RP2040" with the cause spread out
+- **Machine-specific values** (`/dev/cu.usbmodem1101` and the like). The name changes
+  with the bridge chip (the CH343 in docs/TODO.md §1.1), so committing it breaks on
+  someone else's machine
 
 ```
-wasmicon.toml        git にコミットする
-wasmicon.local.toml  gitignore。シリアルポートなどマシン固有の上書き
+wasmicon.toml        committed to git
+wasmicon.local.toml  gitignored. Machine-specific overrides such as the serial port
 ```
 
-優先順位は **CLI フラグ > `local.toml` > `wasmicon.toml` > デバイスの既定値**。
-`info` が返すのは常にデバイスの実効値で、toml はそれを上書きしない（§3.9）。
+Precedence is **CLI flags > `local.toml` > `wasmicon.toml` > device defaults**.
+`info` always returns the device's effective values; the toml does not override them
+(§3.9).
 
-`wasmicon new` がこのファイルも雛形として出す。CLI に toml パーサの依存が 1 つ
-増える（`wasmicon-gen` の `anyhow` / `wit-parser` と同じ範囲。§4.1）。
+`wasmicon new` writes this file as part of the scaffold too. The CLI gains one toml
+parser dependency (the same scope as `anyhow` / `wit-parser` in `wasmicon-gen`; §4.1).
 
 ---
 
-## 5. 段階
+## 5. Stages
 
-**0 段と 1 段で「ファーム再ビルド不要」まで届く。** USB スタックと Wi-Fi は
-そのあと。
+**Stages 0 and 1 reach "no firmware rebuild needed".** The USB stack and Wi-Fi come
+after.
 
-| 段 | 中身 | ファームの変更 | 実機 |
+| Stage | Content | Firmware change | Hardware |
 |---|---|---|---|
-| 0 | CLI の骨 + `new` / `check` / `run` / `monitor` / `trace diff` / `doctor` | **ゼロ** | 不要 |
-| 1 | §3.2 の掃除 → スロット形式 → 「スロットを読んで走る」ファーム → **内蔵アプリの撤去**（§3.3）→ 既存フラッシャで `deploy` | ローダの芯 | 要 |
-| 2 | USB 制御チャネル + §3.6 のプロトコル。`info` と `probe`、役割マップの設定（§3.9）が入る | USB スタック | 要 |
-| 3 | HTTP（ESP32-S3） | Wi-Fi + RAM 予算の判断 | 要 |
+| 0 | CLI skeleton + `new` / `check` / `run` / `monitor` / `trace diff` / `doctor` | **None** | Not needed |
+| 1 | The §3.2 cleanup -> slot format -> a firmware that "reads the slot and runs" -> **removal of the built-in app** (§3.3) -> `deploy` through the existing flasher | The core of the loader | Needed |
+| 2 | USB control channel + the §3.6 protocol. `info`, `probe` and the role map configuration (§3.9) arrive | USB stack | Needed |
+| 3 | HTTP (ESP32-S3) | Wi-Fi + the RAM budget decision | Needed |
 
-- **0 段は TODO §1.3 の SHT40 作業にそのまま効く**（取り込みと突き合わせ）
-- **1 段の時点で ESP32-S3 はボタン操作不要**（espflash が DTR/RTS でリセットする）。
-  Pico は BOOTSEL 押下が残り、2 段で消える
-- **bindings の配布**（crates.io / npm）はどの段とも独立。ここで決め打ちしない。
-  `new` は 0 段に入ったが、依存はパスで書いている（§4.6 の 3）
-
----
-
-## 6. 変えないもの / 触ると壊れるもの
-
-- **ABI**: import 名、シグネチャ、エラーコード（discriminant + 1）、ハンドル 0 = 無効
-  （handoff §2）。必要になったら実装せずオーナーに確認する
-- **`wit/` が唯一の真実**、生成物はジェネレータ出力のみ（CLAUDE.md）
-- **記録済みの `.wasm` ハッシュとトレース**（verification-report §6 / §7、TODO §3）。
-  `new` の雛形は `apps/` と同じフラグを持つので同じバイト列が出る（§4.4）。
-  ローダはトレース行を増やさない
-  （§3.7）
-- ~~内蔵アプリと `guest-lcd-demo` feature は 1 段まで触らない。~~ → 3 ポートが
-  スロットを読めるようになったので 2026-10-07 に外し、CI も同時に直した（§3.3）
-- **handoff §5 の Phase 4 / 5 / 6 の完了条件**（ESP32-S3 と Pico WH の 2 ボード定義）
-- **トラップ後に同じアプリを自動再実行しない**（handoff §3 #4）。ローダは
-  「新しいアプリを受け付ける」だけを足す（§3.1）
+- **Stage 0 helps the SHT40 work in docs/TODO.md §1.3 directly** (capture and cross-check)
+- **At stage 1 the ESP32-S3 already needs no button** (espflash resets through
+  DTR/RTS). The Pico still needs BOOTSEL; that goes away at stage 2
+- **Distributing the bindings** (crates.io / npm) is independent of every stage and is
+  not decided here. `new` landed in stage 0 but writes the dependency as a path
+  (§4.6, step 3)
 
 ---
 
-## 7. 未決
+## 6. What does not change / what breaks if touched
 
-**`docs/TODO.md` §5 に集約した。** 判断が要るのは、トラップ後の idle 復帰の確定、
-ESP32-S3 の RAM 予算（`max_memory_pages` を落とすか PSRAM か）、HTTP の向き、
-Pico W の Wi-Fi（embassy 移行）、ボードの品種（フラッシュ容量と PSRAM の有無）、
-ファーム版の振り方。
+- **The ABI**: import names, signatures, error codes (discriminant + 1), handle 0 =
+  invalid (docs/decisions.md D-02, D-03, D-05). If it becomes necessary, do not
+  implement; ask the owner
+- **`wit/` is the source of truth**; generated files are generator output only (`AGENTS.md`)
+- **The recorded `.wasm` hashes and traces** (docs/verification-report.md §6, §7;
+  docs/TODO.md §3). The `new` scaffold carries the same flags as `apps/`, so it
+  produces the same bytes (§4.4). The loader adds no trace lines
+  (§3.7)
+- ~~The built-in app and the `guest-lcd-demo` feature are not touched until stage 1.~~
+  -> removed on 2026-10-07 once the three ports could read the slot, and CI was
+  fixed at the same time (§3.3)
+- **The Phase 4 / 5 / 6 completion criteria** (docs/TODO.md §1.3; defined over the two
+  boards ESP32-S3 and Pico WH)
+- **No automatic re-run of the same app after a trap** (docs/decisions.md A-04). The
+  loader only adds "accept a new app" (§3.1)
+
+---
+
+## 7. Open questions
+
+**Collected in docs/TODO.md §5.** Decisions needed: settling the return to idle after
+a trap, the ESP32-S3 RAM budget (lower `max_memory_pages` or PSRAM), the HTTP
+direction, Pico W Wi-Fi (the embassy move), the board variant (flash size and whether
+PSRAM is present), and how firmware versions are assigned.

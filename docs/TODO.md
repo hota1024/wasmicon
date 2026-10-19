@@ -1,899 +1,922 @@
-# 残作業
+# Remaining work
 
-最終更新: 2026-10-19
-
-**当初の目標は達成した**（2026-10-07 オーナー判断。sensor-display が ESP32-S3 と Pico 2 W で
-動き、トレースの一致を確かめた。`docs/handoff.md` §0）。ここに残っているのは、目標の
-外にある改善・未決・MVP 後の作業。残っているものをここに集約する。
-散らばると更新漏れで嘘になるので、**残作業はこのファイルだけに書く**。
-決定済みの事項と経緯は `docs/handoff.md`、検証の現状は `docs/verification-report.md`。
-
----
-
-## 1. 実機が要るもの
-
-**Raspberry Pi Pico 2 W と ESP32-S3 DevKitC-1 は手元にある**（どちらも 2026-09-26 に
-`lcd-demo-rs` で動作確認済み。`docs/verification-report.md` §6 / §7）。
-**温湿度センサーは SHT40 が手元にある**（2026-09-29。`docs/handoff.md` §2 の
-決定 9 を SHT31/SHT30 から SHT4x に変更し、ゲストのドライバを直した）。
-**RP2040（Pico WH）は評価対象から外した**（2026-10-07 オーナー決定。`docs/handoff.md` §0）。
-Phase 4/5/6 の完了条件の 2 ボードは **ESP32-S3 と Pico 2 W（RP2350）**。
-`ports/rp2040` のコードと CI のビルドは残すが、実機検証と I2C / SPI の実装はしない。
-I2C と sensor-display は 2026-10-05 / 07 に 2 ボードで動作を確認した
-（`docs/verification-report.md` §11 / §12）。
-
-### 1.1 オーナーに聞くこと
-
-- [x] **実機の配線**（2026-10-07 に閉じた。`led` 以外は 2 ボードとも実機で確認済み。`led` は下の項目）。`docs/abi-spec.md` §8 の表（I2C/SPI のピン、役割名 → GPIO 番号）が実機と合っているか
-      - RP2350 の LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、SCK=GP18 / MOSI=GP19）は
-        2026-09-26 に、I2C (SDA=GP4 / SCL=GP5) は 2026-10-05 に実機で確認済み
-        （`docs/verification-report.md` §11）。**残るのは `led`**（RP2040 は評価対象外）
-      - ESP32-S3 の LCD 側（CS=GPIO10 / DC=GPIO14 / RST=GPIO15、SCK=GPIO12 /
-        MOSI=GPIO11）は 2026-09-26 に実機で確認済み。配線表は
-        `apps/lcd-demo-rs/README.md`。I2C (SDA=GPIO8 / SCL=GPIO9) も
-        2026-10-05 に確認済み。**残るのは `led`**
-      - **I2C は SDA / SCL に外部 10 kΩ のプルアップが要る。** 両ポートとも
-        内部プルアップを有効にしているが（esp-hal の `connect_pin` が必ず
-        `Pull::Up` を掛けるので rp2350 もそれに揃えた）、RP2350 は 50..80 kΩ、
-        ESP32-S3 は約 45 kΩ と弱く、`standard` (100 kHz) の短い配線で
-        かろうじてという程度。モジュール側に載っていることが多いので、
-        **載っているなら足さなくてよい**
-- [x] **シリアルの接続方法**（2026-10-07 に閉じた。2 ボードとも UART0 で確認済み）。RP2350 は UART0 (GP0/GP1)、ESP32-S3 は UART0 (GPIO43/44) を前提にしている
-      - RP2350 は UART0 + USB シリアル変換 (CP2102N) で 2026-09-26 に確認済み
-      - ESP32-S3 も UART0 (GPIO43/44) で 2026-09-26 に確認済み。**手元のボードは
-        `USB-UART` 側のブリッジが CH343 (VID 0x1A86 / PID 0x55D3) で、macOS では
-        `/dev/cu.usbmodem*` として見える**（CP2102N ではないので `usbserial` を
-        探すと見つからない）。書き込みは `USB-OTG` 側（USB-Serial-JTAG）からも通る
-      - **ESP32-S3 で `USB-UART` 側を使うときは、外付けの USB シリアル変換を
-        UART0 に繋がない。** CH343 の TX が基板上で GPIO44 に直結しているので
-        引っ張り合い、書き込めなくなる（2026-10-07 に踏んだ。
-        `docs/verification-report.md` §12）
-- [x] **モジュールの型番**（2026-10-07 に閉じた。ILI9341 は 3.3V の SPI 版で 2 ボードとも表示が出た。SHT40 はアドレス 0x44 で読めた）。ILI9341 は 3.3V ロジックの SPI 版を前提にしている
-      - センサーは **SHT40 で確定**（2026-09-29）。ただし **I2C アドレスは
-        サフィックスで変わる**（-AD1B が 0x44）。ドライバは `0x44` のままなので、
-        **手元の品種の刻印かバススキャンで確認すること**。違っていれば **3 箇所**:
-        `apps/sensor-display-rs/src/sht4x.rs` と
-        `apps/sensor-display-as/assembly/sht4x.ts` の `ADDRESS`、および
-        `ports/host/tests/apps.rs` の `SHT4X_ADDR`（host テストが期待する
-        トレースの値。直さないと「計測コマンドが違う」という紛らわしい
-        メッセージで落ちる）
-- [x] **役割名**（2026-10-07 オーナー決定: 既定のまま確定）。`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`。変えるなら 3 箇所（`wit/board.wit` のコメント、abi-spec §8 の表、`ports/common` の `profile`）。**番号を変えるだけなら `profile` の 1 箇所**で、語彙（名前）を増やすときは `ROLE_NAMES` にも足す（`assert_role_names` がコンパイル時に弾く）
-- [x] **`led` に外付け LED を充てている**（2026-10-07 に閉じた。**`led` はファームの役割ではなくなった**。役割名は固定の語彙を持たず、配線はアプリの `wasmicon.toml` に書く（§5-9）。blink の `apps/blink-*/wasmicon.toml` が `led` を GP15 / GPIO2 に割り当てている。外付け LED を実際に光らせる確認は Phase 4 の blink の項目に残る）。どのボードもオンボード LED が素の GPIO ではないため（Pico W/WH と Pico 2 W は CYW43439、DevKitC-1 は WS2812）。Pico 2（無線なし）だけは GP25 が素の LED だが、Pico 2 W と揃えて外付けにしている
-- [x] **RP2350 ボードの品種** → **Pico 2 W**（RP2350A、GP0..GP29）で確定。`NUM_GPIO` は 30 のままでよい
-- [x] **RP2350 を Arm だけで見るか**（2026-10-07 オーナー決定: Arm（Cortex-M33）だけで確定。RISC-V の Hazard3 は対象外）。`ports/rp2350` は Cortex-M33（`thumbv8m.main-none-eabihf`）のみ。RISC-V (Hazard3) でも同じトレースが出るかは v0.1 の検証範囲に入れていない
-
-### 1.2 実装
-
-- ~~`ports/rp2040` の I2C / SPI~~ → **評価対象外**（2026-10-07）。`unsupported` を
-      返したまま残す。戻すときのための記録: 足すなら rp2350 の実装をそのまま持って
-      これる（RP2040 と RP2350 の I2C は同じ DW_apb_i2c で、SPI も同じ PL022。
-      違いは PADS の `ISO` が無いことと FUNCSEL の綴りだけ）
-- [x] **`ports/rp2350` の SPI**。SPI0 (PL022) をレジスタ直叩きで実装した。
-      **2026-09-26 に実機で確認済み**（`docs/verification-report.md` §6）。
-      rp2040 に足すときは、周波数の丸め（要求値を超えない最大）と
-      「送信後 `BSY` が落ちるまで戻らない」を揃えること
-      （esp32s3 はこの 2 点を `esp-hal` のドライバが満たしている）
-- [x] **`ports/rp2350` の I2C**。I2C0（DW_apb_i2c）をレジスタ直叩きで実装した
-      （2026-10-04）。初期化と転送の手順は `rp235x-hal` の
-      `i2c/controller.rs` に合わせたが、`assert!` ではなくエラーコードを返す
-      （パニックハンドラは理由を出せない → §1.4）。待ちは TIMER0 の実時間で
-      上限を付け、**タイムアウト時は `IC_ENABLE.ABORT` で転送を畳んでから**
-      `timeout` を返す（畳まないとバスが握られたまま残る）。
-      **SCL カウンタは `clk_sys` から計算する**（SPI の PL022 は `clk_peri`
-      だが DW_apb_i2c は `clk_sys`。既定では両方 150 MHz で一致するので
-      取り違えても動いてしまう）。**実機では未検証**（→ §1.3）
-- [x] **`ports/esp32s3` の SPI**。SPI2 (FSPI) を `esp-hal` の `spi::master`
-      ドライバで実装した（GPIO と違いレジスタ直叩きにしていない）。rp2350 と
-      揃えた点は `ports/esp32s3/src/board.rs` の module コメント。
-      **2026-09-26 に実機で確認済み**（トレース 14,352 行完全一致 + ILI9341 に
-      絵が出た。`docs/verification-report.md` §7）
-- [x] **`ports/esp32s3` の I2C**。I2C0 を `esp-hal` の `i2c::master`
-      ドライバで実装した（2026-10-04。SPI と同じくレジスタ直叩きにしていない）。
-      エラーの振り分けは rp2350 と揃えてある（NACK → `nack`、調停負け → `io`、
-      `esp-hal` の `Error::Timeout` → `timeout`）。**実機では未検証**（→ §1.3）
-
-### 1.3 検証（Phase 4 / 5 / 6 の完了条件）
-
-- [x] **`lcd-demo-rs` が Pico 2 W で表示される**（2026-09-26 達成。詳細は
-      `docs/verification-report.md` §6）。トレースが host ポートと 14,352 行完全一致し、
-      画面にも絵が出た。**残るのは I2C 側**
-- [ ] **両ボード（ESP32-S3 と Pico 2 W）で `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致（Phase 4）**。
-  GPIO 自体は 2 ボードとも `lcd-demo-rs` / `sensor-display` で動いているが、blink は
-  まだ焼いていない。`led` 役の外付け LED（§1.1）が要る。**Phase 4 で残っているのはこれだけ**。
-  2026-10-07 にオーナーが当初の目標を達成と判断したので、**ゴールの判定には含めない**
-  （やるなら任意の追加検証）
-- [x] **`lcd-demo-rs` が ESP32-S3 で表示される**（2026-09-26 達成。
-      `docs/verification-report.md` §7）。トレースが host と 14,352 行完全一致し、
-      画面にも絵が出た。**残るのは I2C 側**
-- [x] **4 通り（Rust/AS × ESP32-S3/Pico 2 W）で表示が出る（Phase 5）**。2026-10-07 達成
-  （`docs/verification-report.md` §12。下の AS 版の項目）
-- [x] 同一 `.wasm` を両ボードで走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致（Phase 6）
-      → **2026-09-26 に RP2350 と ESP32-S3 で達成**（どちらも host リファレンスと
-      14,352 行完全一致、`spi.write` の CRC-32 3,272 件を含む。
-      `docs/verification-report.md` §6 / §7）。**表示の一致は別途**（上の項目）
-  - **sensor-display は「センサーを読むまで」の全行が 2 ボードで一致**。読んだ後は
-    値がボードごとに違うので、各ボード ≡ host（そのボードの応答を食わせた host）を
-    4 通りで確かめた（§11 / §12）。**同じ応答を 2 ボードに注入する手段は無い**
-  - [x] **これで Phase 6 を完了とみなす**（2026-10-07 オーナー判断。当初の目標を達成
-    したとして完了）。厳密に「sensor-display の全文が 2 ボードで一致」まで見たく
-    なったら、ポートに I2C の replay モードを足して同じ応答を両ボードに食わせる
-  - 手順は `docs/verification-report.md` §5
-  - 突き合わせは `sh verify/diff-traces.sh a.log b.log`
-- [ ] **ボード間の浮動小数の一致**。sensor-display が唯一 f32 を使う温度バーの計算。ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存あり）。ここが Phase 6 の本来の実測対象（RP2040 のソフトフロートは評価対象外になった）
-  - RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）で組んでいる。FPU は `cortex-m-rt` が有効にし、FPSCR は既定のまま（最近接丸め、flush-to-zero 無効）なので IEEE 準拠のはず。実機で確かめる
-  - **RP2350 は 2026-10-07 に 1 点測れた**（`docs/verification-report.md` §12）。
-    Pico 2 W が読んだ応答を host に食わせると、温度バーを含むトレースが実機と
-    全文一致した（Rust 版・AS 版とも）。**ESP32-S3 も同日に同じ結果**（4 通りとも）。
-    **同じ入力を 2 ボードに食わせる手段はまだ無い**ので、言えるのは
-    「各ボード ≡ host」まで
-  - RP2350 の DCP（f64 を速くする補助演算器）は使っていない。`rp235x-hal` の `dcp-fast-f64` を入れると `__aeabi_dadd` / `__aeabi_dmul` が差し替わる。速くはなるが結果の一致を確かめていないので、Phase 6 が通るまで入れない
-- [x] **SHT40 を実機で読む**（2026-10-05 達成。`docs/verification-report.md` §11）。
-  sensor-display-rs を ESP32-S3 と Pico 2 W で走らせ、どちらも 1 回目で読めて
-  画面に出た。**センサーを読むまでの 3,756 行は host・2 ボードの 3 者で完全一致**。
-  アドレスは 0x44 で合っていた
-- [x] **AS 版（`sensor-display-as`）を実機で走らせる**（2026-10-07、Pico 2 W と
-  ESP32-S3 の両方で達成。実機が読んだ応答を host の Rust 版・AS 版に食わせた
-  トレースと全文一致。`docs/verification-report.md` §12）
-- [ ] **ESP32-S3 で USB からのリセットが効かなくなった原因を突き止める**（2026-10-07）。
-  **切り分けが進んだ**（`docs/verification-report.md` §14）: `USB-OTG` 側が Mac に
-  繋がっていると `RST` でも書き込み待ち（`boot:0x20`）に入る。`USB-UART` 側だけなら
-  `RST` で普通に起動し、CP2102N を外せば CH343 からの書き込みも通る。**残るのは
-  `deploy --monitor`（`espflash monitor` のリセット）でアプリが走らないことだけ**。
-  以下は当初の記録:
-  USB-OTG から焼くと書き込み待ち（`boot:0x21`）で止まり、CH343 の自動リセットは
-  EN だけ効いて GPIO0 が効かない。§10（2026-10-04）では `deploy --monitor` が
-  1 コマンドで通っていたので、何かが変わっている。今は `RST` ボタンで起動して
-  回避している（`docs/verification-report.md` §12「ESP32-S3 で詰まったこと」）。
-  直るまで ESP32-S3 の `deploy` は「焼く → `RST` を押す」の 2 手になる
-- [x] `verify/sht4x-replay.txt` を**実機から記録した応答**に差し替える（2026-10-07。
-  Pico 2 W の SHT40、T=25.63C / RH=74.49%）。オーナー判断でトレースに
-  読み出しのバイト列（`data=`）を出すことにし（abi-spec §9）、
-  `wasmicon trace replay` で取り出した
-- [x] 結果を `docs/verification-report.md` に反映する（§11 / §12）
-
-### 1.3.1 ESP32-C5 対応（2026-10-12 着手。Waveshare ESP32-C5-WIFI6-KIT）
-
-`ports/esp32c5` は `ports/esp32s3` と同じ作り（GPIO はレジスタ直叩き、SPI / I2C は
-`esp-hal` 1.2 のドライバ）。ピンは abi-spec §8。段階ごとに実機で確かめてコミットする。
-
-- [x] **① ファームが起動して名乗る**（2026-10-12。チップは ESP32-C5 rev v1.0、フラッシュ 16 MB。
-  ESP-IDF の 2 段目ブートローダが通り、`wasmicon id esp32c5 …` を出した。スロットと
-  設定スロットが空なら `magic mismatch` を出して待つ）
-- [x] **② `deploy` でスロットから blink が走る**（2026-10-12。配線表 `led`=GPIO4 を読み、
-  blink-rs のトレースが host と 20 行完全一致）
-- [ ] **基板の RGB LED（WS2812B、GPIO27）を `apps/rgb-led-rs` で光らせる**（2026-10-12 実装、
-  **実機では未確認**）。C5 の `spi.bus` index 1 を「SPI2 の MOSI だけを GPIO27 に出す」
-  バスにした（abi-spec §8。配線は要らない）。ファームとアプリは焼いてあるが、RESET を
-  押して走らせていない。赤 → 緑 → 青 → 白 → 虹色 → 消灯に光るか、トレースが host と
-  一致するかを見る
-- [ ] **③ SPI: lcd-demo-rs / life-rs が ILI9341 に描ける**（lcd-demo のトレースが host と一致）
-- [ ] **④ I2C: sensor-display-rs / -as が SHT40 を読み、トレースが host と全文一致**
-- 決めたこと・分かっていること:
-  - **RAM が S3 より小さい。** esp-hal のリンカスクリプトで使える主 RAM は 314 KiB。
-    arena を 288 KiB（4 ページ ＋ 下限の 32 KiB）にし、scratch（8 KiB）は
-    ブートローダから取り戻した領域（`ram(reclaimed)`）に置いた。ネイティブ
-    スタックは 20,168 B（S3 は約 17 KB で足りている）
-  - **FPU が無い**（RV32IMAC）。f32 はソフトウェア演算になる。sensor-display の
-    温度バーが host と一致するかは ④ で見る（§1.3 の浮動小数の項目）
-  - 書き込みは「UART」側の Type-C（CH343。自動ダウンロード回路あり）を使う。
-    ネイティブ USB 側を繋いだまま起動すると、S3 と同じく書き込み待ちに入るかもしれない（未確認）
-  - **ファームが一度走ってシリアルを読んだあとは、`espflash` が `Failed to connect` で
-    繋がらない**（S3 と同じ症状。§1.3 の S3 のリセットの項目）。USB を抜き差しすると戻る。
-    DTR/RTS を落とす・`-c esp32c5`・`--before usb-reset` では直らなかった。
-    `espflash reset` のあとは ROM の 1 行目の途中で出力が止まり、RESET ボタンでは普通に起動する
-
-### 1.4 実機で最初に疑うところ
-
-**RP2350 と ESP32-S3 は観測済み**（どちらも 2026-09-26）。`lcd-demo-rs` を Pico 2 W と
-ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと完全一致し
-（どちらも 14,352 行、`spi.write` の CRC-32 3,272 件を含む）、画面にも絵が出た
-（`docs/verification-report.md` §6 / §7）。以下の懸念のうち **GPIO / SPI のレジスタ
-設定に関するもの**は RP2350 / ESP32-S3 では解消済み（`ARENA` とネイティブスタックの
-項目は解消ではなく、今も有効な注意書き）。ただし **ESP32-S3 は「トレースが完全一致
-するのにピンが動かない」を実際に踏んでいる**（`out_sel`。下の項目）ので、
-**トレースの一致だけでは GPIO が動いた証拠にならない**。**RP2040 は未観測のまま**
-（評価対象外。2026-10-07）。戻すなら「blink が光らない」を最初の期待値として想定すること。
-
-- RP2040: SIO / IO_BANK0 / PADS_BANK0（FUNCSEL=5）
-- RP2350: 同上。加えて **PADS_BANK0 の `ISO`（アイソレーションラッチ）のリセット値が 1**。
-  落とし忘れるとパッドが切り離されたままで、レジスタは正しく見えるのに GPIO が無反応になる。
-  `gpio_configure` は PADS へ書くたびに `iso().clear_bit()` している（`write()` はリセット値から
-  始まるので、書き残すと再びアイソレートされる）
-- ESP32-S3: GPIO / IO_MUX（MCU_SEL=1、GPIO マトリクスの **out_sel=256**）。
-  **ここは 2026-09-26 に実機で踏んだ。** `out_sel` を 128（C3 / C6 など
-  RISC-V 勢の値。ESP32 / S2 / S3 は 256）にしていたため、
-  `GPIO_OUT` / `GPIO_ENABLE` は正しく読めるのにピンが
-  一切動かなかった。症状は「host call のトレースは host と 14,352 行完全一致
-  するのに ILI9341 が真白」。`docs/verification-report.md` §7
-- ESP32-S3: SPI2 は `esp-hal` のドライバ任せなので信号番号を自前で持たない。
-  上のような取り違えは起きない
-- **I2C は 2026-10-05 に ESP32-S3 と RP2350 の両方で 1 回目から通った**
-  （`docs/verification-report.md` §11）。RP2040 に持って行くときや配線を
-  変えたときのために残しておく。失敗の最初の期待値は
-  「`i2c.bus.open` は成功するのに `write` が `nack` を返す」。見る順番:
-  1. **外部プルアップ**（§1.1）。無いと SDA/SCL が high に戻れず、
-     アドレスの ACK が取れない。内部プルだけでは弱い
-  2. **アドレス**（§1.1）。SHT4x はサフィックスで変わる。`nack` が出たら
-     まずここ。品種が違えば 3 箇所直す
-  3. **SDA / SCL の取り違え**。入れ替わっていても `open` は成功する
-  4. RP2350 のみ: **PADS の `ISO`**。GPIO / SPI と同じ落とし穴で、
-     `i2c_open` でも `pue` と一緒に落としている。レジスタは正しく読めるのに
-     波形が出ないならここ
-  5. ESP32-S3 のみ: `esp-hal` のドライバ任せなので GPIO マトリクスの
-     信号番号を自前で持たない。§7 の `out_sel` のような取り違えは起きない
-  - **`timeout` が返ったらバスが握られている**（SCL が low に張り付く）。
-    rp2350 は TIMER0 の実時間で 1 バイトあたり 25 ms で諦める。無言で
-    止まらないようにしてあるので、トレースの最後の行が理由を示す
-
-- ESP32-S3: **ネイティブスタックは `ARENA` の残り**。`esp-hal` の
-  リンカスクリプトは `.stack` を dram_seg の余りに置くので、`ARENA` を
-  300 KB にしている今は 17.4 KiB しかない（`.bss` 315,496 B の直後、
-  dram_seg の端 0x3FCDB700 まで）。インタプリタは呼び出しフレームを arena の
-  配列に積むのでネイティブ再帰はしないが、`ARENA` を増やすとここが削れる。
-  溢れると panic handler（理由を出せない）に入って無言で止まるので、
-  「トレースが途中で切れて何も出ない」はこれを疑う
-  - **この 17.4 KiB のうち約 4 KiB は `esp-storage` が使う。** あちらの
-    `read` は**呼ぶたびに 4096 バイトのセクタバッファをスタックに作る**
-    （`FlashSectorBuffer`。あちらのドキュメントに書いてある）。
-    スロットの読み出しで何度も呼ぶが順に呼ぶので山は 1 つ分。
-    **`ARENA` を増やすときは、この 4 KiB を引いた残りで考えること**
-    （17.4 KiB の数字にはまだ含まれていない計算）
+**The original goal has been reached** (owner decision, 2026-10-07: sensor-display runs on
+ESP32-S3 and Pico 2 W and the traces match. `README.md`). What remains here are
+improvements outside that goal, open questions, and post-MVP work. All remaining work is
+collected here. Scattered lists go stale and start lying, so **remaining work is written in
+this file only**. Frozen decisions and adopted defaults live in `docs/decisions.md`, the
+history in `docs/handoff.md` (a historical record), and the verification status in
+`docs/verification-report.md`.
 
 ---
 
-## 2. 実機なしで判断できること
+## 1. Work that needs hardware
 
-- [x] **toolchain を固定するか** → **1.99.0 に固定した**（2026-10-08 オーナー決定。CI が通っていた stable と同じ版）。4 つの `rust-toolchain.toml`（ルート / `apps` / `ports/rp2040` / `ports/rp2350`）を揃えて上げる。CI の runner も `ubuntu-24.04` に固定し、actions を Node.js 24 で動く v5 に上げた。**1.99.0 では `lcd_demo_rs.wasm` のバイト列が変わる**（`fc470947…` → `84d6de0f…`、大きさは同じ 4,088 B）が、host のトレースは 1.97.1 版と 14,352 行完全一致した（記録済みのトレースは有効。`docs/verification-report.md` §5.1）。以下は当初の記録: `rust-toolchain.toml` は `channel = "stable"` の浮動。clippy の新しい lint や rustfmt の出力変化で CI が突然落ちる（初回 CI がまさにそれ: 手元 1.97.1 / CI 1.98.0）。特に「生成物 diff ゼロ」の検査は rustfmt の出力に依存するので、手元で通って CI で落ちる形で効く。固定すると手動でのバージョン上げが要る
-- [ ] **`abi-spec.md` §8 の表に `lcd-rst` の外部プルアップを明記するか。**
-      `pin.drop` は §5.2 どおりピンを入力・プル無しに戻すので、**デモが描き
-      終わると LCD の `RESET` が浮く**。モジュール側にプルアップが無いと
-      パネルがリセットして画面が白に戻る（2026-09-26 に ESP32-S3 実機で観測。
-      `docs/verification-report.md` §7「原因 3」）
-      - **バグではなく §5.2 の帰結。** 線のアイドルレベルは外部回路が決めるべきもの
-      - **出るかどうかはボードで違う**（2026-09-26 に実測）。同じモジュールで
-        ESP32-S3 は白に戻り、**Pico 2 W は残った**。仕組みは両ポートで同一
-        （ピンが高インピーダンスに戻る）だが、浮いた線がパネルのしきい値を
-        割るかはパッドのリーク量と容量で決まる。**ポートのコードの差ではない**
-      - 実務上は `RESET` に 10 kΩ のプルアップを入れれば済む。**2026-09-26 に
-        ESP32-S3 実機で確認済み**（出荷する構成のまま絵が残った）。**コード変更
-        ゼロで、`.wasm` のハッシュも記録済みのトレースも動かない**のでこれを推す。
-        Pico 2 W でプルアップ無しでも残ったのは保証ではなく観測なので、
-        「両ボードで入れておく」が安全側
-      - **ゲスト側でハンドルを解放せずに終わっても回避できない。** §5.2 は
-        「`run` から戻ったとき、ホストは残っている全ハンドルを drop する」とも
-        定めているので、解放は必ず起きる。外部プルアップか §5.2 の変更しかない
-      - §5.2 を変える（drop でピンを入力に戻さない）のは **ABI の変更**に
-        あたるので、実装せずここに置く（`docs/handoff.md` §2-3）
-      - 「`run()` を抜けたあとに絵が残ることは仕様に含めない」と決めて
-        記録だけする、でも筋は通る。現状の文面はどこにも保証していない
-- [ ] **`abi-spec.md` §6.6 の「drop → ログ出力」の順序を実装に合わせるか**
-      （2026-10-04）。実装は**理由を出してから掃除**にしてある。掃除は
-      無制限に待ちうる（`spi_close` の `BSY` 待ちなど。§2.1）ので、先に
-      回すとペリフェラルが固まったときに理由が出ないまま無言で止まり、
-      `docs/handoff.md` §3 #4「ログを出して停止する」が守れない
-      - 観測できる違いは「理由が出るかどうか」だけで、ハンドルの解放は
-        どちらの順でも起きる。ABI（import 名・シグネチャ・エラーコード）には
-        触らない
-      - §6.6 の文面を直すか、実装を文面に戻すかはオーナー判断
-- [ ] **`docs/abi-spec.md` §10 の未決 2〜5 を確定にするか**。いずれも既定のまま実装済みで動いている
-  - #2 `sleep-ms` 中の挙動 → 各ポートの HAL に委ねる（実装済み）
-  - #3 トラップ後の挙動 → ログを出して停止、再起動しない（実装済み）
-  - #4 `log` の UTF-8 検証 → しない（実装済み）
-  - #5 `spi.transfer` を v0.1 に残すか → 残している（実装済み）
+**A Raspberry Pi Pico 2 W and an ESP32-S3 DevKitC-1 are on hand** (both verified on
+hardware with `lcd-demo-rs` on 2026-09-26. docs/verification-report.md §6, §7).
+**The temperature / humidity sensor on hand is an SHT40** (2026-09-29. docs/decisions.md D-09
+was changed from SHT31/SHT30 to SHT4x and the guest driver was fixed).
+**RP2040 (Pico WH) was dropped from the evaluation** (owner decision, 2026-10-07. `README.md`).
+The two boards of the Phase 4/5/6 completion criteria are **ESP32-S3 and Pico 2 W (RP2350)**.
+The `ports/rp2040` code and its CI build stay, but there is no hardware verification and no
+I2C / SPI implementation for it.
+I2C and sensor-display were verified on both boards on 2026-10-05 / 07
+(docs/verification-report.md §11, §12).
 
-### 2.1 SPI 実装から出た未決（`/code-review xhigh` の指摘、2026-09-26）
+### 1.1 Questions for the owner
 
-いずれも `ports/rp2350` に SPI を入れたときに生まれたもの。**1 と 2 は import の
-エラーステータスに関わるので、ABI の変更にあたる**（`docs/handoff.md` §2-3）。
-実装せずここに置いてある。
+- [x] **Wiring on hardware** (closed 2026-10-07. Everything except `led` is verified on both boards; `led` is the item below). Whether the table in docs/abi-spec.md §8 (I2C/SPI pins, role name -> GPIO number) matches the hardware
+      - RP2350 LCD side (`lcd-cs` / `lcd-dc` / `lcd-rst`, SCK=GP18 / MOSI=GP19) verified on
+        2026-09-26, I2C (SDA=GP4 / SCL=GP5) on 2026-10-05
+        (docs/verification-report.md §11). **Only `led` remains** (RP2040 is not evaluated)
+      - ESP32-S3 LCD side (CS=GPIO10 / DC=GPIO14 / RST=GPIO15, SCK=GPIO12 /
+        MOSI=GPIO11) verified on 2026-09-26. The wiring table is in
+        `apps/lcd-demo-rs/README.md`. I2C (SDA=GPIO8 / SCL=GPIO9) was also
+        verified on 2026-10-05. **Only `led` remains**
+      - **I2C needs external 10 kΩ pull-ups on SDA / SCL.** Both ports enable the
+        internal pull-ups (esp-hal's `connect_pin` always applies `Pull::Up`, so
+        rp2350 was matched to that), but they are weak: 50..80 kΩ on RP2350 and about
+        45 kΩ on ESP32-S3, barely enough for `standard` (100 kHz) over short wires.
+        Sensor modules usually carry their own, so **if the module has them, none need
+        to be added**
+- [x] **How the serial port is connected** (closed 2026-10-07. UART0 verified on both boards). RP2350 is assumed to use UART0 (GP0/GP1), ESP32-S3 UART0 (GPIO43/44)
+      - RP2350: UART0 + a USB serial adapter (CP2102N), verified on 2026-09-26
+      - ESP32-S3: UART0 (GPIO43/44), also verified on 2026-09-26. **The bridge on the
+        `USB-UART` side of the board on hand is a CH343 (VID 0x1A86 / PID 0x55D3), which
+        macOS shows as `/dev/cu.usbmodem*`** (not a CP2102N, so looking for `usbserial`
+        finds nothing). Flashing also works through the `USB-OTG` side (USB-Serial-JTAG)
+      - **When using the `USB-UART` side of the ESP32-S3, do not connect an external USB
+        serial adapter to UART0.** The CH343 TX is wired straight to GPIO44 on the board,
+        so the two drivers fight and flashing stops working (hit on 2026-10-07.
+        docs/verification-report.md §12)
+- [x] **Module part numbers** (closed 2026-10-07. The ILI9341 is the 3.3 V SPI version and displays on both boards. The SHT40 reads at address 0x44). The ILI9341 is assumed to be the 3.3 V logic SPI version
+      - The sensor is **fixed as SHT40** (2026-09-29). But **the I2C address depends on
+        the suffix** (-AD1B is 0x44). The driver keeps `0x44`, so **confirm against the
+        marking of the part on hand or a bus scan**. If it differs, fix **three places**:
+        `ADDRESS` in `apps/sensor-display-rs/src/sht4x.rs` and
+        `apps/sensor-display-as/assembly/sht4x.ts`, and `SHT4X_ADDR` in
+        `ports/host/tests/apps.rs` (the value the host test expects in the trace;
+        without it the test fails with the misleading message that the measurement
+        command differs)
+- [x] **Role names** (owner decision 2026-10-07: the defaults are final). `led` / `lcd-cs` / `lcd-dc` / `lcd-rst`. Changing them means three places (the comment in `wit/board.wit`, the table in docs/abi-spec.md §8, `profile` in `ports/common`). **Changing only a number is one place, `profile`**; adding to the vocabulary (names) also means `ROLE_NAMES` (`assert_role_names` rejects a mismatch at compile time)
+- [x] **An external LED serves as `led`** (closed 2026-10-07. **`led` is no longer a firmware role**. Role names have no fixed vocabulary; the wiring goes in the app's `wasmicon.toml` (§5-9). The blink apps' `apps/blink-*/wasmicon.toml` assign `led` to GP15 / GPIO2. Actually lighting an external LED stays in the Phase 4 blink item). No board has an onboard LED on a plain GPIO (Pico W/WH and Pico 2 W drive it through the CYW43439, the DevKitC-1 has a WS2812). Only the Pico 2 (no radio) has GP25 as a plain LED, but it is kept external to match the Pico 2 W
+- [x] **RP2350 board variant** -> fixed as **Pico 2 W** (RP2350A, GP0..GP29). `NUM_GPIO` stays 30
+- [x] **Treat RP2350 as Arm only?** (owner decision 2026-10-07: Arm (Cortex-M33) only. The RISC-V Hazard3 cores are out of scope). `ports/rp2350` targets Cortex-M33 (`thumbv8m.main-none-eabihf`) only. Whether RISC-V (Hazard3) produces the same trace is not part of the v0.1 verification
 
-- [ ] **`spi.bus.open` の失敗条件を全ポートで揃えるか。** `ports/rp2350` は
-      `frequency-hz == 0` で `invalid-argument`、`index == 1` で `unsupported` を
-      返すが、`ports/host` の mock はどちらも成功を返し、`ports/common` は
-      周波数を検査しない。**同じ `.wasm` が host と実機で違うトレースを出す**ので、
-      「同一バイナリが 2 ボードで同じトレースを出す」（handoff §5 Phase 6）に
-      抵触する。`lcd-demo-rs` も `sensor-display` も踏まないが、踏めば食い違う
-      - 揃えるなら検査は `ports/common` に置く（全ポートが同じ判定になる）
-      - `wit/spi.wit` は「frequency-hz はホストが対応できる最も近い値に丸められる」
-        と書いていて 0 を失敗と定めていない。`docs/abi-spec.md` も長さ 0 の転送
-        だけを `invalid-argument` としている。**どちらに寄せるかはオーナーの判断**
-      - `ports/esp32s3` も rp2350 と同じ判定（`index != 0` → `unsupported`、
-        `frequency-hz == 0` → `invalid-argument`）にした。**ただし下限未満の
-        要求だけは揃っていない**: rp2350 は最も遅い分周に張り付けて成功を返し、
-        esp32s3 は `esp-hal` が範囲外を弾くので `unsupported` を返す
-        （APB 80 MHz のとき 78.125 kHz 未満）。どちらのデモも踏まない
-      - **I2C も同じ形の食い違いがある**（2026-10-04 に実装して判明）。
-        `i2c.bus.open` の `index != 0` は両ポートが `unsupported`、
-        7 bit の外のアドレスと長さ 0 の転送は両ポートが `invalid-argument` を
-        返すが、**`ports/host` の mock はどれも検査しない**。SHT4x は
-        index 0 / 0x44 しか使わないので踏まないが、揃えるなら SPI と同じく
-        `ports/common` に検査を置くことになる
-        - 長さ 0 は `ports/common` が先に弾くので実際には到達しない。
-          それでも両ポートで明示的に弾いているのは、`esp-hal` の
-          `transaction_impl` が**空の read を転送から除いてしまう**ため
-          （任せると `Ok(0)` が返って rp2350 と食い違う）
-        - タイムアウトは **2 ポートで予算を揃えてある**（1 バイト 25 ms）。
-          esp32s3 は `SoftwareTimeout::PerByte` を明示的に設定している。
-          `Config::default()` は `SoftwareTimeout::None` なので、
-          既定のままだと FSM のハードウェアタイムアウト（≒ 0.2 秒）しか
-          残らず桁が合わない
-- [ ] **SPI の待ちループに上限を設けるか。** `ports/rp2350` の `spi_drain` の
-      `BSY` 待ち、RESETS 完了待ち、`spi_write` / `spi_transfer` の `TNF` / `RNE`
-      待ちはいずれも無制限に回る。クロックが止まる・ペリフェラルが固まると、
-      UART に最後のトレース 1 行を残して無言で停止する。これは
-      `ports/rp2350/src/main.rs` と §1.4 が「診断可能にする」と言っている
-      失敗の形そのもの
-      - `types.error-code` に `timeout` は既にあるので型は足りている。
-        ただし**今まで返らなかった状態を返すようになる**ので ABI の変更
-- [ ] **ゲストの `ili9341.rs` の重複を解消するか。** `apps/sensor-display-rs` と
-      `apps/lcd-demo-rs` に写しがある。**2026-10-05 から `draw_text` が
-      違う**（`sensor-display` だけ倍率付き。`lcd-demo-rs` は記録済みトレースを
-      守るため据え置き）。境界検査・初期化列・`fill_rect` は今も同一
-      意図的に分けたが、**一度は実際に挙動が分岐した**: 境界検査の u16 折り返し
-      バグを `321fe3d` で `lcd-demo-rs` 側だけ直し、しばらく振る舞いが違っていた
-      （2026-09-28 に `sensor-display` の Rust / AS 両方を直して揃え直した）
-      - 共有クレートに切り出すならフォント表をパラメータにする。
-        `apps/` の workspace メンバーが 1 つ増える
-      - 分けたままにするなら、片方を直したらもう片方も見ることを
-        `apps/README.md` に書く（AS 版も含めて 3 箇所になる）
-### 2.2 ゲストの境界検査から出た未決（`/code-review` の指摘、2026-09-28）
+### 1.2 Implementation
 
-`apps/sensor-display-*` の u16 折り返しを直したときに出たもの。**ABI には関わらない。**
+- ~~I2C / SPI for `ports/rp2040`~~ -> **not evaluated** (2026-10-07). They keep returning
+      `unsupported`. Note for the record in case it comes back: the rp2350 implementation
+      can be carried over as is (RP2040 and RP2350 have the same DW_apb_i2c for I2C and the
+      same PL022 for SPI; the only differences are the missing `ISO` bit in PADS and the
+      spelling of FUNCSEL)
+- [x] **SPI for `ports/rp2350`**. SPI0 (PL022) is driven through registers directly.
+      **Verified on hardware on 2026-09-26** (docs/verification-report.md §6).
+      When adding it to rp2040, match the frequency rounding (largest value not above
+      the request) and "do not return until `BSY` clears after sending"
+      (on esp32s3 the `esp-hal` driver already satisfies both)
+- [x] **I2C for `ports/rp2350`**. I2C0 (DW_apb_i2c) is driven through registers directly
+      (2026-10-04). Initialization and transfer follow `i2c/controller.rs` in
+      `rp235x-hal`, but return error codes instead of `assert!` (the panic handler
+      cannot report a reason -> §1.4). Waits are bounded by TIMER0 wall time, and
+      **on timeout the transfer is aborted through `IC_ENABLE.ABORT` before**
+      `timeout` is returned (otherwise the bus stays held).
+      **The SCL counters are derived from `clk_sys`** (the PL022 SPI runs on `clk_peri`,
+      but DW_apb_i2c runs on `clk_sys`. Both default to 150 MHz, so mixing them up still
+      works by accident). **Not yet verified on hardware** (-> §1.3)
+- [x] **SPI for `ports/esp32s3`**. SPI2 (FSPI) uses the `esp-hal` `spi::master`
+      driver (unlike GPIO, not direct register access). The points matched to rp2350
+      are in the module comment of `ports/esp32s3/src/board.rs`.
+      **Verified on hardware on 2026-09-26** (14,352 trace lines identical + a picture
+      on the ILI9341. docs/verification-report.md §7)
+- [x] **I2C for `ports/esp32s3`**. I2C0 uses the `esp-hal` `i2c::master` driver
+      (2026-10-04; like SPI, not direct register access). Error mapping matches rp2350
+      (NACK -> `nack`, arbitration loss -> `io`, `esp-hal`'s `Error::Timeout` ->
+      `timeout`). **Not yet verified on hardware** (-> §1.3)
 
-- [ ] **ゲストの単体テストを CI で回すか**（2026-09-28）。`in_bounds` の単体
-      テストを `apps/sensor-display-rs` と `apps/lcd-demo-rs` に入れ、
-      2026-09-29 に `sht4x` の換算（CRC / 温度 / 湿度のクランプ）も足したが、
-      **どちらも CI では走っていない**。`apps/.cargo/config.toml` が wasm32 を固定して
-      いるので、ホストのトリプルを明示しないと実行できない:
+### 1.3 Verification (Phase 4 / 5 / 6 completion criteria)
+
+- [x] **`lcd-demo-rs` displays on the Pico 2 W** (reached 2026-09-26. Details in
+      docs/verification-report.md §6). The trace is identical to the host port over
+      14,352 lines and a picture appeared on the screen. **The I2C side remains**
+- [ ] **`blink-rs` / `blink-as` run on both boards (ESP32-S3 and Pico 2 W) and the serial trace matches the host version (Phase 4)**.
+  GPIO itself works on both boards through `lcd-demo-rs` / `sensor-display`, but blink has
+  not been flashed yet. It needs the external LED for the `led` role (§1.1). **This is the only
+  Phase 4 item left**. The owner judged the original goal reached on 2026-10-07, so **it does
+  not count toward the goal** (optional extra verification)
+- [x] **`lcd-demo-rs` displays on the ESP32-S3** (reached 2026-09-26.
+      docs/verification-report.md §7). The trace is identical to the host over 14,352
+      lines and a picture appeared on the screen. **The I2C side remains**
+- [x] **All four combinations (Rust/AS x ESP32-S3/Pico 2 W) display (Phase 5)**. Reached 2026-10-07
+  (docs/verification-report.md §12. See the AS item below)
+- [x] Run the same `.wasm` on both boards; the trace except `time` and the SPI pixel CRCs are identical (Phase 6)
+      -> **Reached on 2026-09-26 with RP2350 and ESP32-S3** (both identical to the host
+      reference over 14,352 lines, including 3,272 `spi.write` CRC-32 values.
+      docs/verification-report.md §6, §7). **Matching displays are a separate item** (above)
+  - **sensor-display matches on both boards for every line up to the sensor read**. After
+    the read the values differ per board, so each board was compared against the host fed
+    with that board's responses, in all four combinations (docs/verification-report.md §11, §12). **There is no way to
+    inject the same response into both boards**
+  - [x] **Phase 6 is therefore considered complete** (owner decision 2026-10-07: the original
+    goal is reached). To strictly check "the whole sensor-display trace is identical on
+    both boards", add an I2C replay mode to the ports and feed both boards the same response
+  - Procedure: docs/verification-report.md §5
+  - Comparison: `sh verify/diff-traces.sh a.log b.log`
+- [ ] **Floating-point agreement between boards**. sensor-display is the only app using f32, in the temperature bar computation. ESP32-S3 and RP2350 have an f32-only hardware FPU (denormal handling depends on configuration). This is the real measurement target of Phase 6 (RP2040 soft-float is no longer evaluated)
+  - RP2350 is built with the hard-float ABI (`thumbv8m.main-none-eabihf`). `cortex-m-rt` enables the FPU, FPSCR stays at its default (round to nearest, flush-to-zero off), so it should be IEEE compliant. Confirm on hardware
+  - **One data point on RP2350 on 2026-10-07** (docs/verification-report.md §12).
+    Feeding the response read by the Pico 2 W to the host gave a trace identical to the
+    board, including the temperature bar (Rust and AS versions). **The ESP32-S3 gave the
+    same result the same day** (all four combinations). **There is still no way to feed
+    the same input to both boards**, so the claim is limited to "each board == host"
+  - The RP2350 DCP (the f64 coprocessor) is not used. Enabling `dcp-fast-f64` in `rp235x-hal` would replace `__aeabi_dadd` / `__aeabi_dmul`. Faster, but result agreement is unverified, so it stays out until Phase 6 passes
+- [x] **Read the SHT40 on hardware** (reached 2026-10-05. docs/verification-report.md §11).
+  sensor-display-rs ran on ESP32-S3 and Pico 2 W; both read on the first try and displayed.
+  **The 3,756 lines up to the sensor read are identical across host and both boards**.
+  Address 0x44 was correct
+- [x] **Run the AS version (`sensor-display-as`) on hardware** (2026-10-07, reached on both
+  Pico 2 W and ESP32-S3. The responses read on hardware were fed to the host Rust and AS
+  versions and the traces are identical. docs/verification-report.md §12)
+- [ ] **Find out why USB reset stopped working on the ESP32-S3** (2026-10-07).
+  **Narrowed down** (docs/verification-report.md §14): with the `USB-OTG` side connected
+  to the Mac, even `RST` enters download mode (`boot:0x20`). With only the `USB-UART` side
+  connected, `RST` boots normally, and with the CP2102N removed, flashing through the CH343
+  works too. **What remains is only that the app does not run after `deploy --monitor`
+  (the reset done by `espflash monitor`)**. The original record follows:
+  flashing from USB-OTG stops in download mode (`boot:0x21`); the CH343 auto-reset drives
+  EN but not GPIO0. In docs/verification-report.md §10 (2026-10-04) `deploy --monitor` worked as one command, so
+  something changed. The workaround is to boot with the `RST` button
+  (docs/verification-report.md §12 "Where the ESP32-S3 got stuck"). Until fixed,
+  `deploy` on the ESP32-S3 is two steps: flash, then press `RST`
+- [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
+  SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
+  (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
+- [x] Record the results in docs/verification-report.md §11, §12
+
+### 1.3.1 ESP32-C5 support (started 2026-10-12. Waveshare ESP32-C5-WIFI6-KIT)
+
+`ports/esp32c5` is built like `ports/esp32s3` (GPIO through registers directly, SPI / I2C
+through the `esp-hal` 1.2 drivers). Pins: docs/abi-spec.md §8. Each stage is verified on
+hardware and committed separately.
+
+- [x] **(1) The firmware boots and announces itself** (2026-10-12. The chip is ESP32-C5 rev v1.0, 16 MB flash.
+  The ESP-IDF second-stage bootloader runs and the firmware prints `wasmicon id esp32c5 ...`. With the app
+  slot and config slot empty it prints `magic mismatch` and parks)
+- [x] **(2) `deploy` runs blink from the slot** (2026-10-12. The wiring table `led`=GPIO4 is read and
+  the blink-rs trace is identical to the host over 20 lines)
+- [ ] **Light the on-board RGB LED (WS2812B, GPIO27) with `apps/rgb-led-rs`** (implemented 2026-10-12,
+  **not yet confirmed on hardware**). `spi.bus` index 1 on the C5 is a bus that "routes only the SPI2
+  MOSI to GPIO27" (docs/abi-spec.md §8; no wiring needed). Firmware and app are flashed, but RESET
+  has not been pressed to run it. Check that it lights red -> green -> blue -> white -> rainbow -> off
+  and that the trace matches the host
+- [ ] **(3) SPI: lcd-demo-rs / life-rs draw on the ILI9341** (the lcd-demo trace matches the host)
+- [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 and the whole trace is identical to the host**
+- Decided and known so far:
+  - **Less RAM than the S3.** The main RAM usable with the esp-hal linker script is 314 KiB.
+    The arena is 288 KiB (4 pages + the 32 KiB floor) and the scratch area (8 KiB) sits in
+    the region reclaimed from the bootloader (`ram(reclaimed)`). The native stack is
+    20,168 B (the S3 gets by with about 17 KB)
+  - **No FPU** (RV32IMAC). f32 arithmetic is done in software. Whether the sensor-display
+    temperature bar matches the host is checked in (4) (the floating-point item in §1.3)
+  - Flashing uses the "UART" Type-C port (CH343, with the auto-download circuit). Booting
+    with the native USB port connected may enter download mode as on the S3 (unconfirmed)
+  - **Once the firmware has run and read the serial port, `espflash` fails with
+    `Failed to connect`** (same symptom as the S3. See the S3 reset item in §1.3). Unplugging
+    and replugging USB restores it. Dropping DTR/RTS, `-c esp32c5` and `--before usb-reset`
+    did not help. After `espflash reset` the output stops in the middle of the ROM's first
+    line; the RESET button boots normally
+
+### 1.4 What to suspect first on hardware
+
+**RP2350 and ESP32-S3 have been observed** (both on 2026-09-26). `lcd-demo-rs` ran on the
+Pico 2 W and the ESP32-S3 DevKitC-1, the host call trace is identical to the host port
+(14,352 lines on both, including 3,272 `spi.write` CRC-32 values), and a picture appeared
+(docs/verification-report.md §6, §7). Of the concerns below, **those about GPIO / SPI
+register settings** are resolved on RP2350 / ESP32-S3 (the `ARENA` and native stack items
+are not resolved; they are still valid warnings). But **the ESP32-S3 actually hit "the trace
+is identical yet the pins do not move"** (`out_sel`, below), so **a matching trace alone is
+no proof that GPIO works**. **RP2040 remains unobserved** (not evaluated, 2026-10-07). If it
+comes back, expect "blink does not light" as the first outcome.
+
+- RP2040: SIO / IO_BANK0 / PADS_BANK0 (FUNCSEL=5)
+- RP2350: the same registers. In addition, **the reset value of `ISO` (the isolation latch) in PADS_BANK0 is 1**.
+  If it is not cleared the pad stays isolated: the registers read correctly but the GPIO does nothing.
+  `gpio_configure` does `iso().clear_bit()` on every write to PADS (`write()` starts from the reset
+  value, so leaving it out re-isolates the pad)
+- ESP32-S3: GPIO / IO_MUX (MCU_SEL=1, GPIO matrix **out_sel=256**).
+  **This was hit on hardware on 2026-09-26.** `out_sel` was set to 128 (the value for the
+  RISC-V parts such as C3 / C6; ESP32 / S2 / S3 use 256), so `GPIO_OUT` / `GPIO_ENABLE`
+  read back correctly but no pin moved at all. The symptom: the host call trace was
+  identical to the host over 14,352 lines while the ILI9341 stayed white.
+  docs/verification-report.md §7
+- ESP32-S3: SPI2 is left to the `esp-hal` driver, so the port holds no signal numbers of its own.
+  A mix-up like the one above cannot happen there
+- **I2C worked on the first try on both ESP32-S3 and RP2350 on 2026-10-05**
+  (docs/verification-report.md §11). Kept for when it is ported to RP2040 or the wiring
+  changes. The first expected failure is "`i2c.bus.open` succeeds but `write` returns
+  `nack`". Check in this order:
+  1. **External pull-ups** (§1.1). Without them SDA/SCL cannot return high and the
+     address is never ACKed. The internal pull-ups alone are too weak
+  2. **Address** (§1.1). SHT4x addresses vary by suffix. On `nack`, look here first.
+     A different variant means fixing three places
+  3. **SDA / SCL swapped**. `open` still succeeds when they are swapped
+  4. RP2350 only: **`ISO` in PADS**. The same pitfall as GPIO / SPI; `i2c_open` clears it
+     together with `pue`. If the registers read correctly but there is no waveform, look here
+  5. ESP32-S3 only: the `esp-hal` driver owns the GPIO matrix signal numbers, so a mix-up
+     like the `out_sel` one in docs/verification-report.md §7 cannot happen
+  - **A `timeout` means the bus is held** (SCL stuck low). rp2350 gives up after 25 ms per
+    byte of TIMER0 wall time. It never stops silently, so the last trace line shows the reason
+
+- ESP32-S3: **the native stack is what is left of `ARENA`**. The `esp-hal` linker script
+  puts `.stack` in the remainder of dram_seg, so with `ARENA` at 300 KB only 17.4 KiB is
+  left (right after `.bss` at 315,496 B, up to the end of dram_seg at 0x3FCDB700). The
+  interpreter keeps call frames in an array inside the arena and does not recurse natively,
+  but growing `ARENA` shrinks this. An overflow enters the panic handler (which cannot
+  report a reason) and stops silently, so suspect this when "the trace stops midway and
+  nothing follows"
+  - **About 4 KiB of those 17.4 KiB are used by `esp-storage`.** Its `read` **creates a
+    4096-byte sector buffer on the stack on every call** (`FlashSectorBuffer`; its
+    documentation says so). The slot read calls it many times, but sequentially, so the
+    peak is one buffer. **When growing `ARENA`, budget with this 4 KiB subtracted**
+    (the 17.4 KiB figure does not include it yet)
+
+---
+
+## 2. Decisions that need no hardware
+
+- [x] **Pin the toolchain?** -> **Pinned to 1.99.0** (owner decision 2026-10-08; the same stable version CI was passing on). The four `rust-toolchain.toml` files (root / `apps` / `ports/rp2040` / `ports/rp2350`) are raised together. The CI runner is pinned to `ubuntu-24.04` and the actions were raised to the v5 releases that run on Node.js 24. **With 1.99.0 the bytes of `lcd_demo_rs.wasm` change** (`fc470947...` -> `84d6de0f...`, same size 4,088 B), but the host trace is identical to the 1.97.1 build over 14,352 lines (the recorded traces stay valid. docs/verification-report.md §5.1). The original record follows: `rust-toolchain.toml` had `channel = "stable"`, floating. A new clippy lint or a change in rustfmt output makes CI fail out of nowhere (the very first CI run did exactly that: 1.97.1 locally / 1.98.0 in CI). The "generated files diff zero" check in particular depends on rustfmt output, so it passes locally and fails in CI. Pinning means manual version bumps
+- [ ] **State the external pull-up on `lcd-rst` in the docs/abi-spec.md §8 table?**
+      `pin.drop` returns the pin to input with no pull, as docs/abi-spec.md §5.2 says, so **the LCD `RESET`
+      floats once the demo finishes drawing**. If the module has no pull-up, the panel
+      resets and the screen goes white (observed on ESP32-S3 hardware on 2026-09-26.
+      docs/verification-report.md §7 "Cause 3")
+      - **Not a bug; a consequence of docs/abi-spec.md §5.2.** The idle level of a line is for the external
+        circuit to decide
+      - **Whether it happens depends on the board** (measured 2026-09-26). With the same
+        module the ESP32-S3 goes white and **the Pico 2 W keeps the picture**. The mechanism
+        is the same in both ports (the pin returns to high impedance); whether the floating
+        line crosses the panel's threshold depends on pad leakage and capacitance. **It is
+        not a difference in port code**
+      - In practice a 10 kΩ pull-up on `RESET` is enough. **Confirmed on ESP32-S3 hardware
+        on 2026-09-26** (the picture stayed with the shipping configuration). **Zero code
+        changes, and neither the `.wasm` hash nor the recorded traces move**, so this is the
+        preferred option. That the Pico 2 W kept the picture without a pull-up is an
+        observation, not a guarantee, so "add it on both boards" is the safe side
+      - **Leaving handles unreleased in the guest does not avoid it either.** docs/abi-spec.md §5.2 also
+        says "when `run` returns, the host drops all remaining handles", so the release
+        always happens. Only an external pull-up or a change to docs/abi-spec.md §5.2 would help
+      - Changing docs/abi-spec.md §5.2 (drop no longer returns the pin to input) is **an ABI change**, so it
+        is recorded here instead of implemented (docs/decisions.md D-03)
+      - Deciding "whether the picture survives after `run()` returns is not part of the
+        spec" and only recording it would also be consistent. The current text guarantees
+        it nowhere
+- [ ] **Align the "drop -> log" order in docs/abi-spec.md §6.6 with the implementation?**
+      (2026-10-04). The implementation **prints the reason first, then cleans up**. The
+      cleanup can wait without bound (the `BSY` wait in `spi_close`, etc. §2.1), so doing it
+      first means that when a peripheral hangs the firmware stops silently with no reason
+      printed, breaking "log and halt" (docs/decisions.md A-04)
+      - The only observable difference is whether the reason is printed; the handles are
+        released in either order. The ABI (import names, signatures, error codes) is not
+        touched
+      - Whether to fix the docs/abi-spec.md §6.6 text or revert the implementation to the text is the owner's
+        call
+- [ ] **Make open questions 2-5 of docs/abi-spec.md §10 final?** All are implemented with their defaults and work
+  - #2 behavior during `sleep-ms` -> left to each port's HAL (implemented)
+  - #3 behavior after a trap -> log and halt, no restart (implemented)
+  - #4 UTF-8 validation of `log` -> none (implemented)
+  - #5 keep `spi.transfer` in v0.1 -> kept (implemented)
+
+### 2.1 Open questions from the SPI implementation (`/code-review xhigh` findings, 2026-09-26)
+
+All of these came up when SPI was added to `ports/rp2350`. **1 and 2 concern the error
+status of imports, so they are ABI changes** (docs/decisions.md D-03). They are recorded
+here instead of implemented.
+
+- [ ] **Align the failure conditions of `spi.bus.open` across all ports?** `ports/rp2350`
+      returns `invalid-argument` for `frequency-hz == 0` and `unsupported` for `index == 1`,
+      but the `ports/host` mock succeeds on both and `ports/common` does not check the
+      frequency. **The same `.wasm` produces different traces on host and hardware**, which
+      conflicts with "the same binary produces the same trace on both boards"
+      (docs/decisions.md D-10). Neither `lcd-demo-rs` nor `sensor-display` hits it, but any
+      app that does will mismatch
+      - If aligned, the check belongs in `ports/common` (every port gets the same verdict)
+      - `wit/spi.wit` says "frequency-hz is rounded to the nearest value the host supports"
+        and does not define 0 as a failure. `docs/abi-spec.md` only makes zero-length
+        transfers `invalid-argument`. **Which way to go is the owner's decision**
+      - `ports/esp32s3` got the same verdicts as rp2350 (`index != 0` -> `unsupported`,
+        `frequency-hz == 0` -> `invalid-argument`). **Only requests below the minimum are
+        not aligned**: rp2350 clamps to the slowest divider and succeeds, esp32s3 returns
+        `unsupported` because `esp-hal` rejects out-of-range values (below 78.125 kHz at
+        APB 80 MHz). Neither demo hits it
+      - **I2C has the same kind of discrepancy** (found when it was implemented on
+        2026-10-04). Both ports return `unsupported` for `i2c.bus.open` with `index != 0`
+        and `invalid-argument` for addresses outside 7 bits and zero-length transfers, but
+        **the `ports/host` mock checks none of them**. SHT4x uses only index 0 / 0x44, so it
+        is not hit; aligning it means putting the checks in `ports/common`, as for SPI
+        - Zero length never actually arrives, because `ports/common` rejects it first. Both
+          ports still reject it explicitly because `esp-hal`'s `transaction_impl` **drops an
+          empty read from the transfer** (left alone it returns `Ok(0)` and mismatches rp2350)
+        - Timeouts **use the same budget on both ports** (25 ms per byte). esp32s3 sets
+          `SoftwareTimeout::PerByte` explicitly. `Config::default()` is
+          `SoftwareTimeout::None`, which leaves only the FSM hardware timeout (about 0.2 s),
+          an order of magnitude off
+- [ ] **Bound the SPI wait loops?** In `ports/rp2350`, the `BSY` wait in `spi_drain`, the
+      RESETS completion wait, and the `TNF` / `RNE` waits in `spi_write` / `spi_transfer`
+      all spin without bound. If the clock stops or the peripheral hangs, the firmware stops
+      silently with the last trace line on the UART. That is exactly the failure mode
+      `ports/rp2350/src/main.rs` and §1.4 promise to make diagnosable
+      - `types.error-code` already has `timeout`, so the type is sufficient. But **a state
+        that never returned before would start returning**, which is an ABI change
+- [ ] **Deduplicate the guest `ili9341.rs`?** `apps/sensor-display-rs` and
+      `apps/lcd-demo-rs` each have a copy. **Since 2026-10-05 `draw_text` differs**
+      (only `sensor-display` has a scale factor; `lcd-demo-rs` is frozen to protect the
+      recorded traces). The bounds check, init sequence and `fill_rect` are still identical.
+      The split is intentional, but **behavior did diverge once**: the u16 wrap-around bug in
+      the bounds check was fixed only on the `lcd-demo-rs` side in `321fe3d`, and the two
+      behaved differently for a while (both the Rust and AS `sensor-display` were fixed and
+      realigned on 2026-09-28)
+      - Extracting a shared crate means making the font table a parameter. The `apps/`
+        workspace gets one more member
+      - If they stay separate, write in `apps/README.md` that fixing one means checking the
+        other (three places including the AS version)
+### 2.2 Open questions from the guest bounds check (`/code-review` findings, 2026-09-28)
+
+These came up when the u16 wrap-around in `apps/sensor-display-*` was fixed. **None touch the ABI.**
+
+- [ ] **Run the guest unit tests in CI?** (2026-09-28). Unit tests for `in_bounds` were
+      added to `apps/sensor-display-rs` and `apps/lcd-demo-rs`, and on 2026-09-29 the
+      `sht4x` conversion (CRC / temperature / humidity clamps) too, but **neither runs in
+      CI**. `apps/.cargo/config.toml` pins wasm32, so they only run with the host triple
+      given explicitly:
 
       ```
       (cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
       ```
 
-      - **湿度のクランプだけは別経路で CI に入っている**（2026-10-01）。host テスト
-        `sensor_display_agrees_at_humidity_clamp_bounds` が境界を踏む合成応答で
-        Rust 版と AS 版を突き合わせるので、こちらは CI で走る。**AS 側にある
-        唯一のクランプ検査**でもある。ただし**部分的な緩和にすぎず、この項目
-        自体は未解決**（`in_bounds` と `sht4x` の換算の大半は今も CI 外）
-      - 手元（macOS / aarch64）では debug / release とも通り、`in_bounds` を
-        折り返す版に戻すと落ちることも確かめた。**Linux で `extern "C"` の
-        未定義シンボルがリンクエラーにならないかは未確認**なので、`guest`
-        ジョブ（`ubuntu-latest`）に足すのは CI で 1 回試してからにする。
-        ジョブに書くときは上の移植可能な形か `x86_64-unknown-linux-gnu` を使う
-        （`aarch64-apple-darwin` を直書きすると CI では std が無くて落ちる）
-      - **足す前に `clashing_extern_declarations` を潰す必要がある**（下の項目）。
-        `guest` ジョブは `-D warnings` で止まる
-- [ ] **`bindings/rust` の生成物が出す `clashing_extern_declarations` を潰すか。**
-      `i2c` と `spi` が `[static]bus.open` / `[method]bus.write` を別シグネチャで
-      宣言していて、`#[link(wasm_import_module = …)]` で区別している。この lint は
-      wasm32 では属性を見るが**ホストターゲットでは見ない**ので、ゲストを
-      ホスト向けにビルドしたときだけ警告 2 件が出る（2026-09-28 に単体テストを
-      足して初めて見えた）
-      - 直す場所は `tools/wasmicon-gen`。生成物を手で編集しない（CLAUDE.md）
-      - 直さないと上の CI 項目が `-D warnings` で通らない
-- [ ] **境界検査の「呼び出し側」は pin されていない**（2026-09-28）。入れた
-      単体テストは `in_bounds` / `inBounds` を検査するだけなので、**呼び出し側を
-      折り返す式に戻されても気付けない**（`fill_rect` と `draw_text` の両方を
-      戻すと `in_bounds` が dead_code になって clippy が落ちるが、片方だけなら
-      通る。AS 側にはその保険も無い）
-      - 本当に pin するには `fill_rect` / `draw_text` を敵対的な座標で叩く
-        テストが要る。ゲストは `run` しか export していないので、host から
-        叩くには export を増やすことになり、**`lcd_demo_rs.wasm` のハッシュが
-        変わって記録済みのトレースが取り直しになる**
-      - **AS 側には単体テストが無い**（この repo に AS のテスト基盤が無い）。
-        `noAssert: true` で境界検査が消えている側なので、危ないほうが
-        テストされていないという非対称がある
+      - **Only the humidity clamp reaches CI by another route** (2026-10-01). The host test
+        `sensor_display_agrees_at_humidity_clamp_bounds` cross-checks the Rust and AS
+        versions on a synthetic response that hits the bounds, so that one runs in CI. It is
+        also **the only clamp check on the AS side**. But it is **only a partial
+        mitigation; the item itself is unresolved** (`in_bounds` and most of the `sht4x`
+        conversion are still outside CI)
+      - Locally (macOS / aarch64) both debug and release pass, and reverting `in_bounds` to
+        the wrapping version was confirmed to fail. **Whether undefined `extern "C"`
+        symbols link on Linux is unconfirmed**, so add it to the `guest` job
+        (`ubuntu-latest`) only after one trial run in CI. In the job, use the portable form
+        above or `x86_64-unknown-linux-gnu` (hard-coding `aarch64-apple-darwin` fails in CI
+        for lack of std)
+      - **`clashing_extern_declarations` must be fixed first** (item below). The `guest` job
+        stops on `-D warnings`
+- [ ] **Fix the `clashing_extern_declarations` warnings from the generated `bindings/rust`?**
+      `i2c` and `spi` declare `[static]bus.open` / `[method]bus.write` with different
+      signatures and tell them apart through `#[link(wasm_import_module = ...)]`. The lint
+      looks at the attribute on wasm32 but **not on host targets**, so building the guest
+      for the host shows two warnings (first seen on 2026-09-28 when the unit tests were
+      added)
+      - The fix belongs in `tools/wasmicon-gen`. Generated files are not edited by hand
+        (`wit/AGENTS.md`)
+      - Until fixed, the CI item above cannot pass `-D warnings`
+- [ ] **The call sites of the bounds check are not locked in** (2026-09-28). The unit tests
+      added only check `in_bounds` / `inBounds`, so **reverting a call site to the wrapping
+      expression goes unnoticed** (reverting both `fill_rect` and `draw_text` makes
+      `in_bounds` dead code and clippy fails, but reverting one passes. The AS side has not
+      even that safety net)
+      - Locking them in for real needs a test that hits `fill_rect` / `draw_text` with
+        hostile coordinates. The guest exports only `run`, so calling them from the host
+        means adding exports, and **the `lcd_demo_rs.wasm` hash changes, forcing a re-record
+        of the traces**
+      - **The AS side has no unit tests** (this repo has no AS test infrastructure). It is
+        the side where `noAssert: true` removes the bounds checks, so the riskier side is
+        the untested one
 
 ---
 
-## 3. 分かっている制限（今は困っていない）
+## 3. Known limits (not a problem today)
 
-直す必要が出たときのために書いておく。
+Written down for when a fix becomes necessary.
 
-- **`spi.transfer` と `i2c.write-read` は 128 バイトまで**（`ports/common` の `SCRATCH`）。送信元と受信先がどちらもゲストメモリにあり範囲が重なりうるので、送信側を一度写している。超えると `unsupported`。v0.1 の用途（SHT4x の 6 バイト、ILI9341 の ID 読み）には十分
-- **`draw_text` は 40 文字まで**（`apps/README.md` §2。`lcd-demo-rs` の写しは 12 文字まで）。超えると描かずに失敗を返す
-- **`fill_rect` は行ごとに `dc` を high に上げ直している。** CS low の 1 トランザクション
-  内で `dc` は RAMWR の後に 1 回上げれば足りるので、2 回目以降は無駄な host call。
-  `lcd-demo-rs` では 7,176 回のうち約 2,659 回がこれで、トレースを出すビルドの
-  実行時間がほぼ倍になっている。**直すとトレースが変わる**ので、
-  `docs/verification-report.md` §6 と `README.md` に記録した 14,352 行という
-  数値も取り直しになる（`apps/README.md` §2 の送信手順そのものは変わらない）
-- **テキスト形式の Wasm を読めない**。spec テストの `(module quote ...)` 538 件はこれでスキップしている（スキップ 548 件の内訳はランナーが実行時に出す）
-- **複数モジュールのリンクをしない**。`linking.wast` / `imports.wast` 系は対象外
-- **`panic` の理由を実機のシリアルに出せない**。シリアルはボードが持っていて panic handler から届かない。ランタイム由来の失敗は `main` が捕まえて出すので、ここに来るのはポート自身のバグに限られる
-
----
-
-## 4. 今後やるとしたら（MVP 後）
-
-`docs/design-notes.md` §6 のロードマップにある、v0.1 の範囲外のもの。
-
-- AoT コンパイル（`wasmicon_compiler`）
-- HTTP での動的ロード → **§5 で設計に入った**（`docs/app-workflow.md`）
-- Component Model の完全採用（resource type / async / component binary）
-- インタプリタの最適化。今は `match` ループのまま。RP2040 で ILI9341 のテキスト描画が
-  1 秒以内という目標は未計測（`docs/handoff.md` §5 Phase 2）
-    - **速度は 2026-10-05 に初めて測った**（別リポジトリ `wasmicon-doom` の
-      `spike/`、C ゲスト、trace なし。数値の全体はその README）。整数ループで
-      **約 90 サイクル / Wasm 命令**で、RP2350（150 MHz）と ESP32-S3（240 MHz）で
-      ほぼ同じ（host では約 4 ns / 命令）
-    - **host call 1 回が重い**（2026-10-11、`apps/life-rs` の計測モード
-      `--features bench`。Pico 2 W 150 MHz、trace=off）。ライフゲームの描画は
-      1 セル 14 回の host call で **950 µs / セル**、時間の 93% が描画。SPI を
-      16 → 48 MHz にしても 4% しか縮まず（転送は 1 セル約 60 µs）、**残りの
-      約 890 µs = host call 1 回あたり約 63 µs（約 9,500 サイクル）**。内訳は未測
-      （バインディングの Wasm を回す時間か、import の経路か、ポートの待ちか）。
-      ついでに見つけたこと: `ports/common` の `Hal::call` は **trace を切っていても
-      トレース用の文字列と `spi.write` の CRC-32 を毎回作っている**（数 % の見込み）
-    - **計測アプリ `apps/bench-rs`**（2026-10-11）。同じ `.wasm` を host でも実機でも
-      走らせ、整数ループ / fib / ふるい / ライフゲームの計算 / host call 4 種の時間を
-      ログに出す。Pico 2 W（150 MHz、trace=off）の基準値（1 回あたり）:
-      `time.now-us` 18.7 µs、`gpio.write` 21.3 µs、`spi.write` 1 B 55.0 µs / 98 B 175.8 µs、
-      整数ループ 12.7 µs / 周（host の 140 倍）
-    - [x] **trace を切ったときは整形しない**（2026-10-11）。`Buf::off` と、CRC-32 と
-      16 進ダンプの前の `is_on` で飛ばす。host のプロファイルで時間の 22% が CRC-32
-      だった。実機で `spi.write` 1 B 55.0 → 31.8 µs、98 B 175.8 → 106.8 µs、
-      `gpio.write` 21.3 → 19.1 µs。トレースを出すときの中身は変わらない
-    - **命令キャッシュのミスは律速ではなかった**（2026-10-11、実験のみ・取り込まない）。
-      熱い関数（interp のループ・算術・LEB128・呼び出し、`Hal::call`、RP2350 の
-      gpio / spi）を SRAM に置いても、計算は 6〜8%、`spi.write` 1 B は 26% しか
-      縮まない。ボードごとのリンカ指定と `unsafe(link_section)` を足す割に小さいので
-      見送った。**1 命令 100 サイクル前後はインタプリタの作りそのもの**
-    - [x] **ファーム全体を `opt-level = 3` にした**（2026-10-11、3 ポートの
-      `[profile.release]`）。Pico 2 W で z → 3 は計算 16〜35%、host call 7〜37% 速い。
-      ファームは 71 → 116 KB（フラッシュには十分な余裕がある）。**ランタイムだけ 3 に
-      する package 別指定は効かなかった**（fat LTO の最後の最適化がファーム側の z で
-      走るため。LEB128 の近道と組むと逆にライフゲームが 36% 遅くなった）
-    - [x] **LEB128 の 1 バイト目で済む場合の近道**（2026-10-11、`runtime/src/interp.rs`
-      の `leb_*`。2 バイト以上は `#[cold]` の `*_slow` へ）。host のプロファイルで
-      `leb_u32` が 12% だった。同じ `bench-rs` を 2 周（周ごとの揺れ 0.3% 未満）、
-      O3 で近道なし → あり: 整数ループ 16.33 → 8.99 s、fib 1.143 → 1.084 s、
-      ふるい 2.851 → 2.813 s、ライフゲーム 1.154 → 1.181 s（+2%）、`gpio.write`
-      18.75 → 13.6 µs、`spi.write` 1 B 27.8 → 18.2 µs / 98 B 100.2 → 91.7 µs、
-      `time.now-us` 13.6 → 13.8 µs。実機のトレース（sensor-display、センサーの値まで
-      4,182 行）は host と全文一致
-    - **ESP32-S3（240 MHz）でも測った**（2026-10-11、同じ `bench-rs` を 2 周）。
-      aadf8d6（z、整形の省略は入り済み）→ 今（O3 ＋ 近道）: 整数ループ 8.600 → 6.983 s、
-      fib 1.068 → 0.833 s、ふるい 2.892 → 2.223 s、ライフゲーム 1.173 → 0.865 s、
-      `time.now-us` 13.78 → 10.75 µs、`gpio.write` 12.43 → 9.85 µs、`spi.write` 1 B
-      19.55 → 15.33 µs / 98 B 81.52 → 74.59 µs。O3 でもネイティブのスタック（約 17 KB）は
-      あふれず最後まで走った
-    - [x] **`func_type` を走査せずに引く**（2026-10-12）。import 関数の型は呼び出しの
-      たびに import 表を頭から走査していたので、デコード時に `imported_func_types`
-      （import 1 つにつき 4 B）を作る。定義関数は `call` と `enter` で 2 度引いていたのを
-      1 度にした。ESP32-S3 で全項目が 0.2〜4.2% 縮んだ（fib −2.6%、`spi.write` 1 B
-      −4.2%）。Pico 2 W は fib −4.9%、`spi.write` 1 B −6.1% だが、`spi.write` 98 B は
-      +11.6%（下）
-    - **Pico 2 W の数値はコードの置き場所で ±1 割ほど動く**（2026-10-12）。上の変更で
-      `spi.write` 98 B が 91.7 → 102.3 µs になったが、ポートの `spi_write` の機械語は
-      1 命令も変わっておらず、関数が 88 B 前にずれただけだった（前のファームに戻すと
-      91.7 µs が再現）。XIP で走るので、置き場所でキャッシュの当たり方が変わる。
-      **Pico で 1 割未満の差を変更の効果と読まないこと**（ESP32-S3 と並べて判断する）。
-      安定させるなら熱いループを RAM に置く（上の RAM 実行の実験。今は取り込まない）
-    - 次の候補（未着手）: host のプロファイルで残るのは `run` 本体 24%。熱い命令の
-      近道が候補。分岐の side table の二分探索は 1% 未満で、今は律速ではない
-    - [x] **ESP32-S3 の CPU クロックを 240 MHz にするか** → **240 MHz にした**（2026-10-09 オーナー決定。`ports/esp32s3/src/main.rs` の `with_cpu_clock(CpuClock::max())`）。実機で sensor-display が host と全文一致することを確かめた（`docs/verification-report.md` §15）。以下は当初の記録:
-      `ports/esp32s3` は `esp_hal::Config::default()` のままで **80 MHz** で
-      動いている。`with_cpu_clock(CpuClock::max())` で全計測がちょうど 3 倍に
-      なることは手元のビルドで確かめた（コミットはしていない）
+- **`spi.transfer` and `i2c.write-read` are limited to 128 bytes** (`SCRATCH` in `ports/common`). Source and destination are both in guest memory and may overlap, so the source is copied once. Beyond the limit: `unsupported`. Enough for the v0.1 uses (6 bytes for the SHT4x, the ILI9341 ID read)
+- **`draw_text` takes up to 40 characters** (apps/README.md §2; the `lcd-demo-rs` copy takes 12). Beyond that it returns failure without drawing
+- **`fill_rect` raises `dc` again on every row.** Within one CS-low transaction `dc` only needs to go high once after RAMWR, so every raise after the first is a wasted host call.
+  In `lcd-demo-rs` about 2,659 of the 7,176 calls are these, and they nearly double the run
+  time of a tracing build. **Fixing it changes the trace**, so the 14,352-line figure
+  recorded in docs/verification-report.md §6 and `README.md` would have to be re-recorded
+  (the send procedure in apps/README.md §2 itself does not change)
+- **The text format of Wasm is not read**. The 538 `(module quote ...)` cases in the spec tests are skipped for this reason (the runner prints the breakdown of the 548 skips at run time)
+- **No linking of multiple modules**. `linking.wast` / `imports.wast` and the like are out of scope
+- **`panic` reasons cannot reach the serial port on hardware**. The board owns the serial port and the panic handler cannot reach it. Runtime failures are caught and printed by `main`, so only bugs in the port itself end up here
 
 ---
 
-## 5. アプリ開発フロー（ローダと `wasmicon` CLI）
+## 4. Possible future work (post-MVP)
 
-**設計は `docs/app-workflow.md` が正。ここは残作業と未決だけ。**
-2026-10-04 にオーナーが方針を出した: **ボードごとにファームウェアを用意し、
-そのファームウェアがアプリを USB / HTTP 経由でロードできるようにする。**
+Items on the roadmap in docs/design-notes.md §6 that are outside v0.1.
 
-**同日の決定: ファームにアプリは入れない。** `include_bytes!` の内蔵アプリは
-外し、空スロットなら理由を出して idle、生存確認はポート層が直接 LED を振る
-（`docs/app-workflow.md` §3.3）。**今の `include_bytes!` はファームのビルドを
-`apps/` のビルドに依存させていて、ファームを単体のリリース成果物として
-作れない**のがもう 1 つの理由。
+- AoT compilation (`wasmicon_compiler`)
+- Dynamic loading over HTTP -> **entered the design in §5** (`docs/app-workflow.md`)
+- Full adoption of the Component Model (resource types / async / component binary)
+- Interpreter optimization. It is still a plain `match` loop. The goal of drawing ILI9341
+  text on the RP2040 within one second has not been measured
+    - **Speed was measured for the first time on 2026-10-05** (`spike/` in the separate
+      repository `wasmicon-doom`, C guest, no trace; the full numbers are in its README).
+      In an integer loop it is **about 90 cycles per Wasm instruction**, nearly the same on
+      RP2350 (150 MHz) and ESP32-S3 (240 MHz) (about 4 ns per instruction on the host)
+    - **One host call is expensive** (2026-10-11, the measurement mode of `apps/life-rs`,
+      `--features bench`. Pico 2 W at 150 MHz, trace=off). Drawing the game of life takes
+      14 host calls per cell and **950 µs per cell**, with 93% of the time in drawing.
+      Raising SPI from 16 to 48 MHz saves only 4% (the transfer is about 60 µs per cell),
+      so **the remaining ~890 µs is about 63 µs (about 9,500 cycles) per host call**. The
+      breakdown is unmeasured (time in the binding's Wasm, the import path, or waiting in
+      the port). Found along the way: `Hal::call` in `ports/common` **builds the trace
+      strings and the `spi.write` CRC-32 on every call even with trace off** (a few percent
+      expected)
+    - **Benchmark app `apps/bench-rs`** (2026-10-11). The same `.wasm` runs on host and
+      hardware and logs the time of an integer loop / fib / sieve / game-of-life computation /
+      four kinds of host call. Baseline on the Pico 2 W (150 MHz, trace=off), per call:
+      `time.now-us` 18.7 µs, `gpio.write` 21.3 µs, `spi.write` 1 B 55.0 µs / 98 B 175.8 µs,
+      integer loop 12.7 µs per iteration (140x the host)
+    - [x] **No formatting when trace is off** (2026-10-11). `Buf::off`, plus an `is_on` check
+      before the CRC-32 and the hex dump. In the host profile 22% of the time was CRC-32.
+      On hardware `spi.write` 1 B 55.0 -> 31.8 µs, 98 B 175.8 -> 106.8 µs, `gpio.write`
+      21.3 -> 19.1 µs. The trace content when tracing is unchanged
+    - **Instruction cache misses were not the bottleneck** (2026-10-11, experiment only, not
+      merged). Placing the hot functions (the interp loop, arithmetic, LEB128, calls,
+      `Hal::call`, RP2350 gpio / spi) in SRAM shrinks computation by only 6-8% and
+      `spi.write` 1 B by 26%. Too little for the per-board linker directives and
+      `unsafe(link_section)` it needs, so it was dropped. **About 100 cycles per instruction
+      is the nature of the interpreter itself**
+    - [x] **`opt-level = 3` for the whole firmware** (2026-10-11, `[profile.release]` of the
+      three ports). On the Pico 2 W, z -> 3 is 16-35% faster on computation and 7-37% on
+      host calls. The firmware grows from 71 to 116 KB (flash has plenty of room). **A
+      per-package override that sets only the runtime to 3 had no effect** (the final
+      optimization of fat LTO runs at the firmware's z. Combined with the LEB128 shortcut it
+      even made the game of life 36% slower)
+    - [x] **Shortcut for LEB128 values that fit in the first byte** (2026-10-11, `leb_*` in
+      `runtime/src/interp.rs`. Two or more bytes go to the `#[cold]` `*_slow` path). In the
+      host profile `leb_u32` was 12%. The same `bench-rs` run twice (under 0.3% variation
+      between runs), O3 without -> with the shortcut: integer loop 16.33 -> 8.99 s, fib
+      1.143 -> 1.084 s, sieve 2.851 -> 2.813 s, game of life 1.154 -> 1.181 s (+2%),
+      `gpio.write` 18.75 -> 13.6 µs, `spi.write` 1 B 27.8 -> 18.2 µs / 98 B 100.2 -> 91.7 µs,
+      `time.now-us` 13.6 -> 13.8 µs. The hardware trace (sensor-display, 4,182 lines up to
+      the sensor value) is identical to the host
+    - **Measured on the ESP32-S3 (240 MHz) as well** (2026-10-11, the same `bench-rs` twice).
+      aadf8d6 (z, formatting skip already in) -> now (O3 + shortcut): integer loop 8.600 ->
+      6.983 s, fib 1.068 -> 0.833 s, sieve 2.892 -> 2.223 s, game of life 1.173 -> 0.865 s,
+      `time.now-us` 13.78 -> 10.75 µs, `gpio.write` 12.43 -> 9.85 µs, `spi.write` 1 B
+      19.55 -> 15.33 µs / 98 B 81.52 -> 74.59 µs. Even at O3 the native stack (about 17 KB)
+      did not overflow and the run completed
+    - [x] **Look up `func_type` without scanning** (2026-10-12). The type of an imported
+      function was found by scanning the import table from the start on every call, so
+      `imported_func_types` (4 B per import) is now built at decode time. Defined functions
+      were looked up twice, in `call` and `enter`; now once. On the ESP32-S3 every item
+      shrank by 0.2-4.2% (fib -2.6%, `spi.write` 1 B -4.2%). On the Pico 2 W fib -4.9% and
+      `spi.write` 1 B -6.1%, but `spi.write` 98 B +11.6% (below)
+    - **Pico 2 W numbers move by about +/-10% with code placement** (2026-10-12). The change
+      above moved `spi.write` 98 B from 91.7 to 102.3 µs, yet not one instruction of the
+      port's `spi_write` machine code changed; the function merely shifted 88 B earlier
+      (going back to the previous firmware reproduces 91.7 µs). It runs from XIP, so
+      placement changes how the cache hits. **Do not read a difference under 10% on the Pico
+      as the effect of a change** (judge it next to the ESP32-S3). To stabilize, put the hot
+      loop in RAM (the RAM execution experiment above; not merged for now)
+    - Next candidates (not started): what remains in the host profile is the `run` body at
+      24%. Shortcuts for hot instructions are the candidate. The binary search in the branch
+      side table is under 1% and not the bottleneck now
+    - [x] **Run the ESP32-S3 CPU clock at 240 MHz?** -> **Set to 240 MHz** (owner decision 2026-10-09. `with_cpu_clock(CpuClock::max())` in `ports/esp32s3/src/main.rs`). Verified on hardware that the sensor-display trace is identical to the host (docs/verification-report.md §15). The original record follows:
+      `ports/esp32s3` kept `esp_hal::Config::default()` and ran at **80 MHz**.
+      A local build confirmed that `with_cpu_clock(CpuClock::max())` makes every
+      measurement exactly 3x faster (not committed)
 
-§1 を押し退けるものではない。**0 段は §1.3 の SHT40 作業を短くする**
-（取り込みと突き合わせを CLI に寄せる）。**handoff §5 の Phase 4 / 5 / 6 の
-完了条件は変えない。**
+---
 
-### 未決（オーナー判断。本文からは §5-1 … §5-9 で参照する）
+## 5. App development workflow (loader and the `wasmicon` CLI)
 
-- [ ] **§5-1 トラップ後の挙動を「停止したまま次のアプリを受け付ける」に確定するか。**
-      今は handoff §3 #4 のとおり「ログを出して停止、再起動しない」で、`main` は
-      `loop { wfi() }` に入る。ローダは**同じアプリの自動再実行はしないまま**
-      「新しいアプリを待つ」状態を足す。`docs/abi-spec.md` §6.6 がトラップ後の
-      挙動をポートに委ねているので **ABI の変更ではない**が、§3 #4 の記録とは
-      読みが変わるので確定が要る。§2 の「§10 の未決 2〜5 を確定にするか」の #3 と
-      同じ対象
-- [x] **§5-2 ボードの品種**（2026-10-04 実測）。`espflash board-info` の出力:
-      **`Flash size: 8MB`**、`Features: WiFi, BLE, Embedded Flash`、
-      `esp32s3 (revision v0.2)`、水晶 40 MHz
-      - **PSRAM は Features に出ていない** → 載っていない（N8R8 ではなく N8）と
-        見える。**§5-3 の選択肢が 1 つ消える**（arena を PSRAM に移せないので、
-        HTTP をやるなら `max_memory_pages` を 4 → 2 に落とす一択）
-      - espflash の出力が根拠なので、**モジュールの刻印（WROOM-1-N8 か
-        N8R8）で裏を取れると確実**。§5-3 を判断するときに効く
-      - RP2350 側は Pico 2 W（フラッシュ 4 MB）で確定済み（§1.1）
-- [ ] **§5-3 ESP32-S3 の RAM 予算をどうするか**（HTTP の前提）。DRAM はほぼ
-      使い切っている（`.bss` 315 KB / `ARENA` 300 KB / ネイティブスタック
-      17.4 KiB。§1.4）。`esp-wifi` を入れるなら二択:
-      - `max_memory_pages` を 4 → 2 に落とす。abi-spec §6.2 は「上限はポートが
-        決める」としているので**仕様違反ではない**が、**「同一バイナリがどの
-        ボードでも通る」が実質的に崩れる**
-      - ~~arena を PSRAM に置く~~ → **この手は無い**。2026-10-04 の実測で
-        PSRAM が載っていないと分かった（§5-2）。刻印で裏を取るまでは
-        完全には閉じないが、`espflash board-info` の Features に出ていない
-- [ ] **§5-4 Pico 2 W / Pico WH の Wi-Fi をやるか。** CYW43439 で、実用的な
-      ドライバ `cyw43` は embassy（async）前提。今の blocking 構成から
-      **ポートの作り直しになる**。v1 の HTTP は ESP32-S3 だけに絞ることを推す
-- [ ] **§5-5 HTTP の向き。** デバイスがサーバ（`POST /app` + mDNS。dev ループが
-      楽）か、URL から pull（OTA が楽、NAT 越えが効く）か。両方は後でもよいが、
-      先に入れる側を決める
-- [ ] **§5-6 技術的な要確認**（実装前に確かめる。推測で進めない）
-      - **RP2350 のフラッシュ書き込み**。`rom_data::flash_range_erase` /
-        `flash_range_program` を**XIP から実行しているコードから呼べない**。
-        書き込みルーチンを RAM に置き（`#[link_section = ".data"]`）割り込みを
-        止める形になるはず
-      - **UF2 で任意アドレスに書けるか**。RP2350 でパーティションテーブルが
-        無いとき absolute family ID (0xe48bff57) が要るかもしれない。通れば
-        `deploy` が picotool 無しで済む
-      - **ESP32-S3 で任意オフセットが XIP にマップされているとは仮定しない**。
-        `esp-storage` で RAM に読み出す前提で設計してある
-- [ ] **§5-7 ESP32-S3 のファームをリリース成果物として CI で作るか。** 今は
-      Xtensa のため CI で回していない（`.github/workflows/ci.yml` のコメント）。
-      アプリ作者にファームをビルドさせない方針（`docs/app-workflow.md` §4.5）を
-      取るなら espup を入れるジョブが要る
-- [ ] **§5-8 ファーム版の振り方。** 3 ポート共通の 1 本（`0.1.0` を揃える）か、
-      ポートごとに独立か。**ABI 版（`wasmicon:hal@0.1.0`）は `wit/` 由来で、
-      ファーム版とは別物**。勝手に上げない（handoff §2-5）。互換の判定は
-      版 1 本ではなく軸ごとに行う（`docs/app-workflow.md` §3.8）ので、
-      ファーム版は由来の記録にしか使わない
-- [x] **§5-9 役割マップをデバイス側の設定にするか / いつやるか** → **する。1 段の最小版を
-      2026-10-07 に実装した**（オーナー決定）。決めたこと: **役割名はファームの語彙では
-      ない**（`ROLE_NAMES` を廃止、名前は自由）／**ファームは既定の表を持たない**
-      （空・壊れていれば役割を配らない）／**空スロットの待機でピンを駆動しない**。
-      設計は `docs/app-workflow.md` §3.9
-      （`docs/app-workflow.md` §3.9 / §4.7）。今は役割 → GPIO がファームの
-      `profile::<board>.roles` にあるので、**配線を変えるとファームを焼き直す**ことになり
-      「ファームは一度だけ焼く」と衝突する
-      - **決定性は壊れない**。abi-spec §9 が役割で配った番号を `role:` に
-        正規化するので、対応表を変えてもトレース行は変わらない
-      - ただし**ピン番号をハードコードしているアプリのトレースは変わる**
-        （`role:` だった行が生の番号になる）。§9 が既に対象外としている
-        アプリに限る話だが、症状の説明が要る
-      - 最小版は 1 段でも成立する（設定セクタを `espflash write-bin` / UF2 で
-        外から書き、ファームは読んで適用するだけ）。プロトコル経由は 2 段
+**The design is owned by `docs/app-workflow.md`. Only remaining work and open questions live here.**
+On 2026-10-04 the owner set the direction: **provide a firmware per board, and let that
+firmware load apps over USB / HTTP.**
 
-### 実装（段階は `docs/app-workflow.md` §5）
+**Decided the same day: the firmware carries no app.** The built-in app baked in with
+`include_bytes!` goes away; with an empty slot the firmware prints the reason and parks,
+and the port layer blinks the LED directly as a sign of life
+(docs/app-workflow.md §3.3). The other reason: **the current `include_bytes!` makes the
+firmware build depend on the `apps/` build, so the firmware cannot be produced as a
+standalone release deliverable.**
 
-- [x] **`ports/common` に abi-spec §5.2 のハンドル掃除を実装する**（2026-10-04 完了。
-      **ローダの有無と関係なく仕様と実装が食い違っていた**）。
-      §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを drop する」と
-      定めるが、**host も rp2040 / rp2350 / esp32s3 もこれをやっていない**。今
-      見えていないのは Rust バインディングの `Drop`（`bindings/rust/src/hal.rs`）が
-      ゲスト側で解放しているから。ローダでは**次のアプリが `busy` を踏む**
-      （前のアプリがトラップしたときは確実に踏む）
-      - `Hal::release_all()` を足し、**host と 3 ポートの 4 箇所**で `run` の
-        戻りを受けてから呼ぶようにした（トラップで抜けた場合も通る）
-      - **掃除はトレース行を出さない**（`board` を直接叩き、トレースを書く
-        `Hal::call` を通らない）。host の 10 件のトレース比較テストが通ることで
-        記録済みの 14,352 行（`docs/verification-report.md` §6 / §7）が
-        変わっていないことを確認した
-      - 解放の順序は gpio → i2c → spi で固定（ポート間で揃える）
-      - 検査は `ports/common/tests/release_all.rs` の 4 件。`release_all` を
-        空にすると 3 件が落ちることを確かめた
-- [x] **ボードプロファイルを `ports/common` に集める**（2026-10-04 完了）。
-      `Config`（3 つの `main.rs`）、役割割り当て（各 `board.rs` の `ROLES`）、
-      **実装済みインターフェース**を `ports/common/src/profile.rs` に集めた。
-      各ポートはそこから引くので、CI の rp2040 / rp2350 ジョブの `cargo build` が
-      値の一致を見る。値は `ports/common/tests/profiles.rs` に移す前の数値で固定
-      - 実装済みインターフェースが無いと `ports/rp2040` 向けの `check` は
-        **静的には通ってしまう**（SPI / I2C が `unsupported` を返すのは実行時。§1.2）
-      - **`assert_role_names` が `ROLE_NAMES` との包含関係をコンパイル時に検査する。**
-        外れると `pin-by-role` は成功するのにトレースが `role:` に正規化されず、
-        生の GPIO 番号が出て **2 ボードのトレースが食い違う**（abi-spec §9）。
-        **この検査は今まで無かった**
-      - `Config::DEFAULT` を `runtime` に足し、`Default` がそれを返すようにした
-        （host プロファイルが const 文脈で使うため。二重に書くと食い違う）
-- [x] **`tools/wasmicon-cli`（bin 名 `wasmicon`）を作る**（2026-10-04 完了）。
-      0 段は `new` / `check` / `run` / `monitor` / `trace diff` / `doctor`。
-      1 段の `pack` / `deploy` も同日に入って実機で通した。
-      **`size` は入れないことにした**（下の理由。`tools/measure-size.sh` のまま）
-      （`/code-review` の指摘を反映済み）
-      - **`check` は `Config` だけでなく arena の実寸で見る。** 線形メモリは
-        arena の残り全部を取るので、ページ上限に収まっても
-        「decode / validate / `Exec` の残りに入らない」ことがある
-        （`ports/rp2040` は 160 KiB で 2 ページだと 20 KiB ほどしか余らない）。
-        `Profile` が `arena` / `scratch` を持ち、**ポートの `static ARENA` も
-        それを使う**
-      - 役割名の照合は**終了コードを左右させない**（走査が参考なので）。
-        import / export の不備はボードに依存しないので、ボードごとの件数に
-        混ぜず「全ボード共通」として 1 回だけ数える
-      - 壊れた `.wasm`（import の型インデックスが範囲外）で **panic しない**。
-        診断する側が落ちては意味がない
-      - **`run` は型まで見る**（`func()` 以外は実行時に `wrong arity` で
-        落ちるので、export の有無だけでは素通りする）。memory の定義が
-        無いのも落とす（abi-spec §6.2）
-      - 落ちた段（decode / validate / instantiate）を区別して出す。
-        arena 不足を「validate が落ちた」と言うと `max_memory_pages` を
-        縮める方へ誘導してしまう
-      - `--i2c-replay` が無ければ **`WASMICON_I2C_REPLAY` を読む**。
-        無視すると黙って「センサー無し」に落ちて、記録済みのトレースと
-        食い違う
-      - **テストのヘルパ（`repo_root` / ゲストのビルド）を共有していない。**
-        `ports/host/tests/apps.rs` と逐語で重複し、`Mutex` は
-        プロセスをまたげないので、テストバイナリが並走するランナーでは
-        書きかけの `.wasm` を読む形が残る。共有のヘルパに切り出すのが筋
-        （`repo_root` は今 7 ファイルに散っている）
-      - `run` は `wasmicon-host` を lib として呼ぶだけ（`--trace` /
-        `--i2c-replay`）。`--i2c-replay` は `load_i2c_replay` を直に呼ぶので、
-        環境変数 `WASMICON_I2C_REPLAY` は host の bin 側に残っている
-      - `trace diff` は正規化を Rust で持ち、**`verify/diff-traces.sh` と
-        同じ判定を出すことを `tests/trace.rs` が突き合わせる**（判定だけでなく
-        **行数も**見る。`tools/check-sigs.sh` が `wit2sig.py` と突き合わせて
-        いるのと同じ形）。スクリプトは CI の `--self-test` のために残す。
-        **NUL 除去を外すと突き合わせが落ちることを確かめた**
-      - **行は `Vec<u8>` で持つ。** `String` に落とすと UTF-8 でないバイトが
-        どれも `U+FFFD` に潰れて、**違うノイズが混ざった 2 本を「一致」と
-        言ってしまう**。あわせて**スクリプトに `LC_ALL=C` を足した**
-        （ロケールが UTF-8 のままだと macOS の `tr` が不正なバイトで止まり、
-        手元と CI で結果が変わる）
-      - `run --trace` は**トラップしてもそこまでのトレースを出す**
-        （`run_wasm_capture` を足した。トラップしたときこそ要る）
-      - **`monitor` は 2026-10-04 に実装し、実機で通した**
-        （`deploy --monitor` で 14,352 行を取り込み、host と完全一致。
-        `docs/verification-report.md` §9）。取り込みの罠 3 つ
-        （開いたまま `stty` / 流れ始める前に当てる / バイト列として扱う）を
-        モジュールに閉じ込めてある。止めどきは無音（既定 3 秒）
-      - **`size` は入れない。** コアのコードサイズはアプリ作者の関心ではなく
-        リポジトリ保守側の道具なので、`tools/measure-size.sh` のままにする。
-        アプリ自身の大きさは `check` が先頭行で出している
-      - **`build` も入れない**（2026-10-04 決定）。`cargo build --release` /
-        `npm run build` を言語で振り分けるだけの薄いラッパで、ビルドフラグは
-        `new` が埋めたファイルが持つ（§4.4）ので足せるものが無い。
-        `docs/app-workflow.md` §4.6 の内側のループは `cargo build` で書いた
-      - 判定（`facts` / `judge`）と印字を分けてあるので、判定だけをテストから
-        呼べる。`tools/wasmicon-cli/tests/check.rs` が `apps/` の実物で固定:
-        **`blink-rs` は 4 ボードすべて通り、`sensor-display-rs` は rp2040 だけ
-        I2C / SPI の未実装で落ちる**。4 ページ要求の最小 `.wasm` を手で組んで
-        「host と rp2350 では通り rp2040 では落ちる」も見ている
-      - **役割名の照合の限界を実測した**（どちらも §4.3 に記録）:
-        ログ文字列の中の `led` を拾う（`sensor crc failed`）、
-        **AssemblyScript のゲストには当たらない**（文字列が UTF-16）
-      **ファームの変更ゼロ・実機不要**で、§1.3 の作業に効く
-      - `check` は**実ランタイムで** decode / validate / instantiate する。
-        `ports/host` は `Config::default()`（`max_memory_pages` = 65536）で走るので
-        **host 実行は全ボードより緩い**。`--board` が要る理由
-      - `monitor` は `/dev/cu.usb*` を列挙する。`usbserial` を決め打ちしない（§1.1）。
-        **0 段の `monitor` は identity より先に出る**（ログ先頭への記録は下の
-        「ファームが自分を名乗るようにする」の担当で、これだけでは済まない）
-      - **`run` の `--i2c-replay` は既存の環境変数 `WASMICON_I2C_REPLAY` に対応する。**
-        指す先の `verify/sht4x-replay.txt` は §1.3 で実機の記録に差し替える予定
-      - **「検証だけする入口」が今は無い。** `wasmicon_host::run_wasm_opts` は
-        `run` まで呼ぶ。CLI 側で `wasmicon-core` + `wasmicon_port::Hal` +
-        `wasmicon_host::hal::HostBoard` を直に組む（推奨）か、`ports/host` に
-        `check_wasm(wasm, &Config)` を足すかを決める
-      - `wasmicon-host` の crate は残して lib として使う
-        （`verify/differential` が依存している）
-- [x] **アプリ側ビルドフラグの単一真実**（2026-10-04 完了。
-      `docs/app-workflow.md` §4.4）。真実は
-      `tools/wasmicon-cli/src/flags.rs` が持つ**ファイルの中身そのもの**で、
-      `apps/` の実物との一致は `tools/wasmicon-cli/tests/flags.rs` が
-      **バイトで**見る（`wasmicon-gen --check` と同じ形。検査は既に CI に
-      ある `cargo test` に乗るので新しいジョブは要らない）
-      - **コメント 1 文字の差でも落ちる。** 緩めると「値は合っているが
-        どちらが真実か分からない」状態に戻るので、意図的にそうしてある
-      - `[profile.release]` は入れない。食い違ってもアプリが**大きくなる
-        だけ**で静かには壊れない。§4.4 が名指しする 2 つに絞った
-      - **Rust 版と AS 版で初期メモリがページ単位で一致**していること、
-        **一番きついボード（rp2040 の 2 ページ）に収まる**ことも見る
-        （`profile::PROFILES` から引くので、ボードが増えたら自動で効く）
-- [x] **`wasmicon new`**（2026-10-04 完了。§4.6 の 3）。雛形は `flags` から
-      書き出すだけにしてある（ここで文字列を持つと 3 重化する）
-      - **「`apps/` と一致している」だけでは足りない。** `tests/new.rs` が
-        雛形を本当に `cargo build` して **4 ボードすべてで `check` が
-        通る**ことと、書いた `wasmicon.toml` を自分で読み直せることを見る
-        （`deny_unknown_fields` なので余計なキーを書くと読めない）
-      - `Cargo.toml` に `[workspace]` を入れる（無いと既存の workspace の
-        中で「workspace に入っていない」で止まる）。その場所では
-        `rustflags` が**連結**されて同じ値が 2 回効くので `new` が言う
-      - **依存はパスで書く**（`wasmicon-hal` は未配布）。`--hal` か、
-        無ければ上に向かって `bindings/` を探す。見つからなければ版指定を
-        書いて**その旨を出す**。相対と絶対は**短い方**を選ぶ
-        （共通の祖先が無いと `../` が 8 段並ぶのを実際に出した）
-- [x] **スロット形式**（2026-10-04 完了。`docs/app-workflow.md` §3.4）。
-      `ports/common/src/slot.rs` に置いて**書く側（CLI）と読む側（ファーム）が
-      同じ形を使う**。CRC-32 は既にある `crc32` を再利用（トレースと同じ）
-      - **空（消去済みの `0xff` / 未使用の `0x00`）は失敗にしない。**
-        magic 違いと区別する（ログの意味が変わる）
-      - 検査は `ports/common/tests/slot.rs` の 9 件（往復、空、magic 違い、
-        版違い、長さ超過、CRC、余りの無視）と
-        `tools/wasmicon-cli/tests/pack.rs` の 4 件（**CLI が書いたものを
-        ファームの経路で読み直す**往復と、既知の値での CRC 照合）
-      - `SlotError` に `Debug` は付けない（ポートに `core::fmt` を
-        持ち込まないため）。テストは `reason()` と `matches!` で書く
-      - CLI 側は `wasmicon pack`。1 段では**外のフラッシャに渡す素材**
-        （`espflash write-bin <offset>` / `picotool load -o <offset>`）
-- [ ] **スーパーバイザのループ**（`docs/app-workflow.md` §3.1）。
-      **3 ポートがスロットを読むようになった**（2026-10-04。RP2350 と
-      ESP32-S3 は実機で確認済み、RP2040 はコードだけ）。残りは
-      idle への復帰とサイクルごとの作り直し（arena / `Hal` / **ロール表**。
-      持ち越すとトレースが変わりうる。`release_all.rs` が現状を固定）
-      - **RP2040 と RP2350 が読む**（XIP で memory-mapped なので RAM に
-        写さない）。読み出しは `ports/common` の `slot::read_xip` に 1 つだけ
-        置いてある（生スライスを作る `unsafe` を 1 箇所にするため）。
-        **host でも試せる**（static をフラッシュに見立てて渡す）
-      - **RP2350 は 2026-10-04 に Pico 2 W で確認済み**（空 → 内蔵 /
-        スロットのアプリが走る / CRC 破壊 → 内蔵、の 3 点。さらに
-        **スロットから走ったアプリのトレースが host と 14,352 行完全一致**。
-        `docs/verification-report.md` §9）。**RP2040 は未検証**
-        （Pico WH が未入手。コードは同じ `slot::read_xip` を通る）
-      - 実機で `picotool` の引数を 2 つ踏んで直した（拡張子は `.bin`、
-        `-o` は絶対アドレス）。どちらも host では出ない
-      - **ファームの末尾（`__flash_binary_end`）とスロットが重ならないことを
-        起動時に検査している。** 重なったら読まずに内蔵へ落ちる（自分の
-        コードを wasm として食わせない）。RP2040 にはこのシンボルが
-        無かったので `memory.x` に足した（実測で `0x1000de40`、
-        スロットは `0x10100000` なので 1 MB 近く空いている）
-      - **`ports/esp32s3` も 2026-10-04 に実装し、同日 実機で確認した**
-        （`esp-storage` でヘッダを読み、長さの分だけ arena を取って本体を
-        読む。64 KiB のスロットに対してアプリは数 KB なので、静的な領域を
-        増やさない）。**スロットから走ったアプリのトレースが host と
-        14,352 行完全一致**。さらに **Pico 2 W（XIP）と ESP32-S3
-        （`esp-storage` で RAM に写す）が同じ `.wasm` で完全一致**
-        —— フラッシュの読み方が違う 2 ボードで決定性が保たれている
-        （`docs/verification-report.md` §10）
-      - **`partitions.csv` は要らなかった**（実測。`espflash flash` は
-        アプリのセクタしか消さないので、7 MB 地点の目印が生き残った）。
-        置き場所は Pico 系と揃えて `0x100000` から 64 KiB
-      - **ESP32-S3 は書き込みとトレースが同じ口**。`monitor` は `stty` しか
-        当てないので自分ではリセットできず、順番が詰む。**口ごと
-        `espflash monitor` に任せる**ことで解けた（`--before default-reset
-        --after hard-reset` が既定なので、開いてから起動させられる）。
-        `espflash reset` は居座るので呼ばない
-      - **失敗側も同日 実機で踏んだ**（§9 と同じ 3 点）。正しい画像 →
-        走る / 本体を 1 バイト反転 → `slot crc mismatch, running built-in` /
-        `0xff` 埋め → `slot empty, running built-in`。**ボタン操作が
-        要らない**ので Pico より楽に回せる
-      - **残り**: `Truncated`（長さだけ嘘をつく画像）は未実施。
-        `Overlap` の検査は `read_xip` 側にしか無いので **ESP32-S3 には
-        無い**（`esp-storage` 経由で読むため）。重なりを防ぐ責任が
-        `espflash` 側に出ているのが妥当か未決
-- [x] **内蔵アプリを外す**（2026-10-07 完了。ESP32-S3 の実機で「スロットのアプリが
-      走る」「空なら `slot empty, idle`」を確認。`docs/verification-report.md` §13。
-      LED の点滅は外付け LED が無いので未確認）。
-      空スロットは `wasmicon: slot empty, idle` と出して `ports/common` の
-      `idle::heartbeat` に入り、`led` 役を 1 Hz で点滅させる
-      （1 段。**3 ポートがスロットを読めるようになってから**
-      — 先に外すとファームが何も走らせなくなる。**RP2350 と ESP32-S3 は
-      実機で確認済み**。RP2040 は評価対象外になった（2026-10-07）ので、
-      **前提は満たした**。RP2040 はコードが同じ `slot::read_xip` を通るので
-      一緒に外してよい）。`ports/*/src/main.rs` の `include_bytes!` と
-      `guest-lcd-demo` feature を落とし、空スロットは理由を出して idle、
-      生存確認はポート層が LED を振る（`Board` 直叩きで Wasm を通らない）
-      - **CI も同時に直す**: ポートのジョブから `apps` の先行ビルドが不要になり、
-        rp2350 の `cargo clippy --release --features guest-lcd-demo` の行も消える
-      - **記録済みトレースは生き続ける**。`lcd_demo_rs.wasm`（`fc470947…`）を
-        スロットへ `deploy` すれば**バイト列が同一なので host call 列も同一**
-        （XIP の番地や RAM への写しはトレースに出ない）
-      - **失うもの**: 焼いた直後に「ランタイムが decode → run まで通る」ことを
-        実機で確かめる足場。host テストと最初の `deploy` で代替する
-- [x] **`deploy` の 1 段目**（2026-10-04 完了、3 ポート全て）。検査・
-      画像の用意・`picotool load -t bin -o <アドレス>`・リセットを畳んだ。
-      **Pico 2 W で 1 コマンド通し済み**（`docs/verification-report.md` §9）
-      - **走らないものを焼かない**（焼く前に `check --board` を通す）。
-        `tests/deploy.rs` が、sensor-display を rp2040 に送ろうとすると
-        **画像も書かずに**止まることを固定している
-      - トレースの取り込み手順（`cat` で開いたまま `stty`）を最後に出す
-      - **ESP32-S3 も 2026-10-04 に通した**（`espflash write-bin
-        <オフセット>`。`pack` が出すコマンドもボードごとに分けた）。
-        `--monitor` は `espflash monitor` に委譲する
-        （`monitor::capture_cmd`）。**1 コマンドで焼いて取り込み、
-        host と 14,352 行一致**。Pico と違い**ボタン操作が要らない**
-- [x] **ファームが自分を名乗るようにする**（2026-10-09、**バナーの部分**。`info` は
-      USB 制御チャネル（2 段）と一緒に）。バナーの次の行に
-      `wasmicon id <board> fw=… git=…(-dirty) abi=… trace=on|off pages=… if=… slot=v1/… roles=v1/…`
-      を出す（`ports/common` の `identity`。git は `ports/common/build/git.rs` を
-      各ポートの `build.rs` が読んで埋める。ABI 版は `wit/` から生成した
-      `generated::PACKAGE`）。`trace diff` は 2 つのログの名乗りが食い違えば警告する
-      （判定は変えない）。**`monitor` の取り込みは生のシリアル出力なので、名乗りは
-      ログの先頭に自然に残る**。ESP32-S3 と Pico 2 W の実機で確認（`docs/verification-report.md` §16 / §17）。
-      以下は当初の記録: （`info` とバナー。
-      `docs/app-workflow.md` §3.8）。今バナーは `wasmicon rp2350` の 1 行だけで
-      **版も git も入っていない**（`ports/rp2350/src/main.rs:140`）。
-      `docs/verification-report.md` は**ゲストの SHA-256 は記録しているのに
-      ファーム側は何も記録していない**ので、どのビルドが 14,352 行を出したかは
-      日付と git 履歴から推測するしかない
-      - 載せるもの: ボード名 / ファーム版 + `git describe` + dirty / ABI 版 /
-        構成（`trace` の有無、内蔵アプリ）/ `Config` / スロット容量と形式版 /
-        プロトコル版 / 役割名
-      - `git describe` は `build.rs` で埋める。**dirty を落とさない**
-      - `monitor` が取り込みログの先頭に identity を記録し、`trace diff` は
-        identity 行を比較から外すが**食い違ったら警告する**
-      - **`trace` を切って焼いたボードは `monitor` が無言になる**。
-        `trace: off` と申告できれば配線から疑わずに済む
-- [ ] **ファームの配布**（release manifest と `flash --fw` / `fw list`）。
-      ボード × 版の成果物に manifest（ファイル + sha256 + §3.8 の 5 軸）を付ける。
-      §5-7 と対になる
-- [x] **`wasmicon.toml` を読む**（2026-10-04 完了。`docs/app-workflow.md` §4.7）。
-      `[requirements] pin-roles`（このアプリが引く役割名）、既定のボード、
-      replay のパス、配線の意図を書く。
-      - **カレントから上に探す**（cargo と同じ）。無くても `check` / `run` は動く
-      - **`pin-roles` があると役割の照合が保証になる**（走査は出さない）。
-        名前は `ROLE_NAMES` と突き合わせるので**デバイスに繋がなくても
-        タイポが止まる**
-      - `[defaults] board` は `--board` の既定、`i2c-replay` は
-        `--i2c-replay` の既定（**toml のある場所基準**で解決する）
-      - **未知のキーはエラー**（`deny_unknown_fields`）。`version` が
-        CLI より新しければエラー。`"none"` は「この役割は無い」
-      - **`[board.<name>.roles]` は読んで検証するだけ**で、まだ使わない。
-        デバイスへ押し込むのは `config apply`（§3.9 / §5-9 の決定後）
-      - **`wasmicon new` が雛形として出すところまで入った**（2026-10-04）。
-        `tests/new.rs` が**自分で書いたものを自分で読み直せる**ことを見る
-      **ABI 準拠のビルドフラグは書かせない**（§4.4 の 3 重化を 4 重にする）。
-      マシン固有の値は `wasmicon.local.toml`（gitignore）に分ける
-      - `[requirements] pin-roles` があると §4.3 の役割名の照合が
-        **参考から保証に変わる**。検証は `ports/common` の `ROLE_NAMES` と
-        突き合わせるだけなので**デバイスに繋がなくてもタイポが止まる**
-      - `deploy` は toml とデバイスの実効マップを毎回照合し、**黙って適用しない**
-        （駆動されるピンが変わるので物理的に危ない）
-- [x] **`apps/` に `wasmicon.toml` を 5 つ置いてドッグフードする**（2026-10-07。
-      ファームが既定の表を持たなくなったので必須になった。`tests/apps.rs` が
-      「各アプリに toml があり、宣言した役割が rp2350 / esp32s3 の配線表に揃う」を見る）（§4.7 が
-      「この repo の `apps/` をドッグフードするなら 5 つになる」と書いている
-      ところ）。**今 1 つも無い**ので、CLI のマニフェスト経路は合成ファイルの
-      単体テストでしか踏まれていない
-      - **これが一番効くのは AssemblyScript。** 役割名の走査は
-        データセグメントの文字列を拾う推測で、**AS は UTF-16 なので一切
-        当たらない**（§4.3 に実測を記録済み）。`blink-as` /
-        `sensor-display-as` は宣言を書いて初めて照合される
-      - `missing_declared_roles` は `fails()` に入るので、宣言すると
-        **参考からハードな検査になる**。3 ポートの `ROLES` は同一
-        （`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`）なので全ボードで通る
-      - `[defaults] board` でアプリのディレクトリからフラグ無しで
-        `check` / `run` が通る。`sensor-display-*` は
-        `[defaults] i2c-replay` を `verify/sht4x-replay.txt` に向ける
-        （§1.3 で実機の記録に差し替えるファイル）
-      - **既存のテストは壊れない。** `manifest::find` は上に向かって探すので、
-        `apps/<app>/wasmicon.toml` はそのディレクトリから呼んだときだけ効く
-        （既存のテストはリポジトリルートから走り、`--board` を明示している）
-      - **`tests/flags.rs` と同じ理屈で「0 件を黙って成功にしない」検査を
-        付ける**: `apps/` の各アプリに `wasmicon.toml` があることを見る
-        （無いアプリが増えたら落ちる）
-      - **`apps/` の構造は置き換えない**（検討して却下、2026-10-04）。
-        `apps/` は 5 つを 1 workspace で CI ごとビルドするモノレポで、
-        `wasmicon new` が出すのは単体で立つ 1 アプリ。独立させると
-        `target/` が 5 つに割れて `wasmicon-hal` が 5 回コンパイルされ、
-        `include_bytes!`（5 箇所）と `-p` を使うテストヘルパ（4 箇所）と
-        CI の 3 ジョブを書き換えることになる。得るのは
-        `.cargo/config.toml` の監視対象が 1 → 5 になることだけで、
-        **その検証は `tests/flags.rs` と `tests/new.rs` で既に入っている**
-- [x] **役割マップの設定スロット**（2026-10-07、1 段の最小版。§3.9）。アプリスロットの
-      直後の 4 KiB に `"WMCR"` + テキストの表。`deploy` がアプリと 1 本の画像で書き、
-      ファームが起動時に読む（`ports/common` の `roles`）。**残り**: プロトコル経由の
-      `config` コマンドと `info` での読み戻し（2 段）。以下は当初の計画: 設定セクタ +
-      `config` コマンド + デバイス側の検証（予約ピン・バスのピン・重複を弾く）。
-      ~~CRC が合わなければ既定値で起動~~ → **既定の表は持たないので、役割を配らずに
-      起動**してバナーに理由を出す（2026-10-07）。identity に実効マップの CRC-32 を
-      入れるのは `info`（§3.8）と一緒に
-- [ ] **USB 制御チャネル**（2 段）。ESP32-S3 は `esp-hal` の
-      `usb::usb_serial_jtag`（追加クレート不要）、RP2350 / RP2040 は
-      `rp235x-hal::usb` + `usbd-serial`。**制御は USB、トレースは UART0 に分ける**
-      - **`hw-probe` feature を `probe` コマンドにする**（`docs/app-workflow.md` §3.6）。
-        焼き直さずに切り分けられ、build 構成が 1 つ減って variant が
-        `trace` あり / なしの 2 つに収束する
-- [ ] **HTTP**（3 段）。§5-3 / §5-4 / §5-5 の判断が先
-- [ ] **C バインディング（`bindings/c`）を CLI に載せる**（2026-10-19 に生成と
-      `apps/blink-c` だけ入れた。host で blink-rs とトレース全文一致を `cargo test` が見る）。
-      残り:
-      - `wasmicon new --lang c` と、`deploy` / `pack` の言語判定（今は `Cargo.toml` /
-        `asconfig.json` からしか `.wasm` の場所を導けない。C は `sh bindings/c/build.sh` で
-        手でビルドして `.wasm` を渡す）
-      - **ビルドフラグの真実が `bindings/c/build.sh` にある**。写しが無いので今は
-        `tools/wasmicon-cli/src/flags.rs` に入れていないが、`new --lang c` を足すなら
-        flags.rs に移して雛形とバイトで突き合わせる（`docs/app-workflow.md` §4.4）
-      - 実機（ESP32-S3 / Pico 2 W）では C 版を走らせていない。sensor-display の C 版も無い
-      - CI は ubuntu-24.04 の apt の clang + lld（18 系）でビルドする。手元は wasi-sdk 33
-        （clang 22）で確かめた。版で出力のバイト列は変わるが、検査はトレースと機能セットだけ
-- [ ] **bindings の配布**（crates.io / npm）。**`new` は 2026-10-04 に入った**が、
-      依存はパスで書いている（上）。出す先と版の付け方はまだ決め打ちしない。
-      出したら `new` の既定をパスから版指定に変える
+This does not push §1 aside. **Stage 0 shortens the SHT40 work in §1.3** (capture and
+cross-check move into the CLI). **The Phase 4 / 5 / 6 completion criteria in §1.3 do not
+change.**
+
+### Open questions (owner decisions; the text cites them as §5-1 ... §5-9)
+
+- [ ] **§5-1 Settle the behavior after a trap as "stay halted, but accept the next app"?**
+      Today it is "log and halt, no restart" (docs/decisions.md A-04), and `main` enters
+      `loop { wfi() }`. The loader adds a "wait for a new app" state **without automatically
+      re-running the same app**. docs/abi-spec.md §6.6 leaves post-trap behavior to the port,
+      so **this is not an ABI change**, but it changes how the A-04 record reads, so it needs
+      a decision. Same subject as #3 of "make open questions 2-5 of docs/abi-spec.md §10 final" in §2
+- [x] **§5-2 Board variant** (measured 2026-10-04). Output of `espflash board-info`:
+      **`Flash size: 8MB`**, `Features: WiFi, BLE, Embedded Flash`,
+      `esp32s3 (revision v0.2)`, 40 MHz crystal
+      - **PSRAM does not appear in Features** -> apparently not fitted (N8, not N8R8).
+        **One option of §5-3 disappears** (the arena cannot move to PSRAM, so HTTP leaves
+        only lowering `max_memory_pages` from 4 to 2)
+      - The evidence is espflash's output, so **confirming against the module marking
+        (WROOM-1-N8 or N8R8) would make it certain**. Matters when deciding §5-3
+      - The RP2350 side is settled as the Pico 2 W (4 MB flash) (§1.1)
+- [ ] **§5-3 What to do about the ESP32-S3 RAM budget** (prerequisite for HTTP). DRAM is
+      nearly exhausted (`.bss` 315 KB / `ARENA` 300 KB / native stack 17.4 KiB. §1.4).
+      Adding `esp-wifi` leaves two options:
+      - Lower `max_memory_pages` from 4 to 2. docs/abi-spec.md §6.2 says "the port decides
+        the limit", so **it is not a spec violation**, but **"the same binary runs on every
+        board" effectively breaks**
+      - ~~Put the arena in PSRAM~~ -> **not an option**. The measurement of 2026-10-04 showed
+        no PSRAM (§5-2). Not fully closed until the marking confirms it, but it does not
+        appear in the Features of `espflash board-info`
+- [ ] **§5-4 Do Wi-Fi on the Pico 2 W / Pico WH?** They use the CYW43439, and the practical
+      driver `cyw43` assumes embassy (async). From the current blocking setup this means
+      **rewriting the port**. Recommendation: limit v1 HTTP to the ESP32-S3
+- [ ] **§5-5 Direction of HTTP.** Device as server (`POST /app` + mDNS; easy dev loop) or
+      pull from a URL (easy OTA, works across NAT). Both can come later, but decide which
+      goes in first
+- [ ] **§5-6 Technical points to confirm** (check before implementing; do not proceed on
+      guesses)
+      - **RP2350 flash writes.** `rom_data::flash_range_erase` / `flash_range_program`
+        **cannot be called from code executing from XIP**. The write routine will have to
+        live in RAM (`#[link_section = ".data"]`) with interrupts disabled
+      - **Can UF2 write to an arbitrary address?** On RP2350 without a partition table the
+        absolute family ID (0xe48bff57) may be required. If it works, `deploy` needs no
+        picotool
+      - **Do not assume an arbitrary offset is XIP-mapped on the ESP32-S3.** The design
+        reads into RAM through `esp-storage`
+- [ ] **§5-7 Build the ESP32-S3 firmware as a release deliverable in CI?** Not run in CI
+      today because of Xtensa (the comment in `.github/workflows/ci.yml`). If app authors
+      are not to build firmware (docs/app-workflow.md §4.5), a job that installs espup is
+      needed
+- [ ] **§5-8 How firmware versions are assigned.** One version shared by the three ports
+      (all `0.1.0`) or independent per port. **The ABI version (`wasmicon:hal@0.1.0`) comes
+      from `wit/` and is a different thing from the firmware version.** Do not bump it on
+      your own (docs/decisions.md D-05). Compatibility is judged per axis, not by one
+      version (docs/app-workflow.md §3.8), so the firmware version is only a provenance
+      record
+- [x] **§5-9 Make the role map a device-side setting? When?** -> **Yes. The minimal stage-1
+      version was implemented on 2026-10-07** (owner decision). Decided: **role names are
+      not the firmware's vocabulary** (`ROLE_NAMES` removed; names are free-form) / **the
+      firmware has no default table** (empty or corrupt means no roles are handed out) /
+      **no pin is driven while parked on an empty slot**. Design: docs/app-workflow.md §3.9
+      (docs/app-workflow.md §3.9, §4.7). The original record: role -> GPIO lives in the
+      firmware's `profile::<board>.roles`, so **changing the wiring means reflashing the
+      firmware**, which conflicts with "flash the firmware once"
+      - **Determinism is not broken**. docs/abi-spec.md §9 normalizes numbers handed out by
+        role to `role:`, so changing the table does not change the trace lines
+      - But **the trace of an app that hard-codes pin numbers changes** (a line that was
+        `role:` becomes a raw number). That only concerns apps docs/abi-spec.md §9 already excludes, but the
+        symptom needs an explanation
+      - The minimal version works at stage 1 (the config sector is written from outside
+        with `espflash write-bin` / UF2, and the firmware just reads and applies it).
+        Through the protocol is stage 2
+
+### Implementation (stages: docs/app-workflow.md §5)
+
+- [x] **Implement the docs/abi-spec.md §5.2 handle cleanup in `ports/common`** (done
+      2026-10-04. **The spec and the implementation disagreed regardless of the loader**).
+      docs/abi-spec.md §5.2 says "when `run` returns, the host drops every remaining handle", but
+      **neither host nor rp2040 / rp2350 / esp32s3 did it**. It went unnoticed because the
+      `Drop` impls in the Rust bindings (`bindings/rust/src/hal.rs`) release handles on the
+      guest side. With a loader, **the next app hits `busy`** (for sure when the previous
+      app trapped)
+      - `Hal::release_all()` was added and is called **in four places, host and the three
+        ports**, once `run` has returned (also when it left by a trap)
+      - **The cleanup emits no trace lines** (it talks to `board` directly, bypassing
+        `Hal::call`, which writes the trace). The host's 10 trace comparison tests passing
+        confirms that the recorded 14,352 lines (docs/verification-report.md §6, §7) are
+        unchanged
+      - The release order is fixed: gpio -> i2c -> spi (the same across ports)
+      - Locked in by the 4 tests in `ports/common/tests/release_all.rs`. Emptying
+        `release_all` was confirmed to fail 3 of them
+- [x] **Collect the board profiles in `ports/common`** (done 2026-10-04). `Config` (the
+      three `main.rs`), the role assignments (`ROLES` in each `board.rs`) and **the
+      implemented interfaces** are now in `ports/common/src/profile.rs`. Each port reads
+      from there, so the `cargo build` of the rp2040 / rp2350 CI jobs checks that the values
+      agree. The values are locked in `ports/common/tests/profiles.rs` to the numbers from
+      before the move
+      - Without the implemented interfaces, `check` for `ports/rp2040` **passes statically**
+        (SPI / I2C return `unsupported` only at run time. §1.2)
+      - **`assert_role_names` checks at compile time that the roles are contained in
+        `ROLE_NAMES`.** Outside it, `pin-by-role` succeeds but the trace is not normalized
+        to `role:`; a raw GPIO number appears and **the two boards' traces mismatch**
+        (docs/abi-spec.md §9). **This check did not exist before**
+      - `Config::DEFAULT` was added to `runtime`, and `Default` returns it (the host profile
+        uses it in a const context; two copies would diverge)
+- [x] **Create `tools/wasmicon-cli` (binary name `wasmicon`)** (done 2026-10-04).
+      Stage 0 is `new` / `check` / `run` / `monitor` / `trace diff` / `doctor`.
+      Stage 1's `pack` / `deploy` landed the same day and were run on hardware.
+      **`size` was left out** (reason below; `tools/measure-size.sh` stays)
+      (`/code-review` findings applied)
+      - **`check` looks at the actual arena size, not only `Config`.** Linear memory takes
+        all that is left of the arena, so even within the page limit, "the remainder after
+        decode / validate / `Exec` cannot hold it" happens
+        (`ports/rp2040` has 160 KiB; with 2 pages only about 20 KiB is left).
+        `Profile` carries `arena` / `scratch`, and **the ports' `static ARENA` uses them
+        too**
+      - The role-name cross-check **does not affect the exit code** (the scan is
+        informational). Import / export defects do not depend on the board, so they are
+        counted once as "common to all boards" rather than mixed into per-board counts
+      - **No panic** on a broken `.wasm` (an import type index out of range). A diagnostic
+        tool that crashes is useless
+      - **`run` is checked down to its type** (anything but `func()` fails at run time with
+        `wrong arity`, so checking only that the export exists lets it through). A missing
+        memory definition also fails (docs/abi-spec.md §6.2)
+      - The failing stage (decode / validate / instantiate) is reported separately. Calling
+        an arena shortage "validate failed" steers people toward shrinking
+        `max_memory_pages`
+      - Without `--i2c-replay`, **`WASMICON_I2C_REPLAY` is read**. Ignoring it silently
+        falls back to "no sensor" and mismatches the recorded traces
+      - **The test helpers (`repo_root` / guest builds) are not shared.** They duplicate
+        `ports/host/tests/apps.rs` verbatim, and the `Mutex` does not cross processes, so a
+        runner that runs test binaries in parallel can still read a half-written `.wasm`.
+        A shared helper is the right fix (`repo_root` is now spread over 7 files)
+      - `run` only calls `wasmicon-host` as a library (`--trace` / `--i2c-replay`).
+        `--i2c-replay` calls `load_i2c_replay` directly, so the environment variable
+        `WASMICON_I2C_REPLAY` stays on the host binary side
+      - `trace diff` has its normalization in Rust, and **`tests/trace.rs` cross-checks that
+        it gives the same verdict as `verify/diff-traces.sh`** (the line count too, not
+        only the verdict; the same shape as `tools/check-sigs.sh` against `wit2sig.py`).
+        The script stays for CI's `--self-test`. **Removing the NUL stripping was confirmed
+        to fail the cross-check**
+      - **Lines are held as `Vec<u8>`.** Converting to `String` collapses every non-UTF-8
+        byte to `U+FFFD`, which **calls two logs with different noise "a match"**. The
+        script also got `LC_ALL=C` (with a UTF-8 locale, macOS `tr` stops on an invalid
+        byte and local and CI results differ)
+      - `run --trace` **prints the trace up to the trap even when the guest traps**
+        (`run_wasm_capture` was added; that is exactly when it is needed)
+      - **`monitor` was implemented on 2026-10-04 and run on hardware**
+        (`deploy --monitor` captured 14,352 lines, identical to the host.
+        docs/verification-report.md §9). The three capture traps (`stty` while the port is
+        open / attaching before output starts / treating the data as bytes) are contained
+        in the module. It stops on silence (default 3 seconds)
+      - **No `size`.** The core's code size is a concern of repository maintenance, not of
+        app authors, so `tools/measure-size.sh` stays. The app's own size is the first line
+        of `check`
+      - **No `build` either** (decided 2026-10-04). It would be a thin wrapper that picks
+        `cargo build --release` / `npm run build` by language, and the build flags live in
+        the files `new` writes (docs/app-workflow.md §4.4), so there is nothing to add. The
+        inner loop in docs/app-workflow.md §4.6 is written with `cargo build`
+      - The verdict (`facts` / `judge`) is separated from printing, so tests can call the
+        verdict alone. `tools/wasmicon-cli/tests/check.rs` locks it in with the real `apps/`:
+        **`blink-rs` passes on all 4 boards; `sensor-display-rs` fails only on rp2040**, for
+        the missing I2C / SPI. A minimal hand-built `.wasm` that asks for 4 pages shows
+        "passes on host and rp2350, fails on rp2040"
+      - **The limits of the role-name cross-check were measured** (both recorded in
+        docs/app-workflow.md §4.3): `led` inside a log string is picked up
+        (`sensor crc failed`), and **AssemblyScript guests never match** (strings are
+        UTF-16)
+      **Zero firmware changes, no hardware needed**; it helps the §1.3 work
+      - `check` runs decode / validate / instantiate **on the real runtime**. `ports/host`
+        runs with `Config::default()` (`max_memory_pages` = 65536), so **host execution is
+        more permissive than every board**. That is why `--board` exists
+      - `monitor` enumerates `/dev/cu.usb*` and does not assume `usbserial` (§1.1).
+        **Stage 0's `monitor` comes before the identity** (recording it at the top of the
+        log belongs to "make the firmware state who it is" below; this alone is not enough)
+      - **`run --i2c-replay` corresponds to the existing environment variable
+        `WASMICON_I2C_REPLAY`.** Its target, `verify/sht4x-replay.txt`, is to be replaced
+        with a hardware recording in §1.3
+      - **There is no "check only" entry point today.** `wasmicon_host::run_wasm_opts` goes
+        all the way to `run`. Either the CLI assembles `wasmicon-core` +
+        `wasmicon_port::Hal` + `wasmicon_host::hal::HostBoard` directly (recommended) or
+        `ports/host` gets a `check_wasm(wasm, &Config)`
+      - The `wasmicon-host` crate stays and is used as a library
+        (`verify/differential` depends on it)
+- [x] **A single source of truth for the app build flags** (done 2026-10-04.
+      docs/app-workflow.md §4.4). The truth is **the file contents themselves** in
+      `tools/wasmicon-cli/src/flags.rs`, and `tools/wasmicon-cli/tests/flags.rs` checks
+      the match with the real files in `apps/` **byte for byte** (the same shape as
+      `wasmicon-gen --check`; the check rides on the `cargo test` already in CI, so no new
+      job is needed)
+      - **A one-character difference in a comment fails it.** Loosening it brings back "the
+        values agree but nobody knows which is the truth", so this is deliberate
+      - `[profile.release]` is not included. A mismatch there only makes the app **bigger**;
+        it does not break silently. Limited to the two files docs/app-workflow.md §4.4 names
+      - It also checks that **the Rust and AS versions agree on the initial memory in
+        pages** and that it **fits the tightest board (rp2040's 2 pages)** (read from
+        `profile::PROFILES`, so a new board is covered automatically)
+- [x] **`wasmicon new`** (done 2026-10-04. docs/app-workflow.md §4.6, step 3). The scaffold
+      is written out from `flags` only (holding the strings here would make a third copy)
+      - **"Matches `apps/`" is not enough.** `tests/new.rs` really runs `cargo build` on the
+        scaffold and checks that **`check` passes on all 4 boards** and that the
+        `wasmicon.toml` it wrote can be read back (with `deny_unknown_fields`, an extra key
+        makes it unreadable)
+      - `Cargo.toml` gets a `[workspace]` (without it, cargo stops with "not in the
+        workspace" inside an existing workspace). In that location the `rustflags` are
+        **concatenated** and the same value applies twice, so `new` says so
+      - **Dependencies are written as paths** (`wasmicon-hal` is unpublished). `--hal`, or
+        else search upward for `bindings/`. If none is found, write a version requirement
+        and **say so**. Relative or absolute, **whichever is shorter** (without a common
+        ancestor the output really had eight `../` in a row)
+- [x] **Slot format** (done 2026-10-04. docs/app-workflow.md §3.4). Lives in
+      `ports/common/src/slot.rs` so that **the writer (CLI) and the reader (firmware) share
+      one shape**. CRC-32 reuses the existing `crc32` (the same as the trace)
+      - **Empty (erased `0xff` / unused `0x00`) is not a failure.** It is told apart from a
+        wrong magic (the log means something different)
+      - Locked in by the 9 tests in `ports/common/tests/slot.rs` (round trip, empty, wrong
+        magic, wrong version, length overflow, CRC, trailing bytes ignored) and the 4 in
+        `tools/wasmicon-cli/tests/pack.rs` (a round trip that **reads what the CLI wrote
+        through the firmware's path**, and a CRC check against a known value)
+      - `SlotError` has no `Debug` (to keep `core::fmt` out of the ports). Tests use
+        `reason()` and `matches!`
+      - The CLI side is `wasmicon pack`. At stage 1 it is **input for an external flasher**
+        (`espflash write-bin <offset>` / `picotool load -o <offset>`)
+- [ ] **The supervisor loop** (docs/app-workflow.md §3.1).
+      **The three ports now read the slot** (2026-10-04. RP2350 and ESP32-S3 verified on
+      hardware, RP2040 code only). What remains is the return to idle and the per-cycle
+      rebuild (arena / `Hal` / **the role table**; carrying it over can change the trace.
+      `release_all.rs` locks in the current state)
+      - **RP2040 and RP2350 read it in place** (XIP is memory-mapped, so no copy to RAM). The
+        read lives in one place, `slot::read_xip` in `ports/common` (to keep the `unsafe`
+        that builds the raw slice in one spot). **It can be tried on the host too** (pass a
+        static standing in for flash)
+      - **RP2350 verified on the Pico 2 W on 2026-10-04** (three cases: empty -> built-in /
+        the slot app runs / corrupted CRC -> built-in. On top of that, **the trace of the
+        app run from the slot is identical to the host over 14,352 lines**.
+        docs/verification-report.md §9). **RP2040 unverified** (no Pico WH on hand. The
+        code goes through the same `slot::read_xip`)
+      - Two `picotool` argument pitfalls were hit and fixed on hardware (the extension is
+        `.bin`, `-o` is an absolute address). Neither shows up on the host
+      - **The firmware checks at boot that the slot does not overlap the end of the firmware
+        (`__flash_binary_end`).** If it does, it falls back to the built-in app without
+        reading (never feed your own code to the runtime as wasm). RP2040 lacked this
+        symbol, so it was added to `memory.x` (measured `0x1000de40`; the slot is at
+        `0x10100000`, so nearly 1 MB is free)
+      - **`ports/esp32s3` was implemented on 2026-10-04 and verified on hardware the same
+        day** (reads the header through `esp-storage`, takes only the body's length from
+        the arena and reads the body. The app is a few KB against a 64 KiB slot, so no
+        static region grows). **The trace of the app run from the slot is identical to the
+        host over 14,352 lines**. Moreover, **the Pico 2 W (XIP) and the ESP32-S3 (copied
+        to RAM through `esp-storage`) are identical on the same `.wasm`** - determinism
+        holds across two boards that read flash differently
+        (docs/verification-report.md §10)
+      - **`partitions.csv` was not needed** (measured: `espflash flash` erases only the
+        app's sectors, so the marker at the 7 MB point survived). The location matches the
+        Pico family: 64 KiB from `0x100000`
+      - **On the ESP32-S3, flashing and the trace share one port.** `monitor` only applies
+        `stty`, so it cannot reset the board itself, and the ordering deadlocks. Solved by
+        **handing the whole port to `espflash monitor`** (`--before default-reset --after
+        hard-reset` are its defaults, so it can open the port and then boot the board).
+        `espflash reset` lingers, so it is not called
+      - **The failure cases were also tried on hardware the same day** (the same three as
+        docs/verification-report.md §9): correct image -> runs / one byte of the body
+        flipped -> `slot crc mismatch, running built-in` / filled with `0xff` ->
+        `slot empty, running built-in`. **No button presses**, so it is easier to iterate
+        than the Pico
+      - **Remaining**: `Truncated` (an image that lies only about the length) was not
+        tried. The `Overlap` check exists only on the `read_xip` side, so **the ESP32-S3
+        has none** (it reads through `esp-storage`). Whether it is right that preventing
+        overlap falls to `espflash` is undecided
+- [x] **Remove the built-in app** (done 2026-10-07. Verified on ESP32-S3 hardware that "the
+      slot app runs" and "an empty slot gives `slot empty, idle`".
+      docs/verification-report.md §13. The LED blink is unconfirmed for lack of an external
+      LED).
+      An empty slot prints `wasmicon: slot empty, idle`, enters `idle::heartbeat` in
+      `ports/common`, and blinks the `led` role at 1 Hz
+      (stage 1. **Only once the three ports can read the slot** - removing it first would
+      leave the firmware running nothing. **RP2350 and ESP32-S3 are verified on
+      hardware**. RP2040 was dropped from evaluation (2026-10-07), so **the precondition is
+      met**. RP2040 goes through the same `slot::read_xip`, so it can be removed there
+      too). Drop the `include_bytes!` and the `guest-lcd-demo` feature from
+      `ports/*/src/main.rs`; an empty slot prints the reason and parks; the port layer
+      blinks the LED as a sign of life (`Board` directly, not through Wasm)
+      - **Fix CI at the same time**: the port jobs no longer need the `apps` pre-build, and
+        rp2350's `cargo clippy --release --features guest-lcd-demo` line goes away
+      - **The recorded traces live on**. `deploy` `lcd_demo_rs.wasm` (`fc470947...`) to the
+        slot and **the bytes are identical, so the host-call sequence is identical** (the
+        XIP address or a copy to RAM does not show in the trace)
+      - **What is lost**: the footing to confirm on hardware, right after flashing, that
+        "the runtime gets from decode to run". The host tests and the first `deploy`
+        replace it
+- [x] **Stage 1 of `deploy`** (done 2026-10-04, all three ports). Folds the check, the
+      image preparation, `picotool load -t bin -o <address>` and the reset into one
+      command. **Run end to end as one command on the Pico 2 W**
+      (docs/verification-report.md §9)
+      - **Nothing that will not run is flashed** (`check --board` runs before flashing).
+        `tests/deploy.rs` locks in that sending sensor-display to rp2040 stops **without
+        even writing the image**
+      - The trace capture procedure (`stty` while `cat` holds the port open) is printed at
+        the end
+      - **The ESP32-S3 also went through on 2026-10-04** (`espflash write-bin <offset>`;
+        the command `pack` prints is per board too). `--monitor` delegates to
+        `espflash monitor` (`monitor::capture_cmd`). **One command flashes and captures,
+        14,352 lines identical to the host**. Unlike the Pico, **no button presses**
+- [x] **Make the firmware state who it is** (2026-10-09, **the banner part**. `info` comes
+      with the USB control channel (stage 2)). The line after the banner is
+      `wasmicon id <board> fw=... git=...(-dirty) abi=... trace=on|off pages=... if=... slot=v1/... roles=v1/...`
+      (`identity` in `ports/common`. git is filled in by each port's `build.rs` from
+      `ports/common/build/git.rs`. The ABI version is `generated::PACKAGE`, generated from
+      `wit/`). `trace diff` warns when the two logs' identities differ (the verdict is
+      unchanged). **`monitor` captures the raw serial output, so the identity lands at the
+      top of the log by itself**. Verified on ESP32-S3 and Pico 2 W hardware
+      (docs/verification-report.md §16, §17).
+      The original record follows: (`info` and the banner. docs/app-workflow.md §3.8).
+      Today the banner is the single line `wasmicon rp2350`, **with neither version nor
+      git** (`ports/rp2350/src/main.rs:140`). `docs/verification-report.md` **records the
+      guest's SHA-256 but nothing about the firmware**, so which build produced the 14,352
+      lines can only be inferred from dates and git history
+      - What it carries: board name / firmware version + `git describe` + dirty / ABI
+        version / configuration (`trace` on or off, built-in app) / `Config` / slot
+        capacity and format version / protocol version / role names
+      - `git describe` is filled in by `build.rs`. **Do not drop dirty**
+      - `monitor` records the identity at the top of the captured log; `trace diff`
+        excludes the identity line from the comparison but **warns when it differs**
+      - **A board flashed with `trace` off leaves `monitor` silent.** Reporting
+        `trace: off` saves suspecting the wiring
+- [ ] **Firmware distribution** (release manifest and `flash --fw` / `fw list`).
+      Attach a manifest (file + sha256 + the 5 axes of docs/app-workflow.md §3.8) to the
+      board x version deliverables. Pairs with §5-7
+- [x] **Read `wasmicon.toml`** (done 2026-10-04. docs/app-workflow.md §4.7). It holds
+      `[requirements] pin-roles` (the role names this app looks up), the default board,
+      the replay path and the intended wiring.
+      - **Searched upward from the current directory** (like cargo). `check` / `run` work
+        without it
+      - **With `pin-roles` the role cross-check becomes a guarantee** (the scan is not
+        printed). Names are cross-checked against `ROLE_NAMES`, so **a typo stops without
+        a device connected**
+      - `[defaults] board` is the default for `--board`, `i2c-replay` the default for
+        `--i2c-replay` (resolved **relative to the toml's location**)
+      - **Unknown keys are errors** (`deny_unknown_fields`). A `version` newer than the CLI
+        is an error. `"none"` means "this role does not exist"
+      - **`[board.<name>.roles]` is only read and validated**, not used yet. Pushing it to
+        the device is `config apply` (after the docs/app-workflow.md §3.9 / §5-9 decision)
+      - **`wasmicon new` writes it as part of the scaffold** (2026-10-04). `tests/new.rs`
+        checks that **it can read back what it wrote**
+      **The ABI-conformant build flags are not allowed in it** (it would turn the
+      triplication of docs/app-workflow.md §4.4 into quadruplication). Machine-specific
+      values go in `wasmicon.local.toml` (gitignored)
+      - With `[requirements] pin-roles`, the role-name cross-check of
+        docs/app-workflow.md §4.3 **turns from informational into a guarantee**. The check
+        only compares against `ROLE_NAMES` in `ports/common`, so **a typo stops without a
+        device connected**
+      - `deploy` cross-checks the toml against the device's effective map every time and
+        **never applies it silently** (the driven pins change, which is physically
+        dangerous)
+- [x] **Put a `wasmicon.toml` in each of the 5 apps under `apps/` (dogfooding)**
+      (2026-10-07. Became mandatory once the firmware lost its default table.
+      `tests/apps.rs` checks that "each app has a toml and the declared roles agree with
+      the rp2350 / esp32s3 wiring tables") (the spot where docs/app-workflow.md §4.7 says
+      "dogfooding this repo's `apps/` means five of them"). **There is none today**, so the
+      CLI's manifest path is exercised only by unit tests with synthetic files
+      - **This matters most for AssemblyScript.** The role-name scan is a guess that picks
+        up strings from the data segment, and **AS is UTF-16, so it never matches**
+        (measured and recorded in docs/app-workflow.md §4.3). `blink-as` /
+        `sensor-display-as` are cross-checked only once they declare
+      - `missing_declared_roles` is part of `fails()`, so declaring **turns the
+        informational scan into a hard check**. The `ROLES` of the three ports are identical
+        (`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`), so it passes on every board
+      - `[defaults] board` lets `check` / `run` work from the app's directory with no
+        flags. `sensor-display-*` point `[defaults] i2c-replay` at
+        `verify/sht4x-replay.txt` (the file to be replaced with a hardware recording in
+        §1.3)
+      - **Existing tests do not break.** `manifest::find` searches upward, so
+        `apps/<app>/wasmicon.toml` only applies when run from that directory (the existing
+        tests run from the repository root with an explicit `--board`)
+      - **Add a "zero is not silently success" check, by the same reasoning as
+        `tests/flags.rs`**: check that every app under `apps/` has a `wasmicon.toml` (a new
+        app without one fails it)
+      - **The structure of `apps/` is not replaced** (considered and rejected, 2026-10-04).
+        `apps/` is a monorepo that builds its 5 apps in one workspace on every CI run;
+        `wasmicon new` produces one standalone app. Splitting them would split `target/`
+        five ways and compile `wasmicon-hal` five times, and would mean rewriting the
+        `include_bytes!` sites (5), the test helpers that use `-p` (4) and the 3 CI jobs.
+        The only gain is that the `.cargo/config.toml` watch list grows from 1 to 5, and
+        **that check is already covered by `tests/flags.rs` and `tests/new.rs`**
+- [x] **The role-map config slot** (2026-10-07, minimal stage-1 version.
+      docs/app-workflow.md §3.9). 4 KiB right after the app slot, holding `"WMCR"` + the
+      table as text. `deploy` writes it together with the app as one image, and the
+      firmware reads it at boot (`roles` in `ports/common`). **Remaining**: the `config`
+      command over the protocol and reading it back through `info` (stage 2). The original
+      plan follows: a config sector + a `config` command + device-side validation
+      (rejecting reserved pins, bus pins and duplicates). ~~Boot with defaults if the CRC
+      does not match~~ -> **there is no default table, so it boots handing out no roles**
+      and prints the reason in the banner (2026-10-07). The CRC-32 of the effective map
+      goes into the identity together with `info` (docs/app-workflow.md §3.8)
+- [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
+      (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
+      over USB, trace over UART0**
+      - **Turn the `hw-probe` feature into a `probe` command** (docs/app-workflow.md §3.6).
+        Triage without reflashing, one build configuration fewer, and the variants
+        converge on two: `trace` on / off
+- [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
+- [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
+      output and `apps/blink-c` went in. `cargo test` checks on the host that its trace is
+      identical to blink-rs's). Remaining:
+      - `wasmicon new --lang c`, and the language detection in `deploy` / `pack` (today the
+        `.wasm` location can only be derived from `Cargo.toml` / `asconfig.json`. C is
+        built by hand with `sh bindings/c/build.sh` and the `.wasm` is passed in)
+      - **The build-flag truth is in `bindings/c/build.sh`.** It has no copy, so it is not
+        in `tools/wasmicon-cli/src/flags.rs` yet; adding `new --lang c` means moving it to
+        flags.rs and cross-checking the scaffold byte for byte
+        (docs/app-workflow.md §4.4)
+      - The C version has not run on hardware (ESP32-S3 / Pico 2 W). There is no C version
+        of sensor-display
+      - CI builds it with the clang + lld (18.x) from apt on ubuntu-24.04. Locally it was
+        checked with wasi-sdk 33 (clang 22). The output bytes change with the version, but
+        the checks are only the trace and the feature set
+- [ ] **Distributing the bindings** (crates.io / npm). **`new` landed on 2026-10-04**, but
+      dependencies are written as paths (above). Where to publish and how to version are
+      not decided yet. Once published, change `new`'s default from a path to a version

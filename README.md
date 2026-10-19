@@ -1,188 +1,209 @@
 # Wasmicon
 
-マイコン（ESP32-S3 / RP2350）向けの WebAssembly 実行環境。RP2040 はポートだけあり、評価対象外（2026-10-07）。
+A WebAssembly runtime for microcontrollers. Evaluation boards: ESP32-S3 and RP2350 (Pico 2 W).
+ESP32-C5 is a port in progress (boots and blinks on hardware; status in `docs/TODO.md` §1.3.1).
+RP2040 has a port but is build-only; it was dropped from evaluation on 2026-10-07.
 
-- **Runtime**: 自作の Core Wasm インタプリタ。`no_std`、依存クレートゼロ、`alloc` 不使用
-- **HAL**: GPIO / I2C / SPI / time / log / board を WIT で定義。**Component Model は使わない**。
-  WIT は IDL としてのみ使い、`docs/abi-spec.md` の規則で Core Wasm の import に落とす
-- **Bindings**: Rust と AssemblyScript と C。WIT から生成する
-- **ゴール**: I2C 温湿度センサー（SHT4x）を読んで SPI ディスプレイ（ILI9341）に描くアプリを
-  Rust と AS で書き、**同一の Wasm バイナリ**を ESP32-S3 と Pico 2 W で動かして
-  host call トレースが一致することを検証する
+- **Runtime**: a from-scratch Core Wasm interpreter. `no_std`, zero dependency crates, no `alloc`
+- **HAL**: GPIO / I2C / SPI / time / log / board, defined in WIT. **The Component Model is not used.**
+  WIT serves only as the IDL; the rules in `docs/abi-spec.md` lower it to Core Wasm imports
+- **Bindings**: Rust, AssemblyScript and C, generated from the WIT
+- **Goal**: write an app that reads an I2C temperature / humidity sensor (SHT4x) and draws on an
+  SPI display (ILI9341), in Rust and in AssemblyScript; run the **same Wasm binary** on ESP32-S3
+  and Pico 2 W; verify that the host-call traces match
 
-## 現在地
+## Status
 
-全 6 フェーズのソフトウェア側が完了し、CI は green。
+The software side of all six phases is complete. The checks CI runs are in
+`.github/workflows/ci.yml`.
 
-**Raspberry Pi Pico 2 W では実機で動いた**（2026-09-26）。`apps/lcd-demo-rs` を
-走らせ、host call のトレースが host ポートと 14,352 行完全一致し、ILI9341 に
-絵が出た（[`docs/verification-report.md`](docs/verification-report.md) §6）。
+**It ran on a Raspberry Pi Pico 2 W** (2026-09-26). `apps/lcd-demo-rs` ran on the board, its
+host-call trace was identical to the host port's (14,352 lines), and a picture appeared on the
+ILI9341 ([`docs/verification-report.md`](docs/verification-report.md) §6).
 
-**ESP32-S3 実機でも動いた**（2026-09-26）。`ports/esp32s3` に SPI2 を実装し、
-**Pico 2 に焼いたものと同じ `lcd_demo_rs.wasm`**（`fc470947…`）を走らせて、
-host call のトレースが 14,352 行完全一致し、ILI9341 にも絵が出た
-（[`docs/verification-report.md`](docs/verification-report.md) §7）。
-**これで Phase 6「同一バイナリが 2 ボードで同じトレースを出す」は達成。**
-**sensor-display も 2 ボードで動いた**（2026-10-05 / 07）。I2C で SHT40 を読み、
-Rust 版・AS 版の 4 通りとも表示が出て、実機が読んだ応答を host に食わせた
-トレースと全文一致した（§11 / §12）。**これをもって当初の目標を達成とした**
-（2026-10-07 オーナー判断）。残作業は [`docs/TODO.md`](docs/TODO.md)。
+**It ran on an ESP32-S3 too** (2026-09-26). `ports/esp32s3` got an SPI2 implementation, and
+**the same `lcd_demo_rs.wasm` that was flashed to the Pico 2** (`fc470947...`) produced a trace
+identical to the host port's and a picture on the ILI9341
+([`docs/verification-report.md`](docs/verification-report.md) §7).
+**That completes Phase 6, "the same binary produces the same trace on two boards".**
+**sensor-display also ran on both boards** (2026-10-05 / 07). It read the SHT40 over I2C, all
+four combinations (Rust and AS versions on both boards) showed the display, and each board's
+trace was identical to a host run fed the responses that board had read
+(`docs/verification-report.md` §11, §12). **The owner declared the original goal achieved on
+this basis** (2026-10-07). Remaining work: [`docs/TODO.md`](docs/TODO.md).
 
-| 検証 | 状態 |
+| Verification | Status |
 |---|---|
-| **ファームを焼き直さずにアプリを差し替える**（アプリスロット） | **RP2350 と ESP32-S3 の実機で達成（2026-10-04）**。どちらもスロットから走らせたトレースが host と 14,352 行完全一致。RP2040 は評価対象外 |
-| **フラッシュの読み方が違う 2 ボードでスロット経由のトレースが一致** | **達成（2026-10-04）**。Pico 2 W は XIP のスライスをそのまま decode に渡し、ESP32-S3 は `esp-storage` でヘッダを読んでから arena に写すが、同じ `.wasm` で 14,352 行一致 |
-| Wasm 仕様適合（spec testsuite コア 74 ファイル / 22507 コマンド） | 達成 |
-| インタプリタの正しさ（wasmtime との差分、4 ゲスト） | 達成 |
-| Rust 版と AS 版が同じ host call 列を出す（成功経路 + 失敗経路） | 達成 |
-| RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
-| ESP32-S3 実機で GPIO / SPI / ILI9341 の描画が動く | 達成（2026-09-26） |
-| 同一バイナリが 2 ボードで同じトレースを出す | 達成（2026-09-26、RP2350 と ESP32-S3） |
-| I2C（SHT40）が 2 ボードで読める | 達成（2026-10-05） |
-| 4 通り（Rust/AS × 2 ボード）で表示が出る | **達成**（2026-10-07、ESP32-S3 と Pico 2 W） |
-| 実機が読んだ値で、値の描画（f32 を含む）まで host と一致する | **達成**（2026-10-07、4 通りとも） |
+| **Replace the app without reflashing the firmware** (app slot) | **Achieved on RP2350 and ESP32-S3 hardware (2026-10-04)**. On both boards the trace of the app run from the slot was identical to the host's (line count: `docs/verification-report.md` §6). RP2040 is not evaluated |
+| **Traces via the slot match on two boards that read flash differently** | **Achieved (2026-10-04)**. The Pico 2 W passes the XIP slice straight to decode; the ESP32-S3 reads the header through `esp-storage` and copies the body into the arena. The same `.wasm` gives identical traces on both (line count: `docs/verification-report.md` §6) |
+| Wasm spec conformance (spec testsuite core: 74 files / 22507 commands) | Achieved |
+| Interpreter correctness (differential test against wasmtime, 4 guests) | Achieved |
+| The Rust and AS versions emit the same host-call sequence (success and failure paths) | Achieved |
+| GPIO / SPI / ILI9341 drawing works on RP2350 hardware | Achieved (2026-09-26) |
+| GPIO / SPI / ILI9341 drawing works on ESP32-S3 hardware | Achieved (2026-09-26) |
+| The same binary produces the same trace on two boards | Achieved (2026-09-26, RP2350 and ESP32-S3) |
+| I2C (SHT40) reads on both boards | Achieved (2026-10-05) |
+| All four combinations (Rust/AS x 2 boards) show the display | **Achieved** (2026-10-07, ESP32-S3 and Pico 2 W) |
+| With values read on hardware, the drawn values (including f32) match the host | **Achieved** (2026-10-07, all four combinations) |
 
-詳細は [`docs/verification-report.md`](docs/verification-report.md)。
+Details: [`docs/verification-report.md`](docs/verification-report.md).
 
-コアのコードサイズは thumbv6m-none-eabi（RP2040）向けで **49.5 KiB**、
-thumbv8m.main-none-eabihf（RP2350）向けで **46.0 KiB**
-（`sh tools/measure-size.sh [ターゲット]`）。
+Core code size is **49.5 KiB** for thumbv6m-none-eabi (RP2040) and **46.0 KiB** for
+thumbv8m.main-none-eabihf (RP2350) (`sh tools/measure-size.sh [target]`).
 
-## 構成
+## Layout
 
 ```
-wit/                  HAL 定義。唯一の真実。生成物を手で編集しない
-tools/wasmicon-gen/   wit/ から 4 つの生成物を出すジェネレータ
-tools/wasmicon-cli/   アプリ作者が触る CLI（bin 名 wasmicon）。check / run / trace diff / doctor
-runtime/              wasmicon-core。no_std / 依存ゼロ / alloc 不使用のインタプリタ
-ports/common/         ポート共通の HAL。ボード固有の操作だけ Board トレイトに切り出す
-ports/host/           PC 用。mock HAL + トレース。CI はここで回す
-ports/rp2040/         Raspberry Pi Pico WH（別 workspace。評価対象外、ビルドのみ）
-ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W（別 workspace、Cortex-M33）
-ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
-ports/esp32c5/        ESP32-C5（Waveshare ESP32-C5-WIFI6-KIT。別 workspace、RISC-V。実機は段階的に確認中）
-bindings/rust/        ゲスト向け Rust バインディング
-bindings/assemblyscript/  同 AssemblyScript
-bindings/c/           同 C（ヘッダ + build.sh。clang の wasm32 ターゲットでビルドする）
-apps/                 ゲスト（別 workspace）。blink と sensor-display の Rust / AS 版
-                      blink-c は blink の C 版（bindings/c の検査用）
-                      lcd-demo-rs は ILI9341 だけを使うデモ（センサー不要）
-                      life-rs は ILI9341 にライフゲームを描き続けるデモ（FPS 表示つき）
-                      bench-rs はインタプリタと host call の速さを測る（host / 実機で同じ .wasm）
-                      rgb-led-rs は ESP32-C5-WIFI6-KIT の基板の RGB LED を光らせる（esp32c5 専用）
-verify/               検証の道具。wasmtime との差分テスト、トレース diff
-docs/                 仕様・設計・検証レポート・残作業
+wit/                  HAL definition. Source of truth; never edit the generated files by hand
+tools/wasmicon-gen/   Generator that emits the four generated files from wit/
+tools/wasmicon-cli/   CLI for app authors (binary name wasmicon). check / run / trace diff / doctor
+runtime/              wasmicon-core: the no_std / zero-dependency / no-alloc interpreter
+ports/common/         HAL shared by the ports; only board-specific operations go in the Board trait
+ports/host/           PC port: mock HAL + trace. CI runs here
+ports/rp2040/         Raspberry Pi Pico WH (separate workspace; build-only, not evaluated)
+ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W (separate workspace, Cortex-M33)
+ports/esp32s3/        ESP32-S3 DevKitC-1 (separate workspace, esp toolchain)
+ports/esp32c5/        ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT; separate workspace, RISC-V; hardware bring-up in progress)
+bindings/rust/        Rust bindings for guests
+bindings/assemblyscript/  AssemblyScript bindings for guests
+bindings/c/           C bindings for guests (header + build.sh; built with clang's wasm32 target)
+apps/                 Guests (separate workspace). Rust and AS versions of blink and sensor-display
+                      blink-c is the C version of blink (checks bindings/c)
+                      lcd-demo-rs is a demo that uses only the ILI9341 (no sensor needed)
+                      life-rs keeps drawing Conway's Life on the ILI9341 (with an FPS readout)
+                      bench-rs measures interpreter and host-call speed (same .wasm on host and hardware)
+                      rgb-led-rs drives the on-board RGB LED of the ESP32-C5-WIFI6-KIT (esp32c5 only)
+verify/               Verification tools: differential test against wasmtime, trace diff
+docs/                 Spec, design, verification report, remaining work
 ```
 
-`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `ports/esp32c5` / `apps` / `verify/differential` は
-ターゲットも toolchain も profile も違うので**別 workspace**にしてある。
+`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `ports/esp32c5` / `apps` / `verify/differential`
+are **separate workspaces** because their targets, toolchains and profiles all differ.
 
-## ビルドと検証
+## Build and verify
 
-上から順にそのまま貼れる。**`cargo test` の前に testsuite を取ること。**
-無いと spec テストは「取得されていない」と出して丸ごとスキップし、
-それでも `test result: ok` になる。
+The commands can be pasted in order from the top. **Fetch the testsuite before `cargo test`.**
+Without it the spec tests print "not fetched", skip entirely, and still end with
+`test result: ok`.
 
 ```bash
-# spec テストに要る testsuite（固定 SHA）。cargo test より先に。
+# Testsuite for the spec tests (pinned SHA). Run before cargo test.
 sh tools/fetch-testsuite.sh
 
-# ホスト側（ランタイム、ジェネレータ、host ポート）
+# Host side (runtime, generator, host port)
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
-# 生成物が wit/ と一致しているか
+# Generated files match wit/
 cargo run -p wasmicon-gen -- --check
-sh tools/check-sigs.sh          # 参照実装 tools/wit2sig.py と突き合わせ
+sh tools/check-sigs.sh          # cross-check against the reference tools/wit2sig.py
 
-# ゲスト（wasm32-unknown-unknown と AssemblyScript）
+# Guests (wasm32-unknown-unknown and AssemblyScript)
 npm ci
 (cd apps && cargo build --release)
 (cd apps/sensor-display-as && npx asc assembly/index.ts --config asconfig.json --target release)
-# C のゲスト。wasm32 対応の clang と wasm-ld が要る（wasi-sdk、または clang + lld）。
-# cargo test の host テストもこれを呼ぶ
+# C guest. Needs a clang with the wasm32 target and wasm-ld (wasi-sdk, or clang + lld).
+# The host tests in cargo test call this too
 sh bindings/c/build.sh apps/blink-c/build/blink_c.wasm apps/blink-c/src/main.c
-# ゲストの単体テスト。apps/ は wasm32 固定なのでホストのトリプルを明示する。
-# bindings の生成物が clashing_extern_declarations を 2 件出すが、これは
-# ホストターゲットでだけ見える既知のもの（docs/TODO.md §2.2）
+# Guest unit tests. apps/ pins wasm32, so name the host triple explicitly.
+# The generated bindings emit two clashing_extern_declarations warnings; that is
+# a known issue visible only on the host target (docs/TODO.md §2.2)
 (cd apps && cargo test --target "$(rustc -vV | sed -n 's/^host: //p')")
 
-# 実機向けのファーム。アプリは入っていない（apps/ を先にビルドしなくてよい）。
-# アプリは下の「アプリをスロットに焼く」で別に焼く
+# Firmware for the boards. It contains no app (no need to build apps/ first).
+# Apps are flashed separately; see "Flash an app to the slot" below
 (cd ports/rp2040 && cargo build --release)
 (cd ports/rp2350 && cargo build --release)
-sh ports/esp32s3/build.sh build --release   # ~/export-esp.sh を読んでから cargo を呼ぶ
-(cd ports/esp32c5 && cargo build --release)  # RISC-V。upstream の Rust でよい
+sh ports/esp32s3/build.sh build --release   # sources ~/export-esp.sh, then calls cargo
+(cd ports/esp32c5 && cargo build --release)  # RISC-V; upstream Rust is enough
 
-# wasmtime との差分テスト（インタプリタの正しさ）
+# Differential test against wasmtime (interpreter correctness)
 (cd verify/differential && cargo test)
 
-# 実機のトレースを突き合わせる（2 ボード）
+# Cross-check hardware traces (two boards)
 sh verify/diff-traces.sh pico.log esp32s3.log
 ```
 
-### アプリをスロットに焼く
+### Toolchain
 
-**ファームにアプリは入っていない**（2026-10-07 に内蔵アプリを外した）。ファームを
-一度焼いたら、アプリはスロットに焼いて差し替える（[`docs/app-workflow.md`](docs/app-workflow.md)）。
-スロットが空のときは `wasmicon: slot empty, idle` と出して待つ（ピンは駆動しない）。
+Five `rust-toolchain.toml` files (root, `apps`, `ports/rp2040`, `ports/rp2350`,
+`ports/esp32c5`) pin the same stable version, 1.99.0 (pinned 2026-10-08), so that they do
+not drift from each other or from CI; bump them together. `ports/esp32s3` uses the espup
+fork (`channel = "esp"`) because upstream Rust has no Xtensa target (`docs/decisions.md` P-10).
 
-**配線（役割名 → GPIO）もファームには入っていない**（2026-10-07）。アプリの
-`wasmicon.toml` の `[board.<name>.roles]` に書くと、`deploy` がアプリと一緒に
-デバイスの設定スロットへ書く。起動時のバナーに `wasmicon: roles lcd-cs=17 …` と出る
-（[`docs/app-workflow.md`](docs/app-workflow.md) §3.9）。`apps/` の 5 つは書いてある。
+### Flash an app to the slot
+
+**The firmware contains no app** (the built-in app was removed on 2026-10-07). Once the firmware
+is flashed, apps are flashed to the slot and replaced there
+([`docs/app-workflow.md`](docs/app-workflow.md)). With an empty slot the firmware prints
+`wasmicon: slot empty, idle` and parks (it drives no pins).
+
+**The wiring (role name -> GPIO) is not in the firmware either** (2026-10-07). Write it under
+`[board.<name>.roles]` in the app's `wasmicon.toml`; `deploy` writes it to the device's config
+slot together with the app. The boot banner shows `wasmicon: roles lcd-cs=17 ...`
+([`docs/app-workflow.md`](docs/app-workflow.md) §3.9). Every app under `apps/` has one.
 
 ```bash
-# CLI を用意する。PATH に入れたいなら cargo install --path tools/wasmicon-cli
+# Build the CLI. To put it on PATH: cargo install --path tools/wasmicon-cli
 cargo build --release -p wasmicon-cli
 w=./target/release/wasmicon
 app=apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
 
-$w doctor                            # 道具が揃っているか、焼けるボードは何か
+$w doctor                            # are the tools installed, and which boards can be flashed
 
-# アプリをビルドして、そのボードで走るかを検査する
+# Build the app and check that it runs on that board
 (cd apps && cargo build --release -p lcd-demo-rs)
 $w check "$app" --board rp2350
 
-# 焼いて、そのままトレースを取り込む（検査に落ちたら焼かない）
+# Flash and capture the trace in one go (nothing is flashed if the check fails)
 $w deploy "$app" --board rp2350 --monitor -o pico.log
 
-# host の実行と突き合わせる
+# Cross-check against a host run
 $w run "$app" --trace > host.log
 $w trace diff host.log pico.log
 ```
 
-- **Pico は BOOTSEL を押しながら USB を挿してから** `deploy` する
-  （`picotool` に渡すため。2 段の USB 制御チャネルで要らなくなる）
-- **ESP32-S3 はボタン操作が要らない**（`espflash` が DTR/RTS でリセットする）。
-  書き込みとトレースが同じ口なので `--monitor` は `espflash monitor` に委譲する
-- 新しいアプリを始めるなら `wasmicon new <dir> --lang rust --hal bindings`
+- **Hold BOOTSEL while plugging in the Pico's USB, then** `deploy`
+  (the image goes through `picotool`; the stage-2 USB control channel will remove this step)
+- **The ESP32-S3 needs no button** (`espflash` resets it over DTR/RTS). Flashing and the trace
+  share one port, so `--monitor` delegates to `espflash monitor`
+- To start a new app: `wasmicon new <dir> --lang rust --hal bindings`
 
-### その他
+### Other
 
 ```bash
-wasm-tools component wit wit/                              # WIT の構文検証
-wasm-tools json-from-wast <file>.wast -o out/<file>.json   # spec テストの変換（旧 wast2json）
+wasm-tools component wit wit/                              # WIT syntax check
+wasm-tools json-from-wast <file>.wast -o out/<file>.json   # convert a spec test (formerly wast2json)
 wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-memory,multi-value,mutable-global app.wasm
 rustup target add thumbv6m-none-eabi                       # RP2040
 rustup target add thumbv8m.main-none-eabihf                # RP2350
-espup install                                              # ESP32-S3（Xtensa フォーク）
-sh tools/measure-size.sh                                   # コアのコードサイズ
+rustup target add riscv32imac-unknown-none-elf             # ESP32-C5
+espup install                                              # ESP32-S3 (Xtensa fork)
+sh tools/measure-size.sh                                   # core code size
 ```
 
-## ドキュメント
+## Documents
 
-| ファイル | 内容 |
+| File | Contents |
 |---|---|
-| [`docs/TODO.md`](docs/TODO.md) | **残作業。ここだけ見れば何が残っているか分かる** |
-| [`docs/abi-spec.md`](docs/abi-spec.md) | WIT → Core Wasm の lowering 規則。**この仕様が正** |
-| [`docs/app-workflow.md`](docs/app-workflow.md) | アプリ開発フローの設計。ファームがアプリを USB / HTTP でロードする形と `wasmicon` CLI |
-| [`tools/wasmicon-cli`](tools/wasmicon-cli) | `wasmicon` CLI。`new` / `check` / `run` / `pack` / `deploy` / `monitor` / `trace diff` / `doctor`。ゲストのビルドフラグの真実（`src/flags.rs`）もここ |
-| [`docs/verification-report.md`](docs/verification-report.md) | 何がどこまで検証されたか、何がされていないか |
-| [`docs/design-notes.md`](docs/design-notes.md) | 背景・方針・技術選定の理由 |
-| [`docs/handoff.md`](docs/handoff.md) | 確定した決定事項、フェーズと完了条件、落とし穴。**コードのコメントが節番号で参照している** |
-| [`apps/README.md`](apps/README.md) | Rust 版と AS 版で描画を揃えるための共通仕様 |
-| [`apps/lcd-demo-rs/README.md`](apps/lcd-demo-rs/README.md) | Pico 2 (W) + ILI9341 のデモ。配線・書き込み・つまずきどころ |
+| [`docs/TODO.md`](docs/TODO.md) | **Remaining work. The one place that says what is left** |
+| [`docs/abi-spec.md`](docs/abi-spec.md) | WIT -> Core Wasm lowering rules. **Normative** |
+| [`docs/decisions.md`](docs/decisions.md) | Frozen decisions (D-NN), adopted defaults (A-NN) and pitfalls (P-NN), with stable IDs that code cites |
+| [`docs/style-guide.md`](docs/style-guide.md) | Language, comment, file-header, citation, error-string and commit conventions |
+| [`docs/app-workflow.md`](docs/app-workflow.md) | Design of the app workflow: firmware that loads apps over USB / HTTP, and the `wasmicon` CLI |
+| [`tools/wasmicon-cli`](tools/wasmicon-cli) | The `wasmicon` CLI: `new` / `check` / `run` / `pack` / `deploy` / `monitor` / `trace diff` / `doctor`. Also the source of truth for the guest build flags (`src/flags.rs`) |
+| [`docs/verification-report.md`](docs/verification-report.md) | What has been verified, how far, and what has not |
+| [`docs/design-notes.md`](docs/design-notes.md) | Background, direction and the reasons behind the technical choices |
+| [`docs/handoff.md`](docs/handoff.md) | Historical record: the decisions, phases and pitfalls as written at the time. No longer cited from code; the live entries are in `docs/decisions.md` |
+| [`apps/README.md`](apps/README.md) | Shared spec that keeps the Rust and AS versions drawing the same thing |
+| [`apps/lcd-demo-rs/README.md`](apps/lcd-demo-rs/README.md) | Pico 2 (W) + ILI9341 demo: wiring, flashing, pitfalls |
 
-開発は `main` で続ける。`v2` ブランチは `main` に取り込まれて消えた。
-旧実装（wasm decoder / llvm 試行、2024 年の試作）も潰していない。マージコミット
-`8c26071` の第 2 親として `main` の履歴に残っている（`git log 8c26071^2`）。
+Development continues on `main`. The `v2` branch was merged into `main` and deleted. The old
+implementation (wasm decoder / llvm experiments, the 2024 prototype) is not gone either: it is
+in `main`'s history as the second parent of merge commit `8c26071` (`git log 8c26071^2`).
+
+## Contributing
+
+- Read [`AGENTS.md`](AGENTS.md) (rules, what needs the owner's approval, how to verify) and
+  [`docs/style-guide.md`](docs/style-guide.md) (language, comments, citations, commit messages).
+- The repository was translated from Japanese to English in one series of commits. To keep
+  `git blame` useful, run once: `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
