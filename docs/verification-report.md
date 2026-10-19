@@ -1,255 +1,247 @@
-# Wasmicon 検証レポート
+# Wasmicon verification report
 
-作成日: 2026-09-10 / 対象: **本レポートを含むコミット時点**（Phase 6 の道具を入れた地点）
+Created: 2026-09-10 / Subject: **the commit that contains this report** (the point where the Phase 6 tools were added)
 
-レポート自身のコミットハッシュはここに書けないので、`git log --oneline -- docs/verification-report.md`
-で最初にこのファイルが入ったコミットを見ること。
+The report cannot contain its own commit hash; use `git log --oneline -- docs/verification-report.md`
+to find the commit that first added this file.
 
-docs/handoff.md §5 Phase 6 の成果物。**何がどこまで検証されたか**と、**まだ検証されて
-いないこと**を分けて書く。
+The deliverable of docs/handoff.md §5 Phase 6. It separates **what has been verified, and how far**, from
+**what has not been verified yet**.
 
 ---
 
-## 0. 結論
+## 0. Conclusion
 
-| 検証項目 | 状態 |
+| Item | Status |
 |---|---|
-| ランタイムの Wasm 仕様適合（spec testsuite） | **達成** |
-| インタプリタの正しさ（wasmtime との差分） | **達成** |
-| Rust 版と AS 版が同じ host call 列を出す | **達成**（host 上、成功経路と失敗経路） |
-| RP2350 実機で GPIO / SPI / ILI9341 の描画が動く | **達成**（2026-09-26、`lcd-demo-rs`。§6） |
-| ESP32-S3 実機で host call のトレースが一致する | **達成**（2026-09-26、14,352 行完全一致。§7） |
-| ESP32-S3 実機で ILI9341 に絵が出る | **達成**（2026-09-26。§7） |
-| 同一バイナリが 2 ボードで同じトレースを出す | **達成**（2026-09-26、RP2350 と ESP32-S3。§6 / §7） |
-| RP2350 / ESP32-S3 実機で I2C（SHT40）が読める | **達成**（2026-10-05、sensor-display-rs。§11） |
-| 実機が読んだ値で、値の描画（f32 を含む）まで host と一致する | **達成**（2026-10-07、ESP32-S3 / Pico 2 W × Rust / AS の 4 通り。§12） |
-| 4 通り（Rust/AS × 2 ボード）で表示が出る | **達成**（2026-10-07、ESP32-S3 と Pico 2 W。§12） |
+| Runtime Wasm spec compliance (spec testsuite) | **Reached** |
+| Interpreter correctness (differential against wasmtime) | **Reached** |
+| Rust and AS versions produce the same host call sequence | **Reached** (on host, success and failure paths) |
+| GPIO / SPI / ILI9341 drawing works on RP2350 hardware | **Reached** (2026-09-26, `lcd-demo-rs`. §6) |
+| Host call trace matches on ESP32-S3 hardware | **Reached** (2026-09-26, 14,352 lines identical. §7) |
+| ILI9341 shows an image on ESP32-S3 hardware | **Reached** (2026-09-26. §7) |
+| The same binary produces the same trace on 2 boards | **Reached** (2026-09-26, RP2350 and ESP32-S3. §6 / §7) |
+| I2C (SHT40) reads on RP2350 / ESP32-S3 hardware | **Reached** (2026-10-05, sensor-display-rs. §11) |
+| With the values the board read, drawing the values (including f32) matches host | **Reached** (2026-10-07, ESP32-S3 / Pico 2 W x Rust / AS, all 4. §12) |
+| Display works in all 4 combinations (Rust/AS x 2 boards) | **Reached** (2026-10-07, ESP32-S3 and Pico 2 W. §12) |
 
-**当初の目標は達成（2026-10-07 オーナー判断）。** sensor-display が 2 ボードで動き、トレースは
-センサーを読むまで 2 ボードで一致、読んだ後は各ボードが host と全文一致した（§11 / §12）。
+**The original goal is reached (owner judgment, 2026-10-07).** sensor-display runs on both boards; the traces
+match across the 2 boards up to the sensor read, and after the read each board matches host in full (§11 / §12).
 
-**2026-10-07 に評価ボードを変えた**（オーナー決定）。2 ボード目は Pico WH（RP2040）から
-**Pico 2 W（RP2350）**になり、RP2040 は評価対象外。以下の RP2040 の記述は当時の記録として残す。
+**The evaluation board changed on 2026-10-07** (owner decision). The second board went from Pico WH (RP2040) to
+**Pico 2 W (RP2350)**; RP2040 is no longer evaluated. The RP2040 statements below stay as the record of the time.
 
-**Phase 6 の「同一バイナリが 2 ボードで同じトレースを出す」は満たした。**
-**4 通りの表示（Phase 5）も 2026-10-07 に満たした。** I2C は 2026-10-05 に
-2 ボードで SHT40 を読め（§11）、Rust / AS × 2 ボードの 4 通りとも、実機が読んだ
-応答を host に食わせたトレースと全文一致した（§12）。残りは Phase 4 の blink と、
-sensor-display の全文一致を 2 ボードで直接見られない点の扱い → `docs/TODO.md` §1.3。
+**Phase 6's "the same binary produces the same trace on 2 boards" is met.**
+**The 4-way display (Phase 5) was also met on 2026-10-07.** I2C read the SHT40 on 2 boards on
+2026-10-05 (§11), and all 4 combinations of Rust / AS x 2 boards matched in full the trace of the host fed with
+the response the board read (§12). What remains is the Phase 4 blink, and how to treat the fact that
+sensor-display's full identity cannot be seen directly across 2 boards -> docs/TODO.md §1.3.
 
-2026-09-26 に `ports/esp32s3` の SPI2 を実装し、RP2350 と**同じ
-`lcd_demo_rs.wasm`**（SHA-256 `fc470947…`）を実機で走らせた。**host call の
-トレースは 14,352 行完全一致**で、これは RP2350 の実測と同じ数・同じ内容。
-**画面にも絵が出た。** つまり **Phase 6 の「同一バイナリが 2 ボードで同じ
-host call 列を出す」は実機で達成**した（§6 / §7）。
+On 2026-09-26 SPI2 was implemented in `ports/esp32s3`, and the **same `lcd_demo_rs.wasm`** as on RP2350
+(SHA-256 `fc470947...`) ran on hardware. **The host call trace was identical, 14,352 lines**, the same count
+and content as the RP2350 measurement. **An image appeared on the screen too.** So **Phase 6's "the same
+binary produces the same host call sequence on 2 boards" is reached on hardware** (§6 / §7).
 
-途中で ESP32-S3 のポートに実バグが 1 件あった（`GPIO_FUNCn_OUT_SEL` の値）。
-**トレースが完全一致していても検出できない種類の失敗**だったので、§7 に
-経緯ごと残してある。
+Along the way the ESP32-S3 port had 1 real bug (the value of `GPIO_FUNCn_OUT_SEL`). It was **the kind of
+failure that an identical trace cannot detect**, so §7 keeps the whole story.
 
 ---
 
-## 1. ランタイムの仕様適合
+## 1. Runtime spec compliance
 
-WebAssembly spec testsuite（固定 SHA `34f1f40`）のコア 74 ファイルで
-**22507 コマンドが通る**。
+**22507 commands pass** in the 74 core files of the WebAssembly spec testsuite (pinned SHA `34f1f40`).
 
-- 対象: `runtime/tests/spec.rs` の `FILES`
-- 除外: 同ファイルの `EXCLUDED` に 11 分類（SIMD / GC / EH / tail-call /
-  multi-memory / memory64 / linking など）を理由つきで列挙
-- スキップ 548 件: 大半は `(module quote ...)` のテキスト形式モジュール。
-  WAT パーサを持たないので扱えない。バイナリ形式の同等ケースは実行している
+- Subject: `FILES` in `runtime/tests/spec.rs`
+- Excluded: 11 categories (SIMD / GC / EH / tail-call / multi-memory / memory64 / linking and others) listed
+  with reasons in `EXCLUDED` in the same file
+- 548 skipped: mostly `(module quote ...)` text-format modules. There is no WAT parser, so they cannot be
+  handled. The binary-format equivalents are executed
 
-浮動小数の自前実装（`no_std` に無い `sqrt` / `floor` / `nearest` など）は
-40 万件の乱数で std とビット単位一致することを別途確認した（`runtime/tests/float.rs`）。
-**これはホスト（AArch64）での一致**であり、ソフトフロートに落ちる RP2040 や
-f32 のみ FPU を持つ Xtensa での一致は未確認。
+The hand-written floats (`sqrt` / `floor` / `nearest` and others that `no_std` lacks) were separately confirmed
+to match std bit for bit on 400,000 random inputs (`runtime/tests/float.rs`).
+**That is a match on the host (AArch64)**; a match on RP2040, which falls back to soft-float, or on Xtensa,
+which has an f32-only FPU, is not confirmed.
 
-## 2. インタプリタの正しさ（wasmtime との差分）
+## 2. Interpreter correctness (differential against wasmtime)
 
-`apps/` の 4 つのゲスト全部について、**同じ `.wasm` を自作インタプリタと
-wasmtime 45 で走らせ、トレースが完全一致する**ことを確認した
-（`verify/differential/tests/agree.rs`）。
+For all 4 guests in `apps/`, **the same `.wasm` was run on our interpreter and on wasmtime 45, and the traces
+are identical** (`verify/differential/tests/agree.rs`).
 
-肝は **HAL を共有している**こと。`wasmicon-port` の `Hal` は
-`wasmicon_core::Resolver` を実装しているが、その `call` はエンジンに依存しない
-（引数のスロット列とゲストメモリのスライスしか触らない）。同じ `Hal` を wasmtime
-からも駆動しているので、トレースに差が出たらそれは**エンジンの差**、つまり
-自作インタプリタのバグということになる。
+The key is that **the HAL is shared**. `wasmicon-port`'s `Hal` implements `wasmicon_core::Resolver`, but its
+`call` does not depend on the engine (it only touches the argument slots and a slice of guest memory). The same
+`Hal` is driven from wasmtime too, so a difference in the traces would be a **difference between engines**, that
+is, a bug in our interpreter.
 
-これは実機と無関係に効く検証で、固定小数の計算・唯一の f32 演算・
-1200 回を超える host call の順序すべてを含む。
+This verification works independently of hardware and covers the fixed-point arithmetic, the single f32
+operation, and the order of more than 1200 host calls.
 
-## 3. Rust 版と AS 版の一致
+## 3. Rust and AS versions match
 
-`ports/host` で両ゲストを走らせ、**トレース全文が完全一致**する。
+Both guests run in `ports/host` and **the full traces are identical**.
 
-| ゲスト | 行数 | 経路 |
+| Guest | Lines | Path |
 |---|---|---|
-| blink | 22 | 成功 |
-| sensor-display | 4183 | 成功（2026-10-05 の画面デザイン変更前は 1215） |
-| sensor-display | 短 | SPI が `unsupported`（実機ポートの現状を模す） |
-| sensor-display | 短 | センサー無応答 |
+| blink | 22 | success |
+| sensor-display | 4183 | success (1215 before the screen redesign of 2026-10-05) |
+| sensor-display | short | SPI returns `unsupported` (mimics the state of the hardware ports) |
+| sensor-display | short | sensor does not respond |
 
-abi-spec §9 により `time` はトレースに出ないので、**全文一致がそのまま
-docs/handoff.md §2-10 の「`time` を除く全 host call と結果が一致」の定義**になる。
-`spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが
-同一」を意味する。
+By docs/abi-spec.md §9, `time` does not appear in the trace, so **full identity is exactly the definition in
+docs/handoff.md §2-10 (now docs/decisions.md D-10): "every host call and result except `time` matches"**.
+The `spi.write` trace is the CRC-32 of the data, so a match means "the pixels being sent are identical".
 
-失敗経路も検査しているのは、`ports/rp2040` の SPI と 3 ポートの I2C が
-まだ `unsupported` を返すため（SPI は rp2350 / esp32s3 とも実装済み）。
-成功経路だけ揃えても実機に持って行った瞬間に比較が意味を失う。
+The failure paths are checked too because the SPI of `ports/rp2040` and the I2C of all 3 ports still return
+`unsupported` (SPI is implemented on both rp2350 and esp32s3). Aligning only the success path would make the
+comparison meaningless the moment it is taken to hardware.
 
-## 4. まだ検証されていないこと
+## 4. Not yet verified
 
-### 4.1 実機での動作
+### 4.1 Running on hardware
 
-**RP2350（§6）と ESP32-S3（§7）は観測済み。RP2040 はビルドが通るところまでで、
-一度も焼いていない。**
+**RP2350 (§6) and ESP32-S3 (§7) have been observed. RP2040 builds but has never been flashed.**
 
-- RP2040 の GPIO はレジスタ直叩き（SIO / IO_BANK0 / PADS_BANK0）で、
-  型は通ったが一つも観測していない。実機で最初に起きることとして
-  「blink が光らない」を想定すべき
-- `ports/rp2040` の I2C / SPI は `unsupported` を返す（評価対象外。2026-10-07）。
-  `ports/rp2350` / `ports/esp32s3` の I2C は **2026-10-05 に実機で SHT40 を
-  読めた**（§11）。sensor-display-rs は両ボードで表示まで確認した。
-  **AS 版は実機でまだ走らせていない**
-- `ports/esp32s3` の SPI2 と GPIO は実機で動いた（§7）。ただし
-  **host call の一致は「ゲストが正しいバイト列を HAL に渡した」ことしか言わない。**
-  レジスタへの書き込みがパッドまで届いているかはトレースに現れない。
-  §7 のバグはまさにそこを突いていた
-- abi-spec §8 の配線は RP2350 の SPI / LCD 側（`lcd-cs` / `lcd-dc` / `lcd-rst`、
-  SCK=GP18 / MOSI=GP19）は実機で確認できた（§6）。I2C は RP2350
-  （SDA=GP4 / SCL=GP5）と ESP32-S3（SDA=GPIO8 / SCL=GPIO9）で確認した（§11）。
-  **`led` と RP2040 は依然オーナー未確認**
+- RP2040 GPIO is written through registers directly (SIO / IO_BANK0 / PADS_BANK0); it type-checks but nothing
+  has been observed. "blink does not light" should be expected as the first thing to happen on hardware
+- The I2C / SPI of `ports/rp2040` return `unsupported` (not evaluated. 2026-10-07). The I2C of
+  `ports/rp2350` / `ports/esp32s3` **read the SHT40 on hardware on 2026-10-05** (§11). sensor-display-rs was
+  confirmed up to the display on both boards. **The AS version has not run on hardware yet**
+- SPI2 and GPIO of `ports/esp32s3` worked on hardware (§7). But **a host call match only says that "the guest
+  passed the right bytes to the HAL".** Whether the register writes reach the pads does not show in the trace.
+  The bug in §7 hit exactly that
+- Of the wiring in docs/abi-spec.md §8, the RP2350 SPI / LCD side (`lcd-cs` / `lcd-dc` / `lcd-rst`,
+  SCK=GP18 / MOSI=GP19) was confirmed on hardware (§6). I2C was confirmed on RP2350
+  (SDA=GP4 / SCL=GP5) and ESP32-S3 (SDA=GPIO8 / SCL=GPIO9) (§11).
+  **`led` and RP2040 are still unconfirmed by the owner**
 
-### 4.2 ボード間の浮動小数の一致
+### 4.2 Floating-point agreement between boards
 
-sensor-display が唯一 f32 を使う温度バーの計算は、**ホスト 1 プラットフォーム
-での一致しか確認していない**。RP2040 は `compiler_builtins` のソフトフロート、
-ESP32-S3 と RP2350 は f32 のみハード FPU（非正規化数の扱いに設定依存がある）なので、
-ここが Phase 6 の本来の実測対象。
+The temperature bar computation, the only place sensor-display uses f32, **has been confirmed to match on one
+platform only, the host**. RP2040 uses `compiler_builtins` soft-float, and ESP32-S3 and RP2350 have an f32-only
+hardware FPU (denormal handling depends on configuration), so this is the real measurement target of Phase 6.
 
-RP2350 は hard-float ABI（`thumbv8m.main-none-eabihf`）でビルドしている。
-f64 を速くする DCP は使っていない（`rp235x-hal` の `dcp-fast-f64` を入れると
-`__aeabi_dadd` / `__aeabi_dmul` が差し替わるが、結果の一致を確かめていない）。
+RP2350 is built with the hard-float ABI (`thumbv8m.main-none-eabihf`). The DCP that speeds up f64 is not used
+(enabling `dcp-fast-f64` of `rp235x-hal` replaces `__aeabi_dadd` / `__aeabi_dmul`, and the results have not
+been checked for agreement).
 
-### 4.3 記録済み I2C 応答
+### 4.3 Recorded I2C responses
 
-**2026-10-07 に実機の SHT40 から記録したもの（T=25.63°C / RH=74.49%）に
-差し替えた**（§12）。それまでは T=23.44°C / RH=51.08% になる合成データだった。
-（バイト列は SHT31 前提だったころのまま。応答形式と CRC-8 は SHT3x / SHT4x で
-同一で、**湿度の換算式だけが違う**ので表示値が 45.66% → 51.08% に変わった。）
+**Replaced on 2026-10-07 with responses recorded from the SHT40 on hardware (T=25.63°C / RH=74.49%)** (§12).
+Until then it was synthetic data giving T=23.44°C / RH=51.08%.
+(The bytes were still from the SHT31 days. The response format and CRC-8 are the same for SHT3x / SHT4x and
+**only the humidity conversion formula differs**, so the displayed value changed from 45.66% to 51.08%.)
 
 ### 4.4 CI
 
-**2026-09-10 に初めて実行し、4 ジョブすべて green**（`v2` ブランチ、ubuntu-latest）。
+[Stale as of 2026-10-19: CI has six jobs on ubuntu-24.04 and the toolchain is pinned to 1.99.0; see `.github/workflows/ci.yml`.]
 
-初回は `root` ジョブの clippy で落ちた。CI の stable が 1.98.0 で手元が 1.97.1 で、
-1.98 で入った `map_or_identity` に引っかかった。直して 2 回目で green。
+**First run on 2026-09-10, all 4 jobs green** (`v2` branch, ubuntu-latest).
 
-- `root`: fmt / clippy / spec テスト（testsuite を固定 SHA で取得して実行）/
-  生成物 diff ゼロ / check-sigs / diff-traces の self-test
-- `guest`: apps workspace の fmt / clippy / wasm32 ビルド
-- `rp2040`: thumbv6m のビルド
-- `differential`: wasmtime との差分テスト 4 件
+The first attempt failed in the `root` job's clippy. CI's stable was 1.98.0 while the local one was 1.97.1, and
+`map_or_identity`, new in 1.98, fired. Fixed; green on the second run.
 
-2026-09-22 に `rp2350` ジョブ（thumbv8m.main-none-eabihf のビルド）を足した。
-手元では fmt / clippy / build とも通っているが、**CI で回したのはまだ見ていない**。
+- `root`: fmt / clippy / spec tests (fetches the testsuite at the pinned SHA and runs it) /
+  zero diff of generated files / check-sigs / diff-traces self-test
+- `guest`: fmt / clippy / wasm32 build of the apps workspace
+- `rp2040`: thumbv6m build
+- `differential`: the 4 differential tests against wasmtime
 
-**wasmtime との一致は x86_64 Linux でも確認できた**（手元は AArch64 macOS）。
-インタプリタの一致がホストのアーキテクチャに依存しないことの傍証にはなるが、
-RP2040 / Xtensa のソフトフロートを跨いだ一致は依然として未検証（§4.2）。
+On 2026-09-22 the `rp2350` job (thumbv8m.main-none-eabihf build) was added. fmt / clippy / build all pass
+locally, but **it has not yet been seen running in CI**.
 
-`rust-toolchain.toml` は `channel = "stable"` の浮動。clippy の新しい lint や
-rustfmt の出力変化で CI が突然落ちうる（今回まさにそれ）。**固定するかは未決**。
+**Agreement with wasmtime was also confirmed on x86_64 Linux** (local is AArch64 macOS). This is supporting
+evidence that the interpreter's agreement does not depend on the host architecture, but agreement across the
+RP2040 / Xtensa soft-float is still unverified (§4.2).
+
+`rust-toolchain.toml` floats on `channel = "stable"`. A new clippy lint or a change in rustfmt output can make
+CI fail suddenly (which is exactly what happened here). **Whether to pin it is open.**
 
 ---
 
-## 5. 実機で検証するときの手順
+## 5. Procedure for verifying on hardware
 
-1. `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の I2C / SPI を実装する
-   （**SPI は rp2350 / esp32s3 とも済み。残りは I2C と rp2040**）
-2. abi-spec §8 の配線を確認し、役割名の表を実機に合わせる
-3. 焼く
-   - RP2040: ELF を `picotool load`、または `elf2uf2-rs` で UF2 にして BOOTSEL
-   - RP2350: ELF を `picotool load -u -v -x -t elf`（RP2350 は picotool 2.0 以降が要る。
-     `elf2uf2-rs` は RP2040 用で使えない）
-   - ESP32-S3: `sh ports/esp32s3/build.sh run --release`（espflash）
-4. シリアル（いずれも 115200 8N1）を捕まえてファイルに落とす
+1. Implement I2C / SPI in `ports/rp2040` / `ports/rp2350` / `ports/esp32s3`
+   (**SPI is done on both rp2350 and esp32s3. I2C and rp2040 remain**)
+2. Check the wiring in docs/abi-spec.md §8 and align the role-name table with the hardware
+3. Flash
+   - RP2040: `picotool load` the ELF, or make a UF2 with `elf2uf2-rs` and use BOOTSEL
+   - RP2350: `picotool load -u -v -x -t elf` with the ELF (RP2350 needs picotool 2.0 or later.
+     `elf2uf2-rs` is for RP2040 and does not work)
+   - ESP32-S3: `sh ports/esp32s3/build.sh run --release` (espflash)
+4. Capture serial (115200 8N1 in all cases) to a file
    - RP2040 / RP2350: UART0 (GP0=TX, GP1=RX)
-   - ESP32-S3: UART0 (GPIO43/44、DevKitC-1 の `USB-UART` ポートが USB-シリアル
-     ブリッジ経由で直結。`espflash flash --monitor` の出力をそのまま落とせる)。
-     **ブリッジの型番は個体差がある**（公式の回路図は CP2102N だが、手元の
-     ボードは CH343 で macOS では `/dev/cu.usbmodem*` に見える。§7 の条件表）。
-     デバイス名を決め打ちせず `ls /dev/cu.usb*` で確かめること
-5. 突き合わせる: `sh verify/diff-traces.sh pico.log esp32s3.log`
-   - バナーとゲストの `[wasm]` 行は自動で落とす
-   - `time` はトレースに出ず、役割名で引いた GPIO 番号は `role:led` に
-     正規化済みなので、追加の加工は要らない
-6. 実機の SHT4x 応答を記録して `verify/sht4x-replay.txt` を差し替える
+   - ESP32-S3: UART0 (GPIO43/44; the DevKitC-1's `USB-UART` port is wired straight through the USB-serial
+     bridge. The output of `espflash flash --monitor` can be captured as-is).
+     **The bridge chip varies between units** (the official schematic has a CP2102N, but the board on hand has
+     a CH343 and shows up as `/dev/cu.usbmodem*` on macOS. See the conditions table in §7).
+     Do not hard-code the device name; check with `ls /dev/cu.usb*`
+5. Cross-check: `sh verify/diff-traces.sh pico.log esp32s3.log`
+   - the banner and the guest's `[wasm]` lines are dropped automatically
+   - `time` does not appear in the trace, and GPIO numbers looked up by role are already normalized to
+     `role:led`, so no further processing is needed
+6. Record the SHT4x responses from hardware and replace `verify/sht4x-replay.txt`
 
-### 5.1 LCD だけで 2 ボードの一致を測る（I2C を待たない経路）
+### 5.1 Measuring 2-board agreement with the LCD alone (the path that does not wait for I2C)
 
-`lcd-demo-rs` は SPI と GPIO だけを使う。SPI は rp2350 と esp32s3 の両方で
-実装済みなので、**I2C を待たずに Phase 6 の「同一バイナリで同一トレース」を
-LCD 側だけ先に測れる**。ゲストを 1 回だけ作り、2 ボードに同じものを焼く。
+`lcd-demo-rs` uses only SPI and GPIO. SPI is implemented on both rp2350 and esp32s3, so **Phase 6's "same
+binary, same trace" can be measured on the LCD side first, without waiting for I2C**. Build the guest once and
+flash the same one to both boards.
 
-**2026-10-07 に内蔵アプリを外したので、下の `--features guest-lcd-demo` は
-もう無い**（当時の記録として残す）。今は同じ `.wasm` をスロットに `deploy` する
-（`apps/lcd-demo-rs/README.md`）。**バイト列が同一なので host call 列も同一**で、
-§9 / §10 でスロット経由でも 14,352 行一致することを確かめてある。
+**The built-in apps were removed on 2026-10-07, so `--features guest-lcd-demo` below no longer exists** (kept
+as the record of the time). Now the same `.wasm` is `deploy`ed to the slot (`apps/lcd-demo-rs/README.md`).
+**The bytes are identical, so the host call sequence is identical**; §9 / §10 confirm the same 14,352-line
+match through the slot.
 
 ```bash
 (cd apps && cargo build --release)
 shasum -a 256 apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
-# 期待値（この記録を取った時点。Rust 1.97.1）:
+# expected (when this record was taken; Rust 1.97.1):
 # fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453
-# 2026-10-08 に toolchain を 1.99.0 に固定してからは 84d6de0f…（同じ 4,088 B）。
-# コード生成が変わっただけで、host のトレースは 1.97.1 版と 14,352 行完全一致する
+# since the toolchain was pinned to 1.99.0 on 2026-10-08 it is 84d6de0f... (same 4,088 B).
+# only the code generation changed; the host trace is identical to the 1.97.1 version, 14,352 lines
 
 (cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
 picotool load -u -v -x -t elf \
   ports/rp2350/target/thumbv8m.main-none-eabihf/release/wasmicon-rp2350
-# → pico.log を取る
+# -> capture pico.log
 
 sh ports/esp32s3/build.sh run --release --features guest-lcd-demo | tee esp32s3.log
-# monitor が色や接頭辞を付けて diff-traces.sh が 1 行も取れない場合の取り方は
-# apps/lcd-demo-rs/README.md「トレースをファイルに落とす」
+# if the monitor adds colors or prefixes and diff-traces.sh cannot get even 1 line, see
+# apps/lcd-demo-rs/README.md (capturing a trace to a file)
 
 sh verify/diff-traces.sh pico.log esp32s3.log
 ```
 
-`lcd-demo-rs` は f32 を使わないので、**これが一致しても §4.2 の浮動小数は
-1 ミリも進まない**。SPI のバイト列（`spi.write` の CRC-32）と GPIO の順序が
-2 ボードで同じであることだけが言える。
+`lcd-demo-rs` does not use f32, so **a match here moves the floating point of §4.2 forward by nothing**. It
+only says that the SPI bytes (the CRC-32 of `spi.write`) and the GPIO order are the same on the 2 boards.
 
 ---
 
-## 6. RP2350 実機の実測（2026-09-26）
+> **Historical record.** Kept as written at the time and translated from Japanese; section numbers are stable. Current rules: `docs/decisions.md`. Current status: `README.md`, `docs/TODO.md`.
 
-`ports/rp2350` を初めて実機で動かした記録。**Phase 6 の完了条件そのものではない**
-（あれは 2 ボードで定義されている。handoff §5）。Phase 5 の「表示が出る」のうち、
-ディスプレイ側だけを SHT31 を待たずに切り分けたもの。
-（この実測の時点では決定 9 は SHT31/SHT30 だった。センサーを SHT4x に
-変えたのは 2026-09-29 で、**この記録より後**。記録の本文は当時のまま残す。）
+## 6. RP2350 hardware measurement (2026-09-26)
 
-### 条件
+The record of the first run of `ports/rp2350` on hardware. **Not the Phase 6 completion criterion itself**
+(that one is defined on 2 boards; docs/handoff.md §5). Of Phase 5's "the display works", only the display side,
+isolated without waiting for the SHT31.
+(At the time of this measurement decision 9 was SHT31/SHT30. The sensor was changed to SHT4x on 2026-09-29,
+**after this record**. The body of the record is kept as it was.)
+
+### Conditions
 
 | | |
 |---|---|
-| ボード | Raspberry Pi Pico 2 W |
-| ゲスト | `apps/lcd-demo-rs`（Rust）。SPI と GPIO のみ、I2C を使わない |
-| 配線 | abi-spec §8 の既定（CS=GP17 / DC=GP20 / RST=GP21 / SCK=GP18 / MOSI=GP19、MISO 未接続） |
-| SPI | 要求 16 MHz → 実際 15 MHz（`clk_peri` 150 MHz、切り下げ規則は `spi_divisors`） |
-| シリアル | UART0 (GP0/GP1) 115200 8N1、CP2102N 経由 |
-| 書き込み | `picotool` 2.3.1、`picotool load -u -v -t elf` → `picotool reboot -f` |
-| ビルド | `cargo build --release --features guest-lcd-demo`（`trace` 有効） |
+| Board | Raspberry Pi Pico 2 W |
+| Guest | `apps/lcd-demo-rs` (Rust). SPI and GPIO only; no I2C |
+| Wiring | the defaults of docs/abi-spec.md §8 (CS=GP17 / DC=GP20 / RST=GP21 / SCK=GP18 / MOSI=GP19, MISO not connected) |
+| SPI | 16 MHz requested -> 15 MHz actual (`clk_peri` 150 MHz; the round-down rule is `spi_divisors`) |
+| Serial | UART0 (GP0/GP1) 115200 8N1, through a CP2102N |
+| Flashing | `picotool` 2.3.1, `picotool load -u -v -t elf` -> `picotool reboot -f` |
+| Build | `cargo build --release --features guest-lcd-demo` (`trace` enabled) |
 
-### 再現手順
+### Reproduction
 
-比較相手の `host.log` は host ポートで作る（`pico.log` は UART をそのまま落としたもの。
-バナーとログ行が混ざっていてよい）。
+The `host.log` to compare against is made with the host port (`pico.log` is the UART captured as-is; the
+banner and log lines may be mixed in).
 
 ```bash
 (cd apps && cargo build --release)
@@ -258,99 +250,98 @@ cargo run -q -p wasmicon-host -- --trace \
 sh verify/diff-traces.sh pico.log host.log
 ```
 
-host 側だけなら CI が毎回見ている（`cargo test -p wasmicon-host --test apps`
-の `lcd_demo_rs_runs_on_host`）。実機側のログは手元にしかない。
+The host side alone is checked by CI on every run (`lcd_demo_rs_runs_on_host` in
+`cargo test -p wasmicon-host --test apps`). The hardware log exists only locally.
 
-### 結果
+### Results
 
-- **host call のトレースが host ポートと完全一致**。`sh verify/diff-traces.sh pico.log host.log`
-  → `一致: 14352 行`。`spi.write` の CRC-32 **3,272 件を含めて全て同じ**なので、
-  ILI9341 に出たバイト列は host モデルの予測とビット単位で一致している
-- 失敗ステータスは 1 件も無い（`pin.open` × 3、`spi.bus.open`、以降の
-  `pin.write` / `spi.write` すべて `< 0`）
-- ハンドルは `spi` → `rst` → `dc` → `cs` の順で解放された（`apps/README.md` §4）
-- **画面に絵が出た。** カラーバーの左端が赤（MADCTL の BGR ビットが正しい）、
-  文字が読める（`draw_text` の経路と DC の配線が正しい）
+- **The host call trace is identical to the host port.** `sh verify/diff-traces.sh pico.log host.log`
+  -> `match: 14352 lines`. **All 3,272 `spi.write` CRC-32 values are the same**, so the bytes
+  that reached the ILI9341 match the host model's prediction bit for bit
+- Not a single failure status (`pin.open` x 3, `spi.bus.open`, and every following
+  `pin.write` / `spi.write` are `< 0`)
+- Handles were released in the order `spi` -> `rst` -> `dc` -> `cs` (apps/README.md §4)
+- **An image appeared on the screen.** The left end of the color bars is red (the BGR bit of MADCTL is
+  right), and the text is readable (the `draw_text` path and the DC wiring are right)
 
-これで、懸念していた RP2350 固有の 2 点が実機で潰れた:
+This settled on hardware the 2 RP2350-specific concerns:
 
-- **PADS_BANK0 の `ISO`**（リセット値 1）。落とし損ねていれば `pin.write` は
-  成功を返すのに GPIO が無反応になっていた
-- **SPI0 の RESETS 解除**。忘れていれば `spi.bus.open` 以降のレジスタ書き込みが
-  素通りしていた
+- **`ISO` in PADS_BANK0** (reset value 1). Had it not been cleared, `pin.write` would have returned success
+  while the GPIO stayed unresponsive
+- **Releasing SPI0 from RESETS**. Had it been forgotten, the register writes from `spi.bus.open` on would
+  have gone nowhere
 
-### この実測が言っていないこと
+### What this measurement does not say
 
-- **浮動小数の一致（§4.2）は 1 ミリも進んでいない。** `lcd-demo-rs` は f32 を
-  使わない。あれは sensor-display の温度バーの話で、I2C が要る
-- **グレーのランプの見え方は未確認。** RGB565 のビット位置は「左端が赤」で
-  R と B の入れ替わりが無いことしか見ていない
-- **2 ボード間の一致（Phase 6）は未達。** 突き合わせた相手は host の mock HAL で、
-  2 枚目の実機ではない
-- **`led` の役割名（外付け LED）は未検証。** `lcd-demo-rs` は LED を触らない
-- **ESP32-S3 については何も言っていない**（§7 で別に測った）
+- **Floating-point agreement (§4.2) has not advanced at all.** `lcd-demo-rs` does not use f32.
+  That is about sensor-display's temperature bar, which needs I2C
+- **How the gray ramp looks is unconfirmed.** Of the RGB565 bit positions, only "the left end is red", that
+  is, R and B are not swapped, has been seen
+- **Agreement between the 2 boards (Phase 6) is not reached.** The comparison partner was the host's mock
+  HAL, not a second board
+- **The `led` role (external LED) is unverified.** `lcd-demo-rs` does not touch the LED
+- **Nothing is said about ESP32-S3** (measured separately in §7)
 
 ---
 
-## 7. ESP32-S3 実機の実測（2026-09-26）
+## 7. ESP32-S3 hardware measurement (2026-09-26)
 
-`ports/esp32s3` を初めて実機で動かした記録。**トレースの一致と画面が出ることは
-別の話**なので分けて書く。結論はどちらも達成だが、**トレースは一発で完全一致した
-のに画面は真白**で、そこから 3 つの原因（うち 1 つは実バグ）を潰した。
-その経緯も残してある — 同じ形の失敗は他のポートでも起きる。
+The record of the first run of `ports/esp32s3` on hardware. **A matching trace and an image on the screen are
+two different things**, so they are written separately. Both were reached in the end, but **the trace was
+identical on the first try while the screen stayed pure white**, and from there 3 causes (1 of them a real bug)
+were eliminated. That story is kept too: the same shape of failure will happen in other ports.
 
-### 条件
+### Conditions
 
 | | |
 |---|---|
-| ボード | ESP32-S3-WROOM-1 搭載ボード（`USB-UART` / `USB-OTG` の 2 ポート）。chip rev v0.2、flash 8 MB、PSRAM なし |
-| ゲスト | `apps/lcd-demo-rs`。**RP2350 に焼いたものと同一ファイル**（SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453`） |
-| 配線 | abi-spec §8 の既定（CS=GPIO10 / DC=GPIO14 / RST=GPIO15 / SCK=GPIO12 / MOSI=GPIO11、MISO 未接続） |
-| SPI | 要求 16 MHz。APB 80 MHz なので 80/5 でちょうど 16 MHz |
-| シリアル | UART0 (GPIO43/44) 115200 8N1 |
-| 書き込み | `espflash` 4.5。`USB-OTG` 側（USB-Serial-JTAG）と `USB-UART` 側の CH343 のどちらからでも通る |
-| ビルド | `sh ports/esp32s3/build.sh build --release --features guest-lcd-demo`（`trace` 有効） |
+| Board | a board carrying an ESP32-S3-WROOM-1 (2 ports, `USB-UART` / `USB-OTG`). chip rev v0.2, flash 8 MB, no PSRAM |
+| Guest | `apps/lcd-demo-rs`. **The identical file flashed to the RP2350** (SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453`) |
+| Wiring | the defaults of docs/abi-spec.md §8 (CS=GPIO10 / DC=GPIO14 / RST=GPIO15 / SCK=GPIO12 / MOSI=GPIO11, MISO not connected) |
+| SPI | 16 MHz requested. APB is 80 MHz, so 80/5 gives exactly 16 MHz |
+| Serial | UART0 (GPIO43/44) 115200 8N1 |
+| Flashing | `espflash` 4.5. Works from either the `USB-OTG` side (USB-Serial-JTAG) or the CH343 on the `USB-UART` side |
+| Build | `sh ports/esp32s3/build.sh build --release --features guest-lcd-demo` (`trace` enabled) |
 
-### 達成: トレースが host と完全一致
+### Reached: the trace is identical to host
 
 ```
 sh verify/diff-traces.sh esp32s3.log host.log
-→ 一致: 14352 行
+-> match: 14352 lines
 ```
 
-**RP2350 の実測（§6）と同じ 14,352 行**で、`spi.write` の CRC-32 3,272 件を含めて
-全て同じ。失敗ステータスは 1 件も無く、`[wasm] lcd-demo done` まで到達した。
+**The same 14,352 lines as the RP2350 measurement (§6)**, all the same including the 3,272 `spi.write` CRC-32
+values. Not a single failure status, and it reached `[wasm] lcd-demo done`.
 
-これで **「同一バイナリが 2 ボードで同じ host call 列を出す」は実機で確認できた**
-（両ボードがそれぞれ同じ host リファレンスと完全一致したので、2 ボード間でも一致）。
+With this, **"the same binary produces the same host call sequence on 2 boards" is confirmed on hardware**
+(each board is identical to the same host reference, so the 2 boards agree with each other).
 
-`spi.bus.open(0, 16000000, 0)` も `pin.open` 3 件もすべて成功している。
-つまり **GPIO / SPI2 のレジスタ操作は成功を返している**。
+`spi.bus.open(0, 16000000, 0)` and all 3 `pin.open` calls succeed too.
+So **the GPIO / SPI2 register operations return success**.
 
-### 達成: 画面に絵が出た
+### Reached: an image on the screen
 
-`lcd-demo-rs` の描画がすべて出た。**カラーバーの左端が赤**（MADCTL の BGR ビットが
-正しい）、**文字が読める**（`draw_text` の経路と DC の配線が正しい）。
-`RESET` に 10 kΩ のプルアップを入れると**描き終わったあとも絵が残る**
-（原因 3）。ここは RP2350 の §6 と同じ粒度で観測した。
+Everything `lcd-demo-rs` draws appeared. **The left end of the color bars is red** (the BGR bit of MADCTL is
+right), **the text is readable** (the `draw_text` path and the DC wiring are right).
+With a 10 kΩ pull-up on `RESET`, **the image stays after drawing finishes**
+(cause 3). Observed at the same granularity as the RP2350 in §6.
 
-ただしここに至るまでに 3 つ潰している（次節以降）。
-**最初の状態は「トレースは完全一致するのに画面は真白」**だった。
-全画面を黒で塗るのが最初の描画なので、SPI が少しでもパネルに届いていれば
-まず黒くなる。真白は「バックライトは点いているが有効なデータが 1 バイトも
-届いていない」形。
+But 3 things had to be eliminated to get there (next sections).
+**The initial state was "the trace is identical but the screen is pure white"**.
+The first drawing fills the whole screen black, so if even a little SPI reaches the panel it goes black first.
+An all-white screen means the backlight is on but not a single byte of valid data has arrived.
 
-**トレースの一致はここを保証しない。** 一致が言うのは「ゲストが正しいバイト列を
-HAL に渡した」ことだけで、レジスタへの書き込みが**パッドまで届いているか**は
-トレースに現れない（成功を返しつつ無反応、という形になりうる。これは
-`docs/TODO.md` §1.4 が ESP32-S3 の最初の懸念として挙げていたもの）。
+**A matching trace does not guarantee this.** A match only says "the guest passed the right bytes to the
+HAL"; whether the register writes **reach the pads** does not show in the trace (it can take the form of
+returning success while nothing happens. This is what docs/TODO.md §1.4 listed as the first ESP32-S3
+concern).
 
-試したこと:
+Tried:
 
-- **SPI クロックを 16 MHz → 1 MHz に落とした**。トレースは同じく 14,352 行一致、
-  画面は変わらず真白。**信号品質は原因ではない**
-- **ポート層を直接叩く切り分けを入れた**（`ports/esp32s3/src/probe.rs`、
-  `--features hw-probe`）。ゲストもインタプリタも通さず `Board` を呼ぶ。結果:
+- **Lowered the SPI clock from 16 MHz to 1 MHz**. The trace still matched at 14,352 lines; the screen stayed
+  pure white. **Signal quality is not the cause**
+- **Added an isolation path that drives the port layer directly** (`ports/esp32s3/src/probe.rs`,
+  `--features hw-probe`). Calls `Board` without the guest or the interpreter. Result:
 
   ```
   probe: configure cs: ok / dc: ok / rst: ok
@@ -359,340 +350,324 @@ HAL に渡した」ことだけで、レジスタへの書き込みが**パッ�
   probe: 0xD3 (want 00 00 93 41) -> 00 00 00 00 00
   ```
 
-  ID 読み出しは全部ゼロだったが、**`MISO` を繋いでいないので判定材料にならない**。
+  The ID read was all zeros, but **MISO is not connected, so it is no evidence either way**.
 
-### 原因 1（ソフト）: `GPIO_FUNCn_OUT_SEL` の値が S3 では違う
+### Cause 1 (software): the value of `GPIO_FUNCn_OUT_SEL` differs on the S3
 
-USB シリアル変換の `RXD` を `GPIO43` から `GPIO14` に移し、`probe` が
-GPIO14 を 1 Hz で振っている間に受信バイト数を数えた（UART 受信機から見ると
-500 ms の Low は BREAK に見えるので、振れていれば Low 期間ごとに `00` が 1 つ出る）。
+The USB-serial adapter's `RXD` was moved from `GPIO43` to `GPIO14`, and the received bytes were counted while
+`probe` toggled GPIO14 at 1 Hz (to a UART receiver a 500 ms low looks like a BREAK, so if it toggles, one `00`
+arrives per low period).
 
-| | 20 秒間の受信バイト数 |
+| | Bytes received in 20 s |
 |---|---|
-| `out_sel = 128`（修正前） | **1** |
-| `out_sel = 256`（修正後） | **28** |
+| `out_sel = 128` (before the fix) | **1** |
+| `out_sel = 256` (after the fix) | **28** |
 
-同じアダプタで `GPIO43` からは 442,982 バイト取れていたので、アダプタ側は生きている。
-つまり修正前は**ピンがパッドで動いていなかった**。
+The same adapter got 442,982 bytes from `GPIO43`, so the adapter is alive.
+So before the fix **the pin was not moving at the pad**.
 
-`ports/esp32s3/src/board.rs` の `SIG_GPIO_OUT`（`GPIO_FUNCn_OUT_SEL` に入れる
-「GPIO 出力」信号の番号）を **128 → 256** に直した。**この番号はチップごとに
-違う**（`esp-metadata-generated` の `OutputSignal::GPIO`）: ESP32 / S2 / S3 は
-256、C3 / C6 など RISC-V 勢は信号マップが 128 本ぶん短いので 128。S3 で 128 を
-書くと `I2S0O_SD1` の出力がパッドに繋がるので、`GPIO_OUT` / `GPIO_ENABLE` を
-読み返すと正しく見えるのにピンは動かない。
+`SIG_GPIO_OUT` in `ports/esp32s3/src/board.rs` (the number of the "GPIO output" signal written to
+`GPIO_FUNCn_OUT_SEL`) was changed **from 128 to 256**. **This number differs per chip**
+(`OutputSignal::GPIO` in `esp-metadata-generated`): ESP32 / S2 / S3 use 256; the RISC-V chips such as C3 / C6
+have a signal map 128 entries shorter, so 128. Writing 128 on the S3 connects the `I2S0O_SD1` output to the
+pad, so reading back `GPIO_OUT` / `GPIO_ENABLE` looks right while the pin does not move.
 
-**この失敗の形が厄介な点:** `pin.open` / `pin.write` はすべて成功を返し、
-host call のトレースは host と完全一致する。`gpio_write` は `GPIO_ENABLE` を
-読んで出力かどうかを検査しているが、それも通る。**トレースだけを見ていると
-「動いている」と読めてしまう。** `docs/TODO.md` §1.4 が ESP32-S3 の最初の
-懸念として「out_sel」を挙げていたのは当たっていた。
+**What makes this failure nasty:** `pin.open` / `pin.write` all return success, and the host call trace is
+identical to host. `gpio_write` reads `GPIO_ENABLE` to check that the pin is an output, and that passes too.
+**Looking only at the trace, it reads as "working".** docs/TODO.md §1.4 had listed "out_sel" as the first
+ESP32-S3 concern, and that was right.
 
-SPI2 は `esp-hal` のドライバが信号番号を持っているので影響を受けていない。
-壊れていたのは `lcd-cs` / `lcd-dc` / `lcd-rst` の 3 本で、CS が Low に
-ならなければパネルには 1 バイトも入らない。真白はその形。
+SPI2 was not affected because the `esp-hal` driver carries its own signal numbers. What was broken were the 3
+lines `lcd-cs` / `lcd-dc` / `lcd-rst`, and if CS never goes low not 1 byte enters the panel. Pure white is
+that shape.
 
-### 原因 2（配線）: 接触不良
+### Cause 2 (wiring): bad contact
 
-`out_sel` を直しても画面は真白のままだった。SCK (GPIO12) には 15,770 バイトぶんの
-クロックが出ていて、CS / DC / RST も振れていることを実測できていたので、
-ソフト側は出し切った状態だった。**その後ブレッドボードの配線を挿し直したら
-絵が出た。** 途中で読み取り用アダプタの線が 1 本外れていたことも分かっており、
-他の線も接触が怪しかったと見られる。
+After fixing `out_sel` the screen was still pure white. SCK (GPIO12) was putting out 15,770 bytes' worth of
+clock, and CS / DC / RST were measured toggling, so the software side had done all it could. **After
+reseating the breadboard wires, the image appeared.** One wire of the readback adapter was also found to have
+come loose along the way, so the other wires were likely marginal too.
 
-ここから得た教訓: **「レジスタは正しい」と「信号が相手に届いている」は別**で、
-後者はトレースからは一切見えない。ブレッドボードで組む場合は最初に配線を
-疑う余地を残しておくこと。
+Lesson: **"the registers are right" and "the signal reaches the other side" are different things**, and the
+latter is invisible in the trace. On a breadboard, leave room to suspect the wiring first.
 
-### 原因 3（仕様の帰結）: 描き終わると `RESET` が浮いて絵が消える
+### Cause 3 (consequence of the spec): `RESET` floats after drawing and the image disappears
 
-絵が出るようになったあと、**デモが描き終わると画面が白に戻る**という症状が残った。
-これはバグではなく `docs/abi-spec.md` §5.2 の帰結で、**ポート固有でもない**。
+After the image started appearing, one symptom remained: **when the demo finishes drawing, the screen goes
+back to white**. This is not a bug but a consequence of docs/abi-spec.md §5.2, and **not port-specific
+either**.
 
-トレースの最後 4 件がそのまま答えになっている:
+The last 4 entries of the trace are the answer:
 
 ```
 [wasm] lcd-demo done
-> spi@0.1.0/[resource-drop]bus(1)     ← SCK / MOSI / MISO が入力に戻る
-> gpio@0.1.0/[resource-drop]pin(3)    ← lcd-rst が入力・プル無しに戻る = RESET が浮く
-> gpio@0.1.0/[resource-drop]pin(2)    ← lcd-dc
-> gpio@0.1.0/[resource-drop]pin(1)    ← lcd-cs
+> spi@0.1.0/[resource-drop]bus(1)     <- SCK / MOSI / MISO return to input
+> gpio@0.1.0/[resource-drop]pin(3)    <- lcd-rst returns to input, no pull = RESET floats
+> gpio@0.1.0/[resource-drop]pin(2)    <- lcd-dc
+> gpio@0.1.0/[resource-drop]pin(1)    <- lcd-cs
 ```
 
-`pin.drop` は §5.2 どおりピンを入力・プル無しに戻す。手元の ILI9341 モジュールは
-`RESET` にプルアップを持っていないので、線が浮いてパネルがリセットし、画面が
-白に戻る。
+`pin.drop` returns the pin to input with no pull, as §5.2 says. The ILI9341 module on hand has no pull-up on
+`RESET`, so the line floats, the panel resets, and the screen goes back to white.
 
-**確かめ方（2 段階、どちらも実測）:**
+**How it was confirmed (2 steps, both measured):**
 
-1. `gpio_release` で入力に戻すのをやめた切り分けビルドを焼くと、**絵はそのまま
-   残った**。チップの再起動ではないことも別に確認した（無干渉で 150 秒観測して、
-   起動は 1 回・トレース 14,352 行・`lcd-demo done` のあと出力なし）
-2. **`RESET` ↔ `3V3` に 10 kΩ のプルアップを入れると、出荷する構成
-   （切り分け feature なし）のままで絵が残った。** これが対処の実測。
-   `gpio_release` は §5.2 どおり入力に戻すので、`RESET` を High に保っているのは
-   プルアップだけ
+1. Flashing an isolation build that stops `gpio_release` from returning the pin to input, **the image
+   stayed**. That it is not a chip reboot was confirmed separately (observed for 150 s untouched: 1 boot, a
+   14,352-line trace, no output after `lcd-demo done`)
+2. **With a 10 kΩ pull-up from `RESET` to `3V3`, the image stayed in the shipping configuration (without the
+   isolation feature).** That is the measured fix.
+   `gpio_release` returns the pin to input as §5.2 says, so only the pull-up holds `RESET` high
 
-**対処は外部回路側しかなく、実機で効くことを確認した。** `RESET` に 10 kΩ 程度の
-プルアップを 3V3 から入れる（既存の `GPIO15` → `RESET` は外さない。ESP32 が
-`RESET` を Low に駆動するときプルアップ経由で 330 µA 流れるだけで、初期化の
-リセットパルスは問題なく出る）。ゲスト側でハンドルを解放せずに終わっても
-回避できない — §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを
-drop する」とも定めているので、解放は必ず起きる。理由:
+**The only fix is in the external circuit, and it was confirmed to work on hardware.** Add a pull-up of about
+10 kΩ from 3V3 to `RESET` (keep the existing `GPIO15` -> `RESET`. When the ESP32 drives `RESET` low, only
+330 µA flows through the pull-up, and the reset pulse of the init sequence comes out fine). Ending without
+releasing the handles on the guest side does not avoid it either: §5.2 also says "when `run` returns, the
+host drops every remaining handle", so the release always happens. Reasons:
 
-- コード変更ゼロ。`.wasm` は `fc470947…` のままで、記録したトレースが生き続ける
-- **リセット入力を浮かせないのは回路としてまっとう。** §5.2 が「入力・プル無しに
-  戻す」と定めている以上、**線のアイドルレベルは外部回路が決めるべき**もので、
-  ホストに保証させる話ではない
-- ILI9341 モジュールの多くは `RESET` にプルアップを持っている。手元の個体は
-  持っていなかった、という整理になる
+- Zero code change. The `.wasm` stays `fc470947...` and the recorded trace stays valid
+- **Not letting a reset input float is proper circuit design.** Since §5.2 says "return to input, no pull",
+  **the idle level of the line is for the external circuit to decide**, not something the host guarantees
+- Most ILI9341 modules have a pull-up on `RESET`. The unit on hand just did not
 
-#### Pico 2 W では起きなかった（2026-09-26 に実測）
+#### It did not happen on the Pico 2 W (measured 2026-09-26)
 
-**この症状が出るかどうかはボードで違う。** 同じモジュールを Pico 2 W に繋ぎ替えて
-プルアップ無しで走らせたところ、**描き終わっても絵は残った**。当初「`gpio_release`
-の意味は両ポートで同じなので Pico 2 W でも起きるはず」と書いていたが、**実測では
-起きなかった**ので訂正する。
+**Whether this symptom appears differs per board.** Moving the same module to the Pico 2 W and running
+without the pull-up, **the image stayed after drawing finished**. This originally said "`gpio_release` means
+the same on both ports, so it should happen on the Pico 2 W too", but **in measurement it did not**, so this
+is a correction.
 
-| ボード | プルアップ無し | プルアップ有り |
+| Board | Without pull-up | With pull-up |
 |---|---|---|
-| ESP32-S3 | **白に戻る** | 残る |
-| Raspberry Pi Pico 2 W | **残る** | （試していない） |
+| ESP32-S3 | **goes back to white** | stays |
+| Raspberry Pi Pico 2 W | **stays** | (not tried) |
 
-分けて考えるべきものが 2 つある:
+Two things must be kept apart:
 
-- **仕組みは両ポートで同一。** §5.2 によりピンは高インピーダンスに戻るので、
-  **線のアイドルレベルをソフトウェアは決めていない**。これはポート固有の話ではない
-- **電気的な結果はボードで違う。** 浮いた線がパネルのしきい値を割るかは、パッドの
-  リーク量・容量とモジュール側の入力仕様で決まる。ESP32-S3 では割り、Pico 2 W では
-  割らなかった。**ポートのコードの差ではない**
+- **The mechanism is the same on both ports.** By §5.2 the pin returns to high impedance, so **software does
+  not decide the idle level of the line**. This is not port-specific
+- **The electrical outcome differs per board.** Whether a floating line crosses the panel's threshold is
+  decided by the pad's leakage and capacitance and the module's input spec. On the ESP32-S3 it crossed; on the
+  Pico 2 W it did not. **Not a difference in port code**
 
-したがって **`RESET` のプルアップは「バグの回避」ではなく「浮いた線に依存しない」
-ための対策**として要る。Pico 2 W で動いているのは保証ではなく、たまたま割らなかった
-という観測にすぎない（温度・個体・配線長で変わりうる）。
+So **the `RESET` pull-up is needed not as a "bug workaround" but to "not depend on a floating line"**. That it
+works on the Pico 2 W is not a guarantee, only the observation that it happened not to cross (it can change
+with temperature, unit and wire length).
 
-`docs/TODO.md` §2 に「abi-spec §8 の表に `lcd-rst` の外部プルアップを明記するか」を
-オーナー確認事項として挙げてある。
+docs/TODO.md §2 lists "whether to state the external pull-up on `lcd-rst` in the docs/abi-spec.md §8 table"
+as an item for the owner.
 
-### 切り分けに使った道具
+### Tools used for isolation
 
-`ports/esp32s3/src/probe.rs`（`--features hw-probe`）。ゲストもインタプリタも
-通さず `Board` を直接叩き、次を行う:
+`ports/esp32s3/src/probe.rs` (`--features hw-probe`). Drives `Board` directly without the guest or the
+interpreter and does the following:
 
-- ILI9341 の ID 読み出し（`0xD3` / `0x04`）
-- **全画面を 1 色で塗る**（ポート層だけで SPI が生きているかを目で見る）
-- **DC を 1 Hz で振る**（パッドまで届いているかを外から当てて見る）
+- reads the ILI9341 ID (`0xD3` / `0x04`)
+- **fills the whole screen with 1 color** (see by eye whether SPI is alive from the port layer alone)
+- **toggles DC at 1 Hz** (probe from outside whether it reaches the pad)
 
-**トレースが一致しているのに絵が出ない**という状況では、ここが
-「レジスタがパッドまで届いているか」を見られる唯一の場所だった。
-`rp2040` のブリングアップでも同じものが要るはず。
+In the situation "the trace matches but no image appears", this was the only place that could show "whether
+the registers reach the pads". The `rp2040` bring-up will need the same thing.
 
-なお **MOSI をソフトだけで読み返す検査は成立しない。** MISO を MOSI と同じ
-ピンに向ければ読み返せるはずだが、ESP32-S3 では GPIO11 が FSPID そのもので
-`with_mosi` が IO_MUX の直結機能を選ぶため、`with_miso` を同じピンに向けると
-`mcu_sel` が GPIO 機能に書き換わって**直結していた出力が切り離される**
-（実際に試すと `ff ff ff ff` が返る）。`probe.rs` にコメントで残してある。
+Note that **reading MOSI back in software alone does not work.** Pointing MISO at the same pin as MOSI should
+read it back, but on the ESP32-S3 GPIO11 is FSPID itself and `with_mosi` selects the direct IO_MUX function,
+so pointing `with_miso` at the same pin rewrites `mcu_sel` to the GPIO function and **disconnects the direct
+output** (trying it returns `ff ff ff ff`). Left as a comment in `probe.rs`.
 
 ---
 
-## 8. 2 ボードの直接突き合わせ（2026-09-26）
+## 8. Direct cross-check of the 2 boards (2026-09-26)
 
-§6 と §7 はそれぞれのボードを host リファレンスと比べたもの。**§5 手順 5 が言って
-いる board-to-board の突き合わせはこれ。**
+§6 and §7 compared each board against the host reference. **This is the board-to-board cross-check that step
+5 of §5 describes.**
 
 ```bash
-(cd apps && cargo build --release)      # fc470947... を 1 回だけ作る
+(cd apps && cargo build --release)      # build fc470947... exactly once
 (cd ports/rp2350 && cargo build --release --features guest-lcd-demo)
 sh ports/esp32s3/build.sh build --release --features guest-lcd-demo
-# 同じ .wasm が両方の ELF に入っていることをバイト列で照合してから焼く
+# confirm by byte comparison that the same .wasm is in both ELFs, then flash
 
 sh verify/diff-traces.sh pico.log esp32s3.log
-→ 一致: 14352 行
+-> match: 14352 lines
 ```
 
 | | |
 |---|---|
-| ゲスト | `apps/lcd-demo-rs`。SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453` |
-| ボード 1 | Raspberry Pi Pico 2 W（RP2350 A2 / QFN60）。UART0 (GP0) 115200 8N1 |
-| ボード 2 | ESP32-S3-WROOM-1 搭載ボード（chip rev v0.2、flash 8 MB）。UART0 (GPIO43) 115200 8N1 |
-| 結果 | **14,352 行完全一致**（`spi.write` の CRC-32 3,272 件を含む） |
+| Guest | `apps/lcd-demo-rs`. SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453` |
+| Board 1 | Raspberry Pi Pico 2 W (RP2350 A2 / QFN60). UART0 (GP0) 115200 8N1 |
+| Board 2 | a board carrying an ESP32-S3-WROOM-1 (chip rev v0.2, flash 8 MB). UART0 (GPIO43) 115200 8N1 |
+| Result | **14,352 lines identical** (including the 3,272 `spi.write` CRC-32 values) |
 
-3 通りの突き合わせがすべて一致している（Pico ↔ host、ESP32-S3 ↔ host、
-Pico ↔ ESP32-S3）。**`docs/handoff.md` §5 Phase 6 の (2)「同一バイナリを 2 ボードで
-走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致」は達成。**
+All 3 cross-checks match (Pico <-> host, ESP32-S3 <-> host, Pico <-> ESP32-S3). **docs/handoff.md §5 Phase 6
+(2), "run the same binary on 2 boards; the trace except `time` and the SPI pixel CRCs are identical", is
+reached.**
 
-同じ `.wasm` が両方の ELF に入っていることは、焼く前に ELF の中からゲストの
-バイト列を検索して確認した（`include_bytes!` なのでそのまま埋まっている）。
+That the same `.wasm` is in both ELFs was confirmed before flashing by searching for the guest's bytes inside
+the ELFs (`include_bytes!` embeds them as-is).
 
-### ここで `verify/diff-traces.sh` のバグを踏んだ
+### A bug in `verify/diff-traces.sh` was hit here
 
-最初の突き合わせは「`pico.log` は 1 行、`esp32s3.log` は 14352 行」という不一致に
-なった。**トレースの中身ではなくスクリプト側の問題だった。**
+The first cross-check came out as a mismatch, "`pico.log` has 1 line, `esp32s3.log` has 14352 lines". **It
+was the script, not the trace contents.**
 
-実機のシリアルはリセットや電源投入の瞬間にライン・ノイズで NUL を吐く。
-`pico.log` には **441,254 バイト中 1 個**だけ NUL が混ざっていて、それだけで
-`grep` がファイルをバイナリと判断し、`Binary file matches` の 1 行を返していた。
-実際には 14,352 行ある。
+The board's serial emits a NUL from line noise at the moment of reset or power-on. `pico.log` contained
+**1 NUL in 441,254 bytes**, and that alone made `grep` treat the file as binary and return the 1 line
+`Binary file matches`. There are really 14,352 lines.
 
-`normalize()` で NUL も落とし、`grep -a` を付けて直した。**完了条件の判定に使う
-スクリプトなので、この壊れ方は原因の誤診に直結する**（今回は偽陰性だったが、
-「2 ボードが一致しない」と読んで実機を疑い始めるところだった）。
+Fixed by dropping NUL in `normalize()` and adding `grep -a`. **This script decides the completion criterion,
+so this kind of breakage leads straight to a misdiagnosis** (this time it was a false negative, but it was
+about to be read as "the 2 boards do not match" and the hardware was about to be suspected).
 
-**この一致が言っていないこと:**
+**What this match does not say:**
 
-- **浮動小数の一致（§4.2）は進んでいない。** `lcd-demo-rs` は f32 を使わない
-- **表示が同じであることは、この一致からは出ない。** 一致しているのは host call の
-  列で、パッドまで届いているかは別（§7 の `out_sel` のバグがまさにその例）。
-  表示は両ボードで目視した（§6 / §7）
-- **描き終わったあとの挙動は 2 ボードで違った。** プルアップ無しで ESP32-S3 は
-  白に戻り、Pico 2 W は絵が残った（§7「原因 3」）。トレースは同一なので、
-  **host call の一致は表示の保持を保証しない**という例がもう 1 つ増えた形
+- **Floating-point agreement (§4.2) has not moved.** `lcd-demo-rs` does not use f32
+- **That the displays are the same does not follow from this match.** What matches is the host call
+  sequence; whether it reaches the pads is separate (the `out_sel` bug of §7 is exactly that example). The
+  displays were checked by eye on both boards (§6 / §7)
+- **The behavior after drawing finished differed between the 2 boards.** Without a pull-up the ESP32-S3 went
+  back to white and the Pico 2 W kept the image (§7 "Cause 3"). The traces are identical, so this is one more
+  example that **a host call match does not guarantee that the display is kept**
 
-この突き合わせをやる過程で `verify/diff-traces.sh` のバグを 1 件踏んで直した
-（上記）。**実機のログで初めて出た壊れ方**で、host 同士の比較や self-test では
-出ない（NUL が混ざらないため）。
+In the course of this cross-check, 1 bug in `verify/diff-traces.sh` was hit and fixed (above). **A breakage
+that first appeared with hardware logs**; it does not appear in host-to-host comparisons or the self-test
+(no NUL gets mixed in).
 
 ---
 
-## 9. アプリスロットの実測（2026-10-04、Pico 2 W）
+## 9. App slot measurement (2026-10-04, Pico 2 W)
 
-**ファームを焼き直さずにアプリを差し替えられることを実機で確認した。**
-`docs/app-workflow.md` §3.1 / §3.4 の 1 段目。
+**Confirmed on hardware that the app can be swapped without reflashing the firmware.**
+The first stage of docs/app-workflow.md §3.1 / §3.4.
 
-ファームは `ports/rp2350`（既定 feature = trace 有効、内蔵アプリ = `blink_rs`）。
-スロットには `lcd_demo_rs` を入れた。**内蔵とスロットで別のアプリにしてある**
-ので、どちらが走ったかがトレースの先頭で分かる（LCD の配線は要らない）。
+The firmware is `ports/rp2350` (default features = trace enabled, built-in app = `blink_rs`). `lcd_demo_rs`
+was put in the slot. **The built-in app and the slot app are different**, so the head of the trace shows which
+one ran (no LCD wiring needed).
 
-| 見たこと | 期待 | 実機の出力 |
+| Observed | Expected | Board output |
 |---|---|---|
-| スロットが空 | 内蔵へ落ちる | `wasmicon: slot empty, running built-in` → blink のトレース |
-| スロットにアプリ | そちらが走る | `wasmicon: slot 4088 B crc32=0f19d973` → lcd-demo のトレース（`spi` 657 件） |
-| CRC を 1 bit 壊す | 内蔵へ落ちる | `wasmicon: slot crc mismatch, running built-in` → blink のトレース |
+| Slot empty | falls back to built-in | `wasmicon: slot empty, running built-in` -> blink trace |
+| App in slot | that one runs | `wasmicon: slot 4088 B crc32=0f19d973` -> lcd-demo trace (657 `spi` entries) |
+| CRC corrupted by 1 bit | falls back to built-in | `wasmicon: slot crc mismatch, running built-in` -> blink trace |
 
-CRC は `wasmicon pack` が報告した値（`0f19d973`）と一致した。
+The CRC matched the value `wasmicon pack` reported (`0f19d973`).
 
-### スロットから走ったアプリのトレースが host と完全一致した
+### The trace of the app run from the slot is identical to host
 
-**14,352 行**。§6 で `include_bytes!` で焼き込んで記録した行数と同じで、
-1 行も違わない。**スロット経由で配ってもゲストの振る舞いは変わらない**ことの
-実測。突き合わせは `wasmicon trace diff` と `verify/diff-traces.sh` の両方で
-行い、**実機のログで両者が同じ判定を出した**（`tests/trace.rs` の
-突き合わせが合成データでしか見ていなかった部分）。
+**14,352 lines.** The same count as recorded in §6 with the `include_bytes!` build, not 1 line different.
+Measured proof that **distributing through the slot does not change the guest's behavior**. The cross-check
+was done with both `wasmicon trace diff` and `verify/diff-traces.sh`, and **both gave the same verdict on the
+hardware log** (the part of the `tests/trace.rs` cross-check that had only seen synthetic data).
 
 ```
-$ wasmicon run --trace lcd_demo_rs.wasm > host.log     # 14,354 行
+$ wasmicon run --trace lcd_demo_rs.wasm > host.log     # 14,354 lines
 $ wasmicon trace diff host.log pico.log
-一致: 14352 行
+match: 14352 lines
 ```
 
-取り込んだログの先頭には NUL が 1 つ入っていた（リセットの瞬間のライン
-ノイズ）。正規化が落とすので判定には出ない —— §8 で踏んだ壊れ方と同じ形。
+The captured log had 1 NUL at its head (line noise at the moment of reset). Normalization drops it, so it
+does not affect the verdict -- the same breakage hit in §8.
 
-### 副産物: ハンドル掃除がトレースを汚していない
+### By-product: handle cleanup does not pollute the trace
 
-空スロットのときのトレースは、**ゲスト自身の `[resource-drop]pin(1)` で終わって
-いる**。`Hal::release_all`（abi-spec §5.2）はその後に走るが、**行が 1 つも
-増えていない。** 記録済みの 14,352 行（§6 / §7）が変わらないことの実機での裏付け。
+With the slot empty, the trace **ends with the guest's own `[resource-drop]pin(1)`**. `Hal::release_all`
+(docs/abi-spec.md §5.2) runs after that, but **not a single line is added.** Hardware confirmation that the
+recorded 14,352 lines (§6 / §7) do not change.
 
-### `picotool` の引数で 2 つ踏んだ
+### 2 things hit in the `picotool` arguments
 
-どちらも host では出ない。`wasmicon pack` が出していたコマンドが通らなかった。
+Neither shows up on host. The command `wasmicon pack` printed did not work.
 
-- **拡張子は `.bin` でないといけない。** `picotool load` は拡張子でファイル
-  種別を判定するので、`.slot` だと
-  `does not have a recognized file type (extension)` で止まる
-- **`-o` は絶対アドレス。** フラッシュのオフセット（`0x100000`）を渡すと
-  `invalid memory range 0x00100000-0x00101008` で弾かれる。
-  正しくは XIP base を足した `0x10100000`
+- **The extension must be `.bin`.** `picotool load` decides the file type by extension, so `.slot` stops
+  with `does not have a recognized file type (extension)`
+- **`-o` is an absolute address.** Passing the flash offset (`0x100000`) is rejected with
+  `invalid memory range 0x00100000-0x00101008`.
+  Correct is `0x10100000`, with the XIP base added
 
-### 取り込みの手順（`monitor` を作るときに要る）
+### Capture procedure (needed when building `monitor`)
 
-**macOS では `stty -f` だけでは baud が保持されない。** 開いて設定して
-閉じるので、次に開くと 9600 に戻る。実際に 1 回、全部ノイズのログを
-取ってしまった（11,799 バイトすべて化けた）。
+**On macOS, `stty -f` alone does not keep the baud rate.** It opens, configures and closes, so the next open
+goes back to 9600. Once, a log of nothing but noise was actually captured (all 11,799 bytes garbled).
 
-**正しい順序は「`cat` で開いたまま `stty` を当てる」**:
+**The right order is "keep it open with `cat` and apply `stty`"**:
 
 ```
 cat /dev/cu.usbserial-21420 > pico.log &
-stty -f /dev/cu.usbserial-21420 115200 raw -echo   # 開いている間に当てる
-# ここでボードをリセット（USB を抜き差し）
+stty -f /dev/cu.usbserial-21420 115200 raw -echo   # apply while it is open
+# reset the board here (unplug and replug USB)
 ```
 
-**データが流れている最中に `stty` を当てると行が混ざる**（`<")` のような形で
-バイトが落ちる）。当てるのはリセットの前。この順で取ったログは 14,352 行が
-完全一致した（上記）。崩れたログでも先頭の `slot ...` 行は読めたので
-判定自体は付いたが、トレースの突き合わせには使えない。
+**Applying `stty` while data is flowing mixes lines** (bytes drop, as in `<")`). Apply it before the reset. A
+log captured in this order matched at 14,352 lines (above). Even in a garbled log the leading `slot ...` line
+was readable, so the verdict could be made, but it cannot be used for the trace cross-check.
 
-### `pack` が出すコマンドが通ることの確認
+### Confirming that the command `pack` prints works
 
-2 つのバグを直したあと、**`wasmicon pack --board rp2350` が出力した
-コマンドを一字も変えずに実行して通った**（`picotool load -o 0x10100000
-<file>.bin`）。その状態で走らせたのが上のトレース一致。
+After the 2 bugs were fixed, **the command printed by `wasmicon pack --board rp2350` was run without changing
+a character and it worked** (`picotool load -o 0x10100000 <file>.bin`). The trace match above was taken in
+that state.
 
-### `wasmicon deploy` が 1 コマンドで通った（同日）
+### `wasmicon deploy` worked in 1 command (same day)
 
-検査・画像の用意・書き込み・リセットを畳んだ `deploy` を実機で通した。
-**スロットの中身を lcd-demo（4,088 B）から blink（775 B）に差し替えた**ので、
-入れ替わったことがトレースの先頭で分かる。
+`deploy`, which folds check / image preparation / write / reset into one, was run on hardware. **The slot
+content was swapped from lcd-demo (4,088 B) to blink (775 B)**, so the swap shows at the head of the trace.
+[The blink sizes and CRCs here predate the 2026-10 translation of the blink log strings; the lcd-demo-rs hash `fc470947...` is unaffected because that app has no Japanese literals.]
 
 ```
 $ wasmicon deploy blink_rs.wasm --board rp2350
-blink_rs.bin → rp2350 のスロット（0x10100000）  791 B（wasm 775 B、crc32 d6c9dce3）
+blink_rs.bin -> rp2350 slot (0x10100000)  791 B (wasm 775 B, crc32 d6c9dce3)
 The device was rebooted into application mode.
-→ 走っている。トレースを見るなら: ...
+-> running. To see the trace: ...
 
-（実機のシリアル）
+(serial from the board)
 wasmicon rp2350
 wasmicon: slot 775 B crc32=d6c9dce3
 [wasm] blink start
 ```
 
-CRC は `deploy` の報告値と一致し、**トレースも host と完全一致した（20 行）**。
+The CRC matched the value `deploy` reported, and **the trace was identical to host (20 lines)**.
 
-`deploy` は**走らないものを焼かない**（焼く前に `check --board` を通す）。
-`tools/wasmicon-cli/tests/deploy.rs` が、sensor-display を rp2040 に送ろうと
-すると**画像も書かずに**止まることを固定している。
+`deploy` **does not flash what will not run** (it passes `check --board` before flashing).
+`tools/wasmicon-cli/tests/deploy.rs` locks in that sending sensor-display to rp2040 stops **without even
+writing the image**.
 
-### `deploy --monitor` が 1 コマンドで通った（同日）
+### `deploy --monitor` worked in 1 command (same day)
 
-焼く・走らせる・取り込むを畳んだ。**今まで手でやっていた 3 コマンドと
-ボーレートの罠が 1 行になった。**
+Flash, run and capture folded into one. **The 3 commands done by hand until now, and the baud rate trap,
+became 1 line.**
 
 ```
 $ wasmicon deploy lcd_demo_rs.wasm --board rp2350 --monitor -o pico.log
-/dev/cu.usbserial-21420 を開いた（リセット前）
-（3 秒無音になったら終わる）
-無音になった: 441291 B / トレース 14352 行
+opened /dev/cu.usbserial-21420 (before reset)
+(stops after 3 s of silence)
+silence: 441291 B / trace 14352 lines
 
 $ wasmicon trace diff host.log pico.log
-一致: 14352 行
+match: 14352 lines
 ```
 
-**14,352 行ちょうど取れて、host と完全一致した。** 取りこぼしも混線も無い
-（手で取ったときは `stty` を流れている最中に当てて行が混ざった）。
-`monitor` が**リセットの前に開いて baud を当てる**順にしてあるため。
+**Exactly 14,352 lines were captured and matched host in full.** Nothing dropped, nothing mixed (when
+captured by hand, applying `stty` while data was flowing mixed lines). This is because `monitor` **opens the
+port and applies the baud rate before the reset**.
 
-止めどきは**無音**で決めている。アプリが `run` を抜けるとファームは idle に
-入って何も出なくなるので、「N 秒無音なら終わり」が自然な区切りになる
-（既定 3 秒）。Ctrl-C 待ちだと自動化に使えない。
+When to stop is decided by **silence**. When the app leaves `run` the firmware goes idle and prints nothing,
+so "done after N seconds of silence" is the natural boundary (default 3 s). Waiting for Ctrl-C cannot be
+automated.
 
-**トレース行が 0 行なら失敗にする。** 「何も取れていない」を黙って成功に
-しないため（§9 でボーレート違いのログを取ったときの形）。
+**0 trace lines is a failure.** So that "nothing was captured" is not silently a success (the shape of the
+wrong-baud-rate log captured in §9).
 
-### まだ見ていないこと
+### Not yet seen
 
-- **ファームの末尾とスロットの重なり検査**（`__flash_binary_end`）は発動して
-  いない。実測でファームは `0x10011100` までで、スロットは `0x10100000` なので
-  1 MB 近く空いている。重なる状況を作らないと通らない経路
-- **RP2040 は未検証**（Pico WH が未入手）。コードは RP2350 と同じ
-  `slot::read_xip` を通る
+- **The check for the firmware's tail overlapping the slot** (`__flash_binary_end`) has not fired. Measured,
+  the firmware ends at `0x10011100` and the slot is at `0x10100000`, so nearly 1 MB is free. A path that
+  cannot be exercised without creating an overlap
+- **RP2040 is unverified** (no Pico WH at hand). The code goes through the same `slot::read_xip` as RP2350
 
 ---
 
-## 10. ESP32-S3 のスロット（2026-10-04、実測）
+## 10. The ESP32-S3 slot (2026-10-04, measured)
 
-`espflash board-info` の実測:
+Measured with `espflash board-info`:
 
 ```
 Chip type:         esp32s3 (revision v0.2)
@@ -701,185 +676,175 @@ Flash size:        8MB
 Features:          WiFi, BLE, Embedded Flash
 ```
 
-**フラッシュ 8 MB**（`docs/TODO.md` §5-2 が解けた）。**PSRAM は Features に
-出ていない** —— 載っていない（N8R8 ではなく N8）と見える。**§5-3 の選択肢が
-1 つ消える**（arena を PSRAM に移せないので、HTTP をやるなら
-`max_memory_pages` を 4 → 2 に落とす一択）。espflash の出力が根拠なので、
-**モジュールの刻印で裏を取れると確実**。
+**Flash is 8 MB** (docs/TODO.md §5-2 resolved). **PSRAM does not appear in Features** -- it looks like it is
+not fitted (N8, not N8R8). **One option of §5-3 disappears** (the arena cannot be moved to PSRAM, so for HTTP
+the only choice is to lower `max_memory_pages` from 4 to 2). The evidence is espflash's output, so
+**confirming against the module marking would make it certain**.
 
-### `partitions.csv` は要らなかった（実測）
+### `partitions.csv` was not needed (measured)
 
-`espflash flash` は既定のパーティションテーブルで `factory` が
-**ほぼ 8 MB 全体**を占める（出力に `App/part. size: 145,904/8,323,072 bytes`）。
-「だからスロットを固定オフセットに置けない」と設計時に書いたが、**実測すると
-置ける**:
+With `espflash flash`'s default partition table, `factory` occupies **almost the whole 8 MB** (the output says
+`App/part. size: 145,904/8,323,072 bytes`). The design said "so the slot cannot be placed at a fixed offset",
+but **measured, it can**:
 
-1. 7 MB 地点（`0x700000`）に 256 B の目印を `espflash write-bin` で書いた
-2. ファームを `espflash flash` で焼いた
-3. `espflash read-flash 0x700000 256` で読み戻した → **目印がそのまま残っていた**
+1. Wrote a 256 B marker at the 7 MB point (`0x700000`) with `espflash write-bin`
+2. Flashed the firmware with `espflash flash`
+3. Read it back with `espflash read-flash 0x700000 256` -> **the marker was still there, intact**
 
-`espflash flash` は**アプリのセクタしか消さない**。`factory` の中に居ること
-自体は害が無いので、`partitions.csv` を増やさず固定オフセット
-（Pico 系と揃えて `0x100000` から 64 KiB）にした。
+`espflash flash` **erases only the app's sectors**. Being inside `factory` is harmless in itself, so the slot
+went to a fixed offset (64 KiB from `0x100000`, aligned with the Pico family) without adding a
+`partitions.csv`.
 
-### シリアルの口が書き込みと共用（ここで詰まった）
+### The serial port is shared with flashing (where it got stuck)
 
-**ESP32-S3 は書き込み・リセットとトレースが同じ口**（CH343 →
-GPIO43/44）。Pico が別の USB-シリアル変換を使うのと違う。そのため:
+**On the ESP32-S3, flashing / reset and the trace share the same port** (CH343 -> GPIO43/44). Unlike the
+Pico, which uses a separate USB-serial converter. Therefore:
 
-- `monitor` が開いたままでは `espflash` が `Resource busy` で使えない
-- 先に `espflash` にリセットさせると、**開く前にアプリの出力が終わっている**
-- **`espflash reset` は終了せずに居座る**（DTR/RTS を握ったまま）。これを
-  呼んだ結果、ボードが `boot:0x0 (DOWNLOAD)` で止まった。
-  **`write-bin` は既定で `--after hard-reset` までやるので、別に呼んではいけない**
+- while `monitor` holds the port open, `espflash` cannot use it (`Resource busy`)
+- if `espflash` resets first, **the app's output is over before the port is opened**
+- **`espflash reset` does not exit; it stays** (holding DTR/RTS). Calling it left the board stopped at
+  `boot:0x0 (DOWNLOAD)`.
+  **`write-bin` already does `--after hard-reset` by default, so it must not be called separately**
 
-**答えは「口ごと espflash に任せる」だった。** `monitor` は `stty` しか
-当てないので自分ではリセットできない（DTR/RTS を触らない）。`espflash monitor`
-は既定で `--before default-reset --after hard-reset` をやる、つまり**開いて
-から起動させる**ので、1 プロセスで順番の問題が消える:
+**The answer was "hand the whole port to espflash".** `monitor` only applies `stty`, so it cannot reset by
+itself (it does not touch DTR/RTS). `espflash monitor` does `--before default-reset --after hard-reset` by
+default, that is, it **opens first and then boots the chip**, so the ordering problem disappears within 1
+process:
 
 ```sh
 espflash monitor --port <dev> -c esp32s3 --non-interactive
 ```
 
-- **`-c esp32s3` が要る。** 無いと `--before` の指定次第で
-  `chip_not_provided` で落ちる
-- **`--before no-reset-no-sync` は使えない。** アプリが走っている
-  （= ブートローダに居ない）ので `Timeout while running ReadReg command`
-  になる。既定の `default-reset`（DTR/RTS でブートローダに入れてから
-  hard-reset）で通る
-- `--non-interactive` を付けて回している（対話用の画面を出させない）
+- **`-c esp32s3` is required.** Without it, depending on `--before`, it fails with `chip_not_provided`
+- **`--before no-reset-no-sync` cannot be used.** The app is running (= not in the bootloader), so it ends
+  in `Timeout while running ReadReg command`. The default `default-reset` (enter the bootloader with DTR/RTS,
+  then hard-reset) works
+- it runs with `--non-interactive` (no interactive screen)
 
-`deploy --monitor --board esp32s3` はこの道具に委譲する形にした
-（`monitor::capture_cmd`）。書き込み側は `--after no-reset` にして**走らせず**、
-リセットは `espflash monitor` にやらせる。委譲が失敗したときは
-**ボードがブートローダに居る**ことを出す（`espflash reset` は助けにならない）。
+`deploy --monitor --board esp32s3` delegates to this tool (`monitor::capture_cmd`). The flashing side uses
+`--after no-reset` so that **it does not run**, and the reset is left to `espflash monitor`. If the delegation
+fails, it reports **that the board is in the bootloader** (`espflash reset` does not help).
 
-要約の行に出すのは**スロットのオフセット**にした。`picotool` に渡す絶対
-アドレス（`0x10100000`）はあのツールの引数であって、スロットの性質ではない
-—— ESP32-S3 では意味を持たない番号になる。
+The summary line shows **the slot offset**. The absolute address passed to `picotool` (`0x10100000`) is that
+tool's argument, not a property of the slot -- on the ESP32-S3 it is a meaningless number.
 
-### **2 つのリーダが同じ口を取り合う**（取り込みが欠ける原因）
+### **2 readers fighting over the same port** (why captures came up short)
 
-最初に取った取り込みが 13,634 行で切れていた。原因は**前の取り込みが
-まだ生きているうちに次を開いた**こと。macOS の `cu.*` は排他にならないので
-両方が read でき、**バイト列が 2 つのプロセスに分配される**（欠けた側と
-あとから開いた側を足すとほぼ 14,352 行になり、辻褄が合った）。
-取り込みが欠けたら、まず
-`pgrep -f 'wasmicon|espflash|cat /dev/cu'` で居残りを疑うこと。
+The first capture was cut off at 13,634 lines. The cause: **the next capture was opened while the previous
+one was still alive**. macOS `cu.*` is not exclusive, so both can read, and **the bytes are split between the
+2 processes** (the short side plus the later-opened side added up to about 14,352 lines, which was
+consistent). If a capture is short, first suspect a leftover with
+`pgrep -f 'wasmicon|espflash|cat /dev/cu'`.
 
-### スロットから走らせるところまで一致した（本題）
+### Matched all the way to running from the slot (the main point)
 
-`espflash monitor` で 1 回で取り込めた:
+Captured in 1 try with `espflash monitor`:
 
 ```
 wasmicon: slot 4088 B crc32=0f19d973
 ```
 
-`pack` が報告した CRC と一致している。そのうえで:
+Matches the CRC `pack` reported. And then:
 
-| 突き合わせ | 結果 |
+| Cross-check | Result |
 | --- | --- |
-| host（`wasmicon run`）vs ESP32-S3（スロット） | **14,352 行 一致** |
-| Pico 2 W（スロット、§9）vs ESP32-S3（スロット） | **14,352 行 一致** |
+| host (`wasmicon run`) vs ESP32-S3 (slot) | **14,352 lines match** |
+| Pico 2 W (slot, §9) vs ESP32-S3 (slot) | **14,352 lines match** |
 
-後者が肝で、**フラッシュの読み方が違う 2 つのボード**——RP2350 は XIP の
-スライスをそのまま `decode` に渡し、ESP32-S3 は `esp-storage` でヘッダを
-読んでから長さの分だけ arena を取って本体を写す——が、同じ `.wasm` で
-**同一のホスト呼び出し列**を出した。スロット経路が
-`docs/handoff.md` §5 Phase 6 の決定性の条件を壊していない。
+The latter is the key: **2 boards that read flash differently** -- the RP2350 passes the XIP slice straight to
+`decode`, while the ESP32-S3 reads the header through `esp-storage`, allocates exactly that length from the
+arena and copies the body -- produced **the identical host call sequence** from the same `.wasm`. The slot
+path does not break the determinism criterion of docs/handoff.md §5 Phase 6.
 
-そのうえで `deploy --monitor` を 1 コマンドで通した:
+On top of that, `deploy --monitor` worked in 1 command:
 
 ```
 $ wasmicon deploy apps/.../lcd_demo_rs.wasm --board esp32s3 \
     --port /dev/cu.usbmodem5C630009931 --monitor -o esp12.log
-lcd_demo_rs.bin → esp32s3 のスロット（+0x100000）  4104 B（wasm 4088 B、crc32 0f19d973）
-→ espflash monitor にリセットと取り込みを任せる:
-無音になった: 442835 B / トレース 14352 行
+lcd_demo_rs.bin -> esp32s3 slot (+0x100000)  4104 B (wasm 4088 B, crc32 0f19d973)
+-> handing reset and capture to espflash monitor:
+silence: 442835 B / trace 14352 lines
 ```
 
-これも host と 14,352 行一致。**Pico と違ってボタン操作が要らない**
-（DTR/RTS でブートローダに入るので、BOOTSEL のような物理操作が無い）。
+This also matched host at 14,352 lines. **Unlike the Pico, no button is needed** (DTR/RTS enters the
+bootloader, so there is no physical action like BOOTSEL).
 
-### 失敗側の枝も実機で起こした（§9 と同じ 3 点）
+### The failure branches were also triggered on hardware (the same 3 points as §9)
 
-スロットに直接書いて（`espflash write-bin --after no-reset` → `espflash
-monitor`）、3 つの入口を踏んだ。**この手順はボタン操作が要らない**ので、
-Pico で必要だった BOOTSEL の抜き差しが消える:
+Writing directly to the slot (`espflash write-bin --after no-reset` -> `espflash
+monitor`), all 3 entry points were exercised. **This procedure needs no button**, so the BOOTSEL replugging
+that the Pico needed disappears:
 
-| スロットの中身 | シリアルに出たもの |
+| Slot content | Serial output |
 | --- | --- |
-| 正しい画像 | `wasmicon: slot 4088 B crc32=0f19d973` → lcd-demo が走る |
-| 本体を 1 バイト反転 | `wasmicon: slot crc mismatch, running built-in` |
-| `0xff` で埋める | `wasmicon: slot empty, running built-in` |
+| a valid image | `wasmicon: slot 4088 B crc32=0f19d973` -> lcd-demo runs |
+| 1 byte of the body flipped | `wasmicon: slot crc mismatch, running built-in` |
+| filled with `0xff` | `wasmicon: slot empty, running built-in` |
 
-CRC が「転送の事故」を「アプリのバグ」と切り分ける役（`ports/common/src/slot.rs`
-の module コメント）を実機で果たしている。壊れた本体を `decode` に渡して
-「対応外の命令」のような無関係な理由を出す、という壊れ方をしない。
+The CRC plays its role of separating "a transfer accident" from "an app bug" (the module comment of
+`ports/common/src/slot.rs`) on hardware. It does not fail in the shape of passing a corrupted body to `decode`
+and reporting an unrelated reason such as "unsupported instruction".
 
-**ESP32-S3 の内蔵アプリは blink**（`guest-lcd-demo` を付けずに焼いてある）。
-フォールバックの行のあとに `blink start` が続くのが、内蔵へ落ちた証拠に
-なっている。
+**The ESP32-S3's built-in app is blink** (flashed without `guest-lcd-demo`). `blink start` following the
+fallback line is the proof that it fell back to the built-in app.
 
-### レビュー（`/code-review #8` 3 周目）で直したものを実機で確かめ直した（同日）
+### What the review (`/code-review #8`, round 3) changed was re-checked on hardware (same day)
 
-ファームの起動経路（`pick_guest`）を書き換えたので、焼き直して同じ 3 点を
-通した。**結果は変わらない**:
+The firmware's startup path (`pick_guest`) was rewritten, so it was reflashed and the same 3 points were run
+again. **The results do not change**:
 
-| スロットの中身 | 出力 |
+| Slot content | Output |
 | --- | --- |
-| 正しい画像 | `slot 4088 B crc32=0f19d973` → **host と 14,352 行一致** |
-| 本体を 1 バイト反転 | `slot crc mismatch, running built-in` → blink |
+| a valid image | `slot 4088 B crc32=0f19d973` -> **14,352 lines match host** |
+| 1 byte of the body flipped | `slot crc mismatch, running built-in` -> blink |
 
-書き換えたのは **arena を取る前に CRC を確かめる**ようにした点。`Arena` は
-bump で返す手段が無いので、先に取ってから壊れていると分かると**内蔵アプリへ
-落ちたあとも arena が減ったまま**走ることになり、`wasmicon check` の見積もりと
-ずれる。フラッシュから 512 バイトずつ流して CRC だけ先に見る形にした
-（`crc32_update` を足した。`esp-storage` の `read` は呼ぶたびに 4 KiB の
-セクタバッファをスタックに作るが、順に呼ぶので山は 1 つ分）。
+What changed is that **the CRC is now checked before allocating from the arena**. `Arena` is a bump allocator
+with no way to give memory back, so if it allocated first and then found the image corrupted, it would **run
+the built-in app with the arena already reduced**, diverging from the `wasmicon check` estimate. Now it
+streams the flash 512 bytes at a time and checks only the CRC first (`crc32_update` was added.
+`esp-storage`'s `read` creates a 4 KiB sector buffer on the stack on every call, but the calls are sequential
+so the peak is one buffer).
 
-**`deploy --no-run` が効いていなかったのも実機で再現した。** `espflash
-write-bin` は既定で `--after hard-reset` までやるので、`--no-run` を渡しても
-**焼いた直後にアプリが走っていた**（走っている状態で取り込むと 11,375 行
-取れた）のに「書いた。リセットすると走る」と出していた。直したあとは
-`Staying in bootloader` が出て、**取り込みは 0 行**（止まったまま）。
+**That `deploy --no-run` had no effect was also reproduced on hardware.** `espflash write-bin` does `--after
+hard-reset` by default, so even with `--no-run` **the app was running right after flashing** (capturing in
+that state got 11,375 lines) while it printed "written; runs on reset". After the fix it prints
+`Staying in bootloader` and **the capture is 0 lines** (it stays stopped).
 
-### まだ見ていないこと
+### Not yet seen
 
-- `Truncated`（ヘッダの長さがスロットの外を指す）を実機で起こしていない。
-  単体テストはある。`espflash write-bin` では長さだけ嘘をつく画像を作る
-  手間があるので後回しにした
-- **`Overlap` は ESP32-S3 では検査していない**（XIP 前提の検査なので
-  `read_xip` 側にしかない）。ESP32-S3 は `esp-storage` 経由で読むため、
-  ファームとスロットが重なる形は `espflash` の側で防ぐことになる。
-  `docs/TODO.md` §5 の未決
+- `Truncated` (the header length points outside the slot) has not been triggered on hardware. There is a
+  unit test. With `espflash write-bin`, making an image that lies only about its length takes effort, so it
+  was deferred
+- **`Overlap` is not checked on the ESP32-S3** (it is an XIP-based check and only exists on the `read_xip`
+  side). The ESP32-S3 reads through `esp-storage`, so a firmware / slot overlap has to be prevented on the
+  `espflash` side.
+  An open item in docs/TODO.md §5
 
 ---
 
-## 11. I2C（SHT40）の実測（2026-10-05、ESP32-S3 と Pico 2 W）
+## 11. I2C (SHT40) measurement (2026-10-05, ESP32-S3 and Pico 2 W)
 
-`ports/esp32s3` / `ports/rp2350` の I2C（2026-10-04 に実装）を初めて実機で
-動かした。**どちらも 1 回目で通った。**
+The I2C of `ports/esp32s3` / `ports/rp2350` (implemented 2026-10-04) ran on hardware for the first time.
+**Both worked on the first try.**
 
-### 条件
+### Conditions
 
-| 項目 | 値 |
+| Item | Value |
 |---|---|
-| センサー | SHT40（アドレス 0x44）。SDA / SCL のプルアップはモジュール側のものだけ |
-| ESP32-S3 の配線 | SDA=GPIO8 / SCL=GPIO9（abi-spec §8 の既定） |
-| Pico 2 W の配線 | SDA=GP4 / SCL=GP5（同） |
-| ゲスト | `sensor_display_rs.wasm`（カード型の画面、6,039 B、SHA-256 `860e00b9…`。`4654221`） |
-| 焼き方 | スロット（`wasmicon deploy`）。ファームは同日の main から焼き直した |
+| Sensor | SHT40 (address 0x44). The only SDA / SCL pull-ups are the module's own |
+| ESP32-S3 wiring | SDA=GPIO8 / SCL=GPIO9 (the defaults of docs/abi-spec.md §8) |
+| Pico 2 W wiring | SDA=GP4 / SCL=GP5 (same) |
+| Guest | `sensor_display_rs.wasm` (the card-style screen, 6,039 B, SHA-256 `860e00b9...`. `4654221`) |
+| Flashing | slot (`wasmicon deploy`). The firmware was reflashed from the same day's main |
 
-最初は画面を変える前のゲスト（4,549 B）で ESP32-S3 だけ見て、I2C が通ることと
-読むまでのトレースが host と一致することを確かめた。下の数字は画面を変えた
-あとのゲストで 2 ボードを回したもの。
+At first, only the ESP32-S3 was checked with the guest from before the screen change (4,549 B), to confirm
+that I2C works and that the trace up to the read matches host. The numbers below are from the guest after
+the screen change, run on 2 boards.
 
-### 結果
+### Results
 
-両ボードとも次のとおりで、`nack` も `timeout` も出ず、CRC-8 の検証を通って
-画面に温湿度が出た:
+On both boards the following appeared, with no `nack` and no `timeout`; the CRC-8 check passed and the
+temperature and humidity appeared on the screen:
 
 ```
 > wasmicon:hal/i2c@0.1.0/[static]bus.open(0, 0)
@@ -890,151 +855,147 @@ write-bin` は既定で `--after hard-reset` までやるので、`--no-run` を
 < 0 [len=6]
 ```
 
-| 比較 | 行数 | 最初の食い違い |
+| Comparison | Lines | First difference |
 |---|---|---|
-| Pico 2 W と ESP32-S3 | 4,182 / 4,182 | 3,757 行目 |
-| host（`verify/sht4x-replay.txt`）と Pico 2 W | 4,182 / 4,182 | 3,757 行目 |
+| Pico 2 W and ESP32-S3 | 4,182 / 4,182 | line 3,757 |
+| host (`verify/sht4x-replay.txt`) and Pico 2 W | 4,182 / 4,182 | line 3,757 |
 
-3,757 行目は**センサーを読んだあとに数値を描く最初の `spi.write`**。2 ボードは
-別の時刻に読み、host は合成データなので値が違い、そこから先はずれて当然。
-**センサーを読むまでの 3,756 行（枠の描画を全て含む）は 3 者で完全一致**した。
+Line 3,757 is **the first `spi.write` that draws a number after the sensor read**. The 2 boards read at
+different times, and host uses synthetic data, so the values differ and everything from there on diverges, as
+expected. **The 3,756 lines up to the sensor read (including all of the frame drawing) are identical across
+all 3.**
 
-### この実測が言っていないこと
+### What this measurement does not say
 
-- **値を描く部分のボード間一致（§4.2 の浮動小数）。** トレースは `i2c.read` の
-  **長さしか出さず、読んだバイト列を出さない**ので、ボードが何を読んだかが
-  分からず、同じ応答を両ボードに食わせることもできない
-- **`verify/sht4x-replay.txt` の差し替え（§4.3）。** 同じ理由で実機の応答を
-  トレースから記録できない
-- **AS 版。** 実機で走らせたのは Rust 版だけ
-- **RP2040。** 評価対象外（2026-10-07）
+- **Cross-board agreement of the part that draws the values (the floating point of §4.2).** The trace shows
+  **only the length of `i2c.read`, not the bytes read**, so what a board read is unknown, and the same
+  response cannot be fed to both boards
+- **Replacing `verify/sht4x-replay.txt` (§4.3).** For the same reason, the board's response cannot be
+  recorded from the trace
+- **The AS version.** Only the Rust version ran on hardware
+- **RP2040.** Not evaluated (2026-10-07)
 
-### ESP32-S3 は書き込みとトレースの口を分けた
+### The ESP32-S3 used separate ports for flashing and the trace
 
-§10 は `USB-UART` 側（CH343）1 本で書き込みとトレースを兼ねたが、今回は
-**書き込みを `USB-OTG` 側（USB-Serial-JTAG、`/dev/cu.usbmodem*`）、トレースを
-CP2102N を UART0（GPIO43/44）に繋いで**取った。この形だと `deploy --monitor`
-（`espflash monitor` に委譲し、書き込みと同じ口を読む）は使えないので、
-**`wasmicon monitor --port <CP2102N> --idle 0` を先に開いてから
-`deploy --port <usbmodem>`** した。リセットは `espflash` が USB-Serial-JTAG
-経由でかけるので、ボタン操作は要らない。
+§10 used the single `USB-UART` side (CH343) for both flashing and the trace; this time **flashing went
+through the `USB-OTG` side (USB-Serial-JTAG, `/dev/cu.usbmodem*`) and the trace through a CP2102N connected
+to UART0 (GPIO43/44)**. In this setup `deploy --monitor` (which delegates to `espflash monitor` and reads the
+same port as flashing) cannot be used, so **`wasmicon monitor --port <CP2102N> --idle 0` was opened first,
+then `deploy --port <usbmodem>`**. `espflash` resets through USB-Serial-JTAG, so no button is needed.
 
-### Pico 2 W は BOOTSEL 1 回で済む
+### The Pico 2 W needs BOOTSEL only once
 
-ファームを `picotool load -u -v -t elf`（**`-x` を付けない**）で焼くと BOOTSEL の
-まま残るので、続けて `deploy` でスロットを焼けば、そこで初めて起動する。
+Flashing the firmware with `picotool load -u -v -t elf` (**without `-x`**) leaves it in BOOTSEL, so `deploy`
+can flash the slot right after, and only then does it boot.
 
 ---
 
-## 12. 実機の応答で値の描画まで一致させる（2026-10-07、Pico 2 W と ESP32-S3）
+## 12. Matching the drawn values with the board's own response (2026-10-07, Pico 2 W and ESP32-S3)
 
-§11 では、トレースが `i2c.read` の長さしか出さなかったので、値を描く部分の
-一致を測れなかった。オーナー判断で、**読み出し系の結果に受け取ったバイト列を
-出す**ことにした（abi-spec §9。`< 0 [len=6 data=0x6754c0a4d840]`）。
-import 名・シグネチャ・エラーコードは変えていない。I2C を使わない
-`lcd-demo-rs` のトレース（14,352 行）はそのまま有効。
+In §11 the trace showed only the length of `i2c.read`, so agreement of the part that draws the values could
+not be measured. By owner judgment, **the result of read-type calls now includes the bytes received**
+(docs/abi-spec.md §9. `< 0 [len=6 data=0x6754c0a4d840]`). Import names, signatures and error codes are
+unchanged. The `lcd-demo-rs` trace (14,352 lines), which does not use I2C, stays valid as-is.
 
-### 手順
+### Procedure
 
 ```bash
-wasmicon monitor --port <CP2102N> --idle 0 -o pico.log    # 先に開く
-wasmicon deploy sensor_display_rs.wasm --board rp2350      # BOOTSEL で挿してから
-wasmicon trace replay pico.log -o pico.replay              # data= を取り出す
+wasmicon monitor --port <CP2102N> --idle 0 -o pico.log    # open first
+wasmicon deploy sensor_display_rs.wasm --board rp2350      # after plugging in with BOOTSEL
+wasmicon trace replay pico.log -o pico.replay              # extract data=
 wasmicon run sensor_display_rs.wasm --trace --i2c-replay pico.replay > host.log
 wasmicon trace diff host.log pico.log
 ```
 
-### 結果
+### Results
 
-| ゲスト | 実機が読んだ応答 | host に食わせたトレースと実機 |
+| Guest | Response the board read | Board vs host fed with it |
 |---|---|---|
-| `sensor_display_rs.wasm`（`860e00b9…`） | `67 54 c0 a4 d8 40`（25.63 °C / 74.49 %） | **全文一致 4,182 行** |
-| `sensor_display_as.wasm`（6,969 B、`53013cbf…`） | `68 38 9f a0 c3 6a`（26.24 °C / 71.94 %） | **全文一致 4,182 行**（host の AS 版とも Rust 版とも） |
+| `sensor_display_rs.wasm` (`860e00b9...`) | `67 54 c0 a4 d8 40` (25.63 °C / 74.49 %) | **identical in full, 4,182 lines** |
+| `sensor_display_as.wasm` (6,969 B, `53013cbf...`) | `68 38 9f a0 c3 6a` (26.24 °C / 71.94 %) | **identical in full, 4,182 lines** (against both the AS and the Rust version on host) |
 
-ESP32-S3（同日、新しいファームで焼き直し）:
+ESP32-S3 (same day, reflashed with the new firmware):
 
-| ゲスト | 実機が読んだ応答 | host に食わせたトレースと実機 |
+| Guest | Response the board read | Board vs host fed with it |
 |---|---|---|
-| `sensor_display_rs.wasm` | `68 6c 25 ab 15 d2`（26.38 °C / 77.53 %） | **全文一致 4,182 行**（host の Rust 版とも AS 版とも） |
-| `sensor_display_as.wasm` | `68 93 89 a4 38 81`（26.48 °C / 74.18 %） | **全文一致 4,182 行**（同上） |
+| `sensor_display_rs.wasm` | `68 6c 25 ab 15 d2` (26.38 °C / 77.53 %) | **identical in full, 4,182 lines** (against both the Rust and the AS version on host) |
+| `sensor_display_as.wasm` | `68 93 89 a4 38 81` (26.48 °C / 74.18 %) | **identical in full, 4,182 lines** (against both the Rust and the AS version on host) |
 
-**数値の描画と、温度バーの f32 計算を含むゲージの塗りまで、RP2350 と ESP32-S3 が
-それぞれ host と同じピクセルを出した。** 4 通り（Rust / AS × 2 ボード）すべて。
-AS 版を実機で走らせたのもこれが初めて。
+**Up to the drawing of the numbers and the gauge fill that includes the f32 temperature bar computation, the
+RP2350 and the ESP32-S3 each produced the same pixels as host.** All 4 combinations (Rust / AS x 2 boards).
+This was also the first time the AS version ran on hardware.
 
-Rust 版の応答は `verify/sht4x-replay.txt` に入れた（合成データからの差し替え。§4.3）。
+The Rust version's response went into `verify/sht4x-replay.txt` (replacing the synthetic data; §4.3).
 
-### この実測が言っていないこと
+### What this measurement does not say
 
-- **同じ入力での 2 ボードの直接比較。** 実機に応答を注入する手段は無いので、
-  ボードごとに読んだ値が違う。言えるのは「各ボード ≡ host（そのボードが読んだ
-  入力に対して）」で、2 ボードの入力は 4 回とも別の値だった
-- **非正規化数・範囲外のクランプ。** 25〜26 °C の 1 点だけ。端の値は host の
-  テスト（`sensor_display_agrees_across_temperatures`）で Rust / AS の一致を見ているが、
-  実機の FPU では見ていない
+- **A direct comparison of the 2 boards on the same input.** There is no way to inject a response into the
+  hardware, so each board reads a different value. What can be said is "each board = host (for the input that
+  board read)", and the 2 boards' inputs were different values all 4 times
+- **Denormals and out-of-range clamping.** Only 1 point around 25 to 26 °C. The edge values are checked for
+  Rust / AS agreement in the host test (`sensor_display_agrees_across_temperatures`), but not on the hardware
+  FPU
 
-### 取り込みで踏んだこと
+### Things hit while capturing
 
-- **`monitor --idle` は最初の出力を待たずに数え始める。** 開いてから Pico を
-  挿し直すまでに 5 秒経つと、0 B で終わる。人がボードを触る手順では `--idle 0` にする
-- **取り込みを 2 本走らせると、同じ口のバイトを奪い合う**（§10 と同じ）。
-  `--idle 0 --timeout 600` の取り込みを残したまま次を開き、両方のログが欠けた。
-  アプリの最後の行（`[resource-drop]pin(1)`）が来たら止めるようにして解決した
-- **CP2102N の口の名前は USB の挿し方で変わる**（`usbserial-21420` →
-  `usbserial-1420`）。決め打ちせず `ls /dev/cu.usb*` で見る
+- **`monitor --idle` starts counting without waiting for the first output.** If 5 s pass between opening and
+  replugging the Pico, it ends with 0 B. In a procedure where a person handles the board, use `--idle 0`
+- **Running 2 captures fights over the bytes of the same port** (same as §10). A capture with
+  `--idle 0 --timeout 600` was left running while the next was opened, and both logs came up short. Solved by
+  stopping when the app's last line (`[resource-drop]pin(1)`) arrives
+- **The CP2102N's port name changes with how USB is plugged in** (`usbserial-21420` ->
+  `usbserial-1420`). Do not hard-code it; look with `ls /dev/cu.usb*`
 
-### ESP32-S3 で詰まったこと（同日）
+### Where the ESP32-S3 got stuck (same day)
 
-**USB から掛けるリセットが効かなくなり、焼いても走らない状態になった。** 症状と原因:
+**The reset issued over USB stopped working, and after flashing the board would not run.** Symptoms and
+causes:
 
-- **USB-OTG（USB-Serial-JTAG）から焼いたあと、ボードが書き込み待ちで止まった。**
-  ROM の出力は `rst:0x15 (USB_UART_CHIP_RESET),boot:0x21 (DOWNLOAD(USB/UART0))` /
-  `waiting for download`。LCD は真っ暗のまま。§10 では同じ口で焼いて走っていたので、
-  何が変わったのかは突き止めていない
-- **CP2102N を UART0 に繋いだまま `USB-UART` 側（CH343）も使うと、GPIO44 に送信側が
-  2 つぶら下がる。** DevKitC-1 の CH343 の TX は基板上で GPIO44 に直結しているので、
-  CP2102N の TX と引っ張り合い、Mac → チップの向き（書き込みの同期）が壊れて
-  `Failed to connect to the device` になった。チップ → Mac の向き（GPIO43）は
-  受け手が 2 つあるだけなので、トレースは読めてしまい気付きにくい。
-  **CH343 を使うなら CP2102N は外す**
-- **CH343 の自動リセットは EN だけ効き、GPIO0 が効かなかった。** 書き込み用の
-  リセット手順を送るとアプリが起動してしまい（3 秒で 32 KB のトレースが届いた）、
-  書き込み待ちに入れない。`BOOT` + `RST` の手動操作でも入れなかった
-  （ボタンの効きは未確認）
+- **After flashing through USB-OTG (USB-Serial-JTAG), the board stopped waiting for download.** The ROM
+  output was `rst:0x15 (USB_UART_CHIP_RESET),boot:0x21 (DOWNLOAD(USB/UART0))` /
+  `waiting for download`. The LCD stayed dark. In §10 it flashed and ran through the same port, so what
+  changed has not been pinned down
+- **Using the `USB-UART` side (CH343) with the CP2102N still connected to UART0 puts 2 transmitters on
+  GPIO44.** The DevKitC-1's CH343 TX is wired straight to GPIO44 on the board, so it fights the CP2102N's TX,
+  the Mac -> chip direction (flashing sync) breaks, and the result is `Failed to connect to the device`. The
+  chip -> Mac direction (GPIO43) just has 2 receivers, so the trace is still readable and it is easy to miss.
+  **If the CH343 is used, disconnect the CP2102N**
+- **The CH343's auto-reset only drove EN; GPIO0 did not work.** Sending the flashing reset sequence booted
+  the app instead (a 32 KB trace arrived within 3 s) and it could not enter download mode. Manual
+  `BOOT` + `RST` did not get there either (whether the buttons work is unconfirmed)
 
-**最後に通した手順**: USB を 2 本挿しにして、**書き込みは USB-OTG 側**
-（`espflash write-bin --port <usbmodem…> 0x100000 <app>.bin`）、**トレースは
-USB-UART 側（CH343）**で取り、起動は **`RST`（EN）ボタン**で行う。`RST` は
-`rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)` で普通に起動した。
-書き込みのあとに自動で起動することもあるので、**取り込みはバナー
-（`wasmicon: slot …`）から最後の行まで揃ったものだけ使う**（途中から取った
-2,306 行のログを一度掴みかけた）
+**The procedure that finally worked**: plug in both USB cables, **flash through the USB-OTG side**
+(`espflash write-bin --port <usbmodem...> 0x100000 <app>.bin`), **capture the trace through the USB-UART
+side (CH343)**, and boot with the **`RST` (EN) button**. `RST` booted normally with
+`rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)`.
+Sometimes it boots automatically after flashing, so **only use captures that are complete from the banner
+(`wasmicon: slot ...`) to the last line** (a 2,306-line log captured midway was almost taken by mistake).
 
 ---
 
-## 13. 内蔵アプリを外したファーム（2026-10-07、ESP32-S3）
+## 13. Firmware without the built-in app (2026-10-07, ESP32-S3)
 
-3 ポートの `include_bytes!` と `guest-lcd-demo` feature を外した
-（`docs/app-workflow.md` §3.3）。ESP32-S3 の実機で 2 点を確かめた。
+The `include_bytes!` and the `guest-lcd-demo` feature were removed from all 3 ports
+(docs/app-workflow.md §3.3). 2 points were checked on the ESP32-S3 hardware.
 
-| スロット | 出力 | 結果 |
+| Slot | Output | Result |
 |---|---|---|
-| `sensor_display_as.wasm`（6,969 B、crc32 `54778528`） | `wasmicon: slot 6969 B crc32=54778528` → アプリのトレース | 実機が読んだ応答を食わせた host と**全文一致 4,182 行**（外す前と同じ） |
-| 先頭 4 KiB を `0xff` で埋める | `wasmicon: slot empty, idle` | トレース行 0 行。ゲストは走らない |
+| `sensor_display_as.wasm` (6,969 B, crc32 `54778528`) | `wasmicon: slot 6969 B crc32=54778528` -> the app's trace | **identical in full, 4,182 lines**, against host fed with the response the board read (same as before the removal) |
+| first 4 KiB filled with `0xff` | `wasmicon: slot empty, idle` | 0 trace lines. The guest does not run |
 
-空スロットでは `ports/common` の `idle::heartbeat` が `led` 役のピンを 1 Hz で
-点滅させる。**`led` に外付け LED を繋いでいないので、点滅そのものは見ていない**
-（`docs/TODO.md` §1.1）。RP2350 / RP2040 は同じ `idle::heartbeat` を呼ぶが、
-実機では回していない（RP2350 はビルドと clippy、RP2040 は評価対象外）。
+With the slot empty, `idle::heartbeat` in `ports/common` blinks the pin of the `led` role at 1 Hz. **No
+external LED is connected to `led`, so the blinking itself has not been seen** (docs/TODO.md §1.1).
+RP2350 / RP2040 call the same `idle::heartbeat` but have not been run on hardware (RP2350: build and clippy;
+RP2040: not evaluated).
 
 ---
 
-## 14. 配線表をファームの外に出したファーム（2026-10-07、ESP32-S3）
+## 14. Firmware with the wiring table moved out (2026-10-07, ESP32-S3)
 
-役割名の固定の語彙とファームの既定の表を廃止し、配線表を設定スロットに置いた
-（`docs/app-workflow.md` §3.9）。`apps/sensor-display-rs` のディレクトリから
-`wasmicon deploy --board esp32s3` し、`wasmicon.toml` の配線表をアプリと一緒に
-1 本の画像で書いた（`配線表: lcd-cs=10 lcd-dc=14 lcd-rst=15` と表示）。
+The fixed vocabulary of role names and the firmware's default table were abolished, and the wiring table was
+placed in the config slot (docs/app-workflow.md §3.9). `wasmicon deploy --board esp32s3` was run from the
+`apps/sensor-display-rs` directory, and the wiring table from `wasmicon.toml` was written together with the
+app as 1 image (displayed as `wiring: lcd-cs=10 lcd-dc=14 lcd-rst=15`).
 
 ```
 wasmicon esp32s3
@@ -1042,46 +1003,48 @@ wasmicon: roles lcd-cs=10 lcd-dc=14 lcd-rst=15
 wasmicon: slot 6039 B crc32=909e18cd
 ```
 
-`pin-by-role` は 3 つとも配線表から答え、トレースは `role:lcd-cs` などに正規化された。
-実機が読んだ応答（`67 af a8 a4 42 a2`）を食わせた host と**全文一致 4,182 行**。
-**配線をファームの外に出してもトレースは変わらない**（abi-spec §9 の正規化が役割名で
-出すため）。CLI 側の往復（`deploy` の画像からアプリと配線表を読み直す）は
-`tools/wasmicon-cli/tests/pack.rs`、形式と検査は `ports/common/tests/roles.rs`。
+All 3 `pin-by-role` lookups were answered from the wiring table, and the trace was normalized to
+`role:lcd-cs` and so on. **Identical in full, 4,182 lines**, against host fed with the response the board read
+(`67 af a8 a4 42 a2`). **Moving the wiring out of the firmware does not change the trace** (the normalization
+of docs/abi-spec.md §9 prints role names). The CLI round trip (reading the app and the wiring table back from
+the `deploy` image) is in `tools/wasmicon-cli/tests/pack.rs`; the format and its checks are in
+`ports/common/tests/roles.rs`.
 
-### ESP32-S3 の「USB からのリセットが効かない」の切り分け（同日）
+### Isolating the ESP32-S3's "reset over USB does not work" (same day)
 
-**`USB-OTG` 側（USB-Serial-JTAG）が Mac に繋がっていると、`RST` ボタンで起動しても
-書き込み待ちに入る**（`rst:0x1 (POWERON),boot:0x20 (DOWNLOAD(USB/UART0))`）。
-`USB-UART` 側だけを挿すと、同じ `RST` で `boot:0x8 (SPI_FAST_FLASH_BOOT)` で普通に
-起動した。§12 で「USB からのリセットが効かない」と書いた症状の大部分はこれで、
-USB-OTG 側を挿したまま回していたことが原因だったと見ている（仕組みは未確認）。
+**While the `USB-OTG` side (USB-Serial-JTAG) is connected to the Mac, booting with the `RST` button also
+enters download mode** (`rst:0x1 (POWERON),boot:0x20 (DOWNLOAD(USB/UART0))`). With only the `USB-UART` side
+plugged in, the same `RST` boots normally with `boot:0x8 (SPI_FAST_FLASH_BOOT)`. Most of the symptom described
+in §12 as "reset over USB does not work" is this; running with the USB-OTG side plugged in is believed to have
+been the cause (the mechanism is unconfirmed).
 
-また、`USB-UART` 側（CH343）からの書き込みは、**CP2102N を外したら通るようになった**
-（§12 の GPIO44 の取り合い）。残っている症状は、`deploy --monitor`（`espflash monitor`）
-のリセットでアプリが走らないことだけで、今は `RST` ボタンで代えている。
-
----
-
-## 15. ESP32-S3 を 240 MHz にしたファーム（2026-10-09）
-
-`esp_hal::init` に `Config::default().with_cpu_clock(CpuClock::max())` を渡し、CPU を
-既定の 80 MHz から 240 MHz にした（PLL は 480 MHz のまま分周だけ変えるプリセット）。
-ファームだけを焼き直し、スロットに残っていた `sensor_display_rs.wasm` と配線表で回した。
-
-- 起動・配線表の読み込み・SHT40 の読み出しとも正常。UART のトレースも化けない
-  （SPI / I2C / UART は APB から作るので CPU のクロックに引きずられない）
-- 実機が読んだ応答（`69 0c 6a a9 20 3b`）を食わせた host と**全文一致 4,182 行**
-
-**速さはここでは測っていない。** トレースを出すビルドは約 120 KB を 115200 baud の
-UART に出すのに 10 秒ほどかかり、実行時間がそこで頭打ちになる。3 倍になることは
-2026-10-05 にトレースを切った計測で確かめてある（`docs/TODO.md` §4）。
+Also, flashing through the `USB-UART` side (CH343) **started working once the CP2102N was disconnected** (the
+GPIO44 contention of §12). The only remaining symptom is that the reset of `deploy --monitor`
+(`espflash monitor`) does not run the app; the `RST` button substitutes for now.
 
 ---
 
-## 16. ファームが名乗るようにした（2026-10-09、ESP32-S3）
+## 15. ESP32-S3 firmware at 240 MHz (2026-10-09)
 
-起動時、バナーの次の行に版・git・ABI・構成を 1 行で出すようにした
-（`docs/app-workflow.md` §3.8）。**これ以降の記録はファームの由来をこの行で残す。**
+`Config::default().with_cpu_clock(CpuClock::max())` is passed to `esp_hal::init`, raising the CPU from the
+default 80 MHz to 240 MHz (a preset that keeps the PLL at 480 MHz and only changes the divider). Only the
+firmware was reflashed, and it ran with the `sensor_display_rs.wasm` and the wiring table that remained in
+the slot.
+
+- Boot, reading the wiring table and reading the SHT40 all normal. The UART trace is not garbled either
+  (SPI / I2C / UART are derived from APB, so they do not follow the CPU clock)
+- **Identical in full, 4,182 lines**, against host fed with the response the board read (`69 0c 6a a9 20 3b`)
+
+**Speed is not measured here.** A build that emits the trace takes about 10 s to push about 120 KB through
+the 115200 baud UART, so the run time is capped there. That it is 3x faster was confirmed on 2026-10-05 with
+a measurement with the trace off (docs/TODO.md §4).
+
+---
+
+## 16. The firmware now identifies itself (2026-10-09, ESP32-S3)
+
+At boot, the line after the banner now reports the version, git, ABI and configuration in 1 line
+(docs/app-workflow.md §3.8). **From here on, records keep the firmware's provenance in this line.**
 
 ```
 wasmicon esp32s3
@@ -1090,54 +1053,56 @@ wasmicon: roles lcd-cs=10 lcd-dc=14 lcd-rst=15
 wasmicon: slot 6039 B crc32=909e18cd
 ```
 
-sensor-display のトレースは、実機の応答を食わせた host と**全文一致 4,182 行**。
-`git=` だけを書き換えたログと `trace diff` すると、判定は一致のまま警告が出る。
+The sensor-display trace is **identical in full, 4,182 lines**, against host fed with the board's response.
+A `trace diff` against a log with only `git=` edited keeps the verdict as a match but prints a warning.
 
-### ESP32-S3 のシリアルが 128 バイトで切れていた（同日に直した）
+### The ESP32-S3 serial was cut off at 128 bytes (fixed the same day)
 
-最初に焼いたファームでは、名乗りの行が `slot=v1/65` で切れた。`esp-hal` の
-`Uart::write` は**送信 FIFO（128 バイト）に入る分だけ書いて、書けたバイト数を返す**
-が、ポートの `SerialPort::write` は戻り値を捨てていた。それまでの行はたまたま
-128 バイトに収まっていたので表に出なかったが、トレース行は最大 160 バイトあるので、
-長い 16 進ダンプ（32 バイトの `list<u8>` や `data=`）で同じように切れていたはず。
-書き切るまで繰り返すように直した。Pico 系は `write_full_blocking` なので影響しない。
+In the first firmware flashed, the identity line was cut off at `slot=v1/65`. `esp-hal`'s `Uart::write`
+**writes only as much as fits in the transmit FIFO (128 bytes) and returns the number of bytes written**, but
+the port's `SerialPort::write` discarded the return value. The earlier lines happened to fit in 128 bytes so
+it never showed, but trace lines are up to 160 bytes, so long hex dumps (a 32-byte `list<u8>` or `data=`)
+must have been cut off the same way. Fixed to loop until everything is written. The Pico family uses
+`write_full_blocking`, so it is not affected.
 
 ---
 
-## 17. 最近の変更を Pico 2 W で確かめた（2026-10-09）
+## 17. Recent changes checked on the Pico 2 W (2026-10-09)
 
-§13（内蔵アプリの撤去）・§14（配線表）・§16（名乗り）は ESP32-S3 でしか見ていなかった。
-`14713cb` のファームを Pico 2 W に焼いて、同じ点を確かめた。Pico は `deploy --monitor`
-の 1 コマンドで、焼く → 起動 → 取り込みまで通る（ESP32-S3 のような RST は要らない）。
+§13 (removal of the built-in app), §14 (wiring table) and §16 (identity) had only been seen on the ESP32-S3.
+The firmware at `14713cb` was flashed to the Pico 2 W and the same points were checked. On the Pico, the
+single `deploy --monitor` command goes all the way from flash -> boot -> capture (no `RST` as on the
+ESP32-S3).
 
-| 確かめたこと | 出力 | 結果 |
+| Checked | Output | Result |
 |---|---|---|
-| 名乗り | `wasmicon id rp2350 fw=0.1.0 git=14713cb abi=wasmicon:hal@0.1.0 trace=on pages=4 …` | 最後まで出る |
-| 配線表を読む（`apps/sensor-display-rs` から deploy） | `wasmicon: roles lcd-cs=17 lcd-dc=20 lcd-rst=21` | `pin-by-role` は 3 つとも成功し `role:lcd-cs` などに正規化 |
-| トレースの一致 | センサーが応答しない経路 | host（応答なし）と**全文一致 3,734 行** |
-| 配線表なしで deploy（toml の無い場所から） | `wasmicon: roles none` → `[wasm] role not found` | `pin-by-role` は `unsupported`（7）。ピンは駆動しない |
-| アプリと配線表を消去 | `wasmicon: roles empty, no roles` / `wasmicon: slot empty, idle` | トレース 0 行で待機 |
+| Identity | `wasmicon id rp2350 fw=0.1.0 git=14713cb abi=wasmicon:hal@0.1.0 trace=on pages=4 ...` | printed to the end |
+| Reading the wiring table (deploy from `apps/sensor-display-rs`) | `wasmicon: roles lcd-cs=17 lcd-dc=20 lcd-rst=21` | all 3 `pin-by-role` succeed and normalize to `role:lcd-cs` and so on |
+| Trace match | the path where the sensor does not respond | **identical in full, 3,734 lines**, against host (no response) |
+| deploy without a wiring table (from a place with no toml) | `wasmicon: roles none` -> `[wasm] role not found` | `pin-by-role` is `unsupported` (7). The pins are not driven |
+| Erasing the app and the wiring table | `wasmicon: roles empty, no roles` / `wasmicon: slot empty, idle` | 0 trace lines, parked |
 
-### センサーの値まで全文一致（2026-10-11）
+### Identical in full down to the sensor values (2026-10-11)
 
-接触不良を直したあと、`apps/sensor-display-rs` から配線表つきで deploy し直した。
-実機の応答（`6b 70 36 98 25 88`）を食わせた host と**全文一致 4,182 行**。
-これで §13 / §14 / §16 の変更は、ESP32-S3 と Pico 2 W の両方でセンサーの値まで確かめた。
+After fixing the bad contact, deployed again from `apps/sensor-display-rs` with the wiring table.
+**Identical in full, 4,182 lines**, against host fed with the board's response (`6b 70 36 98 25 88`).
+With this, the changes of §13 / §14 / §16 are confirmed down to the sensor values on both the ESP32-S3 and
+the Pico 2 W.
 
-### SHT40 が応答しなかった（原因はジャンパと SHT40 の間の接触）
+### The SHT40 did not respond (cause: contact between the jumper and the SHT40)
 
-2026-10-09〜11 の Pico 2 W では、SHT40 への書き込みが毎回 `nack` になった
-（`bus.write(1, 68, 0xfd)` → `< 5`）。切り分けの順:
+On the Pico 2 W between 2026-10-09 and 11, every write to the SHT40 came back `nack`
+(`bus.write(1, 68, 0xfd)` -> `< 5`). The order of isolation:
 
-1. **10/07 に読めたファーム（`7b15465`、Rust 1.97.1）でも `nack`** → ファームではない
-2. **同じ SHT40 は ESP32-S3 では読めた** → センサーとアドレス（0x44）は正常
-3. **使い捨ての診断アプリ**で GP4 / GP5 をプルダウン / プル無し / プルアップの入力として
-   読み、I2C で全アドレスに書いた。外付けのプルアップがある線は、内部プルダウンを
-   掛けても high のままになるはずだが、**low だった**（`ack: none`）
-4. **L チカで、SDA / SCL に使っていたジャンパと Pico の 6・7 番ピンは信号を通す**ことを
-   確かめた。SHT40 のランプも点いていた → 残るのはジャンパと SHT40 の SDA / SCL ピンの間
-5. 確かめた 2 本で SHT40 に繋ぎ直すと `pulldown=high` / `ack: 0x44` になった
+1. **Even the firmware that read it on 10/07 (`7b15465`, Rust 1.97.1) gave `nack`** -> not the firmware
+2. **The same SHT40 could be read on the ESP32-S3** -> the sensor and the address (0x44) are fine
+3. **A throwaway diagnostic app** read GP4 / GP5 as inputs with pull-down / no pull / pull-up, and wrote to
+   every I2C address. A line with an external pull-up should stay high even with the internal pull-down
+   applied, but **it was low** (`ack: none`)
+4. **With blink, confirmed that the jumpers used for SDA / SCL and the Pico's pins 6 and 7 pass a signal.**
+   The SHT40's lamp was on too -> what remains is between the jumpers and the SHT40's SDA / SCL pins
+5. Reconnecting the SHT40 with the 2 verified wires gave `pulldown=high` / `ack: 0x44`
 
-**診断の読み方の注意**: 「プルダウンで low」は、外付けのプルアップが**ある**ときにだけ
-「線が繋がっていない」を意味する。モジュールにプルアップが無いと、繋がっていても
-同じ読み値になる（この日、一度この前提を外して読み違えた）。
+**A caution on reading the diagnostic**: "low with pull-down" means "the line is not connected" only when an
+external pull-up **is present**. If the module has no pull-up, a connected line reads the same (on this day,
+that assumption was dropped once and the reading was misinterpreted).

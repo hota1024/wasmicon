@@ -1,223 +1,225 @@
-# Wasmicon 引き継ぎドキュメント（記録）
+# Wasmicon handoff document (record)
 
-作成日: 2026-09-10 / 作成者: Claude (Cowork セッション) / オーナー: hota
+> **Historical record.** Kept as written at the time and translated from Japanese; section numbers are stable. Current rules: `docs/decisions.md`. Current status: `README.md`, `docs/TODO.md`.
 
-**引き継ぎとしての役目は終えた。** ここは「何をどう決めて、どう作ったか」の記録として残す。
-コードのコメント 72 箇所がこの文書の節番号を参照しているので、**節番号は変えない**。
+Created: 2026-09-10 / Author: Claude (Cowork session) / Owner: hota
 
-いま知りたいことによって、読む先が違う:
+**This document has finished its job as a handoff.** It stays as the record of what was decided, how, and how it was built.
+Code no longer cites this document. Its permanent content moved to `docs/decisions.md` (§2 item N -> D-0N, §3 #N -> A-0N, §6 -> P-01...P-13); section numbers are kept for the historical cross-references in the other docs.
 
-| 知りたいこと | 見る場所 |
+Where to look depends on what you need to know:
+
+| You want to know | Look at |
 |---|---|
-| このプロジェクトが何か、どうビルドするか | `README.md` |
-| **残っている作業** | `docs/TODO.md` |
-| 何がどこまで検証されたか | `docs/verification-report.md` |
-| WIT → Core Wasm の lowering 規則 | `docs/abi-spec.md`（**この仕様が正**） |
-| なぜその技術を選んだか | `docs/design-notes.md` |
-| **変えてはいけない決定事項** | 本書 §2 |
-| 実装中に踏みそうな穴 | 本書 §6 |
+| What this project is and how to build it | `README.md` |
+| **Remaining work** | `docs/TODO.md` |
+| What has been verified, and how far | `docs/verification-report.md` |
+| The WIT -> Core Wasm lowering rules | `docs/abi-spec.md` (**normative**) |
+| Why a technology was chosen | `docs/design-notes.md` |
+| **Decisions that must not be changed** | `docs/decisions.md` (D-NN; originally this document's §2) |
+| Pitfalls you are likely to hit while implementing | `docs/decisions.md` (P-NN; originally this document's §6) |
 
 ---
 
-## 0. 30 秒で分かる Wasmicon
+## 0. Wasmicon in 30 seconds
 
-マイコン（ESP32-S3, RP2350。RP2040 はポートのみで評価対象外）向けの WebAssembly 実行環境。
+A WebAssembly execution environment for microcontrollers (ESP32-S3, RP2350; RP2040 has a port only and is not evaluated).
 
-- **Runtime**: 自作の Core Wasm インタプリタ（既存の wasm3 / WAMR / wasmi は使わない）
-- **HAL**: GPIO / I2C / SPI / time / log を WIT で定義。**Component Model は使わない**。WIT は IDL としてのみ使い、`abi-spec.md` の規則で Core Wasm の import に落とす
-- **Bindings**: Rust と AssemblyScript。WIT から生成する
-- **ゴール**: I2C 温湿度センサー (SHT4x) を読んで SPI ディスプレイ (ILI9341) に描くアプリを Rust と AS で書き、**同一 Wasm バイナリ**を ESP32-S3 と Pico 2 W で動かして host call トレースが一致することを検証する
-- **評価ボードの変更（2026-10-07 オーナー決定）**: 2 ボード目を Pico WH（RP2040）から **Pico 2 W（RP2350）** に置き換えた。RP2040 は評価対象から外す。`ports/rp2040` のコードと CI のビルドは残すが、実機検証と I2C / SPI の実装はしない。以下の Phase 4〜6 の完了条件の「Pico」「両ボード」は ESP32-S3 と Pico 2 W を指す
-- **ゴールは達成（2026-10-07 オーナー判断）**。sensor-display（Rust / AS）が 2 ボードで動き、トレースはセンサーを読むまで 2 ボードで一致し、読んだ後は各ボードが「そのボードの応答を食わせた host」と全文一致した。これをもって当初の目標を完了とした（`docs/verification-report.md` §11 / §12）
-
----
-
-## 1. 現在の状態 → `README.md` と `docs/TODO.md` へ移動
-
-状態は変わり続けるので、この文書に置くと必ず古くなる。
-現在地は `README.md`、残作業は `docs/TODO.md` が正。
+- **Runtime**: a from-scratch Core Wasm interpreter (the existing wasm3 / WAMR / wasmi are not used)
+- **HAL**: GPIO / I2C / SPI / time / log defined in WIT. **The Component Model is not used.** WIT serves only as an IDL and is lowered to Core Wasm imports by the rules in `abi-spec.md`
+- **Bindings**: Rust and AssemblyScript, generated from WIT. [C bindings were added later, 2026-10.]
+- **Goal**: write an app in Rust and in AS that reads an I2C temperature / humidity sensor (SHT4x) and draws on an SPI display (ILI9341), run the **same Wasm binary** on ESP32-S3 and Pico 2 W, and verify that the host call traces match
+- **Evaluation board change (owner decision, 2026-10-07)**: the second board was replaced, from Pico WH (RP2040) to **Pico 2 W (RP2350)**. RP2040 is no longer evaluated. The `ports/rp2040` code and its CI build stay, but there is no hardware verification and no I2C / SPI implementation for it. "Pico" and "both boards" in the completion criteria of Phase 4 to 6 below mean ESP32-S3 and Pico 2 W
+- **The goal is reached (owner judgment, 2026-10-07)**. sensor-display (Rust / AS) runs on both boards; the traces match across the two boards up to the sensor read, and after the read, each board's trace matches, line for line, a host run fed with that board's response. With this the original goal was declared complete (docs/verification-report.md §11 / §12)
 
 ---
 
-## 2. 確定している決定事項（変更禁止）
+## 1. Current state -> moved to `README.md` and `docs/TODO.md`
 
-1. **WIT のサブセット**は `abi-spec.md` §2 の通り。`record` / `variant` / `option` / `tuple` は使わない。
-2. **ハンドル表現**は WIT の `resource` 構文。import 名は Canonical ABI と同じ `[static]r.f` / `[method]r.f` / `[resource-drop]r`。
-3. **エラーコード**は HAL 共通の `types.error-code` 1 つ。関数は単一の i32 ステータスを返す（0 = 成功、n>0 = discriminant+1）。
-4. **`result<T,_>` の T は末尾 out ポインタ**、`list<u8>` の戻り値は `(buf, cap, len-out)` の呼び出し側バッファ。`cabi_realloc` は不要。
-5. **import モジュール名**は `wasmicon:hal/<iface>@0.1.0`。バージョン必須、完全一致。
-6. **ゲスト export** は `run: func()` と `memory`。`_start` / `_initialize` は使わない。
-7. **対応機能セット**: MVP + sign-ext + nontrapping-fptoint + bulk-memory（memory.* のみ）+ multi-value + mutable-globals。SIMD / threads / EH / tail-call / GC / reference-types 拡張は非対応。
-8. **SPI の CS/DC はゲストが gpio で制御**する。SPI インターフェースは CS を扱わない。
-9. **センサーは SHT4x（SHT40 / SHT41 / SHT45）**、ディスプレイは ILI9341。（2026-09-29 オーナー決定。手元の実機が SHT40 のため SHT31/SHT30 から変更した。design-notes §7 の SHT31 推奨を上書きする。**コマンドと換算式は `apps/README.md` §1 が正**。SHT3x との違いは計測コマンドと湿度換算の 2 点だけで、応答形式・CRC-8・温度換算は同一。）
-10. **決定性検証の定義**: `time` を除く全 host call とその結果のトレース（abi-spec §9 の形式）が両ボードで一致すること。
-11. **ランタイム実装言語は Rust `no_std`**（2026-09-10 オーナー決定）。依存クレートゼロ、`alloc` 不使用、arena はポートから注入。design-notes §4 の C11 推奨を上書きする。ABI・WIT・フェーズ構成はこの変更の影響を受けない。
-12. **フルスクラッチ実装**。wasm3 / WAMR / wasmi のコードは取り込まない（アルゴリズムを参考にするのは可、コード流用は不可）。コアは Claude Code が書く（2026-09-10 オーナー決定）。
+The state keeps changing, so anything placed here would go stale.
+Where we are is in `README.md`; remaining work is in `docs/TODO.md`, which is the source of truth.
 
 ---
 
-## 3. 未決事項と、Claude Code が採用してよいデフォルト
+## 2. Frozen decisions (do not change)
 
-**この表は決定の記録**。着手当時に未回答だった項目と、採用したデフォルトを残してある。
-実装はすべてこのデフォルトで動いている。
+1. **The WIT subset** is exactly docs/abi-spec.md §2. `record` / `variant` / `option` / `tuple` are not used.
+2. **Handle representation** is the WIT `resource` syntax. Import names are the same as the Canonical ABI: `[static]r.f` / `[method]r.f` / `[resource-drop]r`.
+3. **Error code**: one `types.error-code` shared by the whole HAL. Functions return a single i32 status (0 = success, n>0 = discriminant+1).
+4. **The T of `result<T,_>` goes through a trailing out-pointer**; a `list<u8>` return value uses a caller buffer `(buf, cap, len-out)`. `cabi_realloc` is not needed.
+5. **Import module name** is `wasmicon:hal/<iface>@0.1.0`. The version is required and must match exactly.
+6. **Guest exports** are `run: func()` and `memory`. `_start` / `_initialize` are not used.
+7. **Supported feature set**: MVP + sign-ext + nontrapping-fptoint + bulk-memory (memory.* only) + multi-value + mutable-globals. The SIMD / threads / EH / tail-call / GC / reference-types extensions are not supported.
+8. **SPI CS/DC are driven by the guest through gpio.** The SPI interface does not handle CS.
+9. **The sensor is SHT4x (SHT40 / SHT41 / SHT45)** and the display is ILI9341. (Owner decision, 2026-09-29. Changed from SHT31/SHT30 because the board on hand is an SHT40. Overrides the SHT31 recommendation in docs/design-notes.md §7. **Commands and conversion formulas: apps/README.md §1 is normative.** The only differences from SHT3x are the measurement command and the humidity conversion; the response format, CRC-8 and temperature conversion are identical.)
+10. **Definition of the determinism verification**: the trace of every host call and its result except `time` (in the docs/abi-spec.md §9 format) is identical on both boards.
+11. **The runtime implementation language is Rust `no_std`** (owner decision, 2026-09-10). Zero dependency crates, no `alloc`, the arena is injected by the port. Overrides the C11 recommendation in docs/design-notes.md §4. The ABI, the WIT and the phase structure are not affected by this change.
+12. **From-scratch implementation.** No code from wasm3 / WAMR / wasmi is taken (studying their algorithms is fine, reusing code is not). The core is written by Claude Code (owner decision, 2026-09-10).
 
-**まだオーナーの確定を待っている項目は `docs/TODO.md` §2 に集約した。** ここには追記しない。
+---
 
-| # | 項目 | デフォルト | 根拠 |
+## 3. Open questions and the defaults Claude Code may adopt
+
+**This table is a record of decisions.** It keeps the items that were unanswered when work started and the defaults that were adopted.
+All implementation runs on these defaults.
+
+**Items still waiting for the owner's decision are collected in docs/TODO.md §2.** Nothing is appended here.
+
+| # | Item | Default | Rationale |
 |---|---|---|---|
-| 1 | ランタイム実装言語 | **決定済み → §2-11（Rust `no_std`）** | オーナー判断（2026-09-10）「組込みを安全に書けるから」。軽量化の工夫は Phase 2 の条件に入れた |
-| 2 | ボード間の GPIO 番号差の吸収 | **採用済み（2026-09-10）**。`wasmicon:hal/board@0.1.0` の `pin-by-role`。当初は役割名を `led` / `lcd-cs` / `lcd-dc` / `lcd-rst` の固定の語彙とし、ファームに既定の表を置いた。**2026-10-07 にオーナーが語彙と既定の表を廃止した**: 役割名は自由で、配線はアプリの `wasmicon.toml` に書き、`deploy` がデバイスの設定スロットに書く（`docs/app-workflow.md` §3.9） | 同一バイナリで検証するため必須 |
-| 3 | `sleep-ms` 中の挙動 | ポート層の HAL に委ねる。host: `std::thread::sleep`、rp2040 / esp32s3: 各 HAL クレートの `Delay`（#8 に依存） | 自然な選択 |
-| 4 | トラップ後の挙動 | ログ出力して停止（無限ループ / abort）。再起動しない | デバッグしやすい |
-| 5 | `log` の UTF-8 検証 | しない | 仕様通り |
-| 6 | `spi.transfer` | v0.1 に残す | 実装コストが低い |
-| 7 | コアの実装分担 | **決定済み → §2-12（フルスクラッチ、Claude Code が書く）** | オーナー判断（2026-09-10） |
-| 8 | **ポート層の実装方式**（Rust 化に伴い新規） | **全て Rust。host = `std`、rp2040 = `rp-hal` + `cortex-m-rt`、esp32s3 = `esp-hal`（`no_std`）。ESP-IDF / Pico SDK は使わない** | コアが Rust である以上 Xtensa のフォークツールチェーンは必須で、C SDK を混ぜても軽くならない。単一言語・単一ツールチェーンの方が軽く安全。**2026-09-10 に承認済み**（本書 §8）。3 ポートとも実装済み |
-| 9 | **Cargo workspace の分割**（Rust 化に伴い新規） | **承認済み（2026-09-10）**。ターゲットごとに別 workspace。root = `runtime` + `tools/wasmicon-gen` + `ports/host`。guest workspace の root は `apps`（`bindings/rust` を members に含む）。`ports/rp2040` / `ports/esp32s3` は Phase 4 で作る。`.cargo/config.toml` は **カレントディレクトリ基準**で探索されるので、ゲストのビルドは `cd apps && cargo build --release` で行う | 単一 workspace ではターゲット・profile・toolchain が衝突する |
+| 1 | Runtime implementation language | **Decided -> §2-11 (Rust `no_std`)** | Owner judgment (2026-09-10): "embedded code can be written safely". The size-reduction measures went into the Phase 2 criteria |
+| 2 | Absorbing GPIO number differences between boards | **Adopted (2026-09-10)**. `pin-by-role` in `wasmicon:hal/board@0.1.0`. Originally the role names were a fixed vocabulary (`led` / `lcd-cs` / `lcd-dc` / `lcd-rst`) with a default table in the firmware. **On 2026-10-07 the owner abolished the vocabulary and the default table**: role names are free-form, the wiring is written in the app's `wasmicon.toml`, and `deploy` writes it to the device's config slot (docs/app-workflow.md §3.9) | Required to verify with the same binary |
+| 3 | Behavior during `sleep-ms` | Left to the port layer's HAL. host: `std::thread::sleep`; rp2040 / esp32s3: the `Delay` of each HAL crate (depends on #8) | The natural choice |
+| 4 | Behavior after a trap | Log and halt (infinite loop / abort). No restart | Easier to debug |
+| 5 | UTF-8 validation in `log` | None | As specified |
+| 6 | `spi.transfer` | Keep in v0.1 | Low implementation cost |
+| 7 | Who implements the core | **Decided -> §2-12 (from scratch, written by Claude Code)** | Owner judgment (2026-09-10) |
+| 8 | **Port layer implementation approach** (new with the move to Rust) | **All Rust. host = `std`, rp2040 = `rp-hal` + `cortex-m-rt`, esp32s3 = `esp-hal` (`no_std`). ESP-IDF / Pico SDK are not used** | With the core in Rust, the Xtensa fork toolchain is required anyway, and mixing in a C SDK does not make anything lighter. One language and one toolchain is lighter and safer. **Approved 2026-09-10** (this document §8). All 3 ports implemented |
+| 9 | **Splitting the Cargo workspaces** (new with the move to Rust) | **Approved (2026-09-10)**. One workspace per target. root = `runtime` + `tools/wasmicon-gen` + `ports/host`. The guest workspace root is `apps` (with `bindings/rust` among its members). `ports/rp2040` / `ports/esp32s3` are created in Phase 4. `.cargo/config.toml` is looked up **relative to the current directory**, so guests are built with `cd apps && cargo build --release` | In a single workspace the targets, profiles and toolchains collide |
 
-デフォルト 2 の採用に伴い、`wit/board.wit` を追加し `world app` に `import board;` を足し、`abi-spec.md` §7 / §8 / §10 を更新した。
-あわせて **abi-spec §9 に正規化の規則を追加**した。役割名で引いた GPIO 番号はボードごとに違うため、そのままトレースに出すと同一バイナリでも一致しない。ポートは番号を `role:led` の形に置き換えて出す。
+Adopting default 2 added `wit/board.wit`, added `import board;` to `world app`, and updated docs/abi-spec.md §7 / §8 / §10.
+At the same time **a normalization rule was added to docs/abi-spec.md §9**. A GPIO number looked up by role differs per board, so printing it as-is would make the traces of the same binary differ. Ports replace the number with the form `role:led`.
 
-デフォルト 8 を却下する（C SDK を使う）場合、Phase 1 の出力に C ヘッダ (`runtime/include/wasmicon/hal.h`) を戻し、コアを `staticlib` として `extern "C"` API を生やす必要がある。
-
----
-
-## 4. リポジトリ構成 → `README.md` へ移動
-
-構成は変わりうるので README を正とする。別 workspace に分けた理由は §3 #9。
+If default 8 is rejected (use the C SDKs), the C header (`runtime/include/wasmicon/hal.h`) has to come back as a Phase 1 output and the core has to grow an `extern "C"` API as a `staticlib`.
 
 ---
 
-## 5. フェーズと完了条件
+## 4. Repository layout -> moved to `README.md`
 
-順番は守ること。各フェーズの完了条件を満たしてから次へ進む。
-
-### Phase 1: ジェネレータ `wasmicon-gen`
-
-- Rust + `wit-parser` クレートで実装。`tools/wit2sig.py` と同じ規則を Rust に移植し、まず `wit2sig.py` の出力と一致することをテストにする。
-- 出力: (a) `runtime/src/generated.rs` — import 表（module, name, sig 文字列, ホスト関数のスロット）とエラーコード enum、(b) `bindings/rust/src/generated.rs` — `#[link(wasm_import_module=...)]` extern 宣言と enum、(c) `bindings/assemblyscript/assembly/generated.ts` — `@external` 宣言と enum。
-- サブセット外の WIT 構文はエラーで拒否する。
-- `wit2sig.py` との突き合わせは `tools/check-sigs.sh`（`wasmicon-gen --sigs` の出力と diff）。abi-spec §7 の表そのものは `tools/wasmicon-gen/tests/abi_spec.rs` にハードコードして検査する（§7 が正なので、期待値は WIT からではなく仕様書から取る）。
-- 生成した Rust は rustfmt に通してから書き出す。そうしないと `cargo fmt --check` と diff ゼロ検査が両立しない。
-- **完了条件**: 3 出力が abi-spec §7 と一致。CI で WIT 変更時に再生成して diff がゼロであることを検査。→ **達成（2026-09-10）**。`.github/workflows/ci.yml` の root ジョブが `cargo test`（`tests/generated_up_to_date.rs`）と `--check` で検査する。
-- `flags` は abi-spec §2.1 が許可しているので生成に対応しているが、v0.1 の `wit/` には無いため実際の出力では使われていない（テストのみ）。
-- 残: AssemblyScript の出力は `asc` でのコンパイル検証をしていない（Phase 3 で AS ツールチェーンを入れたときに行う）。
-
-### Phase 2: ランタイムコア（ホスト PC 上）
-
-- Rust `no_std`、**依存クレートゼロ**、`alloc` 不使用。arena（`&'a mut [u8]`）をポートから受け取り、内部構造は生ポインタではなく arena 内のインデックス/オフセットで持つ。
-- lint: CI で `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`。`unsafe` は最小限に閉じ込め、必ず直前に `// SAFETY:` を書く。
-- 軽量化（オーナー要求）: root workspace の `[profile.release]` は `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`（サイズ計測用）。`panic = "abort"` と `strip = true` はここに置かず、guest / ポートの workspace 側の `[profile.release]` に置く（ホストツールと `cargo test` は unwind が要る）。コアで `core::fmt` を使わない。ジェネリクスの単相化でコードが膨らまないよう型は具体型で書く。
-  - サイズ計測: `sh tools/measure-size.sh`。**2026-09-10 時点で thumbv6m-none-eabi 向け 49.4 KiB**（`.text` + `.rodata`、LTO なしの上限値）。RP2040 の 2 MB フラッシュに対して十分小さい
-- 構造: `decode`（セクション解析、コードはフラッシュ上のスライス `&'static [u8]` を保持）→ `validate`（型検査 + br のジャンプ先 side table 構築）→ `interp`（スタックマシン、`match` ディスパッチ）。
-- **Rust に computed goto は無い**。`match` ループから始める。明示的テールコール（`become`）は unstable なので当てにしない。最適化は spec テスト通過後にプロファイルを取ってから。
-- Wasm の算術は wrapping。`wrapping_*` / `rotate_*` / `checked_*` を明示的に使う。debug の `overflow-checks` は on のままにし、引っかかった箇所は仕様どおりの wrapping に直す。
-- `memory.grow` はポートが指定する最大ページ数まで。
-- import 解決: 生成された `generated.rs` の表を module 名 + name + sig で完全一致リンク。
-- spec テストランナーは `runtime/tests/` に置く。ここは dev-dependencies を使ってよい（`wast` クレートで `.wast` を直接読む、または `wasm-tools json-from-wast` を使う）。コア本体の依存ゼロは崩さない。
-- **完了条件**: WebAssembly spec testsuite（対応機能セット分）を全通過。`ports/host` で `apps/blink-rs` の Wasm が動き、mock GPIO のトレースが出る。→ **達成（2026-09-10）**。
-  - 「全通過」の定義は `runtime/tests/spec.rs` の `FILES`（コア 74 ファイル）。除外は同ファイルの `EXCLUDED` に理由つきで列挙した。22507 コマンドが通る
-  - `apps/blink-rs` は Phase 3 で作るので、同じ host call 列を出す手書きの `ports/host/tests/blink.wat` で先に検証している。Phase 3 で本物に差し替える
-- 最適化は spec テスト通過後、プロファイルを取ってから。RP2040 で ILI9341 のテキスト描画が目視で 1 秒以内に終わる程度を目標。
-
-### Phase 3: Rust / AS バインディング + blink
-
-- Rust: `no_std` クレート、`wasm32-unknown-unknown`。生成 extern を `Pin` / `I2cBus` / `SpiBus` の安全ラッパ（`Drop` で `[resource-drop]`）で包む。ビルドフラグ: `-C target-feature=-reference-types,+sign-ext,+nontrapping-fptoint,+bulk-memory,+mutable-globals,+multivalue`、`--initial-memory=65536`、`-z stack-size=8192`、`panic=abort`、`opt-level=z`。**実体の正は `tools/wasmicon-cli/src/flags.rs`**（`apps/.cargo/config.toml` と `wasmicon new` の雛形はそこから出る。`docs/app-workflow.md` §4.4）。
-- AS: `--runtime stub`、`--initialMemory 1`、`--disable simd,threads,exception-handling`、`--enable sign-extension,nontrapping-f2i,bulk-memory,mutable-globals`。`env.abort` は AS 用に小さな shim をホストへ用意（トラップに変換）。
-- **完了条件**: `blink-rs` と `blink-as` の Wasm を `wasm-tools validate --features=...` で対応機能セット内であることを確認し、`ports/host` で同じ GPIO トレースを出す。→ **達成（2026-09-10）**。`ports/host/tests/apps.rs` が両方をビルドして機能検査し、`gpio` と `board` の host call 列が完全一致することを検査する。blink-rs 796 バイト / blink-as 2.1 KB。
-- AssemblyScript のビルドはリポジトリルートの npm workspace（`npm ci`）+ `npx asc`。asc がスコープ付きパッケージ (`@wasmicon/hal`) を `~lib` として解決できないので、アプリ側は相対パスで import している。
-
-### Phase 4: ポート `rp2040` → `esp32s3`
-
-- **Pico を先に**やる（制約が厳しい方から）。
-- ポート層の実装方式は §3 #8（全 Rust）。着手前にオーナー確認。
-- Pico: `rp2040-hal` + `cortex-m-rt`、`thumbv6m-none-eabi`、`memory` 上限 2 ページ。Wasm バイナリは `include_bytes!` で `.rodata`（flash, XIP）に置き `&'static [u8]` としてランタイムに渡す。
-  - GPIO は番号で動的に触るので、型付きピンではなく SIO / IO_BANK0 / PADS_BANK0 のレジスタを直接叩く。型付きピンは静的な割り当て向けで、`pin.open(index)` の形に合わない
-  - マイコン向けに `Config` を絞る（値スタック 512 / ネスト 64 / ローカル 256 / 呼び出し深さ 32）。ホストの既定値のままだと検証の作業領域が数百 KB になり SRAM に載らない
-  - **2026-09-10 時点: ビルドが通るところまで。実機での動作は未確認**（フラッシュ 56 KB / RAM 172 KB）
-- ESP32-S3: `esp-hal`（`no_std`）、espup が入れる Xtensa ツールチェーン（`rust-toolchain.toml` の `channel = "esp"`）、上限 4 ページ（PSRAM なし）。
-  - Xtensa のプリビルド core は配られていないので `.cargo/config.toml` で `build-std = ["core"]` を指定する
-  - リンカ（`xtensa-esp32s3-elf-gcc`）は espup が入れるが PATH に無い。`ports/esp32s3/build.sh` が `~/export-esp.sh` を読んでから cargo を呼ぶ
-  - GPIO は RP2040 と同じくレジスタ直叩き（IO_MUX の MCU_SEL=1、GPIO マトリクスの out_sel=128）
-  - arena は 300 KB。320 KB にするとリンカが「location counter を戻せない」と言って落ちる（DRAM の実効容量の上限）
-  - **2026-09-10 時点: ビルドが通るところまで。実機での動作は未確認**（.text 80 KB / .bss 405 KB）
-- トレースは cargo feature `trace` を有効にしたビルドで abi-spec §9 形式をシリアル（UART / USB-CDC）に出す。
-- ボード設定（abi-spec §8 の表）は `ports/<board>/src/board.rs` に集約し、`board.pin-by-role` を実装。
-- **完了条件**: 両ボード（ESP32-S3 と Pico 2 W）で `blink-rs` / `blink-as` が動き、シリアルのトレースが host 版と一致。→ **blink は未実施**（ゴールの判定には含めない。2026-10-07 にオーナーがゴール達成と判断）。2 ボードとも GPIO は `lcd-demo-rs` / `sensor-display` で実機で動いているが、blink（`led` 役の外付け LED）はまだ焼いていない（`docs/TODO.md` §1.3）。
-
-### Phase 5: センサー + ディスプレイアプリ
-
-- SHT4x: アドレス・計測コマンド・待ち時間・CRC-8・換算式は **`apps/README.md` §1 が正**（ここに書き写すと二重管理になる。`ili9341.rs` の三重化で一度やらかしている → `docs/TODO.md` §2.1）。CRC-8 の検証はゲストで行う。**表示は固定小数（×100 の整数）で計算し、浮動小数点を使うのはあえて 1 箇所（f32 変換）に限定**して決定性検証の題材にする。
-- ILI9341: 初期化シーケンスは一般的なもの（SWRESET, SLPOUT, PIXFMT=0x55 (RGB565), MADCTL, DISPON）。描画は「矩形塗り」と「8×8 ビットマップフォントでの文字列描画」の 2 プリミティブのみ。行単位（最大 320×8×2 = 5 KB）のバッファを `spi.write` で送る。全画面フレームバッファは持たない（RP2040 に載らない）。
-- Rust 版と AS 版は**同じ描画結果**になるよう、フォントと座標を共通仕様にする（`apps/README.md` に書く）。→ **書いた**（137 行）。片方を変えたらもう片方も変える。
-- **完了条件**: 4 通り（Rust/AS × ESP32-S3/Pico 2 W）で表示が出る。→ **達成（2026-10-07）**。4 通りとも実機で表示が出て、実機が読んだ応答を host に食わせたトレースと全文一致した（`docs/verification-report.md` §12）。
-  - `ports/host` で両ゲストを走らせ、**トレース全文（当時 1215 行、2026-10-05 の画面デザイン変更後は 4183 行）が完全一致**することをテストで検査する（`ports/host/tests/apps.rs`）。abi-spec §9 により `time` はトレースに出ないので、全文一致がそのまま §2-10 の「`time` を除く全 host call と結果が一致」になる。`spi.write` のトレースは data の CRC-32 なので、一致は「送っているピクセルが同一」を意味する
-  - センサーは `verify/sht4x-replay.txt` の記録済み応答を `WASMICON_I2C_REPLAY` で流し込む。2026-10-07 に実機（Pico 2 W の SHT40）から記録したものに差し替えた
-
-### Phase 6: クロスボード検証
-
-- `verify/` に、(1) 記録済み SHT4x 応答を返す mock I2C モード（ポート層の `WASMICON_I2C_REPLAY`）、(2) 2 ボードのトレースを diff するスクリプト、(3) `ports/host` + wasmtime での差分テスト（インタプリタの正しさ）。→ **3 つとも作った（2026-09-10）**。
-  - (1) `WASMICON_I2C_REPLAY` + `verify/sht4x-replay.txt`。応答は**合成データ**で、実機から記録したものへの差し替えが残る
-  - (2) `verify/diff-traces.sh`。シリアルのバナーとゲストの `[wasm]` 行を落として `> ` / `< ` の行だけを突き合わせる。`--self-test` で正規化の正しさを検査できる
-  - (3) `verify/differential/`。**HAL を共有**して同じ `.wasm` を wasmtime 45 と自作インタプリタで走らせる。`Resolver::call` がエンジンに依存しないので、差が出たらそれはインタプリタのバグ。4 ゲスト全部で完全一致
-- **完了条件**: 同一 `.wasm`（Rust 版、AS 版それぞれ）を両ボード（ESP32-S3 と Pico 2 W）で走らせ、`time` を除くトレースと SPI ピクセル CRC が完全一致。結果を `docs/verification-report.md` にまとめる。→ **達成（2026-10-07 オーナー判断）**。
-  - `lcd-demo-rs`（センサー無し）は 2 ボードで 14,352 行完全一致（§6 / §7 / §8）
-  - `sensor-display` は Rust 版・AS 版とも、**センサーを読むまでの全行**が 2 ボードで一致する。読んだ後は**ボードごとに読んだ値が違う**ので文字通りの全文一致にはならない。代わりに、各ボードのトレースが「そのボードが読んだ応答を食わせた host」と全文一致することを 4 通りで確かめた（§11 / §12）。**同じ応答を 2 ボードに注入する手段は無い**ので、2 ボードの直接比較は「各ボード ≡ host」を介した間接的なものにとどまる。**オーナーがこれで完了と判断した**（2026-10-07）
+The layout can change, so the README is the source of truth. The reason for the separate workspaces is §3 #9.
 
 ---
 
-## 6. 落とし穴・注意点
+## 5. Phases and completion criteria
 
-### ゲスト側
+Keep the order. Meet each phase's completion criteria before moving to the next.
 
-- **Rust の wasm32 デフォルト機能**: 最近の rustc は `reference-types` / `multivalue` を有効にする。`call_indirect` のテーブルインデックスは LEB128 で読み、0 以外は拒否する実装にしておく（abi-spec §6.1 注）。
-- **AS は `env.abort` を import する**: `--noAssert` にしても残ることがある。ホストに `env.abort(msg, file, line, col)` を用意しトラップに変換する。これは `world app` には無い例外的 import として明記する。
+### Phase 1: the generator `wasmicon-gen`
 
-### ランタイム側（Rust）
+- Implemented in Rust with the `wit-parser` crate. Port the rules of `tools/wit2sig.py` to Rust and first make a test of matching `wit2sig.py`'s output.
+- Outputs: (a) `runtime/src/generated.rs` -- the import table (module, name, sig string, host function slot) and the error-code enum; (b) `bindings/rust/src/generated.rs` -- `#[link(wasm_import_module=...)]` extern declarations and the enum; (c) `bindings/assemblyscript/assembly/generated.ts` -- `@external` declarations and the enum.
+- WIT syntax outside the subset is rejected with an error.
+- The cross-check against `wit2sig.py` is `tools/check-sigs.sh` (diff against the output of `wasmicon-gen --sigs`). The table in docs/abi-spec.md §7 itself is hard-coded in `tools/wasmicon-gen/tests/abi_spec.rs` and checked there (§7 is normative, so the expected values come from the spec, not from the WIT).
+- Generated Rust is run through rustfmt before it is written out. Otherwise `cargo fmt --check` and the zero-diff check cannot both hold.
+- **Completion criteria**: the 3 outputs match docs/abi-spec.md §7. CI regenerates on a WIT change and checks for a zero diff. -> **Reached (2026-09-10)**. The root job in `.github/workflows/ci.yml` checks this with `cargo test` (`tests/generated_up_to_date.rs`) and `--check`.
+- `flags` is allowed by docs/abi-spec.md §2.1, so generation supports it, but the v0.1 `wit/` has none, so it does not appear in the real output (tests only).
+- Remaining: the AssemblyScript output has not been compile-checked with `asc` (to be done in Phase 3 when the AS toolchain is installed).
 
-- **`no_std` に無い浮動小数メソッド**: `floor` / `ceil` / `trunc` / `round` / `sqrt` などは `core` に無い（`std` か `libm`）。依存クレートゼロを守るなら自前実装する。`f32.sqrt` は Wasm の必須命令なので避けて通れない。`f32.nearest` は偶数丸め、`min`/`max` の NaN 伝播、`copysign`、`trunc_sat` も仕様どおりに自前で書く。spec テストの `float_misc.wast`, `conversions.wast` が鬼門。
-- **RP2040 は FPU 無し・ハード除算無し**: f32/f64 は `compiler_builtins` のソフトフロートになる。IEEE 準拠は保たれるが遅い。
-- **ESP32-S3 の FPU は f32 のみ**: f64 はソフト。Xtensa の FPU は非正規化数を扱えない設定があるので、spec テストの denormal ケースを ESP32-S3 実機でも回して確認する。
-- **XIP 上のバイトコードを直接読む**: RP2040 (Cortex-M0+) は非アライメントのワードアクセスで HardFault する。スライスからの読み出しは必ず `u32::from_le_bytes(bytes[i..i+4].try_into().unwrap())` 形式にし、`ptr::read` / `align_to` / 参照のキャストを使わない（HardFault かつ UB）。LEB128 はバイト単位で読む。
-- **`memory` の範囲検査**: `list<u8>` 引数と out ポインタは host call のたびに範囲検査する。`checked_add` と `slice::get` を使い、`as` キャストでの暗黙の切り詰めを作らない。
-- **`panic = "abort"` でもパニックメッセージは残る**: `panic!` とスライスの暗黙の境界チェックが文字列をバイナリに残す。コアは `Result` を返す設計にし、ホットパスは `get()` で明示的に扱う。`panic_immediate_abort` は build-std が要るので当てにしない。
-- **`core::fmt` はサイズの主犯**: コアでは `write!` / `{:?}` / `Display` を使わない。トレース出力はポート層で、バイト列を直接書く形にする。
+### Phase 2: the runtime core (on the host PC)
 
-### ツールチェーン
+- Rust `no_std`, **zero dependency crates**, no `alloc`. Receives the arena (`&'a mut [u8]`) from the port; internal structures hold indices / offsets into the arena, not raw pointers.
+- lint: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` in CI. `unsafe` is confined to a minimum and always has a `// SAFETY:` comment directly above it.
+- Size reduction (owner requirement): the root workspace's `[profile.release]` is `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1` (for size measurement). `panic = "abort"` and `strip = true` are not placed here but in the `[profile.release]` of the guest / port workspaces (host tools and `cargo test` need unwind). No `core::fmt` in the core. Types are written concretely so that generic monomorphization does not bloat the code.
+  - Size measurement: `sh tools/measure-size.sh`. **As of 2026-09-10, 49.4 KiB for thumbv6m-none-eabi** (`.text` + `.rodata`, upper bound without LTO). Small enough against the RP2040's 2 MB flash
+- Structure: `decode` (section parsing; code is kept as a slice `&'static [u8]` in flash) -> `validate` (type checking + building the side table of `br` targets) -> `interp` (stack machine, `match` dispatch).
+- **Rust has no computed goto.** Start from a `match` loop. Explicit tail calls (`become`) are unstable, so do not rely on them. Optimize after the spec tests pass and after profiling.
+- Wasm arithmetic is wrapping. Use `wrapping_*` / `rotate_*` / `checked_*` explicitly. Keep `overflow-checks` on in debug and fix whatever it catches to the wrapping the spec requires.
+- `memory.grow` is limited to the maximum page count given by the port.
+- Import resolution: link against the table in the generated `generated.rs` by exact match of module name + name + sig.
+- The spec test runner lives in `runtime/tests/`. dev-dependencies are allowed there (read `.wast` directly with the `wast` crate, or use `wasm-tools json-from-wast`). The core itself stays at zero dependencies.
+- **Completion criteria**: the WebAssembly spec testsuite (for the supported feature set) passes in full. The `apps/blink-rs` Wasm runs in `ports/host` and produces a mock GPIO trace. -> **Reached (2026-09-10)**.
+  - "Passes in full" is defined by `FILES` in `runtime/tests/spec.rs` (74 core files). Exclusions are listed with reasons in `EXCLUDED` in the same file. 22507 commands pass
+  - `apps/blink-rs` is created in Phase 3, so a hand-written `ports/host/tests/blink.wat` producing the same host call sequence verifies this first. Replaced by the real app in Phase 3
+- Optimization comes after the spec tests pass and after profiling. Target: ILI9341 text drawing on RP2040 visibly finishes within about 1 second.
 
-- **Xtensa は upstream Rust 非対応**: ESP32-S3 は espup で入れるフォーク（`channel = "esp"`）が要る。CI で ESP32-S3 をビルドするなら espup のインストール手順を含める。RP2040 は `rustup target add thumbv6m-none-eabi` だけで済む。
+### Phase 3: Rust / AS bindings + blink
 
-### 共通
+- Rust: a `no_std` crate, `wasm32-unknown-unknown`. Wrap the generated externs in safe wrappers `Pin` / `I2cBus` / `SpiBus` (`[resource-drop]` in `Drop`). Build flags: `-C target-feature=-reference-types,+sign-ext,+nontrapping-fptoint,+bulk-memory,+mutable-globals,+multivalue`, `--initial-memory=65536`, `-z stack-size=8192`, `panic=abort`, `opt-level=z`. **The source of truth is `tools/wasmicon-cli/src/flags.rs`** (`apps/.cargo/config.toml` and the `wasmicon new` scaffold are produced from it; docs/app-workflow.md §4.4).
+- AS: `--runtime stub`, `--initialMemory 1`, `--disable simd,threads,exception-handling`, `--enable sign-extension,nontrapping-f2i,bulk-memory,mutable-globals`. For `env.abort`, provide a small shim on the host for AS (converted to a trap).
+- **Completion criteria**: confirm with `wasm-tools validate --features=...` that the `blink-rs` and `blink-as` Wasm are within the supported feature set, and that they produce the same GPIO trace in `ports/host`. -> **Reached (2026-09-10)**. `ports/host/tests/apps.rs` builds both, checks the features, and checks that the `gpio` and `board` host call sequences are identical. blink-rs 796 bytes / blink-as 2.1 KB.
+- AssemblyScript is built with the npm workspace at the repository root (`npm ci`) + `npx asc`. asc cannot resolve a scoped package (`@wasmicon/hal`) as `~lib`, so the apps import it by relative path.
 
-- **ハンドル 0 は無効**（abi-spec §5.1）。テーブルのインデックス 0 を使わない。
-- **エラーコード = discriminant + 1** を忘れない。生成された定数だけを使い、手書きの数値を書かない。
-- **決定性**: `time` 以外の host call の順序・引数・結果が両ボードで一致しなければならない。ポート層で「たまたま成功する」挙動（例: 未初期化 GPIO の read）を作らない。
+### Phase 4: ports `rp2040` -> `esp32s3`
+
+- **Pico first** (the more constrained one).
+- The port layer approach is §3 #8 (all Rust). Confirm with the owner before starting.
+- Pico: `rp2040-hal` + `cortex-m-rt`, `thumbv6m-none-eabi`, `memory` limit 2 pages. The Wasm binary is placed in `.rodata` (flash, XIP) with `include_bytes!` and passed to the runtime as `&'static [u8]`.
+  - GPIO is driven dynamically by number, so the SIO / IO_BANK0 / PADS_BANK0 registers are written directly instead of using typed pins. Typed pins are for static assignment and do not fit the `pin.open(index)` form
+  - Narrow `Config` for microcontrollers (value stack 512 / nesting 64 / locals 256 / call depth 32). With the host defaults, the validation work area is several hundred KB and does not fit in SRAM
+  - **As of 2026-09-10: builds. Not yet verified on hardware** (flash 56 KB / RAM 172 KB)
+- ESP32-S3: `esp-hal` (`no_std`), the Xtensa toolchain installed by espup (`channel = "esp"` in `rust-toolchain.toml`), limit 4 pages (no PSRAM).
+  - No prebuilt core is distributed for Xtensa, so `.cargo/config.toml` specifies `build-std = ["core"]`
+  - The linker (`xtensa-esp32s3-elf-gcc`) is installed by espup but is not on PATH. `ports/esp32s3/build.sh` sources `~/export-esp.sh` before calling cargo
+  - GPIO is written through registers directly, as on RP2040 (IO_MUX MCU_SEL=1, GPIO matrix out_sel=128)
+  - The arena is 300 KB. At 320 KB the linker fails with "cannot move location counter backwards" (the effective DRAM limit)
+  - **As of 2026-09-10: builds. Not yet verified on hardware** (.text 80 KB / .bss 405 KB)
+- Traces: a build with the cargo feature `trace` enabled writes the docs/abi-spec.md §9 format to serial (UART / USB-CDC).
+- The board configuration (the table in docs/abi-spec.md §8) is collected in `ports/<board>/src/board.rs`, which implements `board.pin-by-role`.
+- **Completion criteria**: `blink-rs` / `blink-as` run on both boards (ESP32-S3 and Pico 2 W) and the serial trace matches the host version. -> **blink not done** (not part of the goal judgment; the owner declared the goal reached on 2026-10-07). GPIO works on hardware on both boards through `lcd-demo-rs` / `sensor-display`, but blink (an external LED on the `led` role) has not been flashed yet (docs/TODO.md §1.3).
+
+### Phase 5: the sensor + display app
+
+- SHT4x: the address, measurement command, wait time, CRC-8 and conversion formulas are **normative in apps/README.md §1** (copying them here would be duplicate maintenance; this already happened once with `ili9341.rs` in three places -> docs/TODO.md §2.1). CRC-8 is verified in the guest. **The display values are computed in fixed point (integers x100); floating point is used deliberately in exactly one place (an f32 conversion)** as the subject of the determinism verification.
+- ILI9341: the init sequence is the usual one (SWRESET, SLPOUT, PIXFMT=0x55 (RGB565), MADCTL, DISPON). Drawing has only 2 primitives, "fill rectangle" and "draw string in an 8x8 bitmap font". Row-sized buffers (at most 320x8x2 = 5 KB) are sent with `spi.write`. There is no full-screen framebuffer (it does not fit on RP2040).
+- The Rust and AS versions draw **the same result**, so the font and coordinates are a shared spec (written in `apps/README.md`). -> **Written** (137 lines). When one side changes, change the other.
+- **Completion criteria**: the display works in all 4 combinations (Rust/AS x ESP32-S3/Pico 2 W). -> **Reached (2026-10-07)**. All 4 combinations show the display on hardware, and each matched in full the trace of the host fed with the response the board read (docs/verification-report.md §12).
+  - Both guests run in `ports/host` and a test checks that **the full trace (1215 lines at the time; 4183 lines after the screen redesign of 2026-10-05) is identical** (`ports/host/tests/apps.rs`). By docs/abi-spec.md §9, `time` does not appear in the trace, so full identity is exactly the §2-10 definition "every host call and result except `time` matches". The `spi.write` trace is the CRC-32 of the data, so a match means "the pixels being sent are identical"
+  - The sensor is fed the recorded responses in `verify/sht4x-replay.txt` through `WASMICON_I2C_REPLAY`. Replaced on 2026-10-07 with responses recorded from hardware (the SHT40 on the Pico 2 W)
+
+### Phase 6: cross-board verification
+
+- In `verify/`: (1) a mock I2C mode that returns recorded SHT4x responses (`WASMICON_I2C_REPLAY` in the port layer), (2) a script that diffs the traces of the 2 boards, (3) a differential test of `ports/host` against wasmtime (interpreter correctness). -> **All 3 built (2026-09-10)**.
+  - (1) `WASMICON_I2C_REPLAY` + `verify/sht4x-replay.txt`. The responses are **synthetic data**; replacing them with ones recorded from hardware remains
+  - (2) `verify/diff-traces.sh`. Drops the serial banner and the guest's `[wasm]` lines and compares only the `> ` / `< ` lines. `--self-test` checks that the normalization is correct
+  - (3) `verify/differential/`. **Shares the HAL** and runs the same `.wasm` on wasmtime 45 and on our interpreter. `Resolver::call` does not depend on the engine, so any difference is an interpreter bug. Identical for all 4 guests
+- **Completion criteria**: run the same `.wasm` (the Rust version and the AS version) on both boards (ESP32-S3 and Pico 2 W); the trace except `time` and the SPI pixel CRCs are identical. Summarize the results in `docs/verification-report.md`. -> **Reached (owner judgment, 2026-10-07)**.
+  - `lcd-demo-rs` (no sensor): 14,352 lines identical on the 2 boards (§6 / §7 / §8)
+  - `sensor-display`, both Rust and AS: **every line up to the sensor read** matches on the 2 boards. After the read, **each board reads a different value**, so there is no literal full identity. Instead, it was confirmed in all 4 combinations that each board's trace matches in full "the host fed with the response that board read" (§11 / §12). **There is no way to inject the same response into both boards**, so the direct comparison of the 2 boards is indirect, through "each board = host". **The owner declared this complete** (2026-10-07)
 
 ---
 
-## 7. コマンド早見 → `README.md` へ移動
+## 6. Pitfalls and cautions
 
-ビルドと検証のコマンドは README を正とする。この文書にしか無かったものは README に移した。
+### Guest side
+
+- **Rust's wasm32 default features**: recent rustc enables `reference-types` / `multivalue`. Read the `call_indirect` table index as LEB128 and reject anything but 0 (note in docs/abi-spec.md §6.1).
+- **AS imports `env.abort`**: it can remain even with `--noAssert`. Provide `env.abort(msg, file, line, col)` on the host and convert it to a trap. Document it as the one exceptional import that is not in `world app`.
+
+### Runtime side (Rust)
+
+- **Float methods missing in `no_std`**: `floor` / `ceil` / `trunc` / `round` / `sqrt` and friends are not in `core` (they are in `std` or `libm`). With zero dependency crates they are implemented by hand. `f32.sqrt` is a mandatory Wasm instruction, so it cannot be avoided. `f32.nearest` (round half to even), NaN propagation in `min`/`max`, `copysign` and `trunc_sat` are also written by hand to the spec. `float_misc.wast` and `conversions.wast` in the spec tests are the hard cases.
+- **RP2040 has no FPU and no hardware divide**: f32/f64 become `compiler_builtins` soft-float. IEEE compliance is kept but it is slow.
+- **The ESP32-S3 FPU is f32 only**: f64 is soft-float. Some Xtensa FPU configurations cannot handle denormals, so run the denormal cases of the spec tests on the ESP32-S3 hardware too.
+- **Reading bytecode directly from XIP**: RP2040 (Cortex-M0+) HardFaults on unaligned word access. Reads from a slice must always take the form `u32::from_le_bytes(bytes[i..i+4].try_into().unwrap())`; never use `ptr::read` / `align_to` / reference casts (HardFault and UB). Read LEB128 byte by byte.
+- **Range checks on `memory`**: range-check `list<u8>` arguments and out-pointers on every host call. Use `checked_add` and `slice::get`; do not create silent truncation through `as` casts.
+- **Panic messages remain even with `panic = "abort"`**: `panic!` and the implicit bounds checks of slices keep strings in the binary. Design the core to return `Result` and handle hot paths explicitly with `get()`. `panic_immediate_abort` needs build-std, so do not rely on it.
+- **`core::fmt` is the main size cost**: no `write!` / `{:?}` / `Display` in the core. Trace output is written in the port layer, directly as bytes.
+
+### Toolchain
+
+- **Xtensa is not supported by upstream Rust**: ESP32-S3 needs the fork installed by espup (`channel = "esp"`). Building ESP32-S3 in CI would need the espup installation steps. RP2040 only needs `rustup target add thumbv6m-none-eabi`.
+
+### Common
+
+- **Handle 0 is invalid** (docs/abi-spec.md §5.1). Do not use table index 0.
+- Do not forget **error code = discriminant + 1**. Use only the generated constants; never write literal numbers.
+- **Determinism**: the order, arguments and results of every host call except `time` must match on both boards. Do not create behavior in the port layer that "happens to succeed" (for example reading an uninitialized GPIO).
 
 ---
 
-## 8. オーナーへの確認が必要なタイミング（記録）
+## 7. Command cheat sheet -> moved to `README.md`
 
-フェーズを進めるうえでオーナーの回答が要った点。**未回答のまま残っているものは
-`docs/TODO.md` §1.1 に集約した。** ここには追記しない。
-
-- ~~Phase 1 着手前: §3 のデフォルト #1（実装言語）と #7（分担）の承認~~ → 2026-09-10 に回答済み。§2-11 / §2-12
-- ~~Phase 1 着手前: §3 #9（Cargo workspace の分割）~~ → 2026-09-10 に承認済み
-- ~~Phase 4 着手前: §3 #8（ポート層を全 Rust にする）の承認~~ → 「Phase 4 へ進んで」の指示をもって承認とみなし、3 ポートとも実装済み
-- 実機の配線（abi-spec §8）、シリアルの接続方法、ILI9341 の型番 → **確認済み（2026-10-07）**: 2 ボードの実機で I2C / SPI / UART0 が動き、ILI9341（3.3V SPI 版）に表示が出た。`led` の外付け LED だけ未確認（`docs/TODO.md` §1.1）
-- センサーの型番 → **回答済み（2026-09-29）**: 手元の実機が SHT40。§2 の決定 9 を SHT4x に書き換えた
-- 評価ボード → **回答済み（2026-10-07）**: RP2040（Pico WH）を評価対象から外し、Pico 2 W（RP2350）に置き換える。`ports/rp2040` は残す。§0 に記録した
+The README is the source of truth for build and verification commands. Anything that existed only here was moved to the README.
 
 ---
 
-## 9. 参照
+## 8. When the owner had to be asked (record)
 
-- Component Model Canonical ABI（import 命名と flat 型の出典）: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
+Points where the owner's answer was needed to advance a phase. **Those still unanswered are collected in
+docs/TODO.md §1.1.** Nothing is appended here.
+
+- ~~Before Phase 1: approval of §3 defaults #1 (implementation language) and #7 (who implements)~~ -> answered 2026-09-10. §2-11 / §2-12
+- ~~Before Phase 1: §3 #9 (splitting the Cargo workspaces)~~ -> approved 2026-09-10
+- ~~Before Phase 4: approval of §3 #8 (all-Rust port layer)~~ -> the instruction "proceed to Phase 4" was taken as approval; all 3 ports implemented
+- Hardware wiring (docs/abi-spec.md §8), how serial is connected, the ILI9341 model -> **confirmed (2026-10-07)**: I2C / SPI / UART0 work on both boards, and the ILI9341 (3.3V SPI version) shows the display. Only the external LED on `led` is unconfirmed (docs/TODO.md §1.1)
+- Sensor model -> **answered (2026-09-29)**: the board on hand is an SHT40. Decision 9 in §2 was rewritten to SHT4x
+- Evaluation board -> **answered (2026-10-07)**: RP2040 (Pico WH) is removed from evaluation and replaced by Pico 2 W (RP2350). `ports/rp2040` stays. Recorded in §0
+
+---
+
+## 9. References
+
+- Component Model Canonical ABI (source of the import naming and flat types): https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 - wit-parser: https://crates.io/crates/wit-parser
 - WebAssembly spec testsuite: https://github.com/WebAssembly/testsuite
-- 先行事例: Wasefire (Google), WAMR, wasm3, wasmi（design-notes §1）
+- Prior work: Wasefire (Google), WAMR, wasm3, wasmi (docs/design-notes.md §1)

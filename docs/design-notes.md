@@ -1,160 +1,162 @@
-# Wasmicon 設計メモ
+# Wasmicon design notes
 
-作成日: 2026-09-10（同日、ABI 仕様書 v0.1 作成に伴い §8 を更新）
-状態: 初期構想。コンセプトの整理と、実装前に決めるべき判断事項をまとめたもの。
+> **Historical record.** Kept as written at the time and translated from Japanese; section numbers are stable. Current rules: `docs/decisions.md`. Current status: `README.md`, `docs/TODO.md`.
 
-## 1. コンセプト
+Created: 2026-09-10 (§8 updated the same day, when ABI spec v0.1 was written)
+Status: original concept (2026-09). Superseded in part; see docs/decisions.md D-09 (sensor), D-11 (runtime language), A-08 (port layer). It collects the concept and the judgments that had to be made before implementation.
 
-- 従来の MCU 開発環境はハードウェアごとに異なり、管理が面倒
-- WebAssembly は多言語からコンパイル可能で、高速かつ安全な命令セット。MCU でも実行可能
-- しかし WebAssembly には MCU 周辺機器へアクセスする標準 API が無い
-  - Bytecode Alliance embedded WG の wasi-i2c / wasi-spi / wasi-gpio 提案は Phase 1 のまま更新が止まっている
-  - それらは Component Model 前提。Canonical ABI は cabi_realloc や resource テーブルを要求し、RP2040 クラスには重い
-- よって Core Wasm ランタイムから直接周辺機器にアクセスできる軽量な API 層が必要
+## 1. Concept
 
-### 構成要素
+- Conventional MCU development environments differ per hardware and are a burden to manage
+- WebAssembly can be compiled from many languages and is a fast, safe instruction set. It can run on MCUs
+- But WebAssembly has no standard API for accessing MCU peripherals
+  - The wasi-i2c / wasi-spi / wasi-gpio proposals of the Bytecode Alliance embedded WG have stalled at Phase 1
+  - They assume the Component Model. The Canonical ABI requires cabi_realloc and resource tables, which is heavy for the RP2040 class
+- So a lightweight API layer is needed that reaches peripherals directly from a Core Wasm runtime
 
-- **Wasmicon Runtime**: 自作の Core Wasm インタプリタ。ESP32-S3 / RP2040 で動作する軽量さ
-- **Wasmicon HAL**: WIT で GPIO / SPI / I2C（＋ time / log）を定義。Component Model は使わず、WIT は IDL としてのみ使用。限られた型とシンタックスのサブセットで定義
-- **Wasmicon Bindings**: Rust、AssemblyScript
+### Components
 
-### 目標
+- **Wasmicon Runtime**: a from-scratch Core Wasm interpreter, light enough to run on ESP32-S3 / RP2040
+- **Wasmicon HAL**: GPIO / SPI / I2C (plus time / log) defined in WIT. The Component Model is not used; WIT is used only as an IDL, with a limited subset of types and syntax
+- **Wasmicon Bindings**: Rust, AssemblyScript
 
-I2C 接続の温湿度センサーから値を読み、SPI 接続の ILI9341 に描画するアプリを Rust と AssemblyScript で実装。ESP32-S3 と Raspberry Pi Pico WH で実行し、同じ結果が出るかを検証する。
+### Goal
 
-### 比較対象・先行事例
+Implement, in Rust and in AssemblyScript, an app that reads values from an I2C temperature / humidity sensor and draws them on an SPI-connected ILI9341. Run it on ESP32-S3 and Raspberry Pi Pico WH and verify that the results are the same.
 
-- **Wasefire (Google)**: Core Wasm の import として applet API を定義。Component Model 不使用という同じ判断
-- **WAMR**: ESP-IDF 対応あり。既存ランタイムの代表
-- **wasm3**: 軽量インタプリタ。クロージャコンパイル方式（メンテ停滞気味）
-- **wasmi**: Rust 製、no_std 可。レジスタマシン変換方式
+### Comparison and prior work
 
-Wasmicon の差別化: WIT を IDL に使いつつ独自の軽量 ABI を定義 / ランタイム自作 / Rust と AS の両バインディング / 複数 MCU での決定性検証、の組み合わせ。
+- **Wasefire (Google)**: defines an applet API as Core Wasm imports. The same decision not to use the Component Model
+- **WAMR**: supports ESP-IDF. The representative existing runtime
+- **wasm3**: a lightweight interpreter. Closure-compilation approach (maintenance is slowing down)
+- **wasmi**: written in Rust, works in no_std. Register-machine translation approach
 
-## 2. Wasmicon ABI（最初に決めるべきこと）
+What sets Wasmicon apart is the combination: WIT as the IDL with its own lightweight ABI / a from-scratch runtime / both Rust and AS bindings / determinism verification across several MCUs.
 
-WIT の各型を Core Wasm の関数シグネチャへどう落とすかを明文化する。曖昧だと Rust バインディング、AS バインディング、ランタイムのホスト関数テーブルがずれてバグの温床になる。
+## 2. The Wasmicon ABI (the first thing to decide)
 
-→ 具体化した仕様は `abi-spec.md` を参照。以下は方針の要約。
+Spell out how each WIT type is lowered to a Core Wasm function signature. If this is ambiguous, the Rust bindings, the AS bindings and the runtime's host function table drift apart and breed bugs.
 
-### 使用する WIT の型（サブセット）
+-> The concrete spec is in `abi-spec.md`. Below is a summary of the approach.
+
+### WIT types in use (the subset)
 
 - bool, u8, u16, u32, s32, u64, f32, f64
 - enum, flags
 - list<u8>
-- resource（handle として扱う）
+- resource (treated as a handle)
 
-### 落とし込み規則
+### Lowering rules
 
 | WIT | Core Wasm |
 |---|---|
 | bool, u8, u16, u32, s32, enum, flags | i32 |
 | u64 | i64 |
 | f32 / f64 | f32 / f64 |
-| list<u8> | (ptr: i32, len: i32) の 2 引数。Canonical ABI と同じ |
-| resource | u32 handle（i32）。[method] 関数は import 名 `[method]bus.write` のように機械的に生成 |
-| result<T, error-code> | 単一の i32 エラーコードを返し、T は out ポインタ経由。Canonical ABI（retptr 経由）からの意図的な逸脱。逸脱はドキュメントに明記 |
+| list<u8> | 2 arguments (ptr: i32, len: i32). Same as the Canonical ABI |
+| resource | u32 handle (i32). [method] functions get mechanically generated import names such as `[method]bus.write` |
+| result<T, error-code> | returns a single i32 error code; T goes through an out-pointer. A deliberate deviation from the Canonical ABI (which uses a retptr). Deviations are documented explicitly |
 
-設計方針: 可能な限り Canonical ABI のサブセットに留め、将来 Component Model へ橋渡しする際に機械的に変換できるようにする。逸脱する箇所は明示する。
+Design policy: stay within a subset of the Canonical ABI where possible, so that a future bridge to the Component Model can be a mechanical conversion. Deviations are stated explicitly.
 
-### ジェネレータ
+### Generator
 
-WIT を唯一の真実（single source of truth）とし、`wit-parser` クレート（wit-bindgen 内の WIT パーサ、単体利用可）で小さなジェネレータを作り、以下を一括生成する。
+WIT is the single source of truth. A small generator built on the `wit-parser` crate (the WIT parser inside wit-bindgen, usable on its own) generates all of the following at once:
 
-- ランタイム用の import 表（Rust。`runtime/src/generated.rs`）
-- Rust の `extern "C"` 宣言（`#[link(wasm_import_module = "wasmicon:hal/i2c@0.1.0")]`）
-- AssemblyScript の `@external` 宣言
+- the import table for the runtime (Rust; `runtime/src/generated.rs`)
+- the Rust `extern "C"` declarations (`#[link(wasm_import_module = "wasmicon:hal/i2c@0.1.0")]`)
+- the AssemblyScript `@external` declarations
 
-## 3. HAL インターフェース設計
+## 3. HAL interface design
 
-必要なインターフェース: gpio, spi, i2c に加えて **time**（sleep-ms, now-us）と **log**（デバッグ出力）。ILI9341 には DC/RST/CS の GPIO と SPI バルク書き込みが必要で、センサーは計測待ちが要るため time は必須。
+Required interfaces: gpio, spi, i2c, plus **time** (sleep-ms, now-us) and **log** (debug output). The ILI9341 needs DC/RST/CS GPIOs and SPI bulk writes, and the sensor needs a measurement wait, so time is mandatory.
 
-API 粒度の原則: インタプリタのオーバーヘッドは host call ごとに乗る。SPI 書き込みは「1 ピクセルずつ host call」ではなく「線形メモリ上に組み立てたバッファを `spi.write(list<u8>)` で一括転送」にする。API の粒度がそのまま性能を決める。
+API granularity principle: the interpreter overhead is paid per host call. SPI writes are not "one host call per pixel" but "assemble a buffer in linear memory and transfer it at once with `spi.write(list<u8>)`". The API granularity directly determines performance.
 
-フレームバッファ: 320x240x2 = 150KB は RP2040 に載らない。行単位・矩形単位の小バッファで描画し、ゲスト側に小さなフォントと fill-rect 程度のミニ描画ライブラリを持つ。
+Framebuffer: 320x240x2 = 150KB does not fit on RP2040. Draw with small row- or rectangle-sized buffers, and keep a tiny drawing library on the guest side: a small font and fill-rect, about that much.
 
-## 4. ランタイム実装方針
+## 4. Runtime implementation approach
 
-### 実装言語
+### Implementation language
 
-**決定（2026-09-10、オーナー判断）: Rust `no_std`**。理由は「組込み開発を安全に行えるから」。条件は **なるべく軽量に保つこと**。
+**Decision (2026-09-10, owner judgment): Rust `no_std`**. The reason: "embedded development can be done safely". The condition: **keep it as light as possible**.
 
-- 依存クレートゼロ、`alloc` 不使用、arena はポート層から注入（malloc を使わない方針は変わらない）
-- `panic = "abort"` / `opt-level = "z"` / `lto` / `codegen-units = 1`。コアで `core::fmt` を使わない
-- ディスパッチは `match` ループから始める（Rust に computed goto は無い）。最適化はプロファイル後
+- Zero dependency crates, no `alloc`, the arena is injected by the port layer (the no-malloc policy is unchanged)
+- `panic = "abort"` / `opt-level = "z"` / `lto` / `codegen-units = 1`. No `core::fmt` in the core
+- Dispatch starts as a `match` loop (Rust has no computed goto). Optimize after profiling
 
-却下した案: **C11、依存ゼロ**。両プラットフォームの公式 SDK がそのまま使え、GCC の computed goto でディスパッチが速いという利点があったが、安全性を優先して見送った。
+Rejected option: **C11, zero dependencies**. It had the advantages that both platforms' official SDKs could be used as-is and that GCC's computed goto makes dispatch fast, but safety was given priority.
 
-Rust を選んだコスト（織り込み済み）:
-- ESP32-S3（Xtensa）は upstream Rust 非対応。espup 経由のフォークツールチェーンが要る。RP2040 は upstream の `thumbv6m-none-eabi` でそのまま
-- computed goto が使えないぶん、ディスパッチの速度は素の `match` から始まる
-- `no_std` では浮動小数の一部メソッド（`floor` / `ceil` / `trunc` / `sqrt` など）が `core` に無い。依存ゼロを守るなら自前実装する
+The cost of choosing Rust (accepted):
+- ESP32-S3 (Xtensa) is not supported by upstream Rust. A fork toolchain via espup is needed. RP2040 works as-is with upstream `thumbv6m-none-eabi`
+- Without computed goto, dispatch speed starts from a plain `match`
+- In `no_std` some float methods (`floor` / `ceil` / `trunc` / `sqrt` and others) are not in `core`. With zero dependencies they are implemented by hand
 
-### インタプリタ設計
+### Interpreter design
 
-- ロード時に完全な validation（仕様上必須。安全性の根拠）
-- validation 時に br のジャンプ先を事前計算した side table を作る「検証済みバイトコード直接実行」型から始める
-- wasm3 のクロージャコンパイルや wasmi のレジスタマシン変換は速いが複雑。まず spec テスト全通過を優先し、最適化はプロファイル後
-- コードセクションは RAM にコピーせず、フラッシュ（両ボードとも XIP でメモリマップ）上のポインタを直接使う。RAM に置くのは side table、globals、table、線形メモリのみ
+- Full validation at load time (required by the spec; the basis of safety)
+- Start with the "direct execution of validated bytecode" style: a side table of precomputed `br` targets built during validation
+- wasm3's closure compilation and wasmi's register-machine translation are fast but complex. Pass the full spec test first; optimize after profiling
+- The code section is not copied to RAM; pointers into flash (memory-mapped through XIP on both boards) are used directly. Only the side table, globals, table and linear memory live in RAM
 
-### メモリ制約
+### Memory constraints
 
-- RP2040: 264KB SRAM、Cortex-M0+ 133MHz、FPU 無し、ハード除算無し
-- ESP32-S3: 512KB SRAM（＋PSRAM オプション）、Xtensa LX7 240MHz、f32 のみハード FPU
-- 線形メモリの 64KB ページは RP2040 では 1〜2 枚が限度
-  - Rust: `--initial-memory`、`-z stack-size` を絞る
-  - AS: `--initialMemory`、`--runtime stub`
+- RP2040: 264KB SRAM, Cortex-M0+ 133MHz, no FPU, no hardware divide
+- ESP32-S3: 512KB SRAM (plus optional PSRAM), Xtensa LX7 240MHz, hardware FPU for f32 only
+- Of the 64KB linear memory pages, 1 to 2 is the limit on RP2040
+  - Rust: narrow `--initial-memory` and `-z stack-size`
+  - AS: `--initialMemory`, `--runtime stub`
 
-### 対応機能セット
+### Supported feature set
 
-基準: **MVP + sign-extension + non-trapping float-to-int + bulk-memory + multi-value + mutable-globals**
+Baseline: **MVP + sign-extension + non-trapping float-to-int + bulk-memory + multi-value + mutable-globals**
 
-理由: 最近の Rust の wasm32-unknown-unknown ターゲットはこれらをデフォルト有効で出力する。MVP のみだと Rust の出力が動かない（`-C target-cpu=mvp` で抑制可能だが、素直にサポートする方が健全）。
+Reason: recent Rust wasm32-unknown-unknown targets emit these enabled by default. With MVP only, Rust's output does not run (it can be suppressed with `-C target-cpu=mvp`, but supporting them outright is healthier).
 
-不要: SIMD, threads, exceptions, GC, tail-call
+Not needed: SIMD, threads, exceptions, GC, tail-call
 
-## 5. 決定性の検証方法
+## 5. How determinism is verified
 
-RP2040 は FPU 無し、ESP32-S3 は f32 のみハード FPU。Wasm の浮動小数点は IEEE 準拠で決定的でなければならないため、f32.nearest、min/max の NaN 扱い、trunc_sat、i64 演算の 32bit 実装などがまさに差の出やすい検証対象。
+RP2040 has no FPU; ESP32-S3 has a hardware FPU for f32 only. Wasm floating point must be IEEE-compliant and deterministic, so f32.nearest, the NaN handling of min/max, trunc_sat, and the 32-bit implementation of i64 arithmetic are exactly where differences are likely to show up.
 
-### トレース比較
+### Trace comparison
 
-LCD の見た目ではなく、ホスト呼び出しのトレースを比較する。
+Compare the trace of host calls, not what the LCD looks like.
 
-- HAL ポート層に **trace モード** を入れ、I2C/SPI の全トランザクション（送信バイト列、受信バイト列。タイムスタンプは除く）をシリアルに出力
-- SPI に流したピクセルデータの CRC を含めて両ボードで diff
-- センサーの生値は物理的に異なるので、検証時は I2C を固定値応答（または記録したトランザクションの再生）に差し替え、モジュールバイナリ・入力・出力の完全一致を機械的に確認
+- Add a **trace mode** to the HAL port layer that writes every I2C/SPI transaction (bytes sent, bytes received; timestamps excluded) to serial
+- Include the CRC of the pixel data sent over SPI and diff between the two boards
+- The raw sensor values differ physically, so during verification replace I2C with fixed responses (or replay of recorded transactions) and mechanically confirm that the module binary, inputs and outputs are identical
 
-### ホスト PC ポート
+### Host PC port
 
-mock HAL 付きのホストポートを作り、wasmtime を参照実装として差分テスト。CI も回せる。
+Build a host port with a mock HAL and run differential tests against wasmtime as the reference implementation. CI can run it too.
 
-## 6. ロードマップ
+## 6. Roadmap
 
-1. ABI 仕様と WIT を書く（**完了**: `abi-spec.md`, `wit/`）
-2. ランタイムをホスト PC 上で spec テスト（wast2json で変換）全通過まで仕上げる
-3. Pico へ先に移植（制約が厳しい方を先にやると設計が引き締まる）
-4. ESP32-S3 へ移植
-5. ジェネレータとバインディング（Rust / AS）
-6. アプリ: Lチカ → I2C センサー → SPI ディスプレイ
-7. クロスボード検証（trace 比較）
+1. Write the ABI spec and the WIT (**done**: `abi-spec.md`, `wit/`)
+2. Finish the runtime on the host PC until the spec tests (converted with wast2json) pass in full
+3. Port to the Pico first (doing the more constrained one first tightens the design)
+4. Port to ESP32-S3
+5. Generator and bindings (Rust / AS)
+6. Apps: blink -> I2C sensor -> SPI display
+7. Cross-board verification (trace comparison)
 
-※ 実装フェーズの詳細な順序と完了条件は `docs/handoff.md` §5 が正（ジェネレータを最初に置く構成に組み替えた）。
+Note: the detailed order of the implementation phases and their completion criteria are in docs/handoff.md §5, which is the source of truth (restructured to put the generator first).
 
-## 7. 部品の選定
+## 7. Parts selection
 
-- 温湿度センサー推奨: **SHT4x（SHT40 / SHT41 / SHT45）**。初期化シーケンス不要、コマンド 1 つ（1 バイト）で 6 バイト読める、CRC-8 付きで決定性検証の題材として素直。両ボード 3.3V で使える
-  - **当初は SHT31 / SHT30 を推奨していた**。2026-09-29 に SHT4x へ変更（実機が SHT40 だったため。`docs/handoff.md` §2 の決定 9）。上の利点はいずれも SHT3x でも同じように成り立つので、入手できるならどちらでもよい。**ただしコードは SHT4x 前提**（計測コマンドと湿度の換算式が違う）
-- ディスプレイ: ILI9341（SPI）
+- Recommended temperature / humidity sensor: **SHT4x (SHT40 / SHT41 / SHT45)**. No init sequence, a single 1-byte command reads 6 bytes, comes with CRC-8, and is a straightforward subject for determinism verification. Works at 3.3V on both boards
+  - **SHT31 / SHT30 was recommended originally.** Changed to SHT4x on 2026-09-29 (the sensor on hand was an SHT40; docs/handoff.md §2 decision 9, now docs/decisions.md D-09). All of the advantages above hold for SHT3x too, so either is fine if available. **But the code assumes SHT4x** (the measurement command and the humidity conversion formula differ)
+- Display: ILI9341 (SPI)
 
-## 8. 決定済み・未決事項
+## 8. Decided and open items
 
-決定済み（2026-09-10）:
-- resource は WIT の `resource` 構文で書く。import 名は Canonical ABI 準拠
-- エラーコードは HAL 共通の `types.error-code` 1 つ
-- **ランタイム実装言語は Rust `no_std`**（オーナー決定。§4 参照）
-- **フルスクラッチ実装、コアは Claude Code が書く**（オーナー決定）
+Decided (2026-09-10):
+- resources are written with the WIT `resource` syntax. Import names follow the Canonical ABI
+- the error code is one `types.error-code` shared by the whole HAL
+- **the runtime implementation language is Rust `no_std`** (owner decision; see §4)
+- **from-scratch implementation; the core is written by Claude Code** (owner decision)
 
-未決（残作業は `docs/TODO.md` が正。採用したデフォルトの記録は `docs/handoff.md` §3）:
-- ボード間の GPIO 番号差の吸収方法（`abi-spec.md` §8）
-- ポート層の実装方式（全 Rust か、C SDK + FFI か）
+Open (remaining work: `docs/TODO.md` is the source of truth; the adopted defaults are recorded in docs/handoff.md §3, now docs/decisions.md A-01 to A-09):
+- how to absorb GPIO number differences between boards (docs/abi-spec.md §8; now docs/decisions.md A-02)
+- the port layer implementation approach (all Rust, or C SDK + FFI; now docs/decisions.md A-08)
