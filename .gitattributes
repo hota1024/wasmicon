@@ -1,0 +1,6 @@
+# Generator output (cargo run -p wasmicon-gen). Collapsed in GitHub diffs and
+# excluded from language statistics.
+runtime/src/generated.rs linguist-generated=true
+bindings/rust/src/generated.rs linguist-generated=true
+bindings/assemblyscript/assembly/generated.ts linguist-generated=true
+bindings/c/generated.h linguist-generated=true
