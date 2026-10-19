@@ -1,6 +1,6 @@
 # 残作業
 
-最終更新: 2026-10-07
+最終更新: 2026-10-19
 
 **当初の目標は達成した**（2026-10-07 オーナー判断。sensor-display が ESP32-S3 と Pico 2 W で
 動き、トレースの一致を確かめた。`docs/handoff.md` §0）。ここに残っているのは、目標の
@@ -882,6 +882,18 @@ ESP32-S3 DevKitC-1 で走らせ、host call のトレースが host ポートと
         焼き直さずに切り分けられ、build 構成が 1 つ減って variant が
         `trace` あり / なしの 2 つに収束する
 - [ ] **HTTP**（3 段）。§5-3 / §5-4 / §5-5 の判断が先
+- [ ] **C バインディング（`bindings/c`）を CLI に載せる**（2026-10-19 に生成と
+      `apps/blink-c` だけ入れた。host で blink-rs とトレース全文一致を `cargo test` が見る）。
+      残り:
+      - `wasmicon new --lang c` と、`deploy` / `pack` の言語判定（今は `Cargo.toml` /
+        `asconfig.json` からしか `.wasm` の場所を導けない。C は `sh bindings/c/build.sh` で
+        手でビルドして `.wasm` を渡す）
+      - **ビルドフラグの真実が `bindings/c/build.sh` にある**。写しが無いので今は
+        `tools/wasmicon-cli/src/flags.rs` に入れていないが、`new --lang c` を足すなら
+        flags.rs に移して雛形とバイトで突き合わせる（`docs/app-workflow.md` §4.4）
+      - 実機（ESP32-S3 / Pico 2 W）では C 版を走らせていない。sensor-display の C 版も無い
+      - CI は ubuntu-24.04 の apt の clang + lld（18 系）でビルドする。手元は wasi-sdk 33
+        （clang 22）で確かめた。版で出力のバイト列は変わるが、検査はトレースと機能セットだけ
 - [ ] **bindings の配布**（crates.io / npm）。**`new` は 2026-10-04 に入った**が、
       依存はパスで書いている（上）。出す先と版の付け方はまだ決め打ちしない。
       出したら `new` の既定をパスから版指定に変える

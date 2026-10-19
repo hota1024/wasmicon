@@ -100,6 +100,7 @@ fn lower_interface(
                     .iter()
                     .map(|c| EnumCase {
                         docs: docs(&c.docs),
+                        wit_name: c.name.clone(),
                         ident: pascal(&c.name),
                     })
                     .collect(),
@@ -119,6 +120,7 @@ fn lower_interface(
                         .iter()
                         .map(|b| FlagBit {
                             docs: docs(&b.docs),
+                            wit_name: b.name.clone(),
                             ident: pascal(&b.name),
                         })
                         .collect(),
@@ -272,7 +274,7 @@ fn lower_param(resolve: &Resolve, name: &str, ty: Type, out: &mut Vec<Param>) ->
     if matches!(ty, Type::String) {
         out.push(Param {
             name: format!("{name}-ptr"),
-            role: Role::DataPtr,
+            role: Role::StrPtr,
         });
         out.push(Param {
             name: format!("{name}-len"),

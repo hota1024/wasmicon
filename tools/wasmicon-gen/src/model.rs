@@ -66,6 +66,18 @@ impl Scalar {
     pub fn assemblyscript(&self) -> &'static str {
         self.rust()
     }
+
+    /// C 型。enum / flags は Rust と同じく生の `uint32_t`。
+    pub fn c(&self) -> &'static str {
+        match self {
+            Scalar::S32 => "int32_t",
+            Scalar::U64 => "uint64_t",
+            Scalar::S64 => "int64_t",
+            Scalar::F32 => "float",
+            Scalar::F64 => "double",
+            _ => "uint32_t",
+        }
+    }
 }
 
 /// Core Wasm の引数 1 つが何を表すか。abi-spec §4.2 / §4.4。
@@ -75,8 +87,11 @@ pub enum Role {
     Handle,
     /// スカラー・enum・flags。
     Scalar(Scalar),
-    /// `list<u8>` / `string` 引数のポインタ。
+    /// `list<u8>` 引数のポインタ。
     DataPtr,
+    /// `string` 引数のポインタ。Core Wasm 上は `DataPtr` と同じで、
+    /// C バインディングが `const char *` にするためだけに分けてある。
+    StrPtr,
     /// `list<u8>` / `string` 引数の長さ。
     DataLen,
     /// `result<T,_>` の T が スカラー・enum・flags のときの out ポインタ。
@@ -112,7 +127,7 @@ impl Param {
         match &self.role {
             Role::Handle | Role::DataLen | Role::OutCap => "u32".to_string(),
             Role::Scalar(s) => s.rust().to_string(),
-            Role::DataPtr => "*const u8".to_string(),
+            Role::DataPtr | Role::StrPtr => "*const u8".to_string(),
             Role::OutHandle | Role::OutLen => "*mut u32".to_string(),
             Role::OutBuf => "*mut u8".to_string(),
             Role::OutScalar(s) => format!("*mut {}", s.rust()),
@@ -124,9 +139,25 @@ impl Param {
         match &self.role {
             Role::Handle | Role::DataLen | Role::OutCap => "u32".to_string(),
             Role::Scalar(s) => s.assemblyscript().to_string(),
-            Role::DataPtr | Role::OutHandle | Role::OutLen | Role::OutBuf | Role::OutScalar(_) => {
-                "usize".to_string()
-            }
+            Role::DataPtr
+            | Role::StrPtr
+            | Role::OutHandle
+            | Role::OutLen
+            | Role::OutBuf
+            | Role::OutScalar(_) => "usize".to_string(),
+        }
+    }
+
+    /// C 型。ポインタは Wasm32 なので i32 に落ちる。
+    pub fn c(&self) -> String {
+        match &self.role {
+            Role::Handle | Role::DataLen | Role::OutCap => "uint32_t".to_string(),
+            Role::Scalar(s) => s.c().to_string(),
+            Role::DataPtr => "const uint8_t *".to_string(),
+            Role::StrPtr => "const char *".to_string(),
+            Role::OutHandle | Role::OutLen => "uint32_t *".to_string(),
+            Role::OutBuf => "uint8_t *".to_string(),
+            Role::OutScalar(s) => format!("{} *", s.c()),
         }
     }
 }
@@ -156,6 +187,14 @@ impl Ret {
             Ret::None => None,
             Ret::Status => Some("u32"),
             Ret::Scalar(s) => Some(s.rust()),
+        }
+    }
+
+    pub fn c(&self) -> &'static str {
+        match self {
+            Ret::None => "void",
+            Ret::Status => "uint32_t",
+            Ret::Scalar(s) => s.c(),
         }
     }
 }
@@ -192,6 +231,8 @@ impl Import {
 #[derive(Debug, Clone)]
 pub struct EnumCase {
     pub docs: Vec<String>,
+    /// WIT 上の名前（`input-pull-up`）。C の定数名に使う。
+    pub wit_name: String,
     /// PascalCase（Rust / AssemblyScript 共通）。
     pub ident: String,
 }
@@ -213,6 +254,8 @@ pub struct EnumDef {
 #[derive(Debug, Clone)]
 pub struct FlagBit {
     pub docs: Vec<String>,
+    /// WIT 上の名前。C の定数名に使う。
+    pub wit_name: String,
     /// PascalCase（Rust / AssemblyScript 共通）。
     pub ident: String,
 }

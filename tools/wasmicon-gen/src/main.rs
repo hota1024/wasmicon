@@ -4,6 +4,7 @@
 //! - `runtime/src/generated.rs`
 //! - `bindings/rust/src/generated.rs`
 //! - `bindings/assemblyscript/assembly/generated.ts`
+//! - `bindings/c/generated.h`
 //!
 //! サブセット（abi-spec §2）外の WIT 構文はエラーで拒否する。
 

@@ -5,7 +5,7 @@
 - **Runtime**: 自作の Core Wasm インタプリタ。`no_std`、依存クレートゼロ、`alloc` 不使用
 - **HAL**: GPIO / I2C / SPI / time / log / board を WIT で定義。**Component Model は使わない**。
   WIT は IDL としてのみ使い、`docs/abi-spec.md` の規則で Core Wasm の import に落とす
-- **Bindings**: Rust と AssemblyScript。WIT から生成する
+- **Bindings**: Rust と AssemblyScript と C。WIT から生成する
 - **ゴール**: I2C 温湿度センサー（SHT4x）を読んで SPI ディスプレイ（ILI9341）に描くアプリを
   Rust と AS で書き、**同一の Wasm バイナリ**を ESP32-S3 と Pico 2 W で動かして
   host call トレースが一致することを検証する
@@ -52,7 +52,7 @@ thumbv8m.main-none-eabihf（RP2350）向けで **46.0 KiB**
 
 ```
 wit/                  HAL 定義。唯一の真実。生成物を手で編集しない
-tools/wasmicon-gen/   wit/ から 3 つの生成物を出すジェネレータ
+tools/wasmicon-gen/   wit/ から 4 つの生成物を出すジェネレータ
 tools/wasmicon-cli/   アプリ作者が触る CLI（bin 名 wasmicon）。check / run / trace diff / doctor
 runtime/              wasmicon-core。no_std / 依存ゼロ / alloc 不使用のインタプリタ
 ports/common/         ポート共通の HAL。ボード固有の操作だけ Board トレイトに切り出す
@@ -63,7 +63,9 @@ ports/esp32s3/        ESP32-S3 DevKitC-1（別 workspace、esp toolchain）
 ports/esp32c5/        ESP32-C5（Waveshare ESP32-C5-WIFI6-KIT。別 workspace、RISC-V。実機は段階的に確認中）
 bindings/rust/        ゲスト向け Rust バインディング
 bindings/assemblyscript/  同 AssemblyScript
+bindings/c/           同 C（ヘッダ + build.sh。clang の wasm32 ターゲットでビルドする）
 apps/                 ゲスト（別 workspace）。blink と sensor-display の Rust / AS 版
+                      blink-c は blink の C 版（bindings/c の検査用）
                       lcd-demo-rs は ILI9341 だけを使うデモ（センサー不要）
                       life-rs は ILI9341 にライフゲームを描き続けるデモ（FPS 表示つき）
                       bench-rs はインタプリタと host call の速さを測る（host / 実機で同じ .wasm）
@@ -96,6 +98,9 @@ sh tools/check-sigs.sh          # 参照実装 tools/wit2sig.py と突き合わ�
 npm ci
 (cd apps && cargo build --release)
 (cd apps/sensor-display-as && npx asc assembly/index.ts --config asconfig.json --target release)
+# C のゲスト。wasm32 対応の clang と wasm-ld が要る（wasi-sdk、または clang + lld）。
+# cargo test の host テストもこれを呼ぶ
+sh bindings/c/build.sh apps/blink-c/build/blink_c.wasm apps/blink-c/src/main.c
 # ゲストの単体テスト。apps/ は wasm32 固定なのでホストのトリプルを明示する。
 # bindings の生成物が clashing_extern_declarations を 2 件出すが、これは
 # ホストターゲットでだけ見える既知のもの（docs/TODO.md §2.2）

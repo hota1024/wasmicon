@@ -18,14 +18,18 @@ fn repo_root() -> PathBuf {
         .expect("リポジトリルートが見つからない")
 }
 
-/// `apps/` の直下で、Rust（`Cargo.toml`）か AssemblyScript（`asconfig.json`）の
-/// アプリになっているディレクトリ。
+/// `apps/` の直下で、Rust（`Cargo.toml`）か AssemblyScript（`asconfig.json`）か
+/// C（`src/main.c`）のアプリになっているディレクトリ。
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&apps)
         .expect("apps/ を読めない")
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.join("Cargo.toml").is_file() || p.join("asconfig.json").is_file())
+        .filter(|p| {
+            p.join("Cargo.toml").is_file()
+                || p.join("asconfig.json").is_file()
+                || p.join("src/main.c").is_file()
+        })
         .collect();
     dirs.sort();
     dirs

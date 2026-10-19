@@ -15,7 +15,7 @@ pub struct Output {
     pub contents: String,
 }
 
-/// リポジトリルートから 3 つの生成物を組み立てる。
+/// リポジトリルートから 4 つの生成物を組み立てる。
 pub fn outputs(root: &Path) -> Result<Vec<Output>> {
     let hal = lower::load(&root.join("wit"))?;
     Ok(vec![
@@ -30,6 +30,10 @@ pub fn outputs(root: &Path) -> Result<Vec<Output>> {
         Output {
             path: root.join("bindings/assemblyscript/assembly/generated.ts"),
             contents: emit::bindings_ts(&hal),
+        },
+        Output {
+            path: root.join("bindings/c/generated.h"),
+            contents: emit::bindings_c(&hal),
         },
     ])
 }

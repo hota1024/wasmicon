@@ -147,6 +147,40 @@ fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
     std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
 }
 
+/// C のアプリを `bindings/c/build.sh` でビルドして `.wasm` を返す。
+///
+/// ソースは `apps/<dir>/src/*.c`。clang は `WASMICON_CLANG` で差し替えられる。
+fn build_c_app(dir: &str, out: &str) -> Vec<u8> {
+    // 同じ出力先に書くので、ビルドと読み出しをまとめて直列化する（build_as_app と同じ）。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    let root = repo_root();
+    let app = root.join("apps").join(dir);
+    let mut srcs: Vec<PathBuf> = std::fs::read_dir(app.join("src"))
+        .unwrap_or_else(|e| panic!("{dir}/src を読めない: {e}"))
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    srcs.sort();
+    let build = app.join("build");
+    std::fs::create_dir_all(&build).unwrap();
+    let wasm = build.join(out);
+    let status = Command::new("sh")
+        .arg(root.join("bindings/c/build.sh"))
+        .arg(&wasm)
+        .args(&srcs)
+        .status()
+        .expect("sh を起動できない");
+    assert!(
+        status.success(),
+        "{dir} のビルドに失敗した（wasm32 対応の clang と wasm-ld が要る。bindings/c/build.sh）"
+    );
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+}
+
 #[test]
 fn blink_rs_runs_on_host() {
     let wasm = build_rust_app("blink-rs");
@@ -176,13 +210,30 @@ fn blink_rs_and_blink_as_agree() {
     assert_traces_equal(&rs, &as_);
 }
 
+#[test]
+fn blink_c_runs_on_host() {
+    let wasm = build_c_app("blink-c", "blink_c.wasm");
+    assert_within_feature_set(&wasm, "blink-c");
+    let trace = run(&wasm, "blink-c");
+    println!("{trace}");
+    assert_blink_trace(&trace, "blink-c");
+}
+
+/// C 版も Rust 版と同じトレースを出す（`bindings/c` の検査）。
+#[test]
+fn blink_rs_and_blink_c_agree() {
+    let rs = run(&build_rust_app("blink-rs"), "blink-rs");
+    let c = run(&build_c_app("blink-c", "blink_c.wasm"), "blink-c");
+    assert_traces_equal(&rs, &c);
+}
+
 /// トレースを行単位で突き合わせる。最初の食い違いだけ報告する。
 fn assert_traces_equal(rs: &str, as_: &str) {
     let a: Vec<&str> = rs.lines().collect();
     let b: Vec<&str> = as_.lines().collect();
     assert!(!a.is_empty(), "トレースが空");
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-        assert_eq!(x, y, "{} 行目で食い違う（Rust 版 vs AS 版）", i + 1);
+        assert_eq!(x, y, "{} 行目で食い違う（Rust 版 vs もう一方）", i + 1);
     }
     assert_eq!(a.len(), b.len(), "トレースの行数が違う");
 }

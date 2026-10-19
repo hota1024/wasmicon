@@ -1,12 +1,13 @@
-//! 3 つの生成物を文字列として組み立てる。
+//! 4 つの生成物を文字列として組み立てる。
 //!
 //! - `runtime/src/generated.rs` — import 表とエラーコード（ホスト側）
 //! - `bindings/rust/src/generated.rs` — extern 宣言と enum（ゲスト側）
 //! - `bindings/assemblyscript/assembly/generated.ts` — 同上
+//! - `bindings/c/generated.h` — 同上
 
 use std::fmt::Write as _;
 
-use crate::model::{EnumDef, FlagsDef, Hal, Import, Ret};
+use crate::model::{EnumDef, FlagsDef, Hal, Iface, Import, Ret};
 
 /// 生成物の先頭に置く注意書き。
 fn banner(hal: &Hal, comment: &str) -> String {
@@ -447,6 +448,178 @@ fn ts_ret(f: &Import) -> String {
         Ret::Status => "u32".to_string(),
         Ret::Scalar(s) => s.assemblyscript().to_string(),
     }
+}
+
+// ---------------------------------------------------------------- bindings/c
+
+/// C のドキュメントコメント。`*/` で閉じてしまう危険は TS と同じ。
+/// 空行で行末に空白を残さない（C ではエディタや差分で目立つ）。
+fn c_doc(out: &mut String, indent: &str, docs: &[String]) {
+    if docs.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "{indent}/**");
+    for line in docs {
+        if line.is_empty() {
+            let _ = writeln!(out, "{indent} *");
+        } else {
+            let _ = writeln!(out, "{indent} * {}", ts_escape(line));
+        }
+    }
+    let _ = writeln!(out, "{indent} */");
+}
+
+/// C の名前空間は平らなので、型名を `wasmicon_` とインターフェース名で前置する。
+/// 共通型を置く `types` だけはインターフェース名を省く（AS と同じ規則）。
+fn c_type_prefix(iface: &Iface, wit_name: &str) -> String {
+    let ty = crate::lower::snake(wit_name);
+    if iface.name == "types" {
+        format!("wasmicon_{ty}")
+    } else {
+        format!("wasmicon_{}_{ty}", crate::lower::snake(&iface.name))
+    }
+}
+
+fn c_const(prefix: &str, wit_name: &str) -> String {
+    format!("{prefix}_{}", crate::lower::snake(wit_name)).to_uppercase()
+}
+
+/// `bindings/c/generated.h`
+pub fn bindings_c(hal: &Hal) -> String {
+    let mut out = String::new();
+    out.push_str(&banner(hal, "//"));
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#ifndef WASMICON_HAL_GENERATED_H");
+    let _ = writeln!(out, "#define WASMICON_HAL_GENERATED_H");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#include <stdint.h>");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#ifdef __cplusplus");
+    let _ = writeln!(out, "extern \"C\" {{");
+    let _ = writeln!(out, "#endif");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "/** HAL のパッケージ名と版（ABI 版）。 */");
+    let _ = writeln!(out, "#define WASMICON_HAL_PACKAGE \"{}\"", hal.package);
+    let _ = writeln!(out);
+    let _ = writeln!(out, "/** HAL import の宣言に付ける属性（abi-spec §3）。 */");
+    let _ = writeln!(out, "#define WASMICON_IMPORT(module, name) \\");
+    let _ = writeln!(
+        out,
+        "    __attribute__((import_module(module), import_name(name)))"
+    );
+
+    for iface in &hal.interfaces {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "// ---- {} ----", iface.module);
+        if !iface.docs.is_empty() {
+            let _ = writeln!(out);
+            c_doc(&mut out, "", &iface.docs);
+        }
+
+        for e in &iface.enums {
+            let prefix = c_type_prefix(iface, &e.wit_name);
+            let _ = writeln!(out);
+            c_doc(&mut out, "", &e.docs);
+            let _ = writeln!(out, "typedef enum {prefix} {{");
+            for (i, c) in e.cases.iter().enumerate() {
+                c_doc(&mut out, "    ", &c.docs);
+                let _ = writeln!(out, "    {} = {i},", c_const(&prefix, &c.wit_name));
+            }
+            let _ = writeln!(out, "}} {prefix}_t;");
+            let _ = writeln!(out);
+            let _ = writeln!(out, "/** ケース数。範囲外の値は不正（abi-spec §4.1）。 */");
+            let _ = writeln!(
+                out,
+                "#define {} {}u",
+                c_const(&prefix, "count"),
+                e.cases.len()
+            );
+            if is_error_code(e) {
+                let _ = writeln!(out);
+                let _ = writeln!(out, "/** 成功を表すステータス値。 */");
+                let _ = writeln!(out, "#define WASMICON_OK 0u");
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "/** ホストが返すステータス値。discriminant + 1（abi-spec §4.4）。 */"
+                );
+                let _ = writeln!(
+                    out,
+                    "static inline uint32_t {prefix}_status({prefix}_t code) {{"
+                );
+                let _ = writeln!(out, "    return (uint32_t)code + 1u;");
+                let _ = writeln!(out, "}}");
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "/** ステータス値から復元する。0（成功）と範囲外は 0 を返し、*out に触れない。 */"
+                );
+                let _ = writeln!(
+                    out,
+                    "static inline int {prefix}_from_status(uint32_t status, {prefix}_t *out) {{"
+                );
+                let _ = writeln!(
+                    out,
+                    "    if (status == 0u || status > {}) {{",
+                    c_const(&prefix, "count")
+                );
+                let _ = writeln!(out, "        return 0;");
+                let _ = writeln!(out, "    }}");
+                let _ = writeln!(out, "    *out = ({prefix}_t)(status - 1u);");
+                let _ = writeln!(out, "    return 1;");
+                let _ = writeln!(out, "}}");
+            }
+        }
+
+        for fl in &iface.flags {
+            let prefix = c_type_prefix(iface, &fl.wit_name);
+            let _ = writeln!(out);
+            c_doc(&mut out, "", &fl.docs);
+            let _ = writeln!(out, "// abi-spec §4.1: 宣言順にビット 0 から割り当てる。");
+            for (i, b) in fl.bits.iter().enumerate() {
+                c_doc(&mut out, "", &b.docs);
+                let _ = writeln!(out, "#define {} (1u << {i})", c_const(&prefix, &b.wit_name));
+            }
+            let _ = writeln!(
+                out,
+                "/** 定義済みビットのマスク。これ以外が立っていたら invalid-argument。 */"
+            );
+            let _ = writeln!(
+                out,
+                "#define {} {:#x}u",
+                c_const(&prefix, "all"),
+                flags_mask(fl)
+            );
+        }
+
+        for f in &iface.imports {
+            let _ = writeln!(out);
+            c_doc(&mut out, "", &f.docs);
+            let _ = writeln!(out, "WASMICON_IMPORT(\"{}\", \"{}\")", iface.module, f.name);
+            let args = if f.params.is_empty() {
+                "void".to_string()
+            } else {
+                f.params
+                    .iter()
+                    .map(|p| {
+                        let ty = p.c();
+                        let sep = if ty.ends_with('*') { "" } else { " " };
+                        format!("{ty}{sep}{}", crate::lower::snake(&p.name))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let _ = writeln!(out, "{} wasmicon_{}({args});", f.ret.c(), f.as_name);
+        }
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#ifdef __cplusplus");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "#endif");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#endif // WASMICON_HAL_GENERATED_H");
+    out
 }
 
 #[cfg(test)]

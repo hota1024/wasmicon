@@ -14,7 +14,7 @@ env:
 jobs:
   # root workspace: ランタイムコア、ジェネレータ、host ポート
   # host ポートのテストは apps/ のゲストをビルドして動かすので、
-  # Rust の wasm32 ターゲットと AssemblyScript もここで要る。
+  # Rust の wasm32 ターゲットと AssemblyScript と clang もここで要る。
   root:
     runs-on: ubuntu-24.04
     steps:
@@ -26,6 +26,9 @@ jobs:
       # ports/host のテストが apps/ のゲストをビルドするので必要。
       # 入れ子の cargo には rust-toolchain.toml が効かない場合があるため明示する。
       - run: rustup target add wasm32-unknown-unknown
+      # ports/host のテストが apps/blink-c を bindings/c/build.sh でビルドするので必要。
+      # clang の wasm32 ターゲットと wasm-ld（lld）を使う。
+      - run: sudo apt-get update && sudo apt-get install -y clang lld
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # wasm-tools は check-sigs.sh、spec テスト、ゲストの機能検査が使う

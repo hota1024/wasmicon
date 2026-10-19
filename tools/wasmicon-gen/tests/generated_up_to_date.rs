@@ -16,7 +16,7 @@ fn repo_root() -> PathBuf {
 fn committed_outputs_match_wit() {
     let root = repo_root();
     let outputs = wasmicon_gen::outputs(&root).expect("生成に失敗した");
-    assert_eq!(outputs.len(), 3, "生成物は 3 ファイル");
+    assert_eq!(outputs.len(), 4, "生成物は 4 ファイル");
 
     for o in &outputs {
         let on_disk = std::fs::read_to_string(&o.path)

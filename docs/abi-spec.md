@@ -4,7 +4,7 @@
 対象: `wasmicon:hal@0.1.0`（`wit/` 配下の WIT 定義）
 関連: `wasmicon/design-notes.md`
 
-本書は、WIT で記述された Wasmicon HAL を **Core WebAssembly モジュールの import / export** にどう落とし込むかを定める。Component Model は使わない。WIT は IDL としてのみ用い、ここで定める規則によって Rust バインディング、AssemblyScript バインディング、ランタイムのホスト関数テーブルを機械的に生成する。
+本書は、WIT で記述された Wasmicon HAL を **Core WebAssembly モジュールの import / export** にどう落とし込むかを定める。Component Model は使わない。WIT は IDL としてのみ用い、ここで定める規則によって Rust バインディング、AssemblyScript バインディング、C バインディング、ランタイムのホスト関数テーブルを機械的に生成する。
 
 用語: 「ゲスト」= Wasm モジュール、「ホスト」= Wasmicon Runtime とそのポート層。
 
@@ -475,3 +475,46 @@ pub fn resolve(module: &str, name: &str) -> Option<&'static ImportDesc>;
 ```
 
 ランタイムは module + name で `ImportDesc` を引き、`sig` がゲストの型と完全一致することを確かめてから `host_fn` をリンクする。ホスト関数の実体はポート層が供給する。
+
+## 付録 D. ゲスト側コード例（C, 生成物のイメージ）
+
+C は名前空間が平らなので、全ての名前を `wasmicon_` で前置する。
+
+| WIT | C |
+|---|---|
+| import 関数 | `wasmicon_<iface>_<関数>`（AS の関数名に `wasmicon_` を付けたもの。`wasmicon_gpio_pin_open`） |
+| enum の型 | `wasmicon_<iface>_<型>_t`。`types` の型はインターフェース名を省く（`wasmicon_error_code_t`） |
+| enum のケース | 型名の大文字 + `_` + ケース名（`WASMICON_GPIO_PIN_MODE_OUTPUT`）。ケース数は `<型名の大文字>_COUNT` |
+| flags | 型は作らず定数だけ。ビットは `<型名の大文字>_<ビット名>`、定義済みビットのマスクは `<型名の大文字>_ALL` |
+| 引数 | snake_case。`self` はそのまま（C / C++ の予約語ではない） |
+| `list<u8>` / `string` のポインタ | `const uint8_t *` / `const char *`（Core Wasm 上はどちらも i32） |
+
+import 宣言の enum 引数は Rust と同じく生の `uint32_t`。ゲストの export は
+`__attribute__((export_name("run")))` で付ける。ビルドフラグ（§6.1 の機能セット、
+メモリ上限）は `bindings/c/build.sh` が持つ。
+
+```c
+// 生成: bindings/c/generated.h
+typedef enum wasmicon_gpio_pin_mode {
+    WASMICON_GPIO_PIN_MODE_INPUT = 0,
+    /* ... */
+    WASMICON_GPIO_PIN_MODE_OUTPUT = 3,
+} wasmicon_gpio_pin_mode_t;
+
+WASMICON_IMPORT("wasmicon:hal/gpio@0.1.0", "[static]pin.open")
+uint32_t wasmicon_gpio_pin_open(uint32_t index, uint32_t mode, uint32_t *out);
+WASMICON_IMPORT("wasmicon:hal/gpio@0.1.0", "[resource-drop]pin")
+void wasmicon_gpio_pin_drop(uint32_t self);
+
+// アプリ（apps/blink-c/src/main.c）
+#include "wasmicon_hal.h"
+
+WASMICON_EXPORT("run") void run(void) {
+    uint32_t pin;
+    if (wasmicon_gpio_pin_open(15, WASMICON_GPIO_PIN_MODE_OUTPUT, &pin) != WASMICON_OK) {
+        return;
+    }
+    wasmicon_gpio_pin_write(pin, WASMICON_GPIO_LEVEL_HIGH);
+    wasmicon_gpio_pin_drop(pin);
+}
+```
