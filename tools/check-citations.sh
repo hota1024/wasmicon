@@ -45,7 +45,7 @@ while IFS= read -r line; do
     case $rest in
         Appendix\ *)
             letter=${rest#Appendix }
-            grep -qE "^#{1,6} (Appendix|付録) $letter([. ]|$)" "$path" \
+            grep -qE "^#{1,6} Appendix $letter([. ]|$)" "$path" \
                 || { echo "check-citations: no Appendix $letter in $path" >&2; fail=1; }
             ;;
         *)

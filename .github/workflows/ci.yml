@@ -58,6 +58,11 @@ jobs:
       - run: cargo run -p wasmicon-gen -- --check
       # Cross-checks the generated signatures against the reference tools/wit2sig.py.
       - run: sh tools/check-sigs.sh
+      # English only, and every section citation names its document and resolves.
+      - run: sh tools/check-english.sh
+      - run: sh tools/check-citations.sh
+      # The runtime core has no dependency crates (docs/decisions.md D-11).
+      - run: test "$(cargo tree -p wasmicon-core --edges normal --depth 1 | wc -l)" -eq 1
       # Self-test of the trace-diff script's normalization.
       - run: sh verify/diff-traces.sh --self-test
 

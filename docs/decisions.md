@@ -56,7 +56,7 @@ on them. Open questions that still wait for the owner live in `docs/TODO.md` §2
 | P-03 | `core` has no `floor`, `ceil`, `trunc`, `round` or `sqrt`. With zero dependencies they are implemented by hand. `f32.sqrt` is a mandatory instruction; `nearest` rounds half to even; `min` / `max` propagate NaN; `copysign` and `trunc_sat` follow the spec. `float_misc.wast` and `conversions.wast` are the hard cases. |
 | P-04 | RP2040 has no FPU and no hardware divide: f32 / f64 go through `compiler_builtins` soft-float. IEEE-correct but slow. |
 | P-05 | The ESP32-S3 FPU is f32-only; f64 is soft-float. The Xtensa FPU may not handle denormals in some configurations, so the denormal spec cases are run on hardware too. |
-| P-06 | Bytecode is read directly from XIP flash. Cortex-M0+ HardFaults on unaligned word access. Read through `u32::from_le_bytes(bytes[i..i + 4].try_into()…)`; never use `ptr::read`, `align_to` or reference casts (HardFault and UB). Read LEB128 byte by byte. |
+| P-06 | Bytecode is read directly from XIP flash. Cortex-M0+ HardFaults on unaligned word access. Read through `u32::from_le_bytes(bytes[i..i + 4].try_into()...)`; never use `ptr::read`, `align_to` or reference casts (HardFault and UB). Read LEB128 byte by byte. |
 | P-07 | Range-check `list<u8>` arguments and out-pointers on every host call with `checked_add` and `slice::get`. No silent truncation through `as`. |
 | P-08 | `panic = "abort"` still keeps panic messages and implicit bounds-check strings in the binary. The core returns `Result` and uses `get()` on hot paths. `panic_immediate_abort` needs build-std and is not relied on. |
 | P-09 | `core::fmt` is the main size cost. The core uses no `write!`, `{:?}` or `Display`. Trace output is written byte-wise in the port layer. |

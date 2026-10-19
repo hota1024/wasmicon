@@ -26,7 +26,7 @@ Stop and write up the reason instead of implementing, if a change would:
 - change the ABI: import module or field names, signatures, error code =
   discriminant + 1, handle 0 = invalid (`docs/abi-spec.md` §3–§5)
 - use WIT syntax outside the subset in `docs/abi-spec.md` §2
-- overturn a frozen decision (`docs/decisions.md` D-01…D-12)
+- overturn a frozen decision (`docs/decisions.md` D-01...D-12)
 - add a dependency crate or `alloc` to `runtime/`
 - change the trace format (`docs/abi-spec.md` §9) or a guest log string that a
   trace-equality test compares
