@@ -1,37 +1,63 @@
 # Wasmicon
 
-マイコン (ESP32-S3 / RP2040 / RP2350) 向け WebAssembly 実行環境。自作 Core Wasm ランタイム + WIT 定義の HAL + Rust/AssemblyScript/C バインディング。
+WebAssembly runtime for microcontrollers: a from-scratch `no_std` Core Wasm
+interpreter (`runtime/`), a HAL defined in WIT (`wit/`), generated bindings for
+Rust / AssemblyScript / C (`bindings/`), board ports (`ports/`), sample apps
+(`apps/`) and the `wasmicon` CLI (`tools/`). Evaluation boards: ESP32-S3 and
+RP2350 (Pico 2 W). ESP32-C5 is a port in progress (boots and blinks on hardware;
+status in `docs/TODO.md` §1.3.1). RP2040 builds but is not evaluated.
 
-## まず読むもの
+## Read first
 
-1. `README.md` — 何のプロジェクトか、構成、ビルドと検証の手順
-2. `docs/TODO.md` — **残作業。ここだけが残作業の正**
-3. `docs/abi-spec.md` — WIT → Core Wasm の lowering 規則。**この仕様が正**
-4. `wit/` — HAL 定義。**唯一の真実**。生成物を手で編集しない
-5. `docs/handoff.md` — 変更禁止の決定事項（§2）と落とし穴（§6）。コードのコメントが節番号で参照している
+1. `README.md` – what exists, layout, build and flash instructions
+2. `docs/TODO.md` – remaining work and open owner questions. The only place for them.
+3. `docs/abi-spec.md` – normative WIT -> Core Wasm lowering rules
+4. `wit/` – the HAL. Source of truth; every `generated.*` file is generator output
+5. `docs/decisions.md` – frozen decisions (D-NN), adopted defaults (A-NN), pitfalls (P-NN)
+6. `docs/style-guide.md` – language, comment, citation and commit conventions
 
-## 絶対に守ること
+Area rules live in nested `AGENTS.md` files: `runtime/`, `wit/`, `ports/`, `apps/`,
+`tools/`, `bindings/`.
 
-- `docs/abi-spec.md` §2 のサブセット外の WIT 構文を使わない
-- ABI（import 名、シグネチャ、エラーコード = discriminant + 1、ハンドル 0 = 無効）を変更しない。変更が必要なら実装せず理由を書いてオーナーに確認
-- ランタイムコア (`runtime/`) は Rust `no_std`、**依存クレートゼロ**、`alloc` 不使用（arena をポートから注入）、警告ゼロ
-- Wasm の算術は wrapping。`wrapping_*` / `rotate_*` / `checked_*` を明示的に使う
-- `unsafe` は最小限。書くときは直前に `// SAFETY:` を必ず添える
-- コアで `core::fmt`（`format!` / `write!` / `{:?}`）を使わない。バイナリが肥大する
-- 生成物 (`runtime/src/generated.rs`, `bindings/*/generated.*`) はジェネレータ出力のみ。CI で再生成 diff ゼロを検査
-- `docs/handoff.md` §2 の決定事項を覆さない。覆す必要があるなら実装せず理由を書いてオーナーに確認
+## Ask the owner before
 
-## 検証
+Stop and write up the reason instead of implementing, if a change would:
 
-```bash
-wasm-tools component wit wit/            # WIT 構文
-cargo run -p wasmicon-gen                # 生成物を更新
-cargo run -p wasmicon-gen -- --check     # 生成物が wit/ と一致するか
-sh tools/check-sigs.sh                   # 参照実装 tools/wit2sig.py と突き合わせ
+- change the ABI: import module or field names, signatures, error code =
+  discriminant + 1, handle 0 = invalid (`docs/abi-spec.md` §3–§5)
+- use WIT syntax outside the subset in `docs/abi-spec.md` §2
+- overturn a frozen decision (`docs/decisions.md` D-01…D-12)
+- add a dependency crate or `alloc` to `runtime/`
+- change the trace format (`docs/abi-spec.md` §9) or a guest log string that a
+  trace-equality test compares
+
+If you proceed on an adopted default while an owner question is open, say so in
+the commit body.
+
+## Verify
+
+Root workspace (what CI's `root` job runs):
+
+```sh
+sh tools/fetch-testsuite.sh            # once; without it the spec tests silently skip
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+cargo run -p wasmicon-gen -- --check   # generated files match wit/
+sh tools/check-sigs.sh                 # signatures vs. the reference tools/wit2sig.py
+sh tools/check-english.sh && sh tools/check-citations.sh
 ```
 
-## 残作業と未決事項
+Other workspaces are separate: `cd apps`, `cd ports/<board>`, `cd verify/differential`
+(see the nested `AGENTS.md`). `ports/esp32s3` builds through `ports/esp32s3/build.sh`.
 
-`docs/TODO.md` が正。**残作業を他の場所に書き足さない**（散らすと必ず古くなる）。
-オーナーの確定を待っている項目で既定のまま進める場合は、コミットメッセージに明記する。
+## Conventions
+
+- English only: code, comments, docs, commit messages, CLI and firmware output.
+  CI runs `tools/check-english.sh`.
+- Cite documents as `docs/abi-spec.md §4.1` or `docs/decisions.md D-07` (path +
+  section, checked by `tools/check-citations.sh`). Code never cites `docs/handoff.md`.
+- Comments explain why. Every `unsafe` block has a `// SAFETY:` comment stating
+  the invariant in full (clippy `undocumented_unsafe_blocks` is on in every crate).
+  No dates, phase numbers, verification status or build steps in source headers.
+- Prefer a test or script to a prose rule. When you add a rule, add its check.
+- Commits: Conventional Commits, English subject and body; the body says what was
+  verified and what was not. Translation and rename commits never change behavior.
