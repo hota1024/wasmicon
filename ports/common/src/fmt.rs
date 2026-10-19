@@ -1,13 +1,13 @@
-//! `core::fmt` を使わない最小の整形。
+//! Minimal formatting without `core::fmt`.
 //!
-//! トレースはマイコンでも出すので、`core::fmt` を持ち込みたくない
-//! （バイナリが肥大する。CLAUDE.md）。必要なのは 10 進と 16 進だけ。
+//! Traces are emitted on microcontrollers too, and `core::fmt` would bloat the
+//! binary (docs/decisions.md P-09). Only decimal and hex are needed.
 
-/// 固定長のバイト列にだけ書ける、伸びないバッファ。
+/// Fixed-size byte buffer that never grows.
 pub struct Buf<'a> {
     buf: &'a mut [u8],
     len: usize,
-    /// `false` なら何も書かない（`off`）。
+    /// When `false`, nothing is written (`off`).
     on: bool,
 }
 
@@ -21,11 +21,11 @@ impl<'a> Buf<'a> {
         }
     }
 
-    /// 何も書かないバッファ。トレースを切っているときに使う。
+    /// A buffer that writes nothing. Used while tracing is off.
     ///
-    /// 呼び出し側は書くかどうかを毎回分岐しなくてよい（どのメソッドも
-    /// 入り口で戻る）。**引数を作るのに重い計算が要るもの**（CRC-32 や
-    /// 16 進ダンプ）だけは、呼び出し側が `is_on` を見て飛ばす。
+    /// Callers need not branch on every write (every method returns at its
+    /// entry). Only arguments that are expensive to compute (CRC-32, hex
+    /// dumps) are skipped by the caller after checking `is_on`.
     #[must_use]
     pub fn off(buf: &'a mut [u8]) -> Self {
         Buf {
@@ -35,19 +35,19 @@ impl<'a> Buf<'a> {
         }
     }
 
-    /// 書くバッファか。
+    /// Whether this buffer writes.
     #[must_use]
     pub fn is_on(&self) -> bool {
         self.on
     }
 
-    /// 書けた分。溢れた場合は切り詰められている。
+    /// What was written. Truncated if the buffer overflowed.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
     }
 
-    /// 溢れたか。
+    /// Whether the buffer overflowed.
     #[must_use]
     pub fn overflowed(&self) -> bool {
         self.len == self.buf.len()
@@ -77,8 +77,9 @@ impl<'a> Buf<'a> {
         }
     }
 
-    /// トレースに埋め込む文字列。改行や `"` をそのまま出すと abi-spec §9 の
-    /// 1 行 1 レコードという形が壊れ、両ボードの diff が行単位でずれる。
+    /// A string embedded in a trace. Emitting a newline or `"` as is would
+    /// break the one-record-per-line form of docs/abi-spec.md §9 and shift
+    /// the diff between the two boards by whole lines.
     pub fn escaped(&mut self, s: &[u8]) {
         if !self.on {
             return;
@@ -91,7 +92,8 @@ impl<'a> Buf<'a> {
                 b'"' => self.str("\\\""),
                 b'\\' => self.str("\\\\"),
                 0x20..=0x7e => self.byte(b),
-                // 制御文字と非 ASCII は 16 進で出す。UTF-8 の途中で切れても壊れない。
+                // Control and non-ASCII bytes are emitted as hex, so a cut in the
+                // middle of a UTF-8 sequence does no harm.
                 _ => {
                     self.str("\\x");
                     self.hex(u32::from(b), 2);
@@ -100,7 +102,7 @@ impl<'a> Buf<'a> {
         }
     }
 
-    /// 10 進。
+    /// Decimal.
     pub fn u64(&mut self, mut v: u64) {
         if !self.on {
             return;
@@ -125,7 +127,7 @@ impl<'a> Buf<'a> {
         self.u64(u64::from(v));
     }
 
-    /// 幅を固定した 16 進（`width` 桁、0 埋め）。
+    /// Fixed-width hex (`width` digits, zero-padded).
     pub fn hex(&mut self, v: u32, width: usize) {
         if !self.on {
             return;

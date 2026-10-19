@@ -1,29 +1,31 @@
-//! PC 用ポート。`.wasm` を読み込み、mock HAL で実行する。
+//! PC port. Loads a `.wasm` and runs it on the mock HAL.
 //!
-//! docs/handoff.md §5 Phase 2 の完了条件（host で動かしてトレースが出る）はここで検証する。
+//! Runs a guest on the host and collects its trace (docs/abi-spec.md §9). The
+//! host tests and the `wasmicon` CLI build on this.
 
 pub mod hal;
 
 use wasmicon_core::{Arena, Error, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::Hal;
 
-/// arena の大きさ。残りが線形メモリになる。正は `profile::HOST`。
+/// Arena size. The remainder becomes linear memory. `profile::HOST` is the source of truth.
 pub const ARENA: usize = wasmicon_port::profile::HOST.arena;
-/// 検証中だけ使う作業領域。正は `profile::HOST`。
+/// Working memory used only during validation. `profile::HOST` is the source of truth.
 pub const SCRATCH: usize = wasmicon_port::profile::HOST.scratch;
 
-/// 実行結果。
+/// Result of a run.
 pub struct Outcome {
-    /// abi-spec §9 形式のトレース。
+    /// Trace in the docs/abi-spec.md §9 format.
     pub trace: String,
 }
 
-/// 記録済みの I2C 応答を読む。
+/// Loads recorded I2C responses.
 ///
-/// 形式は 1 行 1 応答の 16 進。`#` で始まる行と空行は無視する。
+/// One response per line, as hex bytes. Lines starting with `#` and empty
+/// lines are ignored.
 ///
 /// # Errors
-/// ファイルが読めないか、16 進として解釈できない行があるとき。
+/// The file cannot be read, or a line is not hex.
 pub fn load_i2c_replay(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> {
     let text = std::fs::read_to_string(path)?;
     let mut out = Vec::new();
@@ -35,10 +37,7 @@ pub fn load_i2c_replay(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> 
         let mut bytes = Vec::new();
         for tok in line.split_whitespace() {
             let b = u8::from_str_radix(tok, 16).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "16 進として読めないトークンがある",
-                )
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "a token is not a hex byte")
             })?;
             bytes.push(b);
         }
@@ -47,20 +46,21 @@ pub fn load_i2c_replay(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> 
     Ok(out)
 }
 
-/// `.wasm` を読み込んで `run` を呼ぶ。
+/// Loads a `.wasm` and calls `run`.
 ///
-/// I2C の応答は環境変数 `WASMICON_I2C_REPLAY` が指すファイルから読む。
+/// I2C responses come from the file named by the `WASMICON_I2C_REPLAY`
+/// environment variable.
 ///
 /// # Errors
-/// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
+/// Decoding, validation, instantiation or execution failed.
 pub fn run_wasm(wasm: &[u8], trace: bool) -> Result<Outcome, Error> {
-    // 設定ミスを黙って「センサー無し」に落とさない。読めなければ理由を出す。
+    // Do not silently turn a configuration mistake into "no sensor": print the reason.
     let replay = match std::env::var("WASMICON_I2C_REPLAY") {
         Err(_) => Vec::new(),
         Ok(path) => match load_i2c_replay(std::path::Path::new(&path)) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("wasmicon: WASMICON_I2C_REPLAY={path} を読めない: {e}");
+                eprintln!("wasmicon: cannot read WASMICON_I2C_REPLAY={path}: {e}");
                 Vec::new()
             }
         },
@@ -68,21 +68,22 @@ pub fn run_wasm(wasm: &[u8], trace: bool) -> Result<Outcome, Error> {
     run_wasm_with(wasm, trace, replay)
 }
 
-/// 実行時の設定。
+/// Run options.
 #[derive(Default)]
 pub struct Options {
-    /// トレースを溜めるか。
+    /// Whether to collect the trace.
     pub trace: bool,
-    /// I2C の読み出しに順に返す応答。空なら `Nack`。
+    /// Responses returned to I2C reads, in order. Empty means `Nack`.
     pub i2c_replay: Vec<Vec<u8>>,
-    /// SPI を `unsupported` にする。実機ポートの現状を模した失敗経路のテスト用。
+    /// Makes SPI return `unsupported`, as a port without SPI does, to test the
+    /// failure path.
     pub spi_unsupported: bool,
 }
 
-/// 記録済みの I2C 応答を明示して実行する。
+/// Runs with explicit recorded I2C responses.
 ///
 /// # Errors
-/// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
+/// Decoding, validation, instantiation or execution failed.
 pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Result<Outcome, Error> {
     run_wasm_opts(
         wasm,
@@ -94,32 +95,34 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
     )
 }
 
-/// 設定を明示して実行する。
+/// Runs with explicit options.
 ///
 /// # Errors
-/// デコード・検証・インスタンス化・実行のいずれかが失敗したとき。
+/// Decoding, validation, instantiation or execution failed.
 pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
     let (outcome, result) = run_wasm_capture(wasm, opts);
     result?;
     Ok(outcome)
 }
 
-/// 実行して、**失敗しても溜まったトレースを返す**。
+/// Runs and returns the collected trace even on failure.
 ///
-/// `run_wasm_opts` は失敗を `Err` で返すので、そこまでに溜めたトレースが
-/// 捨てられる。**トラップしたときこそトレースが欲しい**（どの host call で
-/// 分岐したかはそこにしか無い）ので、両方返す口を分けてある。
-/// `wasmicon run --trace` はこちらを使う。
+/// `run_wasm_opts` returns failures as `Err`, which discards the trace
+/// collected up to that point. A trap is exactly when the trace matters (only
+/// it shows at which host call the runs diverged), so this entry point returns
+/// both. `wasmicon run --trace` uses it.
 ///
-/// 第 2 要素が `Err` のときも、第 1 要素のトレースはそこまでの全行を持つ。
+/// When the second element is `Err`, the first still holds every line up to
+/// the failure.
 pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Error>) {
     let (trace, i2c_replay, spi_unsupported) = (opts.trace, opts.i2c_replay, opts.spi_unsupported);
     let mut buf = vec![0u8; ARENA];
     let mut scratch_buf = vec![0u8; SCRATCH];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
-    // host は全ボードより緩い（max_memory_pages = 65536）。ボードの上限で
-    // 検査したいときは profile::<board>.config を使う（§4.3）。
+    // The host is looser than every board (max_memory_pages = 65536). To check
+    // against a board's limits use profile::<board>.config
+    // (docs/app-workflow.md §4.3).
     let cfg = wasmicon_port::profile::HOST.config;
 
     let mut hal = Hal::new(
@@ -130,9 +133,9 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
     )
     .with_roles(hal::host_roles());
 
-    // ゲストが走り出す前の失敗（decode / validate / Exec / instantiate）では
-    // トレースは空。走り出したあとの失敗では、そこまでの全行が hal に溜まる。
-    // どちらも同じ形で返せるように、1 つのブロックに畳む。
+    // A failure before the guest starts (decode / validate / Exec / instantiate)
+    // leaves the trace empty; a failure afterwards leaves every line so far in
+    // hal. One block folds both into the same shape.
     let result: Result<(), Error> = 'guest: {
         let m = match decode::decode(wasm, &mut arena) {
             Ok(m) => m,
@@ -142,7 +145,7 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
             Ok(v) => v,
             Err(e) => break 'guest Err(e),
         };
-        // Exec は線形メモリ（arena の残り全部）より先に確保する。
+        // Exec must be allocated before linear memory (the rest of the arena).
         let mut exec = match Exec::new(&cfg, &mut arena) {
             Ok(e) => e,
             Err(e) => break 'guest Err(e),
@@ -159,14 +162,16 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
                 break 'run Err(e);
             }
             let Some(run) = inst.export_func("run") else {
-                break 'run Err(Error::Unlinkable("export run が無い（abi-spec §3.3）"));
+                break 'run Err(Error::Unlinkable(
+                    "missing export `run` (docs/abi-spec.md §3.3)",
+                ));
             };
             invoke(&mut inst, &mut exec, &mut hal, run, &[], &mut [])
         };
 
-        // abi-spec §5.2 / §6.6: `run` から戻ったら（トラップでも）残っている
-        // ハンドルを全部 drop する。実機のポートと同じ場所で呼ぶ。
-        // トレース行は増えない（`Hal::release_all`）。
+        // docs/abi-spec.md §5.2, §6.6: once `run` returns (even by a trap), drop
+        // every remaining handle. Called at the same point as on the board ports.
+        // No trace line is added (`Hal::release_all`).
         hal.release_all();
         ran
     };

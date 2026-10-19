@@ -1,94 +1,86 @@
-//! 役割マップ（役割名 → GPIO 番号）と、それを置く設定スロットの形式
-//! （`docs/app-workflow.md` §3.9）。
+//! Role map (role name -> GPIO number) and the config slot format that holds
+//! it (docs/app-workflow.md §3.9).
 //!
-//! **役割名はファームの語彙ではない。** アプリ（`wasmicon.toml` の
-//! `[requirements] pin-roles`）と配線（`[board.<name>.roles]`）の間の約束で、
-//! ファームは `deploy` が設定スロットに書いた表のとおりに `pin-by-role` に
-//! 答えるだけ。**ファームは既定の表を持たない**（2026-10-07 オーナー決定）。
-//! スロットが空・壊れていれば役割は 1 つも配らず、どのピンも勝手に駆動しない。
+//! Role names are not firmware vocabulary. They are a contract between the
+//! app (`[requirements] pin-roles` in `wasmicon.toml`) and the wiring
+//! (`[board.<name>.roles]`); the firmware only answers `pin-by-role` from the
+//! table `deploy` wrote to the config slot. The firmware has no default table:
+//! with an empty or corrupt slot it hands out no role and drives no pin. The
+//! layout is on `Header`.
 //!
-//! ```text
-//! offset  size  内容
-//! 0       4     magic "WMCR"（Wasmicon Roles）
-//! 4       2     フォーマット版（u16 LE。= 1）
-//! 6       2     予約（0）
-//! 8       4     本文の長さ（u32 LE）
-//! 12      4     本文の CRC-32（u32 LE）
-//! 16      n     本文。1 行 1 項目の `name=gpio\n`（10 進）
-//! ```
+//! The body is text so that no new compatibility axis (role IDs) is needed
+//! and a flash dump stays human-readable (docs/app-workflow.md §3.9).
 //!
-//! 本文をテキストにするのは、役割 ID という新しい互換の軸を作らずに済み、
-//! フラッシュを吸い出しても人が読めるため（§3.9）。
-//!
-//! 書く側（CLI）と読む側（ファーム）で同じ検査を 2 回書かないよう、
-//! ここに置いて両方が使う。`alloc` を使わないので、名前の長さと個数に
-//! 上限がある（`MAX_NAME` / `MAX_ROLES`）。
+//! The writer (CLI) and the reader (firmware) share this module so the checks
+//! are written once. Without `alloc`, the name length and the number of roles
+//! are bounded (`MAX_NAME` / `MAX_ROLES`).
 
 use crate::crc32;
 use crate::fmt::Buf;
 use crate::profile::{Profile, Slot};
 
-/// スロットの先頭に置く識別子。アプリスロット（`"WMCA"`）と取り違えない。
+/// Identifier at the start of the slot. Distinct from the app slot's `"WMCA"`.
 pub const MAGIC: [u8; 4] = *b"WMCR";
 
-/// フォーマット版。
+/// Format version.
 pub const FORMAT_VERSION: u16 = 1;
 
-/// ヘッダの大きさ。本文はこの直後から始まる。
+/// Header size. The body starts right after it.
 pub const HEADER_LEN: usize = 16;
 
-/// 役割の最大数。
+/// Maximum number of roles.
 pub const MAX_ROLES: usize = 8;
 
-/// 役割名の最大長（バイト）。
+/// Maximum role name length in bytes.
 pub const MAX_NAME: usize = 16;
 
-/// 本文の最大長。`MAX_ROLES` 行 × （名前 16 + `=` + 番号 3 桁 + 改行）に収まる。
+/// Maximum body length. Holds `MAX_ROLES` lines of (16-byte name + `=` + 3-digit
+/// number + newline).
 pub const MAX_BODY: usize = 256;
 
-/// 設定スロットに取る大きさ（フラッシュの消去単位）。
+/// Size reserved for the config slot (one flash erase unit).
 pub const SLOT_LEN: u32 = 4096;
 
-/// 役割マップを読めない・作れない理由。
+/// Why the role map cannot be read or built.
 ///
-/// 文面は `&'static str` で返す（`core::fmt` を使わない）。どの項目で
-/// 落ちたかは、書く側（CLI）が 1 項目ずつ `insert` して自分で出す。
+/// The text is a `&'static str` (no `core::fmt`). Which entry failed is
+/// reported by the writer (CLI), which calls `insert` one entry at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RolesError {
-    /// 消去済み（`0xff`）か、まだ何も書かれていない。**失敗ではなく「空」。**
+    /// Erased (`0xff`) or never written. Not a failure but "empty".
     Empty,
-    /// magic が違う。
+    /// Wrong magic.
     BadMagic,
-    /// この版を読めない。
+    /// A version this firmware cannot read.
     UnsupportedVersion,
-    /// 本文が長すぎる（`MAX_BODY` 超え）か、スロットの外を指している。
+    /// The body is too long (over `MAX_BODY`) or points past the slot.
     TooLong,
-    /// CRC が合わない。
+    /// CRC mismatch.
     BadCrc,
-    /// `name=gpio` の形になっていない行がある。
+    /// A line is not of the form `name=gpio`.
     BadLine,
-    /// 役割名が使えない文字を含むか、長さが範囲外。
+    /// A role name contains a disallowed character or has a bad length.
     BadName,
-    /// GPIO 番号が 10 進の数として読めない。
+    /// A GPIO number is not a decimal number.
     BadNumber,
-    /// 役割が `MAX_ROLES` を超えた。
+    /// More than `MAX_ROLES` roles.
     TooMany,
-    /// 同じ役割名が 2 回出てきた。
+    /// The same role name appears twice.
     DuplicateName,
-    /// 同じ GPIO 番号に 2 つの役割が割り当てられている。
+    /// Two roles are assigned to the same GPIO number.
     DuplicatePin,
-    /// GPIO 番号がボードの本数を超えている。
+    /// A GPIO number exceeds the board's GPIO count.
     OutOfRange,
-    /// 予約ピン（トレースの UART、フラッシュ、無線チップなど）。
+    /// A reserved pin (trace UART, flash, radio chip and so on).
     Reserved,
-    /// ポートが SPI / I2C に使っているピン。割り当てるとバスが黙って壊れる。
+    /// A pin the port uses for SPI / I2C. Assigning it breaks the bus silently.
     BusPin,
-    /// ファームの末尾が設定スロットに食い込んでいる。読んではいけない。
+    /// The firmware's end reaches into the config slot. Must not be read.
     Overlap,
 }
 
 impl RolesError {
-    /// ログに出す文面。
+    /// Text for the log.
     #[must_use]
     pub fn reason(self) -> &'static str {
         match self {
@@ -110,26 +102,26 @@ impl RolesError {
         }
     }
 
-    /// 空か。**これだけは異常ではない。**
+    /// Whether the slot is empty. The one case that is not an error.
     #[must_use]
     pub fn is_empty(self) -> bool {
         self == RolesError::Empty
     }
 }
 
-/// そのボードで割り当ててよい GPIO の制約。
+/// Constraints on which GPIOs may be assigned on the board.
 #[derive(Clone, Copy)]
 pub struct Limits<'a> {
-    /// GPIO の本数。
+    /// Number of GPIOs.
     pub gpio_count: u32,
-    /// 予約ピン。
+    /// Reserved pins.
     pub reserved: &'a [u32],
-    /// ポートが SPI / I2C に使うピン。
+    /// Pins the port uses for SPI / I2C.
     pub bus_pins: &'a [u32],
 }
 
 impl Limits<'static> {
-    /// プロファイルから作る。
+    /// Builds the limits from a profile.
     #[must_use]
     pub const fn of(p: &'static Profile) -> Self {
         Limits {
@@ -140,10 +132,11 @@ impl Limits<'static> {
     }
 }
 
-/// 役割名として使えるか。英小文字で始まる 1..=16 文字の `a-z` / `0-9` / `-`。
+/// Whether `name` is a valid role name: 1..=16 characters of `a-z` / `0-9` /
+/// `-`, starting with a lowercase letter.
 ///
-/// 文字を絞るのは、本文の `=` と改行、トレースの `role:<name>` と
-/// 衝突させないため。
+/// The alphabet is restricted so that names cannot collide with the body's
+/// `=` and newline or with `role:<name>` in traces.
 #[must_use]
 pub fn valid_name(name: &[u8]) -> bool {
     if name.is_empty() || name.len() > MAX_NAME || !name[0].is_ascii_lowercase() {
@@ -153,7 +146,7 @@ pub fn valid_name(name: &[u8]) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-/// 役割名 → GPIO 番号の表。固定長で、`alloc` を使わない。
+/// Role name -> GPIO number table. Fixed size, no `alloc`.
 #[derive(Clone, Copy)]
 pub struct RoleMap {
     names: [[u8; MAX_NAME]; MAX_ROLES],
@@ -163,7 +156,8 @@ pub struct RoleMap {
 }
 
 impl RoleMap {
-    /// 役割が 1 つも無い表。**設定スロットが空・壊れているときはこれで走る。**
+    /// A table with no roles. The firmware runs with this when the config slot
+    /// is empty or corrupt.
     pub const EMPTY: RoleMap = RoleMap {
         names: [[0; MAX_NAME]; MAX_ROLES],
         lens: [0; MAX_ROLES],
@@ -171,46 +165,46 @@ impl RoleMap {
         n: 0,
     };
 
-    /// 役割の数。
+    /// Number of roles.
     #[must_use]
     pub fn len(&self) -> usize {
         self.n
     }
 
-    /// 空か。
+    /// Whether the table is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }
 
-    /// `i` 番目の役割名。
+    /// Name of the `i`-th role.
     #[must_use]
     pub fn name(&self, i: usize) -> &[u8] {
         &self.names[i][..self.lens[i] as usize]
     }
 
-    /// `i` 番目の GPIO 番号。
+    /// GPIO number of the `i`-th role.
     #[must_use]
     pub fn pin(&self, i: usize) -> u32 {
         self.pins[i]
     }
 
-    /// 役割名から引く。見つかれば表の中の位置を返す。
+    /// Looks up a role name. Returns its position in the table when found.
     #[must_use]
     pub fn find(&self, name: &[u8]) -> Option<usize> {
         (0..self.n).find(|&i| self.name(i) == name)
     }
 
-    /// 役割名から GPIO 番号を引く。
+    /// Looks up the GPIO number of a role name.
     #[must_use]
     pub fn get(&self, name: &[u8]) -> Option<u32> {
         self.find(name).map(|i| self.pins[i])
     }
 
-    /// 1 項目足す。ボードの制約もここで見る。
+    /// Adds one entry. The board constraints are checked here too.
     ///
     /// # Errors
-    /// 名前が使えない、重複、上限超え、またはボードで割り当てられない番号のとき。
+    /// Invalid name, duplicate, over the limit, or a number the board cannot assign.
     pub fn insert(&mut self, name: &[u8], pin: u32, limits: &Limits<'_>) -> Result<(), RolesError> {
         if !valid_name(name) {
             return Err(RolesError::BadName);
@@ -241,11 +235,11 @@ impl RoleMap {
     }
 }
 
-/// 本文（`name=gpio` の行）を読む。
+/// Parses the body (lines of `name=gpio`).
 ///
 /// # Errors
-/// 行の形が崩れている、または `insert` が弾いたとき。**1 項目でも
-/// おかしければ表全体を捨てる**（呼び出し側は `RoleMap::EMPTY` で走る）。
+/// A malformed line, or whatever `insert` rejects. One bad entry discards the
+/// whole table (the caller runs with `RoleMap::EMPTY`).
 pub fn parse_body(body: &[u8], limits: &Limits<'_>) -> Result<RoleMap, RolesError> {
     let mut map = RoleMap::EMPTY;
     for line in body.split(|b| *b == b'\n') {
@@ -261,7 +255,8 @@ pub fn parse_body(body: &[u8], limits: &Limits<'_>) -> Result<RoleMap, RolesErro
     Ok(map)
 }
 
-/// 10 進の非負整数。空、10 進以外の文字、u32 を溢れる値は弾く。
+/// Non-negative decimal integer. Rejects empty input, non-decimal characters
+/// and u32 overflow.
 fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
     if digits.is_empty() {
         return Err(RolesError::BadNumber);
@@ -279,19 +274,31 @@ fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
     Ok(v)
 }
 
-/// ヘッダから読み取れること。
+/// What the header says.
+///
+/// Config slot layout:
+///
+/// ```text
+/// offset  size  contents
+/// 0       4     magic "WMCR" (Wasmicon Roles)
+/// 4       2     format version (u16 LE, = 1)
+/// 6       2     reserved (0)
+/// 8       4     body length (u32 LE)
+/// 12      4     CRC-32 of the body (u32 LE)
+/// 16      n     body: one entry per line, `name=gpio\n` (decimal)
+/// ```
 #[derive(Clone, Copy)]
 pub struct Header {
-    /// 本文の長さ（`MAX_BODY` 以下であることは確かめてある）。
+    /// Body length (already checked to be at most `MAX_BODY`).
     pub len: usize,
-    /// 本文の CRC-32。
+    /// CRC-32 of the body.
     pub crc: u32,
 }
 
-/// ヘッダだけを読む（XIP で読めないボードはこれを先に読み、本文の分だけ読む）。
+/// Reads only the header (boards without XIP read this first, then just the body).
 ///
 /// # Errors
-/// 空、magic 違い、版違い、本文が `MAX_BODY` を超えるとき。
+/// Empty, wrong magic, wrong version, or a body longer than `MAX_BODY`.
 pub fn parse_header(head: &[u8]) -> Result<Header, RolesError> {
     let Some(head) = head.get(..HEADER_LEN) else {
         return Err(RolesError::Empty);
@@ -316,10 +323,10 @@ pub fn parse_header(head: &[u8]) -> Result<Header, RolesError> {
     })
 }
 
-/// 本文の CRC を確かめてから読む。
+/// Checks the body's CRC, then parses it.
 ///
 /// # Errors
-/// 長さか CRC が合わない、または `parse_body` が失敗したとき。
+/// Wrong length or CRC, or whatever `parse_body` reports.
 pub fn parse_checked(body: &[u8], h: &Header, limits: &Limits<'_>) -> Result<RoleMap, RolesError> {
     if body.len() != h.len {
         return Err(RolesError::TooLong);
@@ -330,10 +337,10 @@ pub fn parse_checked(body: &[u8], h: &Header, limits: &Limits<'_>) -> Result<Rol
     parse_body(body, limits)
 }
 
-/// スロット全体（ヘッダ + 本文。余りは無視する）を読む。
+/// Parses a whole slot (header + body; the rest is ignored).
 ///
 /// # Errors
-/// `parse_header` / `parse_checked` が失敗したとき。
+/// Whatever `parse_header` / `parse_checked` report.
 pub fn parse(bytes: &[u8], limits: &Limits<'_>) -> Result<RoleMap, RolesError> {
     let h = parse_header(bytes)?;
     let Some(body) = bytes.get(HEADER_LEN..HEADER_LEN + h.len) else {
@@ -342,9 +349,9 @@ pub fn parse(bytes: &[u8], limits: &Limits<'_>) -> Result<RoleMap, RolesError> {
     parse_checked(body, &h, limits)
 }
 
-/// 表を本文に書く。書けた長さを返す（書く側が使う）。
+/// Encodes the table as a body and returns the length written (for the writer).
 ///
-/// `out` は `MAX_BODY` 以上あれば必ず足りる。
+/// `out` of `MAX_BODY` bytes or more is always enough.
 #[must_use]
 pub fn encode_body(map: &RoleMap, out: &mut [u8]) -> usize {
     let mut n = 0;
@@ -379,7 +386,7 @@ pub fn encode_body(map: &RoleMap, out: &mut [u8]) -> usize {
     n
 }
 
-/// ヘッダを組む（書く側が使う）。
+/// Builds the header (for the writer).
 #[must_use]
 pub fn header(body: &[u8]) -> [u8; HEADER_LEN] {
     let mut h = [0u8; HEADER_LEN];
@@ -391,32 +398,37 @@ pub fn header(body: &[u8]) -> [u8; HEADER_LEN] {
     h
 }
 
-/// XIP にマップされたフラッシュから設定スロットを読む（RP2040 / RP2350）。
+/// Reads the config slot from memory-mapped (XIP) flash (RP2040 / RP2350).
 ///
 /// # Errors
-/// ファームと重なっているとき、および `parse` が失敗したとき。
+/// Overlap with the firmware, or whatever `parse` reports.
 ///
 /// # Safety
-/// `crate::slot::xip_region` と同じ。
+/// `slot.len` bytes starting at `xip_base + slot.offset` must be readable
+/// memory-mapped flash that stays mapped for the rest of the program (the
+/// contract of `crate::slot::xip_region`).
 pub unsafe fn read_xip(
     xip_base: usize,
     slot: Slot,
     fw_end: usize,
     limits: &Limits<'_>,
 ) -> Result<RoleMap, RolesError> {
-    // SAFETY: 呼び出し側の契約をそのまま渡す。
+    // SAFETY: this function's own contract guarantees that `slot.len` bytes
+    // from `xip_base + slot.offset` are readable memory-mapped flash that stays
+    // mapped for the rest of the program, which is exactly what `xip_region`
+    // requires.
     let bytes = unsafe { crate::slot::xip_region(xip_base, slot, fw_end) }
         .map_err(|_| RolesError::Overlap)?;
     parse(bytes, limits)
 }
 
-/// 起動時にシリアルへ出す 1 行を組む。
+/// Builds the one line printed to the serial port at boot.
 ///
-/// 読めたら `wasmicon: roles lcd-cs=17 lcd-dc=20`（空なら `roles none`）、
-/// 読めなければ `wasmicon: <理由>, no roles`。**バナーなのでトレース行
-/// （`>` / `<`）ではない**。`trace diff` はこの行を比べない。
+/// `wasmicon: roles lcd-cs=17 lcd-dc=20` when the table was read (`roles none`
+/// when empty), `wasmicon: <reason>, no roles` otherwise. A banner line, not a
+/// trace line (`>` / `<`), so `trace diff` does not compare it.
 ///
-/// `out` は 192 バイトあれば `MAX_ROLES` 個でも収まる。
+/// `out` of 192 bytes holds even `MAX_ROLES` entries.
 pub fn describe(result: &Result<RoleMap, RolesError>, out: &mut Buf<'_>) {
     out.str("wasmicon: ");
     match result {
@@ -437,10 +449,10 @@ pub fn describe(result: &Result<RoleMap, RolesError>, out: &mut Buf<'_>) {
     }
 }
 
-/// `(名前, 番号)` の表から作る（host の mock が使う）。
+/// Builds a map from a `(name, number)` table (used by the host mock).
 ///
 /// # Errors
-/// `RoleMap::insert` が弾いたとき。
+/// Whatever `RoleMap::insert` rejects.
 pub fn from_table(table: &[(&str, u32)], limits: &Limits<'_>) -> Result<RoleMap, RolesError> {
     let mut map = RoleMap::EMPTY;
     for &(name, pin) in table {

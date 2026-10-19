@@ -1,18 +1,20 @@
-//! ボードプロファイルの値を固定する。
+//! Locks in the board profile values.
 //!
-//! `profile` はポートの `main.rs` / `board.rs` に散っていた値を集めたもの。
-//! **集める前の数値をここに literal で書いてある**ので、移し間違いと、
-//! あとからの不注意な変更の両方がここで落ちる。`config` は validate の
-//! 上限なので、変わると**通るアプリが変わる**。
+//! `profile` collects values that used to be scattered across the ports'
+//! `main.rs` / `board.rs`. The original numbers are written here as literals,
+//! so both a copying mistake and a careless later change fail here. `config`
+//! is the validation limit: changing it changes which apps pass.
 //!
-//! **実機ボードは役割の既定の表を持たない**（2026-10-07 オーナー決定。
-//! 配線表は設定スロットから読む。`docs/app-workflow.md` §3.9）。ここでは
-//! 配線表の検査に使う GPIO の制約（本数・予約ピン・バスのピン）を固定する。
+//! Boards have no default role table; the wiring table is read from the
+//! config slot (docs/app-workflow.md §3.9). This file locks in the GPIO
+//! constraints (count, reserved pins, bus pins) that the wiring table check
+//! uses.
 
 use wasmicon_core::Config;
 use wasmicon_port::profile::{self, Profile};
 
-/// 集める前に各 `main.rs` にあった値（`max_memory_pages` 以外は 3 ポート共通）。
+/// The values each `main.rs` had before they were collected (identical across
+/// the ports except `max_memory_pages`).
 fn assert_mcu_limits(p: &Profile, pages: u32) {
     assert_eq!(p.config.max_value_stack, 512, "{}", p.name);
     assert_eq!(p.config.max_control_depth, 64, "{}", p.name);
@@ -25,7 +27,7 @@ fn assert_mcu_limits(p: &Profile, pages: u32) {
 
 #[test]
 fn mcu_configs_are_what_the_ports_had() {
-    // RP2040 は SRAM 264 KB なので 2 ページ。他は 4 ページ。
+    // RP2040 has 264 KB of SRAM, so 2 pages. The others have 4.
     assert_mcu_limits(&profile::RP2040, 2);
     assert_mcu_limits(&profile::RP2350, 4);
     assert_mcu_limits(&profile::ESP32S3, 4);
@@ -34,8 +36,8 @@ fn mcu_configs_are_what_the_ports_had() {
 
 #[test]
 fn arenas_are_what_the_ports_had() {
-    // ポートの `static ARENA` / `static SCRATCH` がこの値を使うので、
-    // 変えると実機のメモリ配置が変わる。
+    // The ports' `static ARENA` / `static SCRATCH` use these values, so changing
+    // them changes the memory layout on the board.
     assert_eq!(profile::RP2040.arena, 160 * 1024);
     assert_eq!(profile::RP2350.arena, 320 * 1024);
     assert_eq!(profile::ESP32S3.arena, 300 * 1024);
@@ -47,22 +49,22 @@ fn arenas_are_what_the_ports_had() {
 
 #[test]
 fn each_board_arena_holds_the_pages_it_promises() {
-    // `max_memory_pages` を満たすだけでは足りない。arena は decode / validate /
-    // Exec / 線形メモリを全部ここから取るので、**上限のページ数が物理的に
-    // 入らなければ、そのボードの Config は嘘**になる。
+    // Satisfying `max_memory_pages` is not enough. decode / validate / Exec and
+    // linear memory all come out of the arena, so if the page limit does not
+    // physically fit, the board's Config is a lie.
     for p in profile::PROFILES {
         if p.name == "host" {
-            continue; // 下の test を見ること
+            continue; // see the test below
         }
         let promised = p.config.max_memory_pages as usize * 64 * 1024;
-        // **`<=` では足りない。** arena は decode / validate / Exec を先に
-        // 取るので、ちょうど収まる大きさでは instantiate が必ず落ちる。
-        // 実測で要るのは数 KB だが、32 KiB は空けておく
-        // （ESP32-S3 が 4 ページ / 300 KiB で 44 KiB しか余らない一番きつい側）。
+        // `<=` is not enough: decode / validate / Exec take from the arena first,
+        // so an exact fit always fails in instantiate. A few KB are needed in
+        // practice; 32 KiB are kept free (the tightest case is the ESP32-S3 with
+        // 4 pages in 300 KiB, leaving 44 KiB).
         let headroom = p.arena - promised;
         assert!(
             promised < p.arena && headroom >= 32 * 1024,
-            "{}: {} ページ ({promised} B) に対して arena {} B は余裕 {headroom} B しかない",
+            "{}: {} pages ({promised} B) in an arena of {} B leave only {headroom} B",
             p.name,
             p.config.max_memory_pages,
             p.arena
@@ -72,28 +74,29 @@ fn each_board_arena_holds_the_pages_it_promises() {
 
 #[test]
 fn host_promises_more_pages_than_its_arena_can_hold() {
-    // **host だけはこの不変条件を満たさない。** `Config::DEFAULT` は
-    // 「ホスト PC 向けの既定値」で 65536 ページ（4 GiB）を名乗るが、
-    // arena は 16 MiB しかない。256 ページ超のゲストは host でも
-    // instantiate で落ちる。
+    // The host alone does not satisfy this invariant. `Config::DEFAULT` is the
+    // host PC default and claims 65536 pages (4 GiB), but the arena is only
+    // 16 MiB; a guest with more than 256 pages fails in instantiate on the host
+    // too.
     //
-    // これは直すところではなく、**`wasmicon run` や `check --board host` が
-    // 実機の根拠にならないことの、もう 1 つの理由**として記録しておく
-    // （ページ上限の緩さに加えて、arena も実機より緩い）。
+    // Not something to fix. It is recorded as one more reason why `wasmicon
+    // run` and `check --board host` say nothing about a board: besides the
+    // loose page limit, the arena is looser than on a board as well.
     let p = &profile::HOST;
     let promised = p.config.max_memory_pages as usize * 64 * 1024;
     assert!(
         promised > p.arena,
-        "host が実機並みに締まったら、上の test に入れてよい"
+        "once the host is as tight as a board, move it into the test above"
     );
-    // 実際に収まるのは 256 ページまで。
+    // In practice up to 256 pages fit.
     assert_eq!(p.arena / (64 * 1024), 256);
 }
 
 #[test]
 fn every_board_has_a_decided_slot() {
-    // 4 ポートとも同じ置き方（1 MiB から 64 KiB）。読み方だけが違う
-    // （Pico 系は XIP のスライス、ESP32-S3 / C5 は RAM への写し）。
+    // All four ports use the same location (64 KiB at 1 MiB). Only the read
+    // method differs (an XIP slice on the Pico family, a copy to RAM on
+    // ESP32-S3 / C5).
     for (p, flash) in [
         (&profile::RP2040, 2usize << 20),
         (&profile::RP2350, 4usize << 20),
@@ -102,17 +105,17 @@ fn every_board_has_a_decided_slot() {
     ] {
         let sl = p
             .slot
-            .unwrap_or_else(|| panic!("{} は決まっている", p.name));
+            .unwrap_or_else(|| panic!("{} has a decided slot", p.name));
         assert_eq!(
             sl.offset,
             1 << 20,
-            "{}: 先頭 1 MiB はファームに空ける",
+            "{}: the first 1 MiB is kept for the firmware",
             p.name
         );
         assert_eq!(sl.len, 64 * 1024, "{}", p.name);
         assert!(
             (sl.offset + sl.len) as usize <= flash,
-            "{}: フラッシュ {flash} B に収まらない",
+            "{}: does not fit in {flash} B of flash",
             p.name
         );
     }
@@ -120,15 +123,15 @@ fn every_board_has_a_decided_slot() {
 
 #[test]
 fn the_host_mock_has_no_slot() {
-    // mock にフラッシュは無い。
+    // The mock has no flash.
     assert!(profile::HOST.slot.is_none());
 }
 
 #[test]
 fn host_config_is_the_runtime_default() {
-    // host は意図的に緩い。`Config::DEFAULT` と一致していることを見ておく
-    // （profile 側が独自の値を持ち始めると、`wasmicon run` と `check --board host`
-    // が食い違う）。
+    // The host is deliberately loose. Check that it equals `Config::DEFAULT`
+    // (if the profile grew its own values, `wasmicon run` and `check --board
+    // host` would disagree).
     let d = Config::default();
     let h = profile::HOST.config;
     assert_eq!(h.max_value_stack, d.max_value_stack);
@@ -142,15 +145,16 @@ fn host_config_is_the_runtime_default() {
 
 #[test]
 fn host_is_looser_than_every_board() {
-    // これが成り立つ限り「host で通っても実機で通るとは限らない」が言える。
-    // `wasmicon check --board <board>` が要る理由（docs/app-workflow.md §4.3）。
+    // As long as this holds, "passing on the host does not mean passing on a
+    // board" is true, which is why `wasmicon check --board <board>` exists
+    // (docs/app-workflow.md §4.3).
     for p in profile::PROFILES {
         if p.name == "host" {
             continue;
         }
         assert!(
             profile::HOST.config.max_memory_pages > p.config.max_memory_pages,
-            "host より厳しいボードがある: {}",
+            "host is not looser than board {}",
             p.name
         );
     }
@@ -158,15 +162,15 @@ fn host_is_looser_than_every_board() {
 
 #[test]
 fn only_the_host_mock_has_a_role_table() {
-    // 実機ボードは既定の表を持たない。host はフラッシュの無い mock なので
-    // 表をプロファイルに持つ（`wasmicon run` とテストが使う）。
+    // Boards have no default table. The host mock has no flash, so its table is
+    // in the profile (used by `wasmicon run` and the tests).
     for p in [
         &profile::RP2040,
         &profile::RP2350,
         &profile::ESP32S3,
         &profile::ESP32C5,
     ] {
-        assert!(p.roles.is_empty(), "{} は既定の表を持たない", p.name);
+        assert!(p.roles.is_empty(), "{} must have no default table", p.name);
     }
     assert_eq!(
         profile::HOST.roles,
@@ -176,7 +180,7 @@ fn only_the_host_mock_has_a_role_table() {
 
 #[test]
 fn gpio_limits_are_what_the_ports_have() {
-    // ポートの `board.rs` もコンパイル時に同じ値と突き合わせている。
+    // Each port's `board.rs` cross-checks the same values at compile time.
     let pico_reserved = [0, 1, 23, 24, 25, 29];
     for p in [&profile::RP2040, &profile::RP2350] {
         assert_eq!(p.gpio_count, 30, "{}", p.name);
@@ -199,11 +203,11 @@ fn gpio_limits_are_what_the_ports_have() {
 
 #[test]
 fn rp2040_declares_i2c_and_spi_unimplemented() {
-    // `spi_open` / `i2c_open` が `unsupported` を返す（docs/TODO.md §1.2）。
-    // これを持たないと rp2040 向けの静的検査が通ってしまう（§4.3）。
+    // `spi_open` / `i2c_open` return `unsupported` (docs/TODO.md §1.2). Without
+    // this flag the static check for rp2040 would pass (docs/app-workflow.md §4.3).
     let i = profile::RP2040.interfaces;
-    assert!(!i.i2c, "rp2040 の I2C は未実装");
-    assert!(!i.spi, "rp2040 の SPI は未実装");
+    assert!(!i.i2c, "rp2040 I2C is not implemented");
+    assert!(!i.spi, "rp2040 SPI is not implemented");
     assert!(i.gpio && i.time && i.log && i.board);
 
     for p in [
@@ -215,7 +219,7 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
         let i = p.interfaces;
         assert!(
             i.gpio && i.i2c && i.spi && i.time && i.log && i.board,
-            "{} は全インターフェース実装済み",
+            "{} implements every interface",
             p.name
         );
     }
@@ -224,9 +228,12 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
 #[test]
 fn by_name_resolves_every_profile_and_nothing_else() {
     for p in profile::PROFILES {
-        let found = profile::by_name(p.name).expect("引けない");
+        let found = profile::by_name(p.name).expect("not found by name");
         assert_eq!(found.name, p.name);
     }
-    assert!(profile::by_name("rp2350 ").is_none(), "完全一致で引く");
+    assert!(
+        profile::by_name("rp2350 ").is_none(),
+        "lookup is an exact match"
+    );
     assert!(profile::by_name("esp32p4").is_none());
 }

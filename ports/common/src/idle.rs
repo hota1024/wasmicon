@@ -1,13 +1,13 @@
-//! 走らせるアプリが無いときの待機（`docs/app-workflow.md` §3.3）。
+//! Parking when there is no app to run (docs/app-workflow.md §3.3).
 //!
-//! ファームにアプリは入っていないので、スロットが空・壊れているときは
-//! 理由をシリアルに出したあとここに来る。**ピンは何も駆動しない**
-//! （2026-10-07 オーナー決定。役割名はファームの語彙ではないので、
-//! 「生存確認の LED」のような特別なピンを持たない）。
+//! The firmware embeds no app. When the slot is empty or corrupt it prints the
+//! reason on the serial port and comes here. No pin is driven: role names are
+//! not firmware vocabulary, so there is no special "alive" LED pin either
+//! (docs/app-workflow.md §3.9).
 
 use crate::Board;
 
-/// 待ち続ける。戻らない。
+/// Parks forever. Never returns.
 pub fn park<B: Board>(board: &mut B) -> ! {
     loop {
         board.sleep_ms(1000);

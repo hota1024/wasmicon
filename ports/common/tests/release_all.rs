@@ -1,11 +1,12 @@
-//! `Hal::release_all` が abi-spec §5.2 を満たすことを固定する。
+//! Locks in that `Hal::release_all` satisfies docs/abi-spec.md §5.2.
 //!
-//! §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを drop する」と
-//! 定めているが、**この掃除は長く未実装だった**（ゲスト側の `Drop` が隠していた）。
-//! ローダが入ると次のアプリが `busy` を踏むので、ここで pin しておく。
+//! That section says the host drops every remaining handle when `run`
+//! returns. The cleanup was missing for a long time, hidden by the guest-side
+//! `Drop`; with a loader the next app would hit `busy`, so this test locks it
+//! in.
 //!
-//! `ports/common` は `no_std` なので、テストは統合テスト（別クレート）に置く。
-//! `runtime` が `tests/` を使っているのと同じ形。
+//! `ports/common` is `no_std`, so the tests are integration tests (a separate
+//! crate), the same shape as `runtime`'s `tests/`.
 
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
@@ -15,7 +16,7 @@ use wasmicon_core::instance::Resolver;
 use wasmicon_port::roles::{Limits, from_table};
 use wasmicon_port::{Board, BoardResult, Hal};
 
-/// 解放されたものを順番どおりに記録するだけのボード。
+/// A board that only records what was released, in order.
 #[derive(Default)]
 struct RecordingBoard {
     released: Vec<String>,
@@ -95,27 +96,27 @@ impl Board for RecordingBoard {
     fn log(&mut self, _level: generated::log::Level, _message: &[u8]) {}
 
     fn trace(&mut self, line: &[u8]) {
-        // トレースが出たら分かるように同じ列に記録する
-        // （release_all は 1 行も出してはいけない）。
+        // Record trace lines in the same list so that one shows up
+        // (release_all must not emit any).
         self.released
             .push(format!("trace {}", String::from_utf8_lossy(line)));
     }
 }
 
-/// `call` の失敗はテストの失敗。`wasmicon_core::Error` は `Debug` を実装しない
-/// （コアで `core::fmt` を使わないため。CLAUDE.md）のでそのまま `expect` できない。
-/// 出し方は `ports/host/tests/apps.rs` に揃える。
+/// A failed `call` fails the test. `wasmicon_core::Error` does not implement
+/// `Debug` (the core uses no `core::fmt`, docs/decisions.md P-09), so `expect`
+/// cannot be used directly. The output format matches `ports/host/tests/apps.rs`.
 fn expect_ok(r: wasmicon_core::error::Result<()>, what: &str) {
     if let Err(e) = r {
-        panic!("{what} に失敗: {} [{}]", e.reason(), e.kind().name());
+        panic!("{what} failed: {} [{}]", e.reason(), e.kind().name());
     }
 }
 
-/// import 名から host 関数の番号を引く。
+/// Looks up a host function number by import name.
 fn host(module: &str, name: &str) -> u32 {
     u32::from(
         generated::resolve(module, name)
-            .expect("import 表に無い")
+            .expect("not in the import table")
             .host_fn
             .index(),
     )
@@ -125,7 +126,7 @@ const GPIO: &str = "wasmicon:hal/gpio@0.1.0";
 const I2C: &str = "wasmicon:hal/i2c@0.1.0";
 const SPI: &str = "wasmicon:hal/spi@0.1.0";
 
-/// gpio / i2c / spi を 1 つずつ開く。out ポインタの行き先はゲストメモリ。
+/// Opens one gpio, one i2c and one spi handle. The out-pointers land in guest memory.
 fn open_one_of_each(hal: &mut Hal<RecordingBoard>, mem: &mut [u8]) {
     let mut out = [0u64; 1];
 
@@ -134,14 +135,14 @@ fn open_one_of_each(hal: &mut Hal<RecordingBoard>, mem: &mut [u8]) {
         hal.call(host(GPIO, "[static]pin.open"), &[5, 1, 0], &mut out, mem),
         "pin.open",
     );
-    assert_eq!(out[0], 0, "pin.open が成功する");
+    assert_eq!(out[0], 0, "pin.open succeeds");
 
     // i2c.bus.open(index = 0, speed = standard, out-handle = 8)
     expect_ok(
         hal.call(host(I2C, "[static]bus.open"), &[0, 0, 8], &mut out, mem),
         "i2c bus.open",
     );
-    assert_eq!(out[0], 0, "i2c bus.open が成功する");
+    assert_eq!(out[0], 0, "i2c bus.open succeeds");
 
     // spi.bus.open(index = 0, frequency-hz = 1 MHz, mode = 0, out-handle = 16)
     expect_ok(
@@ -153,7 +154,7 @@ fn open_one_of_each(hal: &mut Hal<RecordingBoard>, mem: &mut [u8]) {
         ),
         "spi bus.open",
     );
-    assert_eq!(out[0], 0, "spi bus.open が成功する");
+    assert_eq!(out[0], 0, "spi bus.open succeeds");
 }
 
 #[test]
@@ -164,14 +165,14 @@ fn closes_every_leaked_handle_in_a_fixed_order() {
     open_one_of_each(&mut hal, &mut mem);
     assert!(
         hal.board_mut().released.is_empty(),
-        "open しただけでは何も解放されない"
+        "opening alone releases nothing"
     );
 
     hal.release_all();
     assert_eq!(
         hal.board_mut().released,
         ["gpio 5", "i2c 0", "spi 0"],
-        "gpio → i2c → spi の順で解放する（ポート間で揃える）"
+        "releases in the order gpio, i2c, spi (identical across ports)"
     );
 }
 
@@ -184,7 +185,8 @@ fn is_idempotent() {
     hal.release_all();
     hal.board_mut().released.clear();
 
-    // 2 度目は何もしない。ゲストが自分で drop したあとの経路と同じ。
+    // The second call does nothing: the same path as after the guest dropped
+    // everything itself.
     hal.release_all();
     assert!(hal.board_mut().released.is_empty());
 }
@@ -192,7 +194,8 @@ fn is_idempotent() {
 #[test]
 fn emits_no_trace_lines() {
     let mut mem = vec![0u8; 64 * 1024];
-    // trace_on = true。記録済みのトレース（14,352 行）を変えてはいけない。
+    // trace_on = true. The recorded traces (docs/verification-report.md §6, §7)
+    // must not change.
     let mut hal = Hal::new(RecordingBoard::default(), true);
 
     open_one_of_each(&mut hal, &mut mem);
@@ -201,7 +204,7 @@ fn emits_no_trace_lines() {
             .released
             .iter()
             .any(|l| l.starts_with("trace")),
-        "open の方はトレースを出す（この検査自体が効いていることの確認）"
+        "open does emit a trace (so this check is live)"
     );
     hal.board_mut().released.clear();
 
@@ -209,18 +212,18 @@ fn emits_no_trace_lines() {
     assert_eq!(
         hal.board_mut().released,
         ["gpio 5", "i2c 0", "spi 0"],
-        "release_all は board を直接叩くだけで、トレース行を出さない"
+        "release_all calls the board directly and emits no trace line"
     );
 }
 
 #[test]
 fn the_role_table_survives_release_all() {
-    // **ロール表はハンドルではない**ので release_all では消えない（abi-spec
-    // §5.2 の対象外）。ここで固定しておくのは、ローダが 1 つの `Hal` を
-    // 使い回すなら**別に消す必要がある**ことを忘れないため
-    // （docs/TODO.md §5 の「ロール表をサイクルごとに作り直す」）。
-    // 持ち越すと、次のアプリがハードコードした番号がたまたま前のアプリの
-    // 役割と一致したときに `role:` 表記になり、トレースが変わる（§9）。
+    // The role table is not a handle, so release_all does not clear it (outside
+    // the scope of docs/abi-spec.md §5.2). Locked in here as a reminder that a
+    // loader reusing one `Hal` must clear it separately (the "rebuild the role
+    // table per cycle" item in docs/TODO.md §5). Carried over, a number the next
+    // app hard-codes that happens to match a role of the previous app would
+    // print as `role:` and change the trace (docs/abi-spec.md §9).
     let mut mem = vec![0u8; 64 * 1024];
     let mut out = [0u64; 1];
     let limits = Limits {
@@ -234,7 +237,7 @@ fn the_role_table_survives_release_all() {
     };
     let mut hal = Hal::new(RecordingBoard::default(), true).with_roles(roles);
 
-    // pin-by-role("led") -> 2 を配る。role-ptr=0, role-len=3, out=16。
+    // pin-by-role("led") hands out 2. role-ptr=0, role-len=3, out=16.
     mem[..3].copy_from_slice(b"led");
     expect_ok(
         hal.call(
@@ -245,12 +248,12 @@ fn the_role_table_survives_release_all() {
         ),
         "pin-by-role",
     );
-    assert_eq!(out[0], 0, "led は RecordingBoard にある");
+    assert_eq!(out[0], 0, "led exists on RecordingBoard");
 
     hal.release_all();
     hal.board_mut().released.clear();
 
-    // 掃除のあとでも、GPIO 2 は番号ではなく role:led として出る。
+    // Even after the cleanup, GPIO 2 prints as role:led rather than a number.
     expect_ok(
         hal.call(
             host(GPIO, "[static]pin.open"),
@@ -268,7 +271,7 @@ fn the_role_table_survives_release_all() {
         .collect();
     assert!(
         trace.iter().any(|l| l.contains("role:led")),
-        "ロール表が残っているので role:led と出る: {trace:?}"
+        "the role table survives, so role:led is printed: {trace:?}"
     );
 }
 
@@ -280,7 +283,7 @@ fn reopening_after_release_all_succeeds() {
 
     open_one_of_each(&mut hal, &mut mem);
 
-    // 掃除する前は二重 open なので busy（abi-spec §5.2）。
+    // Before the cleanup this is a double open, so busy (docs/abi-spec.md §5.2).
     expect_ok(
         hal.call(
             host(I2C, "[static]bus.open"),
@@ -288,15 +291,15 @@ fn reopening_after_release_all_succeeds() {
             &mut out,
             &mut mem,
         ),
-        "二重 open の呼び出し",
+        "double open call",
     );
     assert_eq!(
         out[0],
         u64::from(ErrorCode::Busy.status()),
-        "掃除前は busy が返る"
+        "busy before the cleanup"
     );
 
-    // 掃除すれば次のアプリが開ける。ローダがこれに依存する。
+    // After the cleanup the next app can open it. The loader depends on this.
     hal.release_all();
     expect_ok(
         hal.call(
@@ -305,7 +308,7 @@ fn reopening_after_release_all_succeeds() {
             &mut out,
             &mut mem,
         ),
-        "掃除後の i2c bus.open",
+        "i2c bus.open after the cleanup",
     );
-    assert_eq!(out[0], 0, "掃除後は成功する");
+    assert_eq!(out[0], 0, "succeeds after the cleanup");
 }

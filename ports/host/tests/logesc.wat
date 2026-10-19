@@ -1,5 +1,6 @@
-;; トレースに埋め込む文字列のエスケープを確かめるための最小ゲスト。
-;; "a\nb\"c" を log に渡す。生のまま出すと abi-spec §9 の 1 行 1 レコードが崩れる。
+;; Minimal guest for checking the escaping of strings embedded in a trace.
+;; Logs "a\nb\"c"; emitted raw it would break the one-record-per-line form of
+;; docs/abi-spec.md §9.
 (module
   (import "wasmicon:hal/log@0.1.0" "log" (func $log (param i32 i32 i32)))
   (memory (export "memory") 1)

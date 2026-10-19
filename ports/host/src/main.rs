@@ -1,18 +1,18 @@
-//! PC 上で `.wasm` を実行し、mock HAL のトレース（abi-spec §9 形式）を出すポート。
+//! PC port binary: runs a `.wasm` and prints the mock HAL trace (docs/abi-spec.md §9 format).
 
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-wasmicon-host — PC 上で Wasmicon のゲストを実行する
+wasmicon-host - runs a Wasmicon guest on the PC
 
-使い方:
+Usage:
     wasmicon-host [--trace] <file.wasm>
 
-オプション:
-    --trace      全 host call を abi-spec §9 の形式で標準出力に出す
-    -h, --help   このヘルプ
+Options:
+    --trace      print every host call to stdout in the docs/abi-spec.md §9 format
+    -h, --help   this help
 
-環境変数 WASMICON_TRACE=1 でも --trace と同じ。
+WASMICON_TRACE=1 in the environment is the same as --trace.
 ";
 
 fn main() -> ExitCode {
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             other if other.starts_with('-') => {
-                eprintln!("未知のオプション: {other}\n\n{USAGE}");
+                eprintln!("unknown option: {other}\n\n{USAGE}");
                 return ExitCode::FAILURE;
             }
             other => path = Some(other.to_string()),
@@ -42,21 +42,21 @@ fn main() -> ExitCode {
     let wasm = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("{path} を読めない: {e}");
+            eprintln!("cannot read {path}: {e}");
             return ExitCode::FAILURE;
         }
     };
 
-    // **失敗してもトレースを出す。** このバイナリは
-    // docs/verification-report.md §6 / §7 の参照トレースを取るのに使う。
-    // 取り込み中にトラップしたときこそ、そこまでの行が要る。
+    // Print the trace even on failure. This binary produces the reference
+    // traces in docs/verification-report.md §6, §7, and a trap during capture
+    // is exactly when the lines so far are needed.
     let replay = match std::env::var("WASMICON_I2C_REPLAY") {
         Err(_) => Vec::new(),
         Ok(path) => match wasmicon_host::load_i2c_replay(std::path::Path::new(&path)) {
             Ok(r) => r,
             Err(e) => {
-                // 設定ミスを黙って「センサー無し」に落とさない。
-                eprintln!("wasmicon: WASMICON_I2C_REPLAY={path} を読めない: {e}");
+                // Do not silently turn a configuration mistake into "no sensor".
+                eprintln!("wasmicon: cannot read WASMICON_I2C_REPLAY={path}: {e}");
                 Vec::new()
             }
         },
@@ -75,7 +75,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // docs/handoff.md §3 #4: トラップしたらログを出して停止する。
+            // docs/decisions.md A-04: on a trap, log the reason and stop.
             eprintln!("wasmicon: {} [{}]", e.reason(), e.kind().name());
             ExitCode::FAILURE
         }

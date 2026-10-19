@@ -1,18 +1,18 @@
-//! 設定スロット（配線表）の形式と検査を固定する（`docs/app-workflow.md` §3.9）。
+//! Locks in the config slot (wiring table) format and checks (docs/app-workflow.md §3.9).
 //!
-//! 書く側（CLI）と読む側（ファーム）が同じ `roles` を使うので、ここが両方の契約。
-//! **形を変えたら `FORMAT_VERSION` を上げる。**
+//! The writer (CLI) and the reader (firmware) share `roles`, so this is the
+//! contract for both. Bump `FORMAT_VERSION` when the shape changes.
 
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::profile;
 use wasmicon_port::roles::{self, Limits, RoleMap, RolesError};
 
-/// Pico 2 W の制約（GP0/1 は UART、GP4/5 と 16/18/19 はバス）。
+/// Pico 2 W constraints (GP0/1 are the UART, GP4/5 and 16/18/19 are buses).
 fn pico() -> Limits<'static> {
     Limits::of(&profile::RP2350)
 }
 
-/// 表から設定スロットの画像（ヘッダ + 本文）を作る。CLI と同じ手順。
+/// Builds the config slot image (header + body) from a table, as the CLI does.
 fn image(map: &RoleMap) -> Vec<u8> {
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(map, &mut body);
@@ -22,17 +22,17 @@ fn image(map: &RoleMap) -> Vec<u8> {
 }
 
 fn table(entries: &[(&str, u32)]) -> RoleMap {
-    roles::from_table(entries, &pico()).unwrap_or_else(|e| panic!("作れない: {}", e.reason()))
+    roles::from_table(entries, &pico()).unwrap_or_else(|e| panic!("cannot build: {}", e.reason()))
 }
 
 fn parsed(img: &[u8]) -> RoleMap {
-    roles::parse(img, &pico()).unwrap_or_else(|e| panic!("読めない: {}", e.reason()))
+    roles::parse(img, &pico()).unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()))
 }
 
 fn parse_err(img: &[u8], what: &str) -> RolesError {
     match roles::parse(img, &pico()) {
         Err(e) => e,
-        Ok(_) => panic!("{what} を期待したが読めてしまった"),
+        Ok(_) => panic!("expected {what} but it parsed"),
     }
 }
 
@@ -44,12 +44,16 @@ fn a_written_table_reads_back() {
     assert_eq!(back.get(b"lcd-cs"), Some(17));
     assert_eq!(back.get(b"lcd-dc"), Some(20));
     assert_eq!(back.get(b"lcd-rst"), Some(21));
-    assert_eq!(back.get(b"led"), None, "書いていない役割は無い");
+    assert_eq!(
+        back.get(b"led"),
+        None,
+        "a role that was not written is absent"
+    );
 }
 
 #[test]
 fn the_body_is_human_readable() {
-    // フラッシュを吸い出しても読める（§3.9 がテキストを選んだ理由）。
+    // Readable in a flash dump (why docs/app-workflow.md §3.9 chose text).
     let img = image(&table(&[("status-led", 2), ("lcd-cs", 17)]));
     assert_eq!(&img[..4], b"WMCR");
     assert_eq!(&img[roles::HEADER_LEN..], b"status-led=2\nlcd-cs=17\n");
@@ -57,10 +61,10 @@ fn the_body_is_human_readable() {
 
 #[test]
 fn an_erased_slot_is_empty_not_an_error() {
-    // 消去済み（0xff）とまだ書いていない（0x00）は「空」。ファームは役割を
-    // 配らずに走る（既定の表は持たない）。
+    // Erased (0xff) and never written (0x00) are "empty". The firmware runs
+    // without handing out any role (there is no default table).
     for fill in [0xffu8, 0x00] {
-        let e = parse_err(&[fill; 4096], "空");
+        let e = parse_err(&[fill; 4096], "empty");
         assert!(e.is_empty(), "{}", e.reason());
     }
 }
@@ -69,35 +73,35 @@ fn an_erased_slot_is_empty_not_an_error() {
 fn a_corrupted_table_is_rejected_whole() {
     let mut img = image(&table(&[("lcd-cs", 17), ("lcd-dc", 20)]));
     let last = img.len() - 2;
-    img[last] ^= 0x01; // 本文の 1 文字（"20" の "0"）を壊す
-    assert!(parse_err(&img, "CRC 違い") == RolesError::BadCrc);
+    img[last] ^= 0x01; // corrupt one body character (the "0" of "20")
+    assert!(parse_err(&img, "crc mismatch") == RolesError::BadCrc);
 
     let mut img = image(&table(&[("lcd-cs", 17)]));
     img[0] = b'X';
-    assert!(parse_err(&img, "magic 違い") == RolesError::BadMagic);
+    assert!(parse_err(&img, "magic mismatch") == RolesError::BadMagic);
 }
 
 #[test]
 fn a_well_formed_but_invalid_entry_drops_the_whole_table() {
-    // CRC は合っているが中身がボードに合わない表（別のボード向けに書いた、
-    // プロファイルが変わった、など）。**1 項目でもおかしければ全部捨てる。**
+    // The CRC matches but the contents do not fit the board (written for another
+    // board, the profile changed, and so on). One bad entry discards everything.
     for (body, want) in [
-        (&b"lcd-cs=0\n"[..], RolesError::Reserved), // GP0 はトレースの UART
-        (b"lcd-cs=4\n", RolesError::BusPin),        // GP4 は I2C0
-        (b"lcd-cs=30\n", RolesError::OutOfRange),   // RP2350A は GP29 まで
-        (b"a=15\nb=15\n", RolesError::DuplicatePin), // 同じピンに 2 役
-        (b"a=15\na=17\n", RolesError::DuplicateName), // 同じ名前が 2 回
-        (b"LCD=15\n", RolesError::BadName),         // 大文字
-        (b"lcd-cs\n", RolesError::BadLine),         // = が無い
-        (b"lcd-cs=x\n", RolesError::BadNumber),     // 数でない
-        (b"lcd-cs=99999999999\n", RolesError::BadNumber), // u32 を溢れる
+        (&b"lcd-cs=0\n"[..], RolesError::Reserved), // GP0 is the trace UART
+        (b"lcd-cs=4\n", RolesError::BusPin),        // GP4 is I2C0
+        (b"lcd-cs=30\n", RolesError::OutOfRange),   // RP2350A ends at GP29
+        (b"a=15\nb=15\n", RolesError::DuplicatePin), // two roles on one pin
+        (b"a=15\na=17\n", RolesError::DuplicateName), // the same name twice
+        (b"LCD=15\n", RolesError::BadName),         // uppercase
+        (b"lcd-cs\n", RolesError::BadLine),         // no =
+        (b"lcd-cs=x\n", RolesError::BadNumber),     // not a number
+        (b"lcd-cs=99999999999\n", RolesError::BadNumber), // overflows u32
     ] {
         let mut img = roles::header(body).to_vec();
         img.extend_from_slice(body);
         let got = parse_err(&img, std::str::from_utf8(body).unwrap_or("?"));
         assert!(
             got == want,
-            "{:?}: {} を期待したが {}",
+            "{:?}: expected {} but got {}",
             std::str::from_utf8(body),
             want.reason(),
             got.reason()
@@ -109,12 +113,18 @@ fn a_well_formed_but_invalid_entry_drops_the_whole_table() {
 fn names_are_limited_to_a_safe_alphabet() {
     assert!(roles::valid_name(b"status-led"));
     assert!(roles::valid_name(b"a1"));
-    assert!(roles::valid_name(b"abcdefghijklmnop"), "16 文字までは通す");
-    assert!(!roles::valid_name(b"abcdefghijklmnopq"), "17 文字は弾く");
+    assert!(roles::valid_name(b"abcdefghijklmnop"), "16 characters pass");
+    assert!(
+        !roles::valid_name(b"abcdefghijklmnopq"),
+        "17 characters are rejected"
+    );
     assert!(!roles::valid_name(b""));
-    assert!(!roles::valid_name(b"1led"), "数字で始めない");
+    assert!(!roles::valid_name(b"1led"), "must not start with a digit");
     assert!(!roles::valid_name(b"lcd_cs"));
-    assert!(!roles::valid_name(b"lcd=cs"), "本文の区切りと衝突する");
+    assert!(
+        !roles::valid_name(b"lcd=cs"),
+        "collides with the body separator"
+    );
 }
 
 #[test]
@@ -130,7 +140,7 @@ fn at_most_max_roles_entries() {
         assert!(map.insert(name.as_bytes(), i, &limits).is_ok());
     }
     assert!(map.insert(b"one-more", 63, &limits) == Err(RolesError::TooMany));
-    // 上限いっぱいでも本文は MAX_BODY に収まる。
+    // Even at the limit the body fits in MAX_BODY.
     let mut big = RoleMap::EMPTY;
     for i in 0..roles::MAX_ROLES as u32 {
         let name = format!("abcdefghijklmn{i:02}");
@@ -138,7 +148,7 @@ fn at_most_max_roles_entries() {
     }
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(&big, &mut body);
-    assert!(n < roles::MAX_BODY, "{n} バイト");
+    assert!(n < roles::MAX_BODY, "{n} bytes");
     assert!(roles::parse_body(&body[..n], &limits).is_ok_and(|m| m.len() == roles::MAX_ROLES));
 }
 
@@ -163,7 +173,7 @@ fn the_boot_line_lists_the_table_or_the_reason() {
 
 #[test]
 fn every_profile_puts_the_roles_slot_right_after_the_app_slot() {
-    // deploy はアプリスロットと設定スロットを 1 本の画像で書く（pack::with_roles）。
+    // deploy writes the app slot and the config slot as one image (pack::with_roles).
     for p in profile::PROFILES {
         match (p.slot, p.role_slot) {
             (Some(s), Some(r)) => {
@@ -171,9 +181,9 @@ fn every_profile_puts_the_roles_slot_right_after_the_app_slot() {
                 assert_eq!(r.len, roles::SLOT_LEN, "{}", p.name);
             }
             (None, None) => {}
-            _ => panic!("{}: スロットと設定スロットは揃えて持つ", p.name),
+            _ => panic!("{}: app slot and config slot go together", p.name),
         }
-        // 実機ボードは既定の表を持たない（host の mock だけが持つ）。
+        // Boards have no default table (only the host mock has one).
         assert_eq!(p.roles.is_empty(), p.name != "host", "{}", p.name);
     }
 }

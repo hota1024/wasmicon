@@ -1,7 +1,9 @@
-//! host ポートで手書きの Lチカゲストを動かし、トレースを確かめる。
+//! Runs a hand-written blink guest (`blink.wat`) on the host port and checks its trace.
 //!
-//! docs/handoff.md §5 Phase 2 の完了条件「ports/host でゲストが動き、mock GPIO の
-//! トレースが出る」に対応する。Rust 版の `apps/blink-rs` は Phase 3 で作る。
+//! This is the smallest end-to-end test of the port: it needs no app build,
+//! only `wasm-tools`, and locks in that a guest links against the mock HAL,
+//! that GPIO host calls produce the docs/abi-spec.md §9 trace lines and that
+//! `time` stays out of the trace. The real apps are covered by `tests/apps.rs`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -19,8 +21,8 @@ fn wat_to_wasm(name: &str) -> Vec<u8> {
         .arg("-o")
         .arg(&out)
         .status()
-        .expect("wasm-tools を起動できない");
-    assert!(status.success(), "wasm-tools parse が失敗した");
+        .expect("cannot run wasm-tools");
+    assert!(status.success(), "wasm-tools parse failed");
     std::fs::read(&out).unwrap()
 }
 
@@ -28,7 +30,8 @@ fn wat_to_wasm(name: &str) -> Vec<u8> {
 fn blink_runs_and_traces() {
     let wasm = wat_to_wasm("blink.wat");
 
-    // 対応機能セット内であることを確かめる（docs/handoff.md §5 Phase 3 と同じ検査）。
+    // Check that it stays within the supported feature set (the same check as
+    // tests/apps.rs).
     let ok = Command::new("wasm-tools")
         .args([
             "validate",
@@ -39,62 +42,67 @@ fn blink_runs_and_traces() {
                 .join("../../target/blink.wat.wasm"),
         )
         .status()
-        .expect("wasm-tools を起動できない");
-    assert!(ok.success(), "対応機能セット外の命令が入っている");
+        .expect("cannot run wasm-tools");
+    assert!(
+        ok.success(),
+        "contains an instruction outside the supported feature set"
+    );
 
-    // コアは core::fmt を使わないので Error に Debug が無い。理由を自分で出す。
+    // The core uses no core::fmt, so Error has no Debug. Print the reason by hand.
     let trace = match wasmicon_host::run_wasm(&wasm, true) {
         Ok(out) => out.trace,
-        Err(e) => panic!("実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+        Err(e) => panic!("execution failed: {} [{}]", e.reason(), e.kind().name()),
     };
     println!("{trace}");
 
-    // ピンを 1 本開いてハンドル 1 を得る。
+    // Opening one pin yields handle 1.
     assert!(
         trace.contains("> wasmicon:hal/gpio@0.1.0/[static]pin.open(2, 3)\n< 0 [1]"),
-        "pin.open のトレースが違う:\n{trace}"
+        "wrong pin.open trace:\n{trace}"
     );
-    // time は abi-spec §9 によりトレースに含めない。
-    assert!(!trace.contains("time@0.1.0"), "time がトレースに出ている");
-    // 点滅は write と toggle が 3 回ずつ。
+    // time is not traced (docs/abi-spec.md §9).
+    assert!(!trace.contains("time@0.1.0"), "time appears in the trace");
+    // Blinking is 3 writes and 3 toggles.
     assert_eq!(
         trace.matches("[method]pin.write(1, 1)").count(),
         3,
-        "pin.write の回数が違う:\n{trace}"
+        "wrong pin.write count:\n{trace}"
     );
     assert_eq!(
         trace.matches("[method]pin.toggle(1)").count(),
         3,
-        "pin.toggle の回数が違う:\n{trace}"
+        "wrong pin.toggle count:\n{trace}"
     );
-    // 最後に drop。
+    // drop at the end.
     assert!(
         trace.contains("[resource-drop]pin(1)"),
-        "drop のトレースが無い:\n{trace}"
+        "missing drop trace:\n{trace}"
     );
-    // 全ての host call が成功している。
-    assert!(
-        !trace.contains("\n< 1"),
-        "失敗した host call がある:\n{trace}"
-    );
+    // Every host call succeeded.
+    assert!(!trace.contains("\n< 1"), "a host call failed:\n{trace}");
 }
 
-/// abi-spec §9 は 1 host call = 2 行（要求と結果）。ゲストが改行や `"` を
-/// 混ぜてもこの形が崩れないこと。崩れると両ボードの diff が行単位でずれる。
+/// docs/abi-spec.md §9 makes one host call two lines (request and result). A
+/// guest that logs a newline or `"` must not break that shape, or the diff
+/// between the two boards shifts by whole lines.
 #[test]
 fn trace_escapes_guest_strings() {
     let wasm = wat_to_wasm("logesc.wat");
     let trace = match wasmicon_host::run_wasm(&wasm, true) {
         Ok(out) => out.trace,
-        Err(e) => panic!("実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+        Err(e) => panic!("execution failed: {} [{}]", e.reason(), e.kind().name()),
     };
     println!("{trace}");
 
     let lines: Vec<&str> = trace.lines().collect();
-    assert_eq!(lines.len(), 2, "1 host call は 2 行のはず:\n{trace}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "one host call should be two lines:\n{trace}"
+    );
     assert_eq!(
         lines[0], r#"> wasmicon:hal/log@0.1.0/log(2, "a\nb\"c")"#,
-        "エスケープされていない"
+        "not escaped"
     );
     assert_eq!(lines[1], "<");
 }

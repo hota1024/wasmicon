@@ -1,6 +1,6 @@
 [package]
 name = "wasmicon-host"
-description = "PC 用ポート。mock HAL とトレース出力。CI はここで回す"
+description = "PC port: mock HAL and trace output. CI runs the guests here"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

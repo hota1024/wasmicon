@@ -1,8 +1,8 @@
-;; Lチカの最小ゲスト。手書きの WAT。
+;; Minimal blink guest, hand-written in WAT.
 ;;
-;; docs/handoff.md §5 Phase 2 の完了条件は apps/blink-rs を動かすことだが、
-;; それは Phase 3 で作る。ここでは同じ host call 列を出す手書きの
-;; モジュールでポートとトレースを先に検証する。
+;; Emits the same host call sequence as apps/blink-rs without needing an app
+;; build, so the port and its trace format can be checked with wasm-tools
+;; alone (tests/blink.rs).
 (module
   (import "wasmicon:hal/gpio@0.1.0" "[static]pin.open"
     (func $pin_open (param i32 i32 i32) (result i32)))
@@ -29,7 +29,7 @@
     (drop (call $pin_open (i32.const 2) (i32.const 3) (i32.const 0x100)))
     (global.set $handle (i32.load (i32.const 0x100)))
 
-    ;; 3 回点滅
+    ;; blink 3 times
     (block $done
       (loop $again
         (br_if $done (i32.ge_u (local.get $i) (i32.const 3)))

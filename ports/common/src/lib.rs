@@ -1,14 +1,17 @@
-//! ポート共通の HAL 実装。
+//! Shared HAL implementation for the ports.
 //!
-//! import の解決（生成された表との完全一致リンク、abi-spec §6.4）、
-//! ハンドル表（§5.3）、ステータスの組み立て（§4.4）、トレースの整形（§9）は
-//! 全ポートで同じでなければならない。特にトレースは、書式が少しでも違うと
-//! §2-10 の「両ボードでトレースが一致」が成立しなくなる。
+//! Import resolution (the exact-match link against the generated table), the
+//! handle table, status assembly and trace formatting
+//! (docs/abi-spec.md §6.4, §5.3, §4.4, §9) must be identical on every port.
+//! Traces above all: the slightest difference in format breaks "identical
+//! traces on both boards" (docs/decisions.md D-10).
 //!
-//! ボード固有の操作だけを `Board` トレイトに切り出し、ここは `no_std` で書く。
+//! Only board-specific operations go through the `Board` trait; this crate is
+//! `no_std`.
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
+#![warn(clippy::undocumented_unsafe_blocks)]
 
 pub mod fmt;
 pub mod identity;
@@ -28,50 +31,51 @@ use wasmicon_core::instance::{Extern, ExternType, Resolver};
 use fmt::Buf;
 use roles::{MAX_ROLES, RoleMap};
 
-/// abi-spec §5.3 が保証する同時ハンドル数。
+/// Number of simultaneous handles docs/abi-spec.md §5.3 guarantees.
 pub const MAX_PINS: usize = 16;
 pub const MAX_I2C: usize = 2;
 pub const MAX_SPI: usize = 2;
 
-/// AssemblyScript が import する `env.abort` に割り当てる識別子。
-/// `world app` には無い例外的な import（docs/handoff.md §6）。
+/// Identifier assigned to the `env.abort` that AssemblyScript imports.
+/// The one import outside `world app` (docs/decisions.md P-02).
 const HOST_ENV_ABORT: u32 = 0xffff;
 
-/// `world app` の外で唯一許す import（`docs/handoff.md` §6）。
+/// The only import allowed outside `world app` (docs/decisions.md P-02).
 ///
-/// **リンクを決めているのはここ**（`Resolver::resolve`）。`wasmicon check` と
-/// `verify/differential` も同じ組を見るので、綴りを 3 箇所に散らさない
-/// （食い違うと、check がリンクするものを「表に無い」と言ったり、
-/// リンクしないものを通したりする）。
+/// Linking is decided here (`Resolver::resolve`). `wasmicon check` and
+/// `verify/differential` look at the same pair, so the spelling is not
+/// repeated in three places (a mismatch would make check call something
+/// linkable "not in the table", or pass something that does not link).
 pub const AS_ABORT: (&str, &str) = ("env", "abort");
 
-/// 入出力が重なりうる転送で使う一時領域の大きさ。
+/// Size of the scratch area for transfers whose input and output may overlap.
 ///
-/// `spi.transfer` と `i2c.write-read` は送信元と受信先がどちらもゲストの
-/// 線形メモリにあり、範囲が重なりうる。借用を分けられないので送信側を
-/// 一度ここへ写す。v0.1 の用途（SHT4x の 6 バイト、ILI9341 の ID 読み）には
-/// 十分で、これを超える転送は `unsupported` を返す。
+/// In `spi.transfer` and `i2c.write-read` both the source and the destination
+/// are in guest linear memory and may overlap. The borrows cannot be split,
+/// so the transmit side is copied here first. Enough for the v0.1 uses (6
+/// bytes for SHT4x, the ILI9341 ID read); a longer transfer returns
+/// `unsupported`.
 pub const SCRATCH: usize = 128;
 
-/// トレース 1 行の最大長。
+/// Maximum length of one trace line.
 const LINE: usize = 160;
 
-/// ボード操作の結果。ボード側でトラップは起きないので `ErrorCode` を直接返す。
+/// Result of a board operation. The board never traps, so it returns `ErrorCode` directly.
 pub type BoardResult<T> = core::result::Result<T, ErrorCode>;
 
-/// ボード固有の操作。ポートはこれだけを実装する。
+/// Board-specific operations. A port implements only these.
 ///
-/// 番号はいずれもボードの GPIO 番号・ペリフェラル番号で、ハンドルではない。
-/// ハンドルの管理は `Hal` 側が行う。
+/// Every index is a board GPIO or peripheral number, not a handle. `Hal`
+/// manages the handles.
 pub trait Board {
-    /// GPIO の本数。範囲検査に使う。
+    /// Number of GPIOs, for range checks.
     fn gpio_count(&self) -> u32;
 
-    /// ゲストに開放しない GPIO。
+    /// GPIOs the guest may not open.
     ///
-    /// トレース用 UART のピン、フラッシュ / PSRAM に繋がっているピン、
-    /// そのチップに存在しない欠番など。開けてしまうとトレースが途切れたり、
-    /// XIP 実行中のフラッシュを叩いてファームウェアごと落ちたりする。
+    /// The trace UART pins, pins wired to flash or PSRAM, numbers that do not
+    /// exist on the chip, and so on. Opening one would cut the trace or hit
+    /// the flash the firmware executes from and take the firmware down.
     fn gpio_reserved(&self, _index: u32) -> bool {
         false
     }
@@ -102,10 +106,10 @@ pub trait Board {
     fn sleep_ms(&mut self, ms: u32);
     fn sleep_us(&mut self, us: u32);
 
-    /// ゲストの `log` 出力。UTF-8 の検証はしない（abi-spec §4.2）。
+    /// The guest's `log` output. UTF-8 is not validated (docs/abi-spec.md §4.2).
     fn log(&mut self, level: LogLevel, message: &[u8]);
 
-    /// トレース 1 行（改行を含まない）。ポートがシリアル等へ出す。
+    /// One trace line (without a newline). The port sends it to the serial port or similar.
     fn trace(&mut self, line: &[u8]);
 }
 
@@ -121,22 +125,23 @@ struct BusSlot {
     index: u32,
 }
 
-/// 生成された import 表に沿って HAL を提供する。
+/// Provides the HAL according to the generated import table.
 pub struct Hal<B: Board> {
     board: B,
     trace_on: bool,
     pins: [PinSlot; MAX_PINS],
     i2c: [BusSlot; MAX_I2C],
     spi: [BusSlot; MAX_SPI],
-    /// 配線表（`docs/app-workflow.md` §3.9）。`pin-by-role` はこれで答える。
+    /// Wiring table (docs/app-workflow.md §3.9). `pin-by-role` answers from it.
     role_map: RoleMap,
-    /// 表の各役割を `pin-by-role` で配ったか（abi-spec §9 の正規化に使う）。
+    /// Whether each role in the table was handed out by `pin-by-role` (for the
+    /// docs/abi-spec.md §9 normalization).
     handed: [bool; MAX_ROLES],
     scratch: [u8; SCRATCH],
 }
 
 impl<B: Board> Hal<B> {
-    /// 役割を 1 つも持たない `Hal`。配線表は `with_roles` で渡す。
+    /// A `Hal` with no roles. The wiring table comes through `with_roles`.
     #[must_use]
     pub fn new(board: B, trace_on: bool) -> Self {
         Hal {
@@ -151,8 +156,8 @@ impl<B: Board> Hal<B> {
         }
     }
 
-    /// 配線表を渡す。実機はファームが設定スロットから読んだもの、host は
-    /// プロファイルの mock の表（`docs/app-workflow.md` §3.9）。
+    /// Sets the wiring table: on a board what the firmware read from the config
+    /// slot, on the host the mock table in the profile (docs/app-workflow.md §3.9).
     #[must_use]
     pub fn with_roles(mut self, map: RoleMap) -> Self {
         self.role_map = map;
@@ -160,36 +165,39 @@ impl<B: Board> Hal<B> {
         self
     }
 
-    /// ボードへの参照。ポートの後始末に使う。
+    /// The board. Used by the port for cleanup.
     pub fn board_mut(&mut self) -> &mut B {
         &mut self.board
     }
 
-    /// 残っているハンドルを全部 drop する（abi-spec §5.2）。
+    /// Drops every handle that is still open (docs/abi-spec.md §5.2).
     ///
-    /// §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを drop する」と
-    /// 定めている。ゲストが自分で解放していれば（Rust バインディングの `Drop`、
-    /// AS 版の明示的な `drop`）ここは何もしない。**トラップで抜けた場合**と、
-    /// バインディングを使わずに書いたゲストが解放し忘れた場合にここで片付く。
+    /// That section says the host drops all remaining handles when `run`
+    /// returns. If the guest released them itself (`Drop` in the Rust
+    /// bindings, an explicit `drop` in the AS version) this does nothing. It
+    /// cleans up after a trap, and after a guest written without the bindings
+    /// forgot to release.
     ///
-    /// 片付けないと、次に走るアプリが同じピン・同じバスの `open` で `busy` を
-    /// 踏む（docs/app-workflow.md §3.2）。
+    /// Without this cleanup the next app hits `busy` on `open` of the same pin
+    /// or bus (docs/app-workflow.md §3.2).
     ///
-    /// **トレース行は出さない。** ゲストの host call ではないし、出すと記録済みの
-    /// トレース（docs/verification-report.md §6 / §7）が変わる。
+    /// No trace line is emitted: this is not a guest host call, and a line
+    /// here would change the recorded traces (docs/verification-report.md §6, §7).
     ///
-    /// 解放の順序は **ハンドルの小さい順に gpio → i2c → spi** で固定する。
-    /// ポートごとに違うと、トレースに出ない差がボード間に生まれる。
+    /// The release order is fixed: ascending handle, gpio then i2c then spi.
+    /// A per-port order would create a difference between boards that the
+    /// trace does not show.
     ///
-    /// **配った役割の記録（`handed`）はここでは消さない。**
-    /// あれはハンドルではなく abi-spec §9 の正規化に使う状態で、§5.2 の
-    /// 対象外。ローダが 1 つの `Hal` を使い回すなら**別に消す必要がある**
-    /// （持ち越すと、次のアプリがハードコードした番号がたまたま前のアプリの
-    /// 役割と一致したときに `role:` 表記になり、トレースが変わる）。
-    /// `docs/TODO.md` §5 の「arena / `Hal` / ロール表をサイクルごとに
-    /// 作り直す」がその作業で、今はどのポートも `Hal` を 1 回しか作らない。
+    /// The record of handed-out roles (`handed`) is not cleared here. It is
+    /// not a handle but state for the docs/abi-spec.md §9 normalization, and
+    /// outside the scope of the handle cleanup. A loader that reuses one `Hal`
+    /// must clear it separately: carried over, a number the next app
+    /// hard-codes that happens to match a role of the previous app would
+    /// print as `role:` and change the trace. That is the "rebuild arena /
+    /// `Hal` / role table per cycle" item in docs/TODO.md §5; today every
+    /// port creates `Hal` once.
     pub fn release_all(&mut self) {
-        // board と各スロットは別のフィールドなので、分けて借りる。
+        // The board and the slots are separate fields, so they are borrowed separately.
         let board = &mut self.board;
         for slot in &mut self.pins {
             if slot.open {
@@ -211,15 +219,18 @@ impl<B: Board> Hal<B> {
         }
     }
 
-    /// abi-spec §9: 役割名で配った GPIO 番号は数値ではなく役割名で出す。
+    /// docs/abi-spec.md §9: a GPIO number handed out by role is printed as the
+    /// role name, not the number.
     ///
-    /// 判断材料は数値だけなので、ゲストがハードコードした番号が役割割り当てと
-    /// 一致していると、それも役割名になる。§9 がその前提を明記している。
+    /// Only the number is available to decide, so a number the guest
+    /// hard-codes that matches a role assignment prints as the role name too;
+    /// that section states this assumption explicitly.
     ///
-    /// **配った役割だけを置き換える。** 表にあっても `pin-by-role` で引いて
-    /// いない番号は生の数値で出す（表を変えても、役割を使わないアプリの
-    /// トレースは変わらない）。表は同じ番号に 2 つの役割を持たない
-    /// （`RoleMap::insert` が弾く）ので、見つかるのは高々 1 つ。
+    /// Only handed-out roles are replaced. A number that is in the table but
+    /// was never looked up through `pin-by-role` prints as a raw number, so
+    /// changing the table does not change the trace of an app that uses no
+    /// roles. The table never maps two roles to one number (`RoleMap::insert`
+    /// rejects it), so at most one entry matches.
     fn write_pin(&self, out: &mut Buf<'_>, index: u32) {
         for i in 0..self.role_map.len() {
             if self.handed[i] && self.role_map.pin(i) == index {
@@ -232,7 +243,7 @@ impl<B: Board> Hal<B> {
     }
 }
 
-/// ハンドル（1 始まり）を配列の添字に。0 は無効（abi-spec §5.1）。
+/// Converts a handle (1-based) to an array index. 0 is invalid (docs/abi-spec.md §5.1).
 fn slot_of(handle: u64, len: usize) -> core::result::Result<usize, u32> {
     let h = handle as u32;
     if h == 0 || h as usize > len {
@@ -263,22 +274,22 @@ fn put_u32(mem: &mut [u8], ptr: u64, v: u32) -> Result<()> {
     Ok(())
 }
 
-/// CRC-32 (IEEE)。長い `list<u8>` のトレース用（abi-spec §9）と
-/// スロットの検査用（`slot`）。
+/// CRC-32 (IEEE). Used for long `list<u8>` values in traces (docs/abi-spec.md §9)
+/// and for the slot check (`slot`).
 #[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
     crc32_end(crc32_update(CRC32_INIT, data))
 }
 
-/// 分割して計算するときの初期値。
+/// Initial value for an incremental computation.
 ///
-/// **一度に渡せないときに要る。** ESP32-S3 はスロットを 1 回では読めない
-/// （`esp-storage` に小さなバッファで何度も読ませる）ので、arena を
-/// 使わずに CRC を確かめるにはこの形が必要になる
-/// （`ports/esp32s3/src/main.rs` の `pick_guest`）。
+/// Needed when the data cannot be passed at once. ESP32-S3 cannot read the
+/// slot in one go (`esp-storage` reads it in small buffers), so checking the
+/// CRC without using the arena needs this form (`pick_guest` in
+/// `ports/esp32s3/src/main.rs`).
 pub const CRC32_INIT: u32 = 0xffff_ffff;
 
-/// 続きを足す。`data` を順に全部渡したあと `crc32_end` で締める。
+/// Feeds more data. After all of `data` has been passed in order, finish with `crc32_end`.
 #[must_use]
 pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
@@ -293,14 +304,15 @@ pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     crc
 }
 
-/// 締める。
+/// Finishes the computation.
 #[must_use]
 pub fn crc32_end(crc: u32) -> u32 {
     !crc
 }
 
-/// abi-spec §9 の `list<u8>` 表記。32 バイトを超えたら先頭 16 バイト + CRC-32。
-/// 引数と、読み出し系が受け取ったバイト列（結果の `data=`）の両方に使う。
+/// The `list<u8>` notation of docs/abi-spec.md §9: beyond 32 bytes, the first
+/// 16 bytes plus a CRC-32. Used both for arguments and for the bytes a read
+/// received (`data=` in the result).
 fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
     if !out.is_on() {
         return;
@@ -323,14 +335,16 @@ fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
 
 impl<B: Board> Resolver for Hal<B> {
     fn resolve(&mut self, module: &str, name: &str, ty: &ExternType<'_>) -> Option<Extern> {
-        // AssemblyScript の env.abort は world app に無い例外的な import（docs/handoff.md §6）。
+        // AssemblyScript's env.abort is the one import outside world app
+        // (docs/decisions.md P-02).
         if (module, name) == AS_ABORT {
             return Some(Extern::Func(HOST_ENV_ABORT));
         }
         let ExternType::Func(ft) = ty else {
             return None;
         };
-        // 生成された表と module + name + sig で完全一致（abi-spec §6.4）。
+        // Exact match of module + name + sig against the generated table
+        // (docs/abi-spec.md §6.4).
         let desc = generated::resolve(module, name)?;
         if !ft.sig_matches(desc.sig) {
             return None;
@@ -349,9 +363,9 @@ impl<B: Board> Resolver for Hal<B> {
 
         let mut argbuf = [0u8; LINE];
         let mut outbuf = [0u8; LINE];
-        // **トレースを切っているときは整形しない。** 以前は毎回組み立てて
-        // 捨てていて、host のプロファイルで時間の 2 割強が `spi.write` の
-        // CRC-32 だった（2026-10-11。docs/TODO.md §4）。
+        // No formatting while tracing is off. Formatting and discarding on every
+        // call used to cost a little over 20% of run time in a host profile, all
+        // of it the CRC-32 of `spi.write` (docs/TODO.md §4).
         let (mut a, mut o) = if self.trace_on {
             (Buf::new(&mut argbuf), Buf::new(&mut outbuf))
         } else {
@@ -538,7 +552,7 @@ impl<B: Board> Resolver for Hal<B> {
                     Ok(i) => {
                         let index = self.i2c[i].index;
                         let addr = args[1] as u16;
-                        // data はゲストメモリを直接読むだけなので写さない。
+                        // data is only read from guest memory, so it is not copied.
                         let data = guest_slice(mem, args[2], args[3])?;
                         match self.board.i2c_write(index, addr, data) {
                             Ok(()) => 0,
@@ -611,7 +625,7 @@ impl<B: Board> Resolver for Hal<B> {
                     Ok(i) => {
                         let index = self.i2c[i].index;
                         let addr = args[1] as u16;
-                        // 送信元と受信先が重なりうるので、送信側を一度写す。
+                        // The source and destination may overlap, so copy the transmit side first.
                         let mut tx = [0u8; SCRATCH];
                         tx[..data_len].copy_from_slice(guest_slice(mem, args[2], args[3])?);
                         match self.board.i2c_write_read(
@@ -680,7 +694,7 @@ impl<B: Board> Resolver for Hal<B> {
             }
             HostFn::SpiBusWrite => {
                 let data = guest_slice(mem, args[1], args[2])?;
-                // abi-spec §9: spi.write の data は CRC-32 のみ。
+                // docs/abi-spec.md §9: spi.write's data is traced as a CRC-32 only.
                 a.u64(args[0]);
                 a.str(", crc32=");
                 if a.is_on() {
@@ -719,7 +733,7 @@ impl<B: Board> Resolver for Hal<B> {
                     Ok(_) if data_len > SCRATCH => ErrorCode::Unsupported.status(),
                     Ok(i) => {
                         let index = self.spi[i].index;
-                        // 送信元と受信先が重なりうるので、送信側を一度写す。
+                        // The source and destination may overlap, so copy the transmit side first.
                         let mut tx = [0u8; SCRATCH];
                         tx[..data_len].copy_from_slice(guest_slice(mem, args[1], args[2])?);
                         match self.board.spi_transfer(
@@ -771,14 +785,15 @@ impl<B: Board> Resolver for Hal<B> {
                 a.escaped(msg);
                 a.byte(b'"');
                 let l = LogLevel::from_u32(level).unwrap_or(LogLevel::Info);
-                // ゲストメモリを直接渡す。写すと長いメッセージが切れるうえ、
-                // UTF-8 の途中で切ると壊れる。
+                // Pass guest memory directly. A copy would truncate long messages
+                // and break them when cut in the middle of a UTF-8 sequence.
                 let msg = guest_slice(mem, args[1], args[2])?;
                 self.board.log(l, msg);
             }
         }
 
-        // 戻り値（abi-spec §4.4: result を返す関数は単一の i32 ステータス）。
+        // Return value (docs/abi-spec.md §4.4: a function that returns a result
+        // yields a single i32 status).
         if !desc.sig.ends_with(':') && !results.is_empty() {
             results[0] = if matches!(f, HostFn::TimeNowUs) {
                 result64
@@ -787,7 +802,7 @@ impl<B: Board> Resolver for Hal<B> {
             };
         }
 
-        // トレース（time は含めない。abi-spec §9）。
+        // Trace (time is not included; docs/abi-spec.md §9).
         if self.trace_on
             && !matches!(
                 f,

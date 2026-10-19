@@ -1,62 +1,55 @@
-//! アプリスロットの形式（`docs/app-workflow.md` §3.4）。
+//! App slot format (docs/app-workflow.md §3.4).
 //!
-//! ```text
-//! offset  size  内容
-//! 0       4     magic "WMCA"（Wasmicon App）
-//! 4       2     フォーマット版（u16 LE。= 1）
-//! 6       2     予約（0）
-//! 8       4     wasm の長さ（u32 LE）
-//! 12      4     wasm の CRC-32（u32 LE）
-//! 16      n     wasm 本体
-//! ```
+//! The wasm starts at a 16-byte boundary, so the slice read from the slot can
+//! be passed to `decode` as is (an XIP slice on RP2350, a copy in RAM on
+//! ESP32-S3). The layout is on `Header`.
 //!
-//! **wasm が 16 バイト境界から始まる**ので、読んだスライスをそのまま
-//! `decode` に渡せる（RP2350 は XIP のスライス、ESP32-S3 は RAM への写し）。
+//! The CRC separates transfer accidents from app bugs. Without it, a corrupted
+//! byte sequence reaches `decode` and produces an unrelated reason such as
+//! "unsupported instruction" (one fewer of the silent failures in
+//! docs/TODO.md §1.4).
 //!
-//! **CRC は「転送の事故」と「アプリのバグ」を切り分けるために入れる。**
-//! 入れないと、壊れたバイト列を decode させて「対応外の命令」のような
-//! 無関係な理由が出る（`docs/TODO.md` §1.4 の「無言で止まる」を 1 つ減らす）。
-//!
-//! 書く側（CLI）と読む側（ファーム）で同じ形を 2 回書かないよう、
-//! ここに置いて両方が使う。
+//! The writer (CLI) and the reader (firmware) share this module so the format
+//! is written once.
 
 use crate::crc32;
 use crate::profile::Slot;
 
-/// スロットの先頭に置く識別子。
+/// Identifier at the start of the slot.
 pub const MAGIC: [u8; 4] = *b"WMCA";
 
-/// フォーマット版。**上げるのは配置を変えるときだけ**（互換の軸の 1 つ。
-/// `docs/app-workflow.md` §3.6）。
+/// Format version. Bump it only when the layout changes (one of the
+/// compatibility axes, docs/app-workflow.md §3.6).
 pub const FORMAT_VERSION: u16 = 1;
 
-/// ヘッダの大きさ。wasm はこの直後から始まる。
+/// Header size. The wasm starts right after it.
 pub const HEADER_LEN: usize = 16;
 
-/// スロットを読めない理由。
+/// Why the slot cannot be read.
 ///
-/// `core::fmt` を使わないので（`ports/common` はポートと同じ制約で書く）、
-/// 文面は `&'static str` で返し、数値はポートが自分の `Buf` で出す。
+/// `ports/common` is written under the same constraints as the ports, so no
+/// `core::fmt`: the text is a `&'static str` and the port prints the numbers
+/// with its own `Buf`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SlotError {
-    /// 消去済み（`0xff`）か、まだ何も書かれていない（`0x00`）。
-    /// **失敗ではなく「空」**。ファームはこれを見て idle に入る。
+    /// Erased (`0xff`) or never written (`0x00`). Not a failure but "empty";
+    /// the firmware parks on it.
     Empty,
-    /// magic が違う。別のものが書かれている。
+    /// Wrong magic. Something else is written there.
     BadMagic,
-    /// この版を読めない。
+    /// A version this firmware cannot read.
     UnsupportedVersion { found: u16 },
-    /// 長さがスロットの外を指している。
+    /// The length points past the slot.
     Truncated { need: usize, have: usize },
-    /// CRC が合わない。転送か書き込みの事故。
+    /// CRC mismatch. A transfer or write accident.
     BadCrc { want: u32, got: u32 },
-    /// ファームの末尾がスロットに食い込んでいる。**読んではいけない**
-    /// （自分のコードを wasm として食わせてしまう）。
+    /// The firmware's end reaches into the slot. Must not be read: it would
+    /// feed the firmware's own code to the runtime as wasm.
     Overlap { fw_end: usize, slot_start: usize },
 }
 
 impl SlotError {
-    /// ログに出す文面。
+    /// Text for the log.
     #[must_use]
     pub fn reason(self) -> &'static str {
         match self {
@@ -69,40 +62,52 @@ impl SlotError {
         }
     }
 
-    /// 空（まだ何も配っていない）か。**これだけは異常ではない。**
+    /// Whether the slot is empty (nothing deployed yet). The one case that is not an error.
     #[must_use]
     pub fn is_empty(self) -> bool {
         self == SlotError::Empty
     }
 }
 
-/// ヘッダから読み取れること。
+/// What the header says.
+///
+/// Slot layout:
+///
+/// ```text
+/// offset  size  contents
+/// 0       4     magic "WMCA" (Wasmicon App)
+/// 4       2     format version (u16 LE, = 1)
+/// 6       2     reserved (0)
+/// 8       4     wasm length (u32 LE)
+/// 12      4     CRC-32 of the wasm (u32 LE)
+/// 16      n     wasm
+/// ```
 #[derive(Clone, Copy)]
 pub struct Header {
-    /// wasm の長さ。
+    /// Length of the wasm.
     pub len: usize,
-    /// ヘッダが持っている CRC-32。
+    /// CRC-32 stored in the header.
     pub crc: u32,
 }
 
-/// ヘッダだけを読む。
+/// Reads only the header.
 ///
-/// **XIP で読めないボード（ESP32-S3）はこれを先に読む。** 長さが分かって
-/// から、その分だけ arena を取って本体を読む（64 KiB のスロットに対して
-/// アプリは数 KB なので、スロットの大きさぶんの RAM は要らない。DRAM は
-/// ほぼ使い切っている。`docs/TODO.md` §1.4）。
+/// Boards that cannot read through XIP (ESP32-S3) read this first, then take
+/// just that much arena for the body. An app is a few KB in a 64 KiB slot, so
+/// RAM the size of the slot is not needed; DRAM is nearly exhausted
+/// (docs/TODO.md §1.4).
 ///
 /// # Errors
-/// 空、magic 違い、版違いのとき。**長さと CRC はまだ検査しない**
-/// （本体を読んでから `verify`）。
+/// Empty, wrong magic or wrong version. The length and CRC are not checked
+/// yet (`verify` does that once the body is read).
 pub fn parse_header(head: &[u8]) -> Result<Header, SlotError> {
     let Some(head) = head.get(..HEADER_LEN) else {
         return Err(SlotError::Empty);
     };
     let magic: &[u8] = &head[..4];
     if magic != MAGIC {
-        // 消去済みのフラッシュは 0xff、まだ書いていない RAM は 0x00。
-        // どちらも「空」で、magic 違いとは区別する（ログの意味が変わる）。
+        // Erased flash reads 0xff, never-written RAM reads 0x00. Both are "empty"
+        // and are kept distinct from a wrong magic (the log means something else).
         if magic.iter().all(|b| *b == 0xff) || magic.iter().all(|b| *b == 0) {
             return Err(SlotError::Empty);
         }
@@ -118,10 +123,10 @@ pub fn parse_header(head: &[u8]) -> Result<Header, SlotError> {
     })
 }
 
-/// 読んだ本体がヘッダと合っているか。
+/// Checks that the body read matches the header.
 ///
 /// # Errors
-/// 長さが足りない、CRC が合わないとき。
+/// Wrong length or CRC mismatch.
 pub fn verify(wasm: &[u8], h: &Header) -> Result<(), SlotError> {
     if wasm.len() != h.len {
         return Err(SlotError::Truncated {
@@ -136,12 +141,13 @@ pub fn verify(wasm: &[u8], h: &Header) -> Result<(), SlotError> {
     Ok(())
 }
 
-/// スロットの中の wasm を取り出す。
+/// Extracts the wasm from the slot.
 ///
-/// `bytes` はスロット領域全体でよい（長さはヘッダが持つので、余りは無視する）。
+/// `bytes` may be the whole slot region; the header carries the length and
+/// the rest is ignored.
 ///
 /// # Errors
-/// 空、magic 違い、版違い、長さ不足、CRC 不一致のとき。
+/// Empty, wrong magic, wrong version, short length or CRC mismatch.
 pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
     let h = parse_header(bytes)?;
     let Some(need) = image_end(h.len) else {
@@ -160,41 +166,47 @@ pub fn parse(bytes: &[u8]) -> Result<&[u8], SlotError> {
     Ok(wasm)
 }
 
-/// XIP にマップされたフラッシュからスロットを読む。
+/// Reads the slot from memory-mapped (XIP) flash.
 ///
-/// RP2040 / RP2350 はフラッシュが memory-mapped なので、**RAM に写さず
-/// スライスのまま返す**（design-notes §4）。両ポートで同じことをするので
-/// ここに置く（生スライスを作る `unsafe` を 1 箇所にする）。
+/// On RP2040 / RP2350 the flash is memory-mapped, so the slot is returned as
+/// a slice without copying it to RAM (docs/design-notes.md §4). Both ports do
+/// the same, so it lives here and the `unsafe` that creates the raw slice
+/// exists in one place.
 ///
-/// `fw_end` はリンカが置く「ファームの末尾」のアドレス。**スロットに
-/// 食い込んでいたら読まずに `Overlap` を返す。**
+/// `fw_end` is the address of the firmware's end as placed by the linker. If
+/// it reaches into the slot, nothing is read and `Overlap` is returned.
 ///
 /// # Errors
-/// 重なっているとき、および `parse` が失敗したとき。
+/// Overlap, or whatever `parse` reports.
 ///
 /// # Safety
-/// `xip_base + slot.offset` から `slot.len` バイトが、読み出し可能な
-/// memory-mapped flash であること（範囲外を読むとバスフォルトになる）。
+/// `slot.len` bytes starting at `xip_base + slot.offset` must be readable
+/// memory-mapped flash that stays mapped for the rest of the program
+/// (reading outside it is a bus fault).
 pub unsafe fn read_xip(
     xip_base: usize,
     slot: Slot,
     fw_end: usize,
 ) -> Result<&'static [u8], SlotError> {
-    // SAFETY: 呼び出し側の契約をそのまま渡す。
+    // SAFETY: this function's own contract guarantees that `slot.len` bytes
+    // from `xip_base + slot.offset` are readable memory-mapped flash that stays
+    // mapped for the rest of the program, which is exactly what `xip_region`
+    // requires.
     parse(unsafe { xip_region(xip_base, slot, fw_end) }?)
 }
 
-/// XIP にマップされたフラッシュの 1 領域を、中身を解釈せずにスライスで返す。
+/// Returns one region of memory-mapped (XIP) flash as a slice, without
+/// interpreting it.
 ///
-/// アプリスロット（`read_xip`）と設定スロット（`roles`）の両方が使う。
-/// **生スライスを作る `unsafe` はここ 1 箇所だけ**にしてある。
+/// Used by both the app slot (`read_xip`) and the config slot (`roles`). This
+/// is the only place that creates a raw slice with `unsafe`.
 ///
 /// # Errors
-/// ファームの末尾が領域に食い込んでいるとき（`Overlap`）。
+/// `Overlap` when the firmware's end reaches into the region.
 ///
 /// # Safety
-/// `read_xip` と同じ（`xip_base + slot.offset` から `slot.len` バイトが
-/// 読み出し可能な memory-mapped flash であること）。
+/// `slot.len` bytes starting at `xip_base + slot.offset` must be readable
+/// memory-mapped flash that stays mapped for the rest of the program.
 pub unsafe fn xip_region(
     xip_base: usize,
     slot: Slot,
@@ -202,47 +214,51 @@ pub unsafe fn xip_region(
 ) -> Result<&'static [u8], SlotError> {
     let slot_start = xip_base + slot.offset as usize;
     if fw_end > slot_start {
-        // **ここで返るので、重なっているときはスライスを作らない。**
+        // Returning here means no slice is created when the regions overlap.
         return Err(SlotError::Overlap { fw_end, slot_start });
     }
-    // SAFETY: 呼び出し側の契約（読み出し可能な memory-mapped flash）。
-    // 上でファームの末尾より後ろだと確かめてある。
+    // SAFETY: the caller guarantees that `slot.len` bytes from `slot_start` are
+    // readable memory-mapped flash that stays mapped for the rest of the
+    // program, so a `'static` shared slice over them is valid. The check above
+    // puts the region past the firmware's end, and flash is never written
+    // through a reference, so no `&mut` aliases it.
     Ok(unsafe { core::slice::from_raw_parts(slot_start as *const u8, slot.len as usize) })
 }
 
-/// ヘッダを組む（書く側が使う）。
+/// Builds the header (for the writer).
 #[must_use]
 pub fn header(wasm: &[u8]) -> [u8; HEADER_LEN] {
     let mut h = [0u8; HEADER_LEN];
     h[..4].copy_from_slice(&MAGIC);
     h[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-    // 6..8 は予約（0）。
+    // 6..8 is reserved (0).
     let len = u32::try_from(wasm.len()).unwrap_or(u32::MAX);
     h[8..12].copy_from_slice(&len.to_le_bytes());
     h[12..16].copy_from_slice(&crc32(wasm).to_le_bytes());
     h
 }
 
-/// スロットに置くときの全体の大きさ（書く側が使う）。
+/// Total size of the image placed in the slot (for the writer).
 ///
-/// 書く側の長さは実在するファイルの大きさなので溢れない。読む側は
-/// `image_end` を使う。
+/// The writer's length is the size of a real file, so it cannot overflow. The
+/// reader uses `image_end`.
 #[must_use]
 pub fn image_len(wasm_len: usize) -> usize {
     HEADER_LEN + wasm_len
 }
 
-/// ヘッダが申告する長さから、必要な全体のバイト数を出す。溢れたら `None`。
+/// Total bytes needed for the length the header claims, or `None` on overflow.
 ///
-/// **読む側の足し算をここ 1 箇所にしてある。** 長さは壊れたフラッシュから
-/// 来た値で、`usize` が 32 bit のターゲット（thumbv6m / thumbv8m /
-/// xtensa）では `0xffff_fff8 + 16` が 8 に巻き戻る。巻き戻ると `Truncated`
-/// が「need 8 / have 65536」のような自己矛盾した理由を出し、debug ビルドでは
-/// 足し算そのものが panic する —— **理由を出すためにある経路が無言で死ぬ**
-/// （`docs/handoff.md` §3 #4 に反する）。
+/// This is the one place the reader does the addition. The length comes from
+/// possibly corrupt flash, and on targets where `usize` is 32 bits (thumbv6m /
+/// thumbv8m / xtensa) `0xffff_fff8 + 16` wraps to 8. Wrapped, `Truncated`
+/// reports a self-contradictory reason such as "need 8 / have 65536", and a
+/// debug build panics on the addition itself: the path that exists to report
+/// the reason dies silently (contrary to docs/decisions.md A-04).
 ///
-/// **`parse` 経由では host で再現しない**（長さは u32 で、host の `usize` は
-/// 64 bit）。だから検査はこの関数を直に呼ぶ（`tests/slot.rs`）。
+/// This does not reproduce on the host through `parse` (the length is a u32
+/// and the host's `usize` is 64 bits), so the test calls this function
+/// directly (`tests/slot.rs`).
 #[must_use]
 pub fn image_end(wasm_len: usize) -> Option<usize> {
     HEADER_LEN.checked_add(wasm_len)

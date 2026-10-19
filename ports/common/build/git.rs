@@ -1,11 +1,13 @@
-// ポートの build.rs が `include!` する。ビルドしたソースの `git describe` を
-// `WASMICON_GIT` に埋め、ファームが起動時に名乗る（docs/app-workflow.md §3.8）。
+// Included by each port's build.rs with `include!`. Embeds `git describe` of
+// the built source as `WASMICON_GIT`, which the firmware reports at boot
+// (docs/app-workflow.md §3.8).
 //
-// **dirty を落とさない。** 手元の未コミットの変更で焼いたファームが、
-// コミット済みのものと同じ名前を名乗ると、検証の記録が曖昧になる。
-// そのため、ファームに入るソース（ポート自身、ports/common、runtime、wit）が
-// 変わったら build.rs を走らせ直す。それ以外（docs など）の変更では
-// 走り直さないので、そこだけの dirty は次にソースが変わるまで反映されない。
+// The `-dirty` suffix is kept on purpose. Firmware flashed from uncommitted
+// changes must not report the same name as a committed build, or hardware
+// records become ambiguous. So build.rs reruns whenever a source that goes
+// into the firmware (the port itself, ports/common, runtime, wit) changes.
+// Changes elsewhere (docs and so on) do not rerun it, so a dirty state that
+// exists only there is not reflected until a source changes.
 
 fn emit_git_describe() {
     use std::process::Command;
@@ -16,7 +18,8 @@ fn emit_git_describe() {
             .success()
             .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    // git が無い・リポジトリの外でビルドしたときは unknown と名乗る（落とさない）。
+    // Without git, or when building outside a repository, report "unknown"
+    // rather than fail the build.
     let describe = run(&["describe", "--always", "--dirty", "--abbrev=7"])
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=WASMICON_GIT={describe}");

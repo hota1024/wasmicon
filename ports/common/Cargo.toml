@@ -1,6 +1,6 @@
 [package]
 name = "wasmicon-port"
-description = "ポート共通のHAL実装。ボード固有の操作だけを Board トレイトに切り出す"
+description = "Shared HAL implementation for the ports; only board-specific operations go through the Board trait"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

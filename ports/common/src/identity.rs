@@ -1,37 +1,39 @@
-//! ファームの identity（`docs/app-workflow.md` §3.8）。
+//! Firmware identity (docs/app-workflow.md §3.8).
 //!
-//! 起動時にバナーの次の行として 1 行で名乗る:
+//! At boot the firmware reports itself in one line right after the banner.
+//! Compatibility cannot be expressed by a single version
+//! (docs/app-workflow.md §3.8), so each axis is listed separately. `fw` and
+//! `git` only say which build this is; they play no part in the compatibility
+//! check.
 //!
-//! ```text
-//! wasmicon id rp2350 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board slot=v1/65536 roles=v1/4096
-//! ```
-//!
-//! **互換は版 1 本では表せない**（§3.8）ので、軸ごとに並べる。`fw` と `git` は
-//! 由来（どのビルドか）を示すためだけのもので、互換の判定には使わない。
-//!
-//! この行はトレース行（`>` / `<`）ではないので、`trace diff` は比べない。
-//! 代わりに `trace diff` は 2 つのログのこの行が食い違えば警告する。
+//! The line is not a trace line (`>` / `<`), so `trace diff` does not compare
+//! it. Instead `trace diff` warns when this line differs between two logs.
 
 use crate::fmt::Buf;
 use crate::profile::Profile;
 
-/// 行の先頭。`trace diff` はこれで identity の行を見つける。
+/// Start of the line. `trace diff` uses it to find the identity line.
 pub const PREFIX: &str = "wasmicon id ";
 
-/// 名乗る内容。ポートの `main.rs` が組む。
+/// What the firmware reports. Built by the port's `main.rs`.
 pub struct Identity<'a> {
-    /// ボードのプロファイル（名前、メモリの上限、実装済みインターフェース、スロット）。
+    /// Board profile (name, memory limits, implemented interfaces, slots).
     pub profile: &'static Profile,
-    /// ファームの版（ポートの `CARGO_PKG_VERSION`）。
+    /// Firmware version (the port's `CARGO_PKG_VERSION`).
     pub fw: &'a str,
-    /// ビルド時の `git describe --always --dirty`（`build.rs` が埋める）。
+    /// `git describe --always --dirty` at build time (filled in by `build.rs`).
     pub git: &'a str,
-    /// `trace` feature を有効にしてビルドしたか。**切ったファームは `monitor` に
-    /// 何も出さない**ので、`trace=off` と言えれば配線から疑わずに済む。
+    /// Whether the firmware was built with the `trace` feature. A firmware
+    /// without it prints nothing to `monitor`, so saying `trace=off` saves
+    /// suspecting the wiring.
     pub trace: bool,
 }
 
-/// 1 行に組む（改行は含まない）。`out` は 192 バイトあれば収まる。
+/// Builds the line (without a newline). `out` of 192 bytes is enough.
+///
+/// ```text
+/// wasmicon id rp2350 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board slot=v1/65536 roles=v1/4096
+/// ```
 pub fn describe(id: &Identity<'_>, out: &mut Buf<'_>) {
     let p = id.profile;
     out.str(PREFIX);

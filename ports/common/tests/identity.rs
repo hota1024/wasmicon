@@ -1,7 +1,7 @@
-//! ファームが名乗る 1 行の形を固定する（`docs/app-workflow.md` §3.8）。
+//! Locks in the one-line identity the firmware reports (docs/app-workflow.md §3.8).
 //!
-//! `trace diff` はこの行を `identity::PREFIX` で見つけて 2 つのログを比べるので、
-//! 形が変わると照合が黙って効かなくなる。
+//! `trace diff` finds this line by `identity::PREFIX` to compare two logs, so a
+//! change of shape would silently disable that check.
 
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
@@ -33,8 +33,8 @@ fn every_axis_is_named() {
 
 #[test]
 fn unimplemented_interfaces_and_trace_off_are_visible() {
-    // rp2040 は I2C / SPI が未実装。trace を切ったファームは monitor に何も
-    // 出さないので、名乗りで分かるようにする。
+    // rp2040 has no I2C / SPI yet. A firmware built without trace prints
+    // nothing to monitor, so the identity line has to say so.
     let l = line(&profile::RP2040, false);
     assert!(l.contains(" trace=off "), "{l}");
     assert!(l.contains(" if=gpio,time,log,board "), "{l}");
@@ -43,10 +43,10 @@ fn unimplemented_interfaces_and_trace_off_are_visible() {
 
 #[test]
 fn the_longest_line_fits_the_ports_buffer() {
-    // ポートは 192 バイトのバッファで組む。溢れると黙って切り詰められる。
+    // The port builds the line in a 192-byte buffer; an overflow is silently truncated.
     for p in profile::PROFILES {
         let l = line(p, false);
-        assert!(l.len() < 160, "{}: {} バイト", p.name, l.len());
+        assert!(l.len() < 160, "{}: {} bytes", p.name, l.len());
         assert!(l.starts_with(identity::PREFIX));
     }
 }

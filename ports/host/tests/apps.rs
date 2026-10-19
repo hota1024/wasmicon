@@ -1,7 +1,8 @@
-//! `apps/` のゲストを host ポートで動かし、トレースを突き合わせる。
+//! Runs the guests in `apps/` on the host port and cross-checks their traces.
 //!
-//! docs/handoff.md §5 Phase 3 の完了条件:
-//! 「blink-rs と blink-as の Wasm が対応機能セット内で、同じ GPIO トレースを出す」
+//! Locks in that every app's Wasm stays within the supported feature set
+//! (docs/decisions.md D-07) and that the Rust, AssemblyScript and C versions
+//! of one app produce identical traces (docs/decisions.md D-10).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,37 +11,38 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
-/// guest workspace でアプリをビルドして `.wasm` を返す。
+/// Builds an app in the guest workspace and returns the `.wasm`.
 fn build_rust_app(pkg: &str) -> Vec<u8> {
-    // 複数のテストが同じ target ディレクトリに向けて cargo を走らせる。
-    // cargo 自身のロックでビルドは直列化されるが、その隙に別のテストが
-    // 書きかけの .wasm を読むことがある。ビルドと読み出しをまとめて直列化する。
+    // Several tests run cargo against the same target directory. cargo's own
+    // lock serializes the builds, but another test can read a half-written
+    // .wasm in between. Serialize the build and the read together.
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let root = repo_root();
-    // cargo test はテストプロセスに RUSTUP_TOOLCHAIN を渡す。これが立っていると
-    // rustup は toolchain override ファイルを一切見ないので、apps/rust-toolchain.toml の
-    // targets（wasm32-unknown-unknown の自動導入）が効かない。外してから起動する。
+    // cargo test passes RUSTUP_TOOLCHAIN to the test process. With it set,
+    // rustup ignores every toolchain override file, so the targets in
+    // apps/rust-toolchain.toml (automatic wasm32-unknown-unknown install) have
+    // no effect. Remove it before launching.
     let status = Command::new("cargo")
         .current_dir(root.join("apps"))
         .env_remove("RUSTUP_TOOLCHAIN")
         .args(["build", "--release", "-p", pkg])
         .status()
-        .expect("cargo を起動できない");
-    assert!(status.success(), "{pkg} のビルドに失敗した");
+        .expect("cannot run cargo");
+    assert!(status.success(), "build of {pkg} failed");
     let wasm = root
         .join("apps/target/wasm32-unknown-unknown/release")
         .join(format!("{}.wasm", pkg.replace('-', "_")));
-    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
 }
 
-/// 対応機能セット（docs/handoff.md §2-7）に収まっているか。
+/// Checks that the Wasm stays within the supported feature set (docs/decisions.md D-07).
 fn assert_within_feature_set(wasm: &[u8], label: &str) {
     let tmp = std::env::temp_dir().join(format!("wasmicon-{label}.wasm"));
     std::fs::write(&tmp, wasm).unwrap();
@@ -51,14 +53,17 @@ fn assert_within_feature_set(wasm: &[u8], label: &str) {
         ])
         .arg(&tmp)
         .status()
-        .expect("wasm-tools を起動できない");
-    assert!(ok.success(), "{label} が対応機能セット外の命令を含む");
+        .expect("cannot run wasm-tools");
+    assert!(
+        ok.success(),
+        "{label} contains an instruction outside the supported feature set"
+    );
 }
 
-/// 失敗した host call が無いことを確かめる。
+/// Checks that no host call failed.
 ///
-/// ステータスは discriminant + 1 なので、`< 1` だけを見ると
-/// `invalid-argument` しか捕まえられない（`busy` は 3、`nack` は 5）。
+/// The status is discriminant + 1, so looking only for `< 1` would catch
+/// `invalid-argument` alone (`busy` is 3, `nack` is 5).
 fn assert_no_host_errors(trace: &str, label: &str) {
     for (i, line) in trace.lines().enumerate() {
         let Some(rest) = line.strip_prefix("< ") else {
@@ -68,7 +73,7 @@ fn assert_no_host_errors(trace: &str, label: &str) {
         assert_eq!(
             code,
             "0",
-            "{label}: {} 行目の host call が失敗している: {line}",
+            "{label}: host call at line {} failed: {line}",
             i + 1
         );
     }
@@ -77,48 +82,56 @@ fn assert_no_host_errors(trace: &str, label: &str) {
 fn run(wasm: &[u8], label: &str) -> String {
     match wasmicon_host::run_wasm(wasm, true) {
         Ok(out) => out.trace,
-        Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+        Err(e) => panic!(
+            "{label} execution failed: {} [{}]",
+            e.reason(),
+            e.kind().name()
+        ),
     }
 }
 
-/// Lチカが期待どおりの host call 列を出すか。
+/// Checks that blink emits the expected host call sequence.
 fn assert_blink_trace(trace: &str, label: &str) {
-    // 役割名で引いたピン番号はボード依存なので、トレースでは役割名になる（abi-spec §9）。
+    // A pin number looked up by role is board-specific, so the trace shows the
+    // role name (docs/abi-spec.md §9).
     assert!(
         trace.contains("> wasmicon:hal/board@0.1.0/pin-by-role(\"led\")\n< 0 [role:led]"),
-        "{label}: pin-by-role のトレースが違う:\n{trace}"
+        "{label}: wrong pin-by-role trace:\n{trace}"
     );
     assert!(
         trace.contains("> wasmicon:hal/gpio@0.1.0/[static]pin.open(role:led, 3)\n< 0 [1]"),
-        "{label}: pin.open のトレースが違う:\n{trace}"
+        "{label}: wrong pin.open trace:\n{trace}"
     );
     assert_eq!(
         trace.matches("[method]pin.write(1, 1)").count(),
         3,
-        "{label}: pin.write の回数が違う:\n{trace}"
+        "{label}: wrong pin.write count:\n{trace}"
     );
     assert_eq!(
         trace.matches("[method]pin.toggle(1)").count(),
         3,
-        "{label}: pin.toggle の回数が違う:\n{trace}"
+        "{label}: wrong pin.toggle count:\n{trace}"
     );
     assert!(
         trace.contains("[resource-drop]pin(1)"),
-        "{label}: drop のトレースが無い:\n{trace}"
+        "{label}: missing drop trace:\n{trace}"
     );
-    // time はトレースに含めない（abi-spec §9）。
-    assert!(!trace.contains("time@0.1.0"), "{label}: time が出ている");
-    // 全ての host call が成功している。
+    // time is not traced (docs/abi-spec.md §9).
+    assert!(
+        !trace.contains("time@0.1.0"),
+        "{label}: time appears in the trace"
+    );
+    // Every host call succeeded.
     assert!(
         !trace.contains("\n< 1"),
-        "{label}: 失敗した host call がある:\n{trace}"
+        "{label}: a host call failed:\n{trace}"
     );
 }
 
-/// AssemblyScript のアプリを asc でビルドして `.wasm` を返す。
+/// Builds an AssemblyScript app with asc and returns the `.wasm`.
 fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
-    // asc は同じ outFile に書くので、テストが並列に走ると書きかけを読んでしまう。
-    // ビルドと読み出しをまとめて直列化する。
+    // asc writes the same outFile, so parallel tests would read a half-written
+    // file. Serialize the build and the read together.
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
@@ -128,7 +141,7 @@ fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
     let app = root.join("apps").join(dir);
     assert!(
         root.join("node_modules/assemblyscript").exists(),
-        "AssemblyScript が入っていない。リポジトリルートで `npm install` を実行すること"
+        "AssemblyScript is not installed; run `npm install` at the repository root"
     );
     let status = Command::new("npx")
         .current_dir(&app)
@@ -141,17 +154,17 @@ fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
             "release",
         ])
         .status()
-        .expect("npx を起動できない");
-    assert!(status.success(), "{dir} のビルドに失敗した");
+        .expect("cannot run npx");
+    assert!(status.success(), "build of {dir} failed");
     let wasm = app.join("build").join(out);
-    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
 }
 
-/// C のアプリを `bindings/c/build.sh` でビルドして `.wasm` を返す。
+/// Builds a C app with `bindings/c/build.sh` and returns the `.wasm`.
 ///
-/// ソースは `apps/<dir>/src/*.c`。clang は `WASMICON_CLANG` で差し替えられる。
+/// The sources are `apps/<dir>/src/*.c`. `WASMICON_CLANG` overrides the clang used.
 fn build_c_app(dir: &str, out: &str) -> Vec<u8> {
-    // 同じ出力先に書くので、ビルドと読み出しをまとめて直列化する（build_as_app と同じ）。
+    // Same output path, so serialize the build and the read together (as in build_as_app).
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
@@ -160,7 +173,7 @@ fn build_c_app(dir: &str, out: &str) -> Vec<u8> {
     let root = repo_root();
     let app = root.join("apps").join(dir);
     let mut srcs: Vec<PathBuf> = std::fs::read_dir(app.join("src"))
-        .unwrap_or_else(|e| panic!("{dir}/src を読めない: {e}"))
+        .unwrap_or_else(|e| panic!("cannot read {dir}/src: {e}"))
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|x| x == "c"))
         .collect();
@@ -173,12 +186,12 @@ fn build_c_app(dir: &str, out: &str) -> Vec<u8> {
         .arg(&wasm)
         .args(&srcs)
         .status()
-        .expect("sh を起動できない");
+        .expect("cannot run sh");
     assert!(
         status.success(),
-        "{dir} のビルドに失敗した（wasm32 対応の clang と wasm-ld が要る。bindings/c/build.sh）"
+        "build of {dir} failed (needs a clang with wasm32 support and wasm-ld; see bindings/c/build.sh)"
     );
-    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
 }
 
 #[test]
@@ -199,10 +212,11 @@ fn blink_as_runs_on_host() {
     assert_blink_trace(&trace, "blink-as");
 }
 
-/// Phase 3 の完了条件: Rust 版と AS 版が同じトレースを出す。
+/// The Rust and AS versions produce the same trace.
 ///
-/// abi-spec §9 により `time` はトレースに出ないので、**トレース全文の一致が
-/// そのまま docs/handoff.md §2-10 の「time を除く全 host call と結果が一致」**になる。
+/// `time` is not traced (docs/abi-spec.md §9), so equality of the whole trace
+/// is exactly "every host call and result except time matches"
+/// (docs/decisions.md D-10).
 #[test]
 fn blink_rs_and_blink_as_agree() {
     let rs = run(&build_rust_app("blink-rs"), "blink-rs");
@@ -219,7 +233,7 @@ fn blink_c_runs_on_host() {
     assert_blink_trace(&trace, "blink-c");
 }
 
-/// C 版も Rust 版と同じトレースを出す（`bindings/c` の検査）。
+/// The C version produces the same trace as the Rust version (checks `bindings/c`).
 #[test]
 fn blink_rs_and_blink_c_agree() {
     let rs = run(&build_rust_app("blink-rs"), "blink-rs");
@@ -227,77 +241,83 @@ fn blink_rs_and_blink_c_agree() {
     assert_traces_equal(&rs, &c);
 }
 
-/// トレースを行単位で突き合わせる。最初の食い違いだけ報告する。
+/// Cross-checks two traces line by line and reports only the first mismatch.
 fn assert_traces_equal(rs: &str, as_: &str) {
     let a: Vec<&str> = rs.lines().collect();
     let b: Vec<&str> = as_.lines().collect();
-    assert!(!a.is_empty(), "トレースが空");
+    assert!(!a.is_empty(), "trace is empty");
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-        assert_eq!(x, y, "{} 行目で食い違う（Rust 版 vs もう一方）", i + 1);
+        assert_eq!(
+            x,
+            y,
+            "mismatch at line {} (Rust version vs the other)",
+            i + 1
+        );
     }
-    assert_eq!(a.len(), b.len(), "トレースの行数が違う");
+    assert_eq!(a.len(), b.len(), "trace line counts differ");
 }
 
-/// 実機の記録と突き合わせた host トレースの大きさ（docs/verification-report.md §6 / §7）。
+/// Size of the host trace that the hardware records were cross-checked
+/// against (docs/verification-report.md §6, §7).
 ///
-/// この 2 つの数は README.md / docs/TODO.md / docs/verification-report.md が
-/// そのまま引用している。**基準側が動いたらここで落ちる**のが狙い。落ちたら
-/// 数字を直すだけでなく、上の 3 つのドキュメントも直すこと。
+/// README.md, docs/TODO.md and docs/verification-report.md quote these two
+/// numbers as they are. The point is to fail here when the reference side
+/// moves; when it does, fix those three documents along with the numbers.
 const LCD_DEMO_TRACE_LINES: usize = 14_352;
 const LCD_DEMO_SPI_WRITES: usize = 3_272;
 
-/// `lcd-demo-rs`（SPI と GPIO だけのデモ）が host で走り切るか。
+/// `lcd-demo-rs` (the SPI-and-GPIO-only demo) runs to completion on the host.
 ///
-/// 実機の記録（docs/verification-report.md §6 / §7）はこのトレースと
-/// 突き合わせたもの。CI で走らせておかないと、比較の基準側が黙って変わっても
-/// 気付けない。
+/// The hardware records (docs/verification-report.md §6, §7) were
+/// cross-checked against this trace. Without running it in CI, a silent
+/// change of the reference side would go unnoticed.
 #[test]
 fn lcd_demo_rs_runs_on_host() {
     let wasm = build_rust_app("lcd-demo-rs");
     assert_within_feature_set(&wasm, "lcd-demo-rs");
     let trace = run(&wasm, "lcd-demo-rs");
 
-    // 役割名で 3 本引く（abi-spec §8、§9 の正規化つき）。
+    // Three pins are looked up by role (docs/abi-spec.md §8, §9).
     for role in ["lcd-cs", "lcd-dc", "lcd-rst"] {
         assert!(
             trace.contains(&format!("pin-by-role(\"{role}\")\n< 0 [role:{role}]")),
-            "{role} を引いていない:\n{trace}"
+            "{role} was not looked up:\n{trace}"
         );
     }
-    // センサーを要らなくするために作ったアプリなので、I2C は一度も触らない。
-    assert!(!trace.contains("i2c@0.1.0"), "i2c を触っている:\n{trace}");
-    // 背景は 240 行を 1 行ずつ送る（全画面フレームバッファを持たない）。
+    // The app exists to avoid needing the sensor, so it never touches I2C.
+    assert!(!trace.contains("i2c@0.1.0"), "touches i2c:\n{trace}");
+    // The background goes out as 240 rows, one at a time (no full-screen framebuffer).
     assert!(
         trace
             .matches("wasmicon:hal/spi@0.1.0/[method]bus.write")
             .count()
             > 240,
-        "行単位で送られていない:\n{trace}"
+        "not sent row by row:\n{trace}"
     );
-    // 実機と突き合わせた基準そのもの。ドキュメントが引用している数と一致させる。
+    // The reference itself. Must equal the numbers the documents quote.
     assert_eq!(
         trace.lines().count(),
         LCD_DEMO_TRACE_LINES,
-        "トレースの行数が実機の記録と違う。README.md / docs/TODO.md / \
-         docs/verification-report.md の数字も取り直しになる"
+        "trace line count differs from the hardware record; the numbers in README.md, \
+         docs/TODO.md and docs/verification-report.md need updating too"
     );
     assert_eq!(
         trace
             .matches("wasmicon:hal/spi@0.1.0/[method]bus.write")
             .count(),
         LCD_DEMO_SPI_WRITES,
-        "spi.write の件数が実機の記録と違う（CRC-32 を突き合わせた件数）"
+        "spi.write count differs from the hardware record (the number of CRC-32s cross-checked)"
     );
-    // 最後まで走り切る。途中で諦めると done が出ない（Level::Info = 2）。
+    // Runs to the end. Giving up midway would not print done (Level::Info = 2).
     assert!(
         trace.contains(r#"log(2, "lcd-demo done")"#),
-        "最後まで走っていない:\n{trace}"
+        "did not run to the end:\n{trace}"
     );
-    // 解放順は apps/README.md §4 の spi → rst → dc → cs。
+    // The release order is spi, rst, dc, cs per apps/README.md §4.
     let at = |needle: &str| {
         trace
             .find(needle)
-            .unwrap_or_else(|| panic!("{needle} が無い:\n{trace}"))
+            .unwrap_or_else(|| panic!("missing {needle}:\n{trace}"))
     };
     let order = [
         "wasmicon:hal/spi@0.1.0/[resource-drop]bus(1)",
@@ -308,7 +328,7 @@ fn lcd_demo_rs_runs_on_host() {
     for pair in order.windows(2) {
         assert!(
             at(pair[0]) < at(pair[1]),
-            "解放順が apps/README.md §4 と違う（{} が {} より後）:\n{trace}",
+            "release order differs from apps/README.md §4 ({} comes after {}):\n{trace}",
             pair[0],
             pair[1]
         );
@@ -316,23 +336,27 @@ fn lcd_demo_rs_runs_on_host() {
     assert_no_host_errors(&trace, "lcd-demo-rs");
 }
 
-/// SHT4x の I2C アドレス（`apps/README.md` §1）。トレースには 10 進で出る。
+/// I2C address of the SHT4x (apps/README.md §1). Traces print it in decimal.
 ///
-/// **品種のサフィックスで変わる**（-AD1B が 0x44）。ゲスト側の `ADDRESS` を
-/// 変えたらここも変える。ここに集約してあるので、アドレスが出てくるのは
-/// ゲストの Rust 版 / AS 版とこの定数の 3 箇所だけ。
+/// It depends on the part suffix (-AD1B is 0x44). Change this along with the
+/// guest's `ADDRESS`. It is collected here so the address appears in only
+/// three places: the Rust guest, the AS guest and this constant.
 const SHT4X_ADDR: u16 = 0x44;
 
-/// 記録済みの SHT4x 応答（`verify/sht4x-replay.txt`）。
+/// Recorded SHT4x responses (`verify/sht4x-replay.txt`).
 fn sht4x_replay() -> Vec<Vec<u8>> {
     let path = repo_root().join("verify/sht4x-replay.txt");
-    wasmicon_host::load_i2c_replay(&path).expect("記録済み応答を読めない")
+    wasmicon_host::load_i2c_replay(&path).expect("cannot read the recorded responses")
 }
 
 fn run_with_sensor(wasm: &[u8], label: &str) -> String {
     match wasmicon_host::run_wasm_with(wasm, true, sht4x_replay()) {
         Ok(out) => out.trace,
-        Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+        Err(e) => panic!(
+            "{label} execution failed: {} [{}]",
+            e.reason(),
+            e.kind().name()
+        ),
     }
 }
 
@@ -342,31 +366,32 @@ fn sensor_display_rs_runs_on_host() {
     assert_within_feature_set(&wasm, "sensor-display-rs");
     let trace = run_with_sensor(&wasm, "sensor-display-rs");
 
-    // 役割名で 3 本引いている（abi-spec §8、§9 の正規化つき）。
+    // Three pins are looked up by role (docs/abi-spec.md §8, §9).
     for role in ["lcd-cs", "lcd-dc", "lcd-rst"] {
         assert!(
             trace.contains(&format!("pin-by-role(\"{role}\")\n< 0 [role:{role}]")),
-            "{role} を引いていない:\n{trace}"
+            "{role} was not looked up:\n{trace}"
         );
     }
-    // SHT4x の単発計測コマンド（高精度、1 バイト）を書いて 6 バイト読んでいる。
+    // Writes the SHT4x single-shot measurement command (high precision, 1 byte)
+    // and reads 6 bytes.
     assert!(
         trace.contains(&format!("[method]bus.write(1, {SHT4X_ADDR}, 0xfd)")),
-        "SHT4x の計測コマンドが違う:\n{trace}"
+        "wrong SHT4x measurement command:\n{trace}"
     );
     assert!(
         trace.contains(&format!(
             "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6754c0a4d840]"
         )),
-        "SHT4x の読み出しが違う:\n{trace}"
+        "wrong SHT4x read:\n{trace}"
     );
-    // 背景は 240 行を 1 行ずつ送る（全画面フレームバッファを持たない）。
+    // The background goes out as 240 rows, one at a time (no full-screen framebuffer).
     assert!(
         trace
             .matches("wasmicon:hal/spi@0.1.0/[method]bus.write")
             .count()
             > 240,
-        "背景の塗りつぶしが行単位で送られていない"
+        "background fill is not sent row by row"
     );
     assert_no_host_errors(&trace, "sensor-display-rs");
 }
@@ -376,26 +401,26 @@ fn sensor_display_as_runs_on_host() {
     let wasm = build_as_app("sensor-display-as", "sensor_display_as.wasm");
     assert_within_feature_set(&wasm, "sensor-display-as");
     let trace = run_with_sensor(&wasm, "sensor-display-as");
-    // Rust 版（`sensor_display_rs_runs_on_host`）と対称にしておく。
-    // 片方だけ SHT3x の 2 バイトコマンドに戻っても、ここで単体で気付ける。
+    // Mirrors the Rust version (`sensor_display_rs_runs_on_host`), so a
+    // regression of one version alone to the 2-byte SHT3x command is caught here.
     assert!(
         trace.contains(&format!("[method]bus.write(1, {SHT4X_ADDR}, 0xfd)")),
-        "SHT4x の計測コマンドが違う:\n{trace}"
+        "wrong SHT4x measurement command:\n{trace}"
     );
     assert!(
         trace.contains(&format!(
             "[method]bus.read(1, {SHT4X_ADDR}, 6)\n< 0 [len=6 data=0x6754c0a4d840]"
         )),
-        "SHT4x の読み出しが違う:\n{trace}"
+        "wrong SHT4x read:\n{trace}"
     );
     assert_no_host_errors(&trace, "sensor-display-as");
 }
 
-/// Phase 5 の完了条件の中核: Rust 版と AS 版が同じ描画をする。
+/// The Rust and AS versions draw the same picture.
 ///
-/// `spi.write` のトレースは abi-spec §9 により data の CRC-32 なので、
-/// これが全て一致すれば送っているピクセルが同一だと分かる。
-/// 比較はトレース全文（= §2-10 の定義そのもの）。
+/// The `spi.write` trace is the CRC-32 of the data (docs/abi-spec.md §9), so
+/// when all of them match the pixels sent are identical. The comparison is
+/// the whole trace, which is the docs/decisions.md D-10 definition itself.
 #[test]
 fn sensor_display_rs_and_as_agree() {
     let rs = run_with_sensor(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
@@ -405,30 +430,32 @@ fn sensor_display_rs_and_as_agree() {
     );
     assert!(
         rs.lines().count() > 1000,
-        "トレースが短すぎる（{} 行）",
+        "trace too short ({} lines)",
         rs.lines().count()
     );
     assert_traces_equal(&rs, &as_);
 }
 
-/// 湿度のクランプで Rust 版と AS 版が一致すること。
+/// The Rust and AS versions agree at the humidity clamp.
 ///
-/// `verify/sht4x-replay.txt` の 1 件（raw_h = 0xa4d8 → 74.49%）は**クランプの
-/// 上下端のどちらからも遠い**ので、`sensor_display_rs_and_as_agree` はクランプの
-/// どちらの分岐も踏まない。つまり片方の言語でクランプを落としても CI が通って
-/// しまう。境界を踏む合成応答で別に見る（`docs/TODO.md` §2.2 の非対称を埋める）。
+/// The one record in `verify/sht4x-replay.txt` (raw_h = 0xa4d8 -> 74.49%) is
+/// far from both ends of the clamp, so `sensor_display_rs_and_as_agree` takes
+/// neither clamp branch: dropping the clamp in one language would still pass
+/// CI. Synthetic responses that hit the bounds are checked separately
+/// (closing the asymmetry in docs/TODO.md §2.2).
 ///
-/// 応答は CRC-8 が合っていないとゲストが `sensor crc failed` で降りて
-/// クランプまで到達しないので、3 バイト目 / 6 バイト目は poly 0x31 / init 0xFF で
-/// 計算した値を置いてある。温度は 23.44 °C（raw_t = 0x6421）に固定し、湿度だけ動かす。
+/// A response with a wrong CRC-8 makes the guest bail out with `sensor crc
+/// failed` before reaching the clamp, so bytes 3 and 6 are computed with poly
+/// 0x31 / init 0xFF. The temperature is fixed at 23.44 deg C (raw_t = 0x6421)
+/// and only the humidity varies.
 #[test]
 fn sensor_display_agrees_at_humidity_clamp_bounds() {
     let cases: [(&str, [u8; 6]); 3] = [
-        // 素の式が -600。下端のクランプ。
+        // Raw formula gives -600. Lower clamp.
         ("raw_h=0", [0x64, 0x21, 0xe0, 0x00, 0x00, 0x81]),
-        // 素の式が -1。下端のすぐ内側（符号の扱いが分かれやすい）。
+        // Raw formula gives -1. Just inside the lower bound (sign handling differs easily).
         ("raw_h=3145", [0x64, 0x21, 0xe0, 0x0c, 0x49, 0x80]),
-        // 素の式が 11900。上端のクランプ。
+        // Raw formula gives 11900. Upper clamp.
         ("raw_h=65535", [0x64, 0x21, 0xe0, 0xff, 0xff, 0xac]),
     ];
     let rs_wasm = build_rust_app("sensor-display-rs");
@@ -438,7 +465,7 @@ fn sensor_display_agrees_at_humidity_clamp_bounds() {
             match wasmicon_host::run_wasm_with(wasm, true, vec![frame.to_vec()]) {
                 Ok(out) => out.trace,
                 Err(e) => panic!(
-                    "{lang} / {label} の実行に失敗: {} [{}]",
+                    "{lang} / {label} execution failed: {} [{}]",
                     e.reason(),
                     e.kind().name()
                 ),
@@ -446,32 +473,35 @@ fn sensor_display_agrees_at_humidity_clamp_bounds() {
         };
         let rs = go(&rs_wasm, "sensor-display-rs");
         let as_ = go(&as_wasm, "sensor-display-as");
-        // 合成応答が壊れていると CRC で降りて、クランプを通らないまま一致する。
+        // A broken synthetic response bails out at the CRC and matches without
+        // ever reaching the clamp.
         assert!(
             !rs.contains(r#"log(0, "sensor crc failed")"#),
-            "{label}: 合成応答の CRC が合っていない（テスト側の誤り）:\n{rs}"
+            "{label}: wrong CRC in the synthetic response (a test bug):\n{rs}"
         );
         assert_traces_equal(&rs, &as_);
     }
 }
 
-/// 温度を振っても Rust 版と AS 版が一致すること。
+/// The Rust and AS versions agree across temperatures.
 ///
-/// replay の 25.63 °C は正の 5 文字で、ゲージは 2 区間目の途中で止まる。
-/// 負の温度（6 文字の中央寄せ）、ゲージを塗らない端、区間をまたぐ塗りを
-/// 踏まないので別に見る。湿度は 51.08%（raw_h = 0x74e9）に固定する。
+/// The replay's 25.63 deg C is a positive 5-character value whose gauge stops
+/// partway through the second segment. It never hits a negative temperature
+/// (6 characters, centered), the edge where no gauge is drawn or a fill that
+/// spans segments, so those are checked separately. The humidity is fixed at
+/// 51.08% (raw_h = 0x74e9).
 #[test]
 fn sensor_display_agrees_across_temperatures() {
     let cases: [(&str, [u8; 6]); 5] = [
-        // -45.00 °C。bar_px == 0 でゲージを塗らない。
+        // -45.00 deg C. bar_px == 0, no gauge drawn.
         ("raw_t=0", [0x00, 0x00, 0x81, 0x74, 0xe9, 0x70]),
-        // -40.01 °C。1 区間目の途中。
+        // -40.01 deg C. Partway through the first segment.
         ("raw_t=1872", [0x07, 0x50, 0x51, 0x74, 0xe9, 0x70]),
-        // -1.25 °C。負で整数部が 1 桁。
+        // -1.25 deg C. Negative with a one-digit integer part.
         ("raw_t=16384", [0x40, 0x00, 0x08, 0x74, 0xe9, 0x70]),
-        // 60.00 °C。4 区間すべてにかかる。
+        // 60.00 deg C. Spans all four segments.
         ("raw_t=39321", [0x99, 0x99, 0xbe, 0x74, 0xe9, 0x70]),
-        // 130.00 °C。SHT4x の上限で 6 文字。
+        // 130.00 deg C. The SHT4x maximum, 6 characters.
         ("raw_t=65535", [0xff, 0xff, 0xac, 0x74, 0xe9, 0x70]),
     ];
     let rs_wasm = build_rust_app("sensor-display-rs");
@@ -481,7 +511,7 @@ fn sensor_display_agrees_across_temperatures() {
             match wasmicon_host::run_wasm_with(wasm, true, vec![frame.to_vec()]) {
                 Ok(out) => out.trace,
                 Err(e) => panic!(
-                    "{lang} / {label} の実行に失敗: {} [{}]",
+                    "{lang} / {label} execution failed: {} [{}]",
                     e.reason(),
                     e.kind().name()
                 ),
@@ -491,24 +521,25 @@ fn sensor_display_agrees_across_temperatures() {
         let as_ = go(&as_wasm, "sensor-display-as");
         assert!(
             !rs.contains(r#"log(0, "sensor crc failed")"#),
-            "{label}: 合成応答の CRC が合っていない（テスト側の誤り）:\n{rs}"
+            "{label}: wrong CRC in the synthetic response (a test bug):\n{rs}"
         );
-        // 画面外の矩形はゲストの中で弾かれて host call にならないので、
-        // assert_no_host_errors では見えない。ログで見る。
+        // An off-screen rectangle is rejected inside the guest and never becomes
+        // a host call, so assert_no_host_errors cannot see it. Check the log.
         assert!(
             !rs.contains(r#"log(0, "display failed")"#),
-            "{label}: 描画が画面に収まっていない:\n{rs}"
+            "{label}: drawing does not fit the screen:\n{rs}"
         );
         assert_no_host_errors(&rs, label);
         assert_traces_equal(&rs, &as_);
     }
 }
 
-/// 失敗経路でも Rust 版と AS 版が一致すること。
+/// The Rust and AS versions agree on the failure path too.
 ///
-/// Phase 5 の一致検査はハッピーパスしか通らないが、実機では
-/// `ports/rp2040` / `ports/rp2350` / `ports/esp32s3` の SPI がまだ `unsupported` を返す。
-/// そこで両言語が食い違うと、実機に持って行った瞬間に比較が意味を失う。
+/// The equality tests above cover only the happy path, but `ports/rp2040`
+/// still returns `unsupported` for SPI (docs/TODO.md §1.2). If the two
+/// languages diverged there, the comparison would lose its meaning the moment
+/// the app reached that board.
 #[test]
 fn sensor_display_agrees_when_spi_is_unsupported() {
     let opts = || wasmicon_host::Options {
@@ -519,7 +550,11 @@ fn sensor_display_agrees_when_spi_is_unsupported() {
     let go = |wasm: &[u8], label: &str| -> String {
         match wasmicon_host::run_wasm_opts(wasm, opts()) {
             Ok(out) => out.trace,
-            Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+            Err(e) => panic!(
+                "{label} execution failed: {} [{}]",
+                e.reason(),
+                e.kind().name()
+            ),
         }
     };
     let rs = go(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
@@ -528,26 +563,30 @@ fn sensor_display_agrees_when_spi_is_unsupported() {
         "sensor-display-as",
     );
 
-    // SPI が開けないので、どちらも同じところで諦めるはず。
+    // SPI cannot be opened, so both should give up at the same point.
     assert!(
         rs.contains(r#"log(0, "spi open failed")"#),
-        "Rust 版が spi open failed を出していない:\n{rs}"
+        "Rust version did not print spi open failed:\n{rs}"
     );
     assert!(
         rs.lines().count() < 40,
-        "早期に諦めていない（{} 行）:\n{rs}",
+        "did not give up early ({} lines):\n{rs}",
         rs.lines().count()
     );
     assert_traces_equal(&rs, &as_);
 }
 
-/// センサーが応答しないときも一致すること（記録済み応答を渡さない）。
+/// The versions agree when the sensor does not respond (no recorded responses).
 #[test]
 fn sensor_display_agrees_when_sensor_is_silent() {
     let go = |wasm: &[u8], label: &str| -> String {
         match wasmicon_host::run_wasm_with(wasm, true, Vec::new()) {
             Ok(out) => out.trace,
-            Err(e) => panic!("{label} の実行に失敗: {} [{}]", e.reason(), e.kind().name()),
+            Err(e) => panic!(
+                "{label} execution failed: {} [{}]",
+                e.reason(),
+                e.kind().name()
+            ),
         }
     };
     let rs = go(&build_rust_app("sensor-display-rs"), "sensor-display-rs");
@@ -557,7 +596,7 @@ fn sensor_display_agrees_when_sensor_is_silent() {
     );
     assert!(
         rs.contains(r#"log(0, "sensor read failed")"#),
-        "Rust 版が sensor read failed を出していない"
+        "Rust version did not print sensor read failed"
     );
     assert_traces_equal(&rs, &as_);
 }
