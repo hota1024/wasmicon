@@ -1,12 +1,13 @@
-//! ILI9341 の最小ドライバ。初期化列と送信の手順は `apps/README.md` §2 が正。
+//! Minimal ILI9341 driver. The init sequence and the send order follow
+//! apps/README.md §2.
 //!
-//! 全画面フレームバッファは持たない（RP2040 に載らない）。矩形を指定して
-//! 行単位でピクセルを流し込む。
+//! No full-screen frame buffer (it does not fit on RP2040). Pixels are
+//! streamed into a rectangle one row at a time.
 //!
-//! `sensor-display-rs` の同名ファイルの写し。あちらは AssemblyScript 版と
-//! ピクセル単位で一致していることを検査されるので、共有せずに分けてある
-//! （こちらを触ってもあの検査は動かない）。フォントだけ `crate::font` の
-//! 拡張版を見ている。
+//! A copy of the file of the same name in `sensor-display-rs`. That copy is
+//! checked pixel for pixel against the AssemblyScript version, so this one is
+//! kept separate rather than shared (editing this file does not run that
+//! check). Only the font differs: this copy uses the extended `crate::font`.
 
 use wasmicon_hal::gpio::{Level, Pin};
 use wasmicon_hal::spi::Bus;
@@ -17,37 +18,39 @@ use crate::font;
 pub const WIDTH: u16 = 320;
 pub const HEIGHT: u16 = 240;
 
-/// 1 行分のピクセルバッファ（320 px × 2 バイト）。
+/// One row of pixels (320 px x 2 bytes).
 const ROW_BYTES: usize = WIDTH as usize * 2;
 
-/// 文字列描画で一度に送れる最大文字数。
+/// Longest text `draw_text` sends at once.
 pub const MAX_TEXT: usize = 12;
 
-/// 文字列描画のバッファ（幅 MAX_TEXT×8 px × 8 行 × 2 バイト）。
+/// Text buffer (MAX_TEXT x 8 px wide, 8 rows, 2 bytes per pixel).
 const TEXT_BYTES: usize = MAX_TEXT * 8 * 8 * 2;
 
 type Result<T> = core::result::Result<T, ErrorCode>;
 
-/// `start + len` が `limit` に収まるか。**u32 に広げてから足す。**
-/// u16 のまま足すと折り返して、画面外の座標が境界検査を通ってしまう
-/// （リリースビルドの Wasm 算術は wrapping）。
+/// Returns whether `start + len` fits in `limit`. Widens to u32 before adding.
+/// Adding in u16 wraps, and an off-screen coordinate would then pass the
+/// bounds check (Wasm arithmetic in release builds is wrapping).
 ///
-/// すり抜ける入力は `start + len` が 65536..65856 のもの。**結果は 2 つあり、
-/// 入力の範囲が違う**:
+/// The inputs that slip through have `start + len` in 65536..65856. There are
+/// two outcomes, for different input ranges:
 ///
-/// - `fill_rect(65530, 0, 10, 1, c)` → `65530 + 10 == 4` で通り、`window` が
-///   `x0 > x1` の反転した矩形を CASET で送る。バッファは超えない（`n == 20`）
-/// - `fill_rect(65216, 0, 640, 1, c)` → 折り返して 320 で通り、さらに
-///   `n = w * 2 == 1280` が 640 バイトの `row` を超える。**こちらだけが
-///   範囲外書き込みになる**（`w > 320` が要る）
+/// - `fill_rect(65530, 0, 10, 1, c)`: `65530 + 10 == 4` passes, and `window`
+///   sends an inverted rectangle (`x0 > x1`) in CASET. The buffer is not
+///   exceeded (`n == 20`).
+/// - `fill_rect(65216, 0, 640, 1, c)`: wraps to 320 and passes, and then
+///   `n = w * 2 == 1280` exceeds the 640-byte `row`. Only this case is an
+///   out-of-bounds write (it needs `w > 320`).
 ///
-/// `draw_text` は `w <= MAX_TEXT * 8 == 96` なので `buf` を超えられない
-/// （`p` の最大は 1534 < 1536）。反転した矩形を送るところまで。
+/// `draw_text` has `w <= MAX_TEXT * 8 == 96`, so it cannot exceed `buf` (the
+/// largest `p` is 1534 < 1536). It gets as far as sending the inverted
+/// rectangle.
 fn in_bounds(start: u16, len: u16, limit: u16) -> bool {
     u32::from(start) + u32::from(len) <= u32::from(limit)
 }
 
-/// 繋がった ILI9341。
+/// An ILI9341 attached over SPI.
 pub struct Display<'a> {
     spi: &'a Bus,
     cs: &'a Pin,
@@ -78,7 +81,7 @@ impl<'a> Display<'a> {
         self.spi.write(d)
     }
 
-    /// コマンドと引数を 1 回の CS で送る。
+    /// Sends a command and its arguments within one CS assertion.
     fn send(&self, c: u8, args: &[u8]) -> Result<()> {
         self.begin()?;
         self.cmd(c)?;
@@ -88,10 +91,10 @@ impl<'a> Display<'a> {
         self.end()
     }
 
-    /// リセットと初期化列。
+    /// Resets the panel and sends the init sequence.
     ///
     /// # Errors
-    /// GPIO か SPI が失敗したとき。
+    /// If a GPIO or SPI call fails.
     pub fn init(&self, rst: &Pin) -> Result<()> {
         self.cs.write(Level::High)?;
         rst.write(Level::Low)?;
@@ -104,11 +107,11 @@ impl<'a> Display<'a> {
         self.send(0x11, &[])?; // SLPOUT
         time::sleep_ms(120);
         self.send(0x3A, &[0x55])?; // PIXFMT = RGB565
-        self.send(0x36, &[0x28])?; // MADCTL = 横向き
+        self.send(0x36, &[0x28])?; // MADCTL = landscape
         self.send(0x29, &[]) // DISPON
     }
 
-    /// 書き込み先の矩形を決める。
+    /// Sets the rectangle that the next RAMWR writes to.
     fn window(&self, x: u16, y: u16, w: u16, h: u16) -> Result<()> {
         let x1 = x + w - 1;
         let y1 = y + h - 1;
@@ -116,15 +119,16 @@ impl<'a> Display<'a> {
         self.send(0x2B, &[(y >> 8) as u8, y as u8, (y1 >> 8) as u8, y1 as u8])
     }
 
-    /// 矩形を単色で塗る。行単位で送る。
+    /// Fills a rectangle with one color, sending it row by row.
     ///
     /// # Errors
-    /// GPIO か SPI が失敗したとき。
+    /// If a GPIO or SPI call fails.
     pub fn fill_rect(&self, x: u16, y: u16, w: u16, h: u16, color: u16) -> Result<()> {
         if w == 0 || h == 0 {
             return Ok(());
         }
-        // 画面外は描かない（`apps/README.md` §2）。row バッファの範囲外書き込みも防ぐ。
+        // Do not draw off screen (apps/README.md §2). This also keeps the
+        // write within the row buffer.
         if !in_bounds(x, w, WIDTH) || !in_bounds(y, h, HEIGHT) {
             return Err(ErrorCode::InvalidArgument);
         }
@@ -149,15 +153,15 @@ impl<'a> Display<'a> {
         self.end()
     }
 
-    /// 等幅 8×8 で文字列を描く。`MAX_TEXT` 文字まで。
+    /// Draws text in the monospace 8x8 font. Up to `MAX_TEXT` characters.
     ///
     /// # Errors
-    /// GPIO か SPI が失敗したとき。
+    /// If a GPIO or SPI call fails.
     pub fn draw_text(&self, x: u16, y: u16, text: &[u8], fg: u16, bg: u16) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
-        // 黙って切り詰めない（`apps/README.md` §2）。
+        // Never truncate silently (apps/README.md §2).
         if text.len() > MAX_TEXT {
             return Err(ErrorCode::InvalidArgument);
         }
@@ -168,7 +172,7 @@ impl<'a> Display<'a> {
         }
         self.window(x, y, w, 8)?;
 
-        // 8 行ぶんをまとめて組み立てる。行の中は文字ごとに 8 px。
+        // Build all 8 rows at once; within a row each character is 8 px.
         let mut buf = [0u8; TEXT_BYTES];
         let stride = len * 8 * 2;
         let mut row = 0;
@@ -201,20 +205,22 @@ impl<'a> Display<'a> {
 mod tests {
     use super::{HEIGHT, WIDTH, in_bounds};
 
-    /// 折り返しですり抜ける入力（`start + len` が 65536..65856）。
-    /// `apps/README.md` §2 は「`x + w > 320` なら描かずに失敗を返す」と定めている。
+    /// Inputs that slip through by wrapping (`start + len` in 65536..65856).
+    /// apps/README.md §2 says `x + w > 320` must fail without drawing.
     #[test]
     fn wrapping_coordinates_are_rejected() {
-        // 和がちょうど 65536 で、折り返すと 0 になる組み合わせ。
+        // Sums of exactly 65536, which wrap to 0.
         assert!(!in_bounds(65000, 536, WIDTH));
         assert!(!in_bounds(65528, 8, HEIGHT));
-        // 折り返すと 4 になる組み合わせ。
+        // A sum that wraps to 4.
         assert!(!in_bounds(65530, 10, WIDTH));
-        // すり抜ける範囲の上端（65856 → 320）。ここは行バッファも超える。
+        // The top of the range that slips through (65856 -> 320). This one
+        // also overruns the row buffer.
         assert!(!in_bounds(65216, 640, WIDTH));
     }
 
-    /// 折り返さない画面外。元の検査でも弾けていた側。
+    /// Plain off-screen inputs that do not wrap. The original check already
+    /// rejected these.
     #[test]
     fn plain_out_of_range_is_rejected() {
         assert!(!in_bounds(65000, 1000, WIDTH));
@@ -222,8 +228,8 @@ mod tests {
         assert!(!in_bounds(0, HEIGHT + 1, HEIGHT));
     }
 
-    /// 画面ぴったりは通す。`fill_rect(0, 0, WIDTH, HEIGHT, …)` が
-    /// どのアプリでも毎フレーム踏む境界。
+    /// An exact fit passes. `fill_rect(0, 0, WIDTH, HEIGHT, ...)` hits this
+    /// boundary on every frame in every app.
     #[test]
     fn exact_fit_is_allowed() {
         assert!(in_bounds(0, WIDTH, WIDTH));

@@ -1,10 +1,11 @@
-//! ILI9341 の最小ドライバ（初期化と矩形塗りだけ）。
+//! Minimal ILI9341 driver (init and rectangle fills only).
 //!
-//! 初期化の手順は `apps/README.md` §2 と同じ。他の 3 つの写し
-//! （`apps/README.md` §0）と違い、**矩形のピクセルを行ごとではなく、
-//! 1 回の SPI 転送にまとめて送る**（640 バイトずつ）。ライフゲームは毎世代
-//! 何十ものセルを描き直すので、行ごとに `dc` と `spi.write` を呼ぶと
-//! host call が 7 倍になり、トレースを出すビルドでは UART が追いつかない。
+//! The init sequence is the one in apps/README.md §2. Unlike the other three
+//! copies (apps/README.md §0), the pixels of a rectangle are not sent row by
+//! row but in as few SPI transfers as possible (640 bytes each). The game of
+//! life redraws dozens of cells per generation, and calling `dc` and
+//! `spi.write` per row would multiply the host calls by 7, more than the UART
+//! of a tracing build can carry.
 
 use wasmicon_hal::gpio::{Level, Pin};
 use wasmicon_hal::spi::Bus;
@@ -15,12 +16,12 @@ use crate::font;
 pub const WIDTH: u16 = 320;
 pub const HEIGHT: u16 = 240;
 
-/// 1 回に送るピクセルのバッファ（320 px ぶん）。
+/// Pixel buffer for one transfer (320 px).
 const CHUNK: usize = WIDTH as usize * 2;
 
 type Result<T> = core::result::Result<T, ErrorCode>;
 
-/// 繋がった ILI9341。
+/// An ILI9341 attached over SPI.
 pub struct Display<'a> {
     spi: &'a Bus,
     cs: &'a Pin,
@@ -33,7 +34,7 @@ impl<'a> Display<'a> {
         Display { spi, cs, dc }
     }
 
-    /// コマンドと引数を 1 回の CS で送る。
+    /// Sends a command and its arguments within one CS assertion.
     fn send(&self, c: u8, args: &[u8]) -> Result<()> {
         self.cs.write(Level::Low)?;
         self.dc.write(Level::Low)?;
@@ -45,10 +46,10 @@ impl<'a> Display<'a> {
         self.cs.write(Level::High)
     }
 
-    /// リセットと初期化列（`apps/README.md` §2）。
+    /// Resets the panel and sends the init sequence (apps/README.md §2).
     ///
     /// # Errors
-    /// GPIO か SPI が失敗したとき。
+    /// If a GPIO or SPI call fails.
     pub fn init(&self, rst: &Pin) -> Result<()> {
         self.cs.write(Level::High)?;
         rst.write(Level::Low)?;
@@ -60,19 +61,21 @@ impl<'a> Display<'a> {
         self.send(0x11, &[])?; // SLPOUT
         time::sleep_ms(120);
         self.send(0x3A, &[0x55])?; // PIXFMT = RGB565
-        self.send(0x36, &[0x28])?; // MADCTL = 横向き、BGR
+        self.send(0x36, &[0x28])?; // MADCTL = landscape, BGR
         self.send(0x29, &[]) // DISPON
     }
 
-    /// 矩形を単色で塗る。ピクセルは 640 バイトずつまとめて送る。
+    /// Fills a rectangle with one color, sending the pixels 640 bytes at a
+    /// time.
     ///
     /// # Errors
-    /// 画面からはみ出すとき（`invalid-argument`）、GPIO か SPI が失敗したとき。
+    /// If the rectangle leaves the screen (`invalid-argument`), or a GPIO or
+    /// SPI call fails.
     pub fn fill_rect(&self, x: u16, y: u16, w: u16, h: u16, color: u16) -> Result<()> {
         if w == 0 || h == 0 {
             return Ok(());
         }
-        // u32 に広げてから比べる（u16 の和は折り返す。apps/README.md §0）。
+        // Widen to u32 before comparing (a u16 sum wraps; apps/README.md §0).
         if u32::from(x) + u32::from(w) > u32::from(WIDTH)
             || u32::from(y) + u32::from(h) > u32::from(HEIGHT)
         {
@@ -82,8 +85,8 @@ impl<'a> Display<'a> {
         self.send(0x2A, &[(x >> 8) as u8, x as u8, (x1 >> 8) as u8, x1 as u8])?;
         self.send(0x2B, &[(y >> 8) as u8, y as u8, (y1 >> 8) as u8, y1 as u8])?;
 
-        // 要る分だけ埋める。7×7 のセルなら 98 バイトで、640 バイト全部を
-        // 毎回埋めると、それだけで 1 セルに数千命令かかっていた。
+        // Fill only what is needed. A 7x7 cell is 98 bytes; filling all 640
+        // bytes every time cost thousands of instructions per cell.
         let total = usize::from(w) * usize::from(h) * 2;
         let fill = if total < CHUNK { total } else { CHUNK };
         let mut buf = [0u8; CHUNK];
@@ -106,10 +109,12 @@ impl<'a> Display<'a> {
         self.cs.write(Level::High)
     }
 
-    /// 等幅 8×8 で文字列を描く（1 行ずつ送る）。画面 1 行に収まる 40 文字まで。
+    /// Draws text in the monospace 8x8 font, one row per transfer. Up to the
+    /// 40 characters that fit in one screen row.
     ///
     /// # Errors
-    /// 画面からはみ出すとき（`invalid-argument`）、GPIO か SPI が失敗したとき。
+    /// If the text leaves the screen (`invalid-argument`), or a GPIO or SPI
+    /// call fails.
     pub fn draw_text(&self, x: u16, y: u16, text: &[u8], fg: u16, bg: u16) -> Result<()> {
         if text.is_empty() {
             return Ok(());
@@ -142,15 +147,16 @@ impl<'a> Display<'a> {
         self.cs.write(Level::High)
     }
 
-    /// 用意済みのピクセル（RGB565、ビッグエンディアン）を矩形に流し込む。
+    /// Streams prepared pixels (RGB565, big-endian) into a rectangle.
     ///
-    /// **窓の指定と書き込みを 1 回の CS の中で続けて送る**（host call 14 回）。
-    /// ライフゲームのセルのように、同じ絵を何度も描くときに使う。画素を
-    /// 毎回組み立てないので、インタプリタの命令数も減る。
+    /// The window commands and the write go out back to back within one CS
+    /// assertion (14 host calls). Meant for drawing the same image many
+    /// times, such as the cells of the game of life: the pixels are not
+    /// rebuilt each time, which also saves interpreter instructions.
     ///
     /// # Errors
-    /// 画面からはみ出すとき、`pixels` の長さが `w * h * 2` でないとき
-    /// （`invalid-argument`）、GPIO か SPI が失敗したとき。
+    /// If the rectangle leaves the screen or `pixels` is not `w * h * 2`
+    /// bytes long (`invalid-argument`), or a GPIO or SPI call fails.
     pub fn blit(&self, x: u16, y: u16, w: u16, h: u16, pixels: &[u8]) -> Result<()> {
         if w == 0
             || h == 0

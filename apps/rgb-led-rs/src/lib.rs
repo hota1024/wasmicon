@@ -1,47 +1,51 @@
-//! ESP32-C5-WIFI6-KIT の基板の RGB LED（WS2812B）を光らせる。
+//! Lights the on-board RGB LED (WS2812B) of the ESP32-C5-WIFI6-KIT.
 //!
-//! RGB LED は GPIO27 に繋がっていて、esp32c5 のポートは `spi.bus` の
-//! index 1 を「SPI2 の MOSI だけを GPIO27 に出すバス」にしている
-//! （abi-spec §8）。WS2812 は 1 ビットを High の長さで表す（0 = 短い、
-//! 1 = 長い）ので、**1 ビットを SPI の 3 ビットに展開して**送る:
+//! The LED is on GPIO27, and the esp32c5 port maps `spi.bus` index 1 to a
+//! bus that drives only the SPI2 MOSI on GPIO27 (docs/abi-spec.md §8). A
+//! WS2812 encodes each bit as the length of a High pulse (0 = short,
+//! 1 = long), so each bit is expanded to 3 SPI bits:
 //!
 //! ```text
-//! WS2812 の 0 → SPI 100（High 約 0.42 µs、Low 約 0.85 µs）
-//! WS2812 の 1 → SPI 110（High 約 0.85 µs、Low 約 0.42 µs）
+//! WS2812 0 -> SPI 100 (High about 0.42 us, Low about 0.85 us)
+//! WS2812 1 -> SPI 110 (High about 0.85 us, Low about 0.42 us)
 //! ```
 //!
-//! SPI を約 2.4 MHz（1 ビット約 0.42 µs）で回すと、WS2812B のデータシートの
-//! T0H 0.4 µs / T1H 0.8 µs（どちらも ±0.15 µs）に収まる。gpio を host call で
-//! 振るのでは 1 回 10 µs かかるので、この幅は作れない。
+//! At about 2.4 MHz (about 0.42 us per bit) this meets the WS2812B datasheet
+//! timing, T0H 0.4 us / T1H 0.8 us (both +/-0.15 us). Toggling a gpio
+//! through host calls costs about 10 us per call, far too slow for these
+//! pulses.
 //!
-//! 赤・緑・青・白を順に出したあと、色相を回して虹色にし、最後に消す。
+//! Shows red, green, blue and white in turn, then cycles the hue through a
+//! rainbow, then turns the LED off.
 
 #![no_std]
 
 use wasmicon_hal::spi::{Bus, Mode};
 use wasmicon_hal::{log, time};
 
-/// RGB LED に繋がった SPI バス（esp32c5 のポートが決める。abi-spec §8）。
+/// SPI bus wired to the RGB LED (chosen by the esp32c5 port,
+/// docs/abi-spec.md §8).
 const LED_BUS: u32 = 1;
 
-/// SPI のクロック。ポートは要求以下で最も速い値に丸める（2.35〜2.4 MHz）。
+/// SPI clock. The port rounds down to the fastest value it can produce
+/// (2.35-2.4 MHz).
 const SPI_HZ: u32 = 2_400_000;
 
-/// 明るさの上限（0..=255）。WS2812B は全開だと目に痛いので抑える。
+/// Brightness cap (0..=255). A WS2812B at full power is painful to look at.
 const BRIGHTNESS: u8 = 32;
 
-/// 虹色の 1 周の段数と、1 段の時間。
+/// Steps per hue cycle, and the time per step.
 const HUE_STEPS: u32 = 96;
 const STEP_MS: u32 = 20;
 
-/// 虹色を何周するか。
+/// Number of hue cycles.
 const ROUNDS: u32 = 5;
 
-/// 先頭に置く 0 のバイト数。WS2812 は Low が 50 µs 以上続くとリセット
-/// （次の色の受け付け）になる。16 バイト = 128 ビット ≒ 54 µs。
+/// Zero bytes sent first. A Low of 50 us or longer resets the WS2812 so it
+/// accepts the next color; 16 bytes = 128 bits, about 54 us.
 const RESET_BYTES: usize = 16;
 
-/// 1 色（GRB 24 ビット）を SPI の 72 ビットに展開した長さ。
+/// One color (GRB, 24 bits) expanded to 72 SPI bits.
 const COLOR_BYTES: usize = 9;
 
 #[unsafe(no_mangle)]
@@ -49,7 +53,7 @@ pub extern "C" fn run() {
     log::info("rgb-led start");
 
     let Ok(bus) = Bus::open(LED_BUS, SPI_HZ, Mode::Mode0) else {
-        log::error("spi.bus index 1 を開けない（RGB LED は esp32c5 だけ）");
+        log::error("cannot open spi.bus index 1 (the RGB LED exists only on esp32c5)");
         return;
     };
 
@@ -79,21 +83,22 @@ pub extern "C" fn run() {
         round += 1;
     }
 
-    // 消す。WS2812 は最後に受けた色を保つので、送らないと点いたままになる。
+    // Turn it off. A WS2812 keeps the last color it received, so without
+    // this it stays lit.
     let _ = show(&bus, 0, 0, 0);
     log::info("rgb-led done");
-    // bus はここで Drop され、[resource-drop]bus が呼ばれる。
+    // `bus` is dropped here, which calls [resource-drop]bus.
 }
 
-/// 1 色を送る。
+/// Sends one color.
 fn show(bus: &Bus, r: u8, g: u8, b: u8) -> Result<(), ()> {
     let mut frame = [0u8; RESET_BYTES + COLOR_BYTES];
     encode([g, r, b], &mut frame[RESET_BYTES..]);
     bus.write(&frame)
-        .map_err(|_| log::error("spi.write に失敗"))
+        .map_err(|_| log::error("spi.write failed"))
 }
 
-/// GRB の 3 バイトを、WS2812 の 1 ビット = SPI の 3 ビットに展開する（MSB から）。
+/// Expands 3 GRB bytes, MSB first, with one WS2812 bit becoming 3 SPI bits.
 fn encode(grb: [u8; 3], out: &mut [u8]) {
     let mut acc: u32 = 0;
     let mut bits = 0u32;
@@ -110,15 +115,16 @@ fn encode(grb: [u8; 3], out: &mut [u8]) {
                 out[o] = (acc >> bits) as u8;
                 o += 1;
             }
-            // 出し終えた上位ビットを捨てる（あふれさせない）。
+            // Drop the high bits already emitted so the accumulator cannot
+            // overflow.
             acc &= (1 << bits) - 1;
         }
     }
 }
 
-/// 色相（0..HUE_STEPS）を RGB にする。明るさは `BRIGHTNESS` まで。
+/// Converts a hue (0..HUE_STEPS) to RGB, with brightness up to `BRIGHTNESS`.
 fn hue(step: u32) -> (u8, u8, u8) {
-    // 6 区間に分け、区間の中で 1 色を 0 → max か max → 0 に動かす。
+    // Six segments; within each, one channel ramps 0 -> max or max -> 0.
     let seg_len = HUE_STEPS / 6;
     let seg = step / seg_len;
     let pos = step % seg_len;
@@ -136,7 +142,7 @@ fn hue(step: u32) -> (u8, u8, u8) {
     }
 }
 
-/// `no_std` なので自前で用意する。トラップに落とす（docs/handoff.md §3 #4）。
+/// Required because the crate is `no_std`. Traps (docs/decisions.md A-04).
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -149,10 +155,10 @@ mod tests {
 
     #[test]
     fn a_zero_bit_is_100_and_a_one_bit_is_110() {
-        // 0x80 0x00 0x00 → 1 0000000 0...: 110 100 100 100 ...
+        // 0x80 0x00 0x00 -> 1 0000000 0...: 110 100 100 100 ...
         let mut out = [0u8; COLOR_BYTES];
         encode([0x80, 0, 0], &mut out);
-        // 110100100100100100100100 = 0xD2 0x49 0x24、残りは 100 の繰り返し。
+        // 110100100100100100100100 = 0xD2 0x49 0x24; the rest repeats 100.
         assert_eq!(out, [0xD2, 0x49, 0x24, 0x92, 0x49, 0x24, 0x92, 0x49, 0x24]);
         let mut all = [0u8; COLOR_BYTES];
         encode([0xff, 0xff, 0xff], &mut all);

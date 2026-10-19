@@ -1,6 +1,6 @@
 [package]
 name = "bench-rs"
-description = "インタプリタと host call の速さを測る。host でも実機でも同じ .wasm を走らせる"
+description = "Measures interpreter and host-call speed. The same .wasm runs on the host and on hardware"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,20 +1,21 @@
-// SHT4x（SHT40 / SHT41 / SHT45）の読み出し。apps/README.md §1 が正。
+// SHT4x (SHT40 / SHT41 / SHT45) readout. apps/README.md §1 is normative.
 
 import { I2cBus, time } from "../../../bindings/assemblyscript/assembly/index";
 
-/// I2C アドレス。**サフィックスで変わる**（-AD1B が 0x44）ので、
-/// 変えるなら 3 箇所: ここ、`sensor-display-rs` の `ADDRESS`、
-/// `ports/host/tests/apps.rs` の `SHT4X_ADDR`（トレースの期待値）。
+/// I2C address. It depends on the part suffix (-AD1B is 0x44). Changing it
+/// means changing three places: here, `ADDRESS` in `sensor-display-rs`, and
+/// `SHT4X_ADDR` in `ports/host/tests/apps.rs` (the expected trace).
 export const ADDRESS: u16 = 0x44;
 
-/// 計測が終わるまでの待ち時間。SHT4x の高精度は最大 8.3 ms なので余裕がある。
-/// SHT3x のときと同じ 15 ms のまま据え置いている。
+/// Wait for the measurement to finish. The SHT4x high-precision measurement
+/// takes at most 8.3 ms, so 15 ms (kept from the SHT3x days) leaves margin.
 ///
-/// **変えるなら Rust 版と必ず同時に変える。** `time` は abi-spec §9 でトレース
-/// 対象外なので、ここが 2 言語で食い違っても一致検査は気付かない。
+/// Change it together with the Rust version, always. `time` is excluded from
+/// the trace (docs/abi-spec.md §9), so if the two languages disagree here,
+/// the equality check does not notice.
 const MEASURE_MS: u32 = 15;
 
-/// CRC-8。多項式 0x31、初期値 0xFF、反転なし。
+/// CRC-8: polynomial 0x31, initial value 0xFF, no reflection.
 export function crc8(data: Uint8Array, from: i32, len: i32): u8 {
   let crc: u8 = 0xff;
   for (let i = 0; i < len; i++) {
@@ -26,7 +27,8 @@ export function crc8(data: Uint8Array, from: i32, len: i32): u8 {
   return crc;
 }
 
-/// 読み出しの結果。`ok` が false のときは `crcFailed` で理由を分ける。
+/// Readout result. When `ok` is false, `crcFailed` tells the two failures
+/// apart.
 export class Reading {
   ok: bool = false;
   crcFailed: bool = false;
@@ -34,11 +36,12 @@ export class Reading {
   rawH: u16 = 0;
 }
 
-/// 単発計測（高精度）。SHT4x のコマンドは **1 バイト**（SHT3x は 2 バイト）。
+/// Single-shot measurement, high precision. SHT4x commands are one byte
+/// (SHT3x commands are two).
 const MEASURE = new Uint8Array(1);
 const FRAME = new Uint8Array(6);
 
-/// 1 回測って読む。
+/// Takes one measurement and reads it back.
 export function read(bus: I2cBus): Reading {
   const r = new Reading();
   MEASURE[0] = 0xfd;
@@ -56,16 +59,17 @@ export function read(bus: I2cBus): Reading {
   return r;
 }
 
-/// 温度（摂氏 ×100）。固定小数で計算する。
+/// Temperature in centi-degrees Celsius, computed in fixed point.
 export function tempCenti(rawT: u16): i32 {
   return -4500 + (17500 * <i32>rawT) / 65535;
 }
 
-/// 相対湿度（％ ×100）。
+/// Relative humidity in centi-percent.
 ///
-/// SHT4x は `-6 + 125·raw/65535` で、**SHT3x の `100·raw/65535` とは違う**。
-/// 素の式は 0 未満・100 超に振れるのでデータシートどおりクランプする。
-/// Rust 版と同じ順序・同じ整数演算にしてある（apps/README.md §1）。
+/// SHT4x uses `-6 + 125 * raw / 65535`, which differs from the SHT3x
+/// `100 * raw / 65535`. The raw formula can go below 0 and above 100, so it
+/// is clamped as the datasheet says. Same order and same integer arithmetic
+/// as the Rust version (apps/README.md §1).
 export function humidityCenti(rawH: u16): i32 {
   const h = -600 + (12500 * <i32>rawH) / 65535;
   if (h < 0) return 0;

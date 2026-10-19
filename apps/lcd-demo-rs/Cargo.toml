@@ -1,6 +1,6 @@
 [package]
 name = "lcd-demo-rs"
-description = "ILI9341 に絵を出すだけのデモ。センサーは要らない"
+description = "Demo that only draws on an ILI9341. No sensor needed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

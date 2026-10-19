@@ -1,10 +1,7 @@
-# guest 用の workspace（docs/handoff.md §3 #9）。
-# ターゲットが wasm32-unknown-unknown で profile も root と別なので、
-# root workspace には入れない。
-#
-# ここを root にしているのは、cargo の `.cargo/config.toml` が
-# カレントディレクトリ基準で探索されるため。アプリのビルドは
-# `cd apps && cargo build --release -p blink-rs` で行う。
+# Guest workspace (docs/decisions.md A-09). It targets wasm32-unknown-unknown
+# with its own profile, so it is kept out of the root workspace. It is a
+# workspace root because cargo looks up `.cargo/config.toml` from the current
+# directory: build apps from `apps/`.
 [workspace]
 resolver = "3"
 members = ["blink-rs", "sensor-display-rs", "lcd-demo-rs", "life-rs", "bench-rs", "rgb-led-rs", "../bindings/rust"]
@@ -17,7 +14,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 wasmicon-hal = { path = "../bindings/rust" }
 
-# ゲストはサイズが全て。トラップは abort に落とす。
+# Guests are all about size. Traps abort.
 [profile.release]
 opt-level = "z"
 lto = "fat"

@@ -1,13 +1,14 @@
-# wasmicon.toml（docs/app-workflow.md §4.7）。
-# 配線表（[board.<name>.roles]）は deploy が設定スロットに書き、ファームは
-# この表だけで pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
+# App manifest (docs/app-workflow.md §4.7).
+# deploy writes the wiring table ([board.<name>.roles]) to the device's config
+# slot, and the firmware answers pin-by-role from that table alone; it has no
+# built-in table (docs/app-workflow.md §3.9).
 version = 1
 
 [requirements]
 pin-roles = ["led"]
 
-# led は外付け（どのボードもオンボード LED が素の GPIO ではない）。
-# GPIO → 220〜330 Ω → LED → GND。
+# The LED is external: on none of these boards is the on-board LED a plain
+# GPIO. GPIO -> 220-330 Ω resistor -> LED -> GND.
 [board.rp2350.roles]
 led = 15
 
@@ -15,7 +16,8 @@ led = 15
 led = 2
 
 [board.esp32c5.roles]
-# GPIO4 は基板上に 10 kΩ のプルアップがある（入力のとき LED がわずかに光ることがある）。
+# GPIO4 has a 10 kΩ pull-up on the board (the LED may glow faintly while the
+# pin is an input).
 led = 4
 
 [board.rp2040.roles]

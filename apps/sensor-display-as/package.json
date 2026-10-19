@@ -2,7 +2,7 @@
   "name": "sensor-display-as",
   "version": "0.1.0",
   "private": true,
-  "description": "SHT4x を読んで ILI9341 に表示する。sensor-display-rs と同じ出力を出す",
+  "description": "Reads an SHT4x and shows it on an ILI9341. Same output as sensor-display-rs",
   "type": "module",
   "scripts": {
     "build": "asc assembly/index.ts --config asconfig.json --target release"

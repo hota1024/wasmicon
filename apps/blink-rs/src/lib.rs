@@ -1,56 +1,58 @@
-//! Lチカ。Wasmicon の最小ゲスト。
+//! Blink: the smallest Wasmicon guest.
 //!
-//! LED のピン番号は `board.pin-by-role` で引くので、同一の `.wasm` が
-//! ESP32-S3 と RP2040 の両方で動く（abi-spec §8、docs/handoff.md §3 #2）。
+//! The LED pin number comes from `board.pin-by-role`, so the same `.wasm`
+//! runs on both ESP32-S3 and RP2040 (docs/abi-spec.md §8,
+//! docs/app-workflow.md §3.9).
 
 #![no_std]
 
 use wasmicon_hal::gpio::{Level, Pin, PinMode};
 use wasmicon_hal::{board, log, time};
 
-/// 点滅回数。
+/// Number of blinks.
 const BLINKS: u32 = 3;
 
-/// 点灯・消灯の間隔（ミリ秒）。
+/// On and off interval in milliseconds.
 const INTERVAL_MS: u32 = 1;
 
-/// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+/// Entry point. The host calls it once, right after instantiation
+/// (docs/abi-spec.md §3.3).
 #[unsafe(no_mangle)]
 pub extern "C" fn run() {
     log::info("blink start");
 
-    // ピン番号はボードごとに違うので、役割名で引く。
+    // The pin number differs per board, so look it up by role name.
     let Ok(index) = board::pin_by_role("led") else {
-        log::error("led の割り当てが無い");
+        log::error("no pin assigned to role led");
         return;
     };
     let Ok(pin) = Pin::open(index, PinMode::Output) else {
-        log::error("led のピンを開けない");
+        log::error("cannot open led pin");
         return;
     };
 
     let mut i = 0;
     while i < BLINKS {
         if pin.write(Level::High).is_err() {
-            log::error("write に失敗");
+            log::error("write failed");
             return;
         }
         time::sleep_ms(INTERVAL_MS);
         if pin.toggle().is_err() {
-            log::error("toggle に失敗");
+            log::error("toggle failed");
             return;
         }
         time::sleep_ms(INTERVAL_MS);
         i += 1;
     }
-    // pin はここで Drop され、[resource-drop]pin が呼ばれる。
+    // `pin` is dropped here, which calls [resource-drop]pin.
 }
 
-/// `no_std` なので自前で用意する。
-/// トラップに落とし、ホストにログを出させて停止させる（docs/handoff.md §3 #4）。
+/// Required because the crate is `no_std`. Traps so that the host logs the
+/// reason and halts (docs/decisions.md A-04).
 ///
-/// `cfg(not(test))` なのは、`cargo clippy --all-targets` がテストハーネスを
-/// 組むときに std の panic handler と衝突するため。
+/// `cfg(not(test))` because `cargo clippy --all-targets` builds the test
+/// harness, whose std panic handler would clash with this one.
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

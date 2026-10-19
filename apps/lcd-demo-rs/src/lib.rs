@@ -1,30 +1,29 @@
-//! ILI9341 に絵を出すだけのデモ。センサーは要らない。
+//! Demo that only draws on an ILI9341. No sensor needed.
 //!
-//! `sensor-display-rs` は SHT4x を I2C で読むので、センサーを繋がずに
-//! ディスプレイだけ動かすことができない（I2C が開けない時点で戻る）。
-//! こちらは SPI と GPIO しか使わないので、LCD を 1 枚繋ぐだけで動く。
+//! `sensor-display-rs` reads an SHT4x over I2C, so it cannot drive the
+//! display without the sensor attached (it returns as soon as I2C fails to
+//! open). This demo uses only SPI and GPIO, so one LCD is enough.
 //!
-//! 出すものはそれぞれ別の失敗の仕方を見るために選んである:
+//! Each element is chosen to expose a different way of failing:
 //!
-//! - **カラーバー** — 色順（MADCTL の BGR ビット）。赤と青が入れ替わって
-//!   見えたらそこ
-//! - **外周 1 px の枠** — アドレス指定の端。`fill_rect` が画面ぴったり
-//!   （x+w == 320, y+h == 240）を扱えているか
-//! - **グレーのランプ** — RGB565 の詰め方。段が色付いて見えたらビット位置が
-//!   ずれている
-//! - **文字** — `draw_text` の経路
-//! - **動く四角** — `time.sleep-ms` と繰り返しの描画
+//! - Color bars: color order (the BGR bit of MADCTL). If red and blue are
+//!   swapped, this is where it shows.
+//! - A 1 px frame around the screen: the edge of the address window. Checks
+//!   that `fill_rect` handles an exact fit (x+w == 320, y+h == 240).
+//! - A gray ramp: RGB565 packing. Tinted steps mean a bit position is off.
+//! - Text: the `draw_text` path.
+//! - A moving square: `time.sleep-ms` and repeated drawing.
 //!
-//! ピン番号はハードコードせず `board.pin-by-role` で引くので、`lcd-cs` /
-//! `lcd-dc` / `lcd-rst` を持つボードならどれでも同じ `.wasm` が動く
-//! （abi-spec §8）。Pico 2 (W) と ESP32-S3 DevKitC-1 の両方に、この
-//! 同じバイナリを埋め込んで焼く。
+//! Pin numbers are not hard-coded; they come from `board.pin-by-role`, so the
+//! same `.wasm` runs on any board that wires `lcd-cs` / `lcd-dc` / `lcd-rst`
+//! (docs/abi-spec.md §8). The same `.wasm` is deployed to the app slot on
+//! every board (docs/app-workflow.md §3.3).
 //!
-//! **画面に出す `RP2350` / `HELLO PICO 2` はボードによらずそのまま。**
-//! このデモの用途は「同一バイナリが 2 ボードで同じ host call 列を出す」ことの
-//! 確認なので、ボードごとに文字を変えると比べるものが無くなる。変えると
-//! `docs/verification-report.md` §6 に記録したトレース 14,352 行も取り直しになる。
-//! 配線は `apps/lcd-demo-rs/README.md`。
+//! The on-screen `RP2350` / `HELLO PICO 2` stay the same on every board.
+//! The point of this demo is to confirm that one binary produces the same
+//! host-call sequence on two boards; per-board text would leave nothing to
+//! compare. Changing the text also invalidates the traces recorded in
+//! docs/verification-report.md §6. Wiring: `apps/lcd-demo-rs/README.md`.
 
 #![no_std]
 
@@ -37,34 +36,37 @@ use wasmicon_hal::{board, log, time};
 
 use ili9341::{Display, HEIGHT, WIDTH};
 
-/// 背景。
+/// Background.
 const BLACK: u16 = 0x0000;
-/// 文字と枠。
+/// Text and frame.
 const WHITE: u16 = 0xFFFF;
-/// 見出しの帯。
+/// Header band.
 const BAND: u16 = 0x001F;
 
-/// カラーバー。左から赤・橙・黄・緑・シアン・青・マゼンタ・白。
-/// **赤と青が逆に出たら** MADCTL (`0x36`) の BGR ビットを疑う。
+/// Color bars, left to right: red, orange, yellow, green, cyan, blue,
+/// magenta, white. If red and blue come out swapped, suspect the BGR bit of
+/// MADCTL (`0x36`).
 const BARS: [u16; 8] = [
     0xF800, 0xFD20, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xFFFF,
 ];
 
-/// SPI のクロック。
+/// SPI clock.
 ///
-/// `apps/README.md` §2 の 24 MHz より落としてある。こちらは 2 実装の一致を
-/// 見るアプリではないので、ブリングアップで転びにくいほうを取る。
-/// RP2350 (clk_peri 150 MHz) では 15 MHz に丸められる。
+/// Lower than the 24 MHz of apps/README.md §2. This app does not take part in
+/// the two-implementation cross-check, so it takes the value that is less
+/// likely to fail during bring-up. RP2350 (clk_peri 150 MHz) rounds it to
+/// 15 MHz.
 const SPI_HZ: u32 = 16_000_000;
 
-/// 動く四角の 1 往復ぶんのコマ数。
+/// Frames per direction of the moving square (a round trip is twice this).
 const FRAMES: u16 = 16;
 
-/// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+/// Entry point. The host calls it once, right after instantiation
+/// (docs/abi-spec.md §3.3).
 ///
-/// ハンドルは `cs` → `dc` → `rst` → `spi` の順に宣言する。`Drop` は宣言の
-/// 逆順に走るので、どの経路で抜けても `spi` → `rst` → `dc` → `cs` の順で
-/// 解放される（`apps/README.md` §4 と同じ並び）。
+/// The handles are declared in the order `cs`, `dc`, `rst`, `spi`. `Drop`
+/// runs in reverse declaration order, so every exit path releases them as
+/// `spi`, `rst`, `dc`, `cs` (the same order as apps/README.md §4).
 #[unsafe(no_mangle)]
 pub extern "C" fn run() {
     log::info("lcd-demo start");
@@ -102,16 +104,16 @@ pub extern "C" fn run() {
     log::info("lcd-demo done");
 }
 
-/// 画面を組み立てる。失敗したら途中で止めて呼び出し元に返す。
+/// Draws the screen. Stops at the first failure and returns it.
 fn draw(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
     d.fill_rect(0, 0, WIDTH, HEIGHT, BLACK)?;
 
-    // 見出しの帯。
+    // Header band.
     d.fill_rect(0, 0, WIDTH, 32, BAND)?;
     d.draw_text(8, 12, b"WASMICON", WHITE, BAND)?;
     d.draw_text(232, 12, b"RP2350", WHITE, BAND)?;
 
-    // カラーバー。8 本 × 40 px でちょうど 320 px。
+    // Color bars: 8 x 40 px is exactly 320 px.
     let bar_w = WIDTH / BARS.len() as u16;
     let mut i = 0u16;
     while (i as usize) < BARS.len() {
@@ -120,8 +122,8 @@ fn draw(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
     }
     d.draw_text(8, 104, b"RGB565 BARS", WHITE, BLACK)?;
 
-    // グレーのランプ。16 段 × 20 px。R と B は 5 bit、G は 6 bit なので、
-    // 同じ明るさにするには段の値を別々に伸ばす必要がある。
+    // Gray ramp: 16 steps x 20 px. R and B have 5 bits, G has 6, so each
+    // channel is scaled separately to get the same brightness.
     let step_w = WIDTH / 16;
     let mut s = 0u16;
     while s < 16 {
@@ -136,8 +138,8 @@ fn draw(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
     d.draw_text(8, 208, b"HELLO PICO 2", WHITE, BLACK)?;
     d.draw_text(8, 224, b"ILI9341 SPI", WHITE, BLACK)?;
 
-    // 外周の枠。画面ぴったりの矩形を 4 つ置く。`fill_rect` は
-    // `x + w > 320` を失敗にするので、ここが通れば端の扱いは合っている。
+    // Frame: four rectangles that fit the screen exactly. `fill_rect` fails
+    // on `x + w > 320`, so if these pass, the edge handling is right.
     d.fill_rect(0, 0, WIDTH, 1, WHITE)?;
     d.fill_rect(0, HEIGHT - 1, WIDTH, 1, WHITE)?;
     d.fill_rect(0, 0, 1, HEIGHT, WHITE)?;
@@ -146,19 +148,21 @@ fn draw(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
     sweep(d)
 }
 
-/// 16 px の四角を左右に 1 往復させる。
+/// Moves a 16 px square right and back once.
 ///
-/// 毎コマ、前の位置を背景色で消してから次の位置を塗る。全画面の
-/// フレームバッファは持てないので、動かすのはこの 2 つの矩形だけ。
+/// Each frame erases the previous position with the background color and
+/// then paints the next one. There is no full-screen frame buffer, so these
+/// two rectangles are all that moves.
 fn sweep(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
-    /// 四角の一辺。
+    /// Side of the square.
     const SIZE: u16 = 16;
-    /// 走る帯の上端。カラーバーとテキストの間の空き。
+    /// Top of the track: the gap between the color bars and the text.
     const TRACK_Y: u16 = 176;
-    /// 左端と 1 コマの移動量。右端は `8 + 16 * 18 + 16 = 312` で枠に当たらない。
+    /// Left end and the step per frame. The right end is
+    /// `8 + 16 * 18 + 16 = 312`, clear of the frame.
     const X0: u16 = 8;
     const STEP: u16 = 18;
-    /// 四角の色（緑）。
+    /// Square color (green).
     const BOX: u16 = 0x07E0;
 
     let mut prev = X0;
@@ -166,7 +170,8 @@ fn sweep(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
 
     let mut n = 0u16;
     while n < FRAMES * 2 {
-        // 前半は右へ、後半は左へ。往復して元の位置に戻る。
+        // Right for the first half, left for the second; ends where it
+        // started.
         let i = if n < FRAMES {
             n + 1
         } else {
@@ -183,7 +188,7 @@ fn sweep(d: &Display<'_>) -> Result<(), wasmicon_hal::ErrorCode> {
     Ok(())
 }
 
-/// `no_std` なので自前で用意する（docs/handoff.md §3 #4）。
+/// Required because the crate is `no_std` (docs/decisions.md A-04).
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

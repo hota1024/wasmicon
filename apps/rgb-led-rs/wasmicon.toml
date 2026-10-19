@@ -1,7 +1,7 @@
-# wasmicon.toml（docs/app-workflow.md §4.7）。
-# ピンは使わない（役割名を引かない）。RGB LED は esp32c5 の spi.bus index 1 に
-# 繋がっている（abi-spec §8）。他のボードでは spi.bus index 1 が unsupported なので、
-# 理由をログに出して終わる。
+# App manifest (docs/app-workflow.md §4.7).
+# Uses no pins (looks up no role). The RGB LED hangs off spi.bus index 1 of
+# esp32c5 (docs/abi-spec.md §8). On the other boards spi.bus index 1 is
+# unsupported, so the app logs the reason and exits.
 version = 1
 
 [defaults]

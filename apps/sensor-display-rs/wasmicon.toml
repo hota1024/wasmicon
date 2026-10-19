@@ -1,14 +1,15 @@
-# wasmicon.toml（docs/app-workflow.md §4.7）。
-# 配線表（[board.<name>.roles]）は deploy が設定スロットに書き、ファームは
-# この表だけで pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
-# 配線の図は apps/lcd-demo-rs/README.md。
+# App manifest (docs/app-workflow.md §4.7).
+# deploy writes the wiring table ([board.<name>.roles]) to the device's config
+# slot, and the firmware answers pin-by-role from that table alone; it has no
+# built-in table (docs/app-workflow.md §3.9).
+# Wiring diagram: apps/lcd-demo-rs/README.md.
 version = 1
 
 [requirements]
 pin-roles = ["lcd-cs", "lcd-dc", "lcd-rst"]
 
 [defaults]
-# センサーは host に無いので、記録済みの応答を流す（run / check の既定）。
+# The host has no sensor, so run / check replay a recorded response by default.
 i2c-replay = "../../verify/sht4x-replay.txt"
 
 [board.rp2350.roles]

@@ -1,24 +1,25 @@
-//! インタプリタと host call の速さを測るベンチマーク。
+//! Benchmark of the interpreter and of host calls.
 //!
-//! **同じ `.wasm` を host でも実機でも走らせ**、同じ物差しで比べる
-//! （`wasmicon run` / `wasmicon deploy --monitor`）。結果は 1 項目 1 行で
-//! ログに出す:
+//! The same `.wasm` runs on the host and on hardware (`wasmicon run` /
+//! `wasmicon deploy --monitor`), so both are measured with the same
+//! yardstick. Each item logs one line:
 //!
 //! ```text
-//! bench name=loop iters=1000000 us=…
+//! bench name=loop iters=1000000 us=...
 //! ```
 //!
-//! 計算の項目は `core::hint::black_box` で結果を使い、最適化で消えないようにする。
-//! host call の項目は呼び出し 1 回あたりの時間を見るためのもので、`time.now-us`
-//! （いちばん軽い）、`gpio.write`、`spi.write`（1 バイトと 98 バイト）を回す。
-//! 時間を測る `time.now-us` 自体の呼び出し（項目ごとに 2 回）は誤差として無視する。
+//! The compute items pass their result through `core::hint::black_box` so
+//! the optimizer cannot remove them. The host-call items measure the cost of
+//! one call: `time.now-us` (the lightest), `gpio.write`, and `spi.write` with
+//! 1 byte and with 98 bytes. The two `time.now-us` calls that time each item
+//! are ignored as noise.
 //!
-//! 全項目を `ROUNDS` 周し（周の頭に `bench round=N`）、走り終えると `bench done` を
-//! 出して `run` から戻る。
+//! All items run `ROUNDS` times (each round starts with `bench round=N`);
+//! when done it logs `bench done` and returns from `run`.
 
 #![no_std]
 
-// life-rs の盤面の計算をそのまま使う（写しを作らない）。使わないメソッドもある。
+// Reuse the board code of life-rs as is (no copy). Some methods go unused.
 #[allow(dead_code)]
 #[path = "../../life-rs/src/life.rs"]
 mod life;
@@ -29,25 +30,25 @@ use wasmicon_hal::gpio::{Level, Pin, PinMode};
 use wasmicon_hal::spi::{Bus as SpiBus, Mode};
 use wasmicon_hal::{board, log, time};
 
-/// 整数ループ（命令の振り分けの速さ）。
+/// Integer loop (instruction dispatch speed).
 const LOOP_ITERS: u32 = 1_000_000;
-/// 再帰の fib（関数呼び出しと分岐）。
+/// Recursive fib (calls and branches).
 const FIB_N: u32 = 24;
-/// エラトステネスのふるい（メモリの読み書き）。配列はゲストのスタック
-/// （8 KiB）に置くので、それより十分小さくする。
+/// Sieve of Eratosthenes (memory loads and stores). The array lives on the
+/// guest stack (8 KiB), so keep it well below that.
 const SIEVE_LEN: usize = 2048;
 const SIEVE_ROUNDS: u32 = 40;
-/// ライフゲームの世代の計算（life-rs と同じコード）。
+/// Game of life generations (the same code as life-rs).
 const LIFE_GENS: u32 = 200;
-/// host call の回数。
+/// Host calls per item.
 const CALLS: u32 = 1000;
-/// 計測を何周するか（ばらつきを見るため）。
+/// Rounds of the whole suite (to see the spread).
 const ROUNDS: u32 = 2;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run() {
     log::info("bench start");
-    // 2 周して、ばらつきの幅も見られるようにする。
+    // Two rounds, so the spread is visible too.
     for round in 0..ROUNDS {
         let mut l = Line::new();
         l.s("bench round=").n(u64::from(round));
@@ -57,7 +58,7 @@ pub extern "C" fn run() {
     log::info("bench done");
 }
 
-/// 1 周分の計測。
+/// One round of measurements.
 fn suite() {
     measure("loop", LOOP_ITERS, || {
         let mut x: u32 = 1;
@@ -142,7 +143,7 @@ fn fib(n: u32) -> u32 {
     }
 }
 
-/// `f` を 1 回走らせて時間を測り、1 行出す。
+/// Runs `f` once, times it and logs one line.
 fn measure(name: &str, iters: u32, f: impl FnOnce()) {
     let t0 = time::now_us();
     f();
@@ -157,7 +158,7 @@ fn measure(name: &str, iters: u32, f: impl FnOnce()) {
     log::info(l.as_str());
 }
 
-/// 短い ASCII の行を組む（`core::fmt` を使わない）。
+/// Builds a short ASCII line without `core::fmt`.
 struct Line {
     buf: [u8; 96],
     n: usize,

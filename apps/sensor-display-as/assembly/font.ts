@@ -1,7 +1,7 @@
-// 8×8 のビットマップフォント。apps/README.md §3 が正。
-// Rust 版（apps/sensor-display-rs/src/font.rs）と同じ表でなければならない。
+// 8x8 bitmap font. apps/README.md §3 is normative.
+// Must be the same table as the Rust version (apps/sensor-display-rs/src/font.rs).
 
-/// 1 バイト = 1 行、ビット 7 が左端。31 字形 × 8 行。
+/// One byte per row, bit 7 is the leftmost pixel. 31 glyphs x 8 rows.
 export const GLYPHS: StaticArray<u8> = [
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ' '
   0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x00, 0x00, // '-'
@@ -36,7 +36,8 @@ export const GLYPHS: StaticArray<u8> = [
   0x66, 0x66, 0x66, 0x3c, 0x18, 0x18, 0x18, 0x00, // 'Y'
 ];
 
-/// 文字から字形の番号へ。対応していない文字は空白。
+/// Maps a character to its glyph index. Unsupported characters map to the
+/// space.
 export function indexOf(c: u8): i32 {
   if (c == 0x2d) return 1; // '-'
   if (c == 0x2e) return 2; // '.'

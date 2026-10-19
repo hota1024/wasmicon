@@ -1,187 +1,205 @@
-# サンプルアプリ共通仕様
+# Shared spec of the sample apps
 
-`sensor-display-rs`（Rust）と `sensor-display-as`（AssemblyScript）は
-**同じ host call 列と同じピクセル出力**を出さなければならない（docs/handoff.md §5 Phase 5）。
-そのために描画の詳細をここで固定する。片方を変えたらもう片方も変える。
+`sensor-display-rs` (Rust) and `sensor-display-as` (AssemblyScript) must
+produce the same host-call sequence and the same pixel output. This document
+fixes the drawing details so that they do. Change both when you change one.
 
-検査は `ports/host/tests/apps.rs`。両者のトレースを突き合わせるので、
-`spi.write` の CRC-32 が食い違えば落ちる。
+The check is `ports/host/tests/apps.rs`. It cross-checks the two traces, so a
+difference in the CRC-32 of any `spi.write` fails it.
 
-## 0. ILI9341 ドライバは 3 箇所にある
+## 0. The ILI9341 driver exists in three places
 
-**`ili9341.rs` / `ili9341.ts` の写しが 3 つある。片方を直したら残り 2 つも見る。**
+There are three copies of `ili9341.rs` / `ili9341.ts`. When you fix one, look
+at the other two.
 
-| ファイル | 検査 |
+| File | Check |
 |---|---|
-| `apps/sensor-display-rs/src/ili9341.rs` | AS 版とトレースを突き合わせられる |
-| `apps/sensor-display-as/assembly/ili9341.ts` | 同上 |
-| `apps/lcd-demo-rs/src/ili9341.rs` | **自動検査が無い**（このアプリは AS 版を持たない） |
+| `apps/sensor-display-rs/src/ili9341.rs` | Trace cross-check against the AS version |
+| `apps/sensor-display-as/assembly/ili9341.ts` | Trace cross-check against the Rust version |
+| `apps/lcd-demo-rs/src/ili9341.rs` | No automated check (this app has no AS version) |
 
-`apps/life-rs/src/ili9341.rs` は**写しではない別の最小ドライバ**（初期化・矩形塗り・
-`blit`・`draw_text` だけ）。初期化列は §2 と同じだが、画素を 1 回の SPI 転送に
-まとめて送るので、送り方は §2 と違う（ライフゲームは毎世代何十ものセルを描き直すため）。
-初期化列を直すときは、ここも見る。
+`apps/life-rs/src/ili9341.rs` is not a copy but a separate minimal driver
+(init, rectangle fill, `blit` and `draw_text` only). Its init sequence is the
+one in §2, but it sends the pixels of a rectangle in as few SPI transfers as
+possible, so the send order differs from §2 (the game of life redraws dozens
+of cells per generation). When you fix the init sequence, look here too.
 
-**Rust の 2 つは 2026-10-05 から `draw_text` が違う。** `sensor-display` は
-倍率付き（下の §2）、`lcd-demo-rs` は 8×8 等倍・12 文字までのまま。
-`lcd-demo-rs` は 14,352 行のトレースと `.wasm` の SHA-256 を
-`docs/verification-report.md` §6 / §7 に記録してあり、触ると取り直しになるので
-揃えていない。**境界検査・初期化列・`fill_rect` は今も同一**なので、そこを
-直すときは 3 つとも見る。
-`lcd-demo-rs` は自動で守られないので、**直し忘れが起きるのはここ**。実際に
-起きた: 境界検査の u16 折り返しを `321fe3d` で `lcd-demo-rs` だけ直し、
-`sensor-display` の 2 つに残っていた（2026-09-28 に揃え直した。
-`docs/TODO.md` §2.1 に重複を解消するかの項目がある）。
+The two Rust copies have had different `draw_text` since 2026-10-05:
+`sensor-display` has the scaled version (§2 below); `lcd-demo-rs` keeps the
+unscaled 8x8, 12-character version. `lcd-demo-rs` has a 14,352-line trace and
+the SHA-256 of its `.wasm` recorded in docs/verification-report.md §6 / §7,
+and touching it would mean re-recording them, so the two were not aligned.
+The bounds check, the init sequence and `fill_rect` are still identical, so
+when you fix those, look at all three.
+`lcd-demo-rs` has no automated guard, so this is where a fix gets forgotten.
+It has happened: the u16 wrap in the bounds check was fixed in `321fe3d` for
+`lcd-demo-rs` only and stayed in the two `sensor-display` copies (aligned on
+2026-09-28; docs/TODO.md §2.1 has an item on removing the duplication).
 
-## 1. センサー: SHT4x（SHT40 / SHT41 / SHT45）
+## 1. Sensor: SHT4x (SHT40 / SHT41 / SHT45)
 
-- I2C バス index 0、`standard`（100 kHz）、アドレス `0x44`
-  - **サフィックスで変わる**（-AD1B が 0x44）。別の品種を挿すなら Rust 版と AS 版の
-    `ADDRESS` 2 箇所を直す
-- 単発計測コマンド `0xFD`（高精度）を書く。**1 バイト**（SHT3x の `0x2400` は 2 バイト）
-- **15 ms 待つ**（`time.sleep-ms(15)`）。SHT4x の高精度は最大 8.3 ms なので余裕を見た値
-- 6 バイト読む: `T MSB, T LSB, CRC, RH MSB, RH LSB, CRC`（SHT3x と同一）
-- CRC-8 をゲストで検証する。多項式 `0x31`、初期値 `0xFF`、反転なし（SHT3x と同一）
-  - 2 バイトずつ検証する。合わなければ値を表示せず、§4 の `sensor crc failed` を出す
+- I2C bus index 0, `standard` (100 kHz), address `0x44`
+  - The address depends on the part suffix (-AD1B is 0x44). For another
+    variant, change `ADDRESS` in both the Rust and the AS version
+- Write the single-shot measurement command `0xFD` (high precision). It is
+  one byte (the SHT3x `0x2400` is two)
+- Wait 15 ms (`time.sleep-ms(15)`). The SHT4x high-precision measurement
+  takes at most 8.3 ms, so this leaves margin
+- Read 6 bytes: `T MSB, T LSB, CRC, RH MSB, RH LSB, CRC` (same as SHT3x)
+- The guest checks the CRC-8: polynomial `0x31`, initial value `0xFF`, no
+  reflection (same as SHT3x)
+  - Each 2-byte value is checked. On a mismatch, show no value and log
+    `sensor crc failed` from §4
 
-### 換算（固定小数）
+### Conversion (fixed point)
 
-浮動小数は使わない。`×100` の整数（centi 単位）で持つ。
+No floating point. Values are integers scaled by 100 (centi units).
 
 ```
 temp_centi     = -4500 + (17500 * raw_t) / 65535
-humidity_centi =  -600 + (12500 * raw_h) / 65535   → 0..10000 にクランプ
+humidity_centi =  -600 + (12500 * raw_h) / 65535   -> clamped to 0..10000
 ```
 
-**温度は SHT3x と同じ式**。湿度だけが違う（SHT3x は `(10000 * raw_h) / 65535`）。
-素の式は 0 未満・100 超に振れるのでデータシートどおりクランプする。
-`17500 * 65535 = 1_146_862_500` も `12500 * 65535 = 819_187_500` も i32 に収まる。
-除算は切り捨て（両言語で同じ）。**クランプは整数のまま行う**ので、f32 を使うのは
-下の温度バーだけという性質は変わらない。
+The temperature formula is the same as SHT3x. Only humidity differs (SHT3x:
+`(10000 * raw_h) / 65535`). The raw formula can go below 0 and above 100, so
+it is clamped as the datasheet says. Both `17500 * 65535 = 1_146_862_500` and
+`12500 * 65535 = 819_187_500` fit in i32. Division truncates (the same in
+both languages). The clamp is done in integers, so it stays true that the
+only f32 use is the temperature bar below.
 
-### 例外: 浮動小数を 1 箇所だけ使う
+### Exception: one place uses floating point
 
-決定性検証の題材として、**温度バーの長さだけ** f32 で計算する（docs/handoff.md §5 Phase 5）。
+As a determinism test case, the length of the temperature bar, and only
+that, is computed in f32.
 
 ```
 t      = f32(temp_centi) / 100.0
 b      = (t + 45.0) * 1.4
-b      = 0.0 より小さければ 0.0、308.0 より大きければ 308.0 に丸める
+b      = clamped: below 0.0 becomes 0.0, above 308.0 becomes 308.0
 bar_px = i32(b)
 ```
 
-`f32` の除算・加算・乗算と `i32` への切り捨てが両ボードで一致することを見る。
+This checks that f32 division, addition and multiplication and the
+truncation to `i32` agree on both boards.
 
-**クランプは f32 のまま行い、変換は必ず範囲内で行う。** Rust の `as` は
-`i32.trunc_sat_f32_s`、AssemblyScript の `<i32>` は `i32.trunc_f32_s` に落ちる
-ことがあり、範囲外だと片方が飽和・片方がトラップして挙動が分かれるため。
+The clamp is done in f32, so the conversion always sees an in-range value.
+Rust's `as` lowers to `i32.trunc_sat_f32_s` and AssemblyScript's `<i32>` may
+lower to `i32.trunc_f32_s`; out of range, one would saturate and the other
+would trap.
 
-## 2. ディスプレイ: ILI9341
+## 2. Display: ILI9341
 
-- SPI バス index 0、24 MHz、`mode0`
-- CS / DC / RST は `gpio` で制御する（abi-spec §2 の設計）。ピン番号は
-  `board.pin-by-role` で `lcd-cs` / `lcd-dc` / `lcd-rst` を引く
-- 画面は 320×240、色は RGB565（ビッグエンディアンで送る: 上位バイト先）
+- SPI bus index 0, 24 MHz, `mode0`
+- CS / DC / RST are driven through `gpio` (docs/decisions.md D-08). The pin
+  numbers come from `board.pin-by-role` for `lcd-cs` / `lcd-dc` / `lcd-rst`
+- The screen is 320x240, colors are RGB565 (sent big-endian: high byte first)
 
-### 初期化列
+### Init sequence
 
-`rst` を low にして 10 ms、high にして 120 ms 待ってから、次のコマンドを順に送る。
+Pull `rst` low for 10 ms, then high and wait 120 ms, then send these commands
+in order.
 
-| コマンド | 引数 | 意味 |
+| Command | Arguments | Meaning |
 |---|---|---|
-| `0x01` | なし | SWRESET。送ってから 120 ms 待つ |
-| `0x11` | なし | SLPOUT。送ってから 120 ms 待つ |
+| `0x01` | none | SWRESET. Wait 120 ms after sending |
+| `0x11` | none | SLPOUT. Wait 120 ms after sending |
 | `0x3A` | `0x55` | PIXFMT = RGB565 |
-| `0x36` | `0x28` | MADCTL = 横向き（320×240）。BGR ビットを立てる（下記） |
-| `0x29` | なし | DISPON |
+| `0x36` | `0x28` | MADCTL = landscape (320x240), with the BGR bit set (see below) |
+| `0x29` | none | DISPON |
 
-`0x28` は `0b0010_1000` で、MV（行と列の入れ替え = 横向き）と **BGR（bit 3）** が
-立っている。ビット名は BGR だが、**ゲストは RGB565 をそのまま送ればよい**。
-ILI9341 のモジュールはパネル側のサブピクセルが BGR 並びのものが多く、この
-ビットを立てて揃えるためで、2026-09-26 に Pico 2 W 実機で `0xF800` が赤で
-出ることを確認した（`docs/verification-report.md` §6）。
-**赤と青が入れ替わって見えたらこのビット**を疑う。
+`0x28` is `0b0010_1000`: MV (swap rows and columns, that is landscape) and
+BGR (bit 3) are set. Despite the bit's name, the guest sends plain RGB565.
+Most ILI9341 modules have panels whose subpixels are in BGR order, and this
+bit compensates for that; `0xF800` was verified to show as red on a Pico 2 W
+on 2026-09-26 (docs/verification-report.md §6). If red and blue appear
+swapped, suspect this bit.
 
-1 回のコマンドは次の順に送る。`cs` を low にしてから、コマンドを `dc` low で
-1 バイト、引数とピクセルを `dc` high で送り、最後に `cs` を high に戻す。
-ピクセルが複数行になる場合も 1 回の `cs` low の中で続けて送る。
+One command is sent in this order: pull `cs` low, send the command byte with
+`dc` low, send the arguments and pixels with `dc` high, then return `cs` to
+high. Pixels that span several rows are also sent within one `cs` low.
 
-### 描画プリミティブ
+### Drawing primitives
 
-2 つだけ。どちらも「矩形を指定してピクセルを流し込む」形。
+Only two, and both have the shape "select a rectangle, stream pixels into it".
 
 ```
 fill_rect(x, y, w, h, color)
-draw_text(x, y, text, scale, fg, bg)   -- 8×8 のビットマップフォント、等幅、scale 倍
+draw_text(x, y, text, scale, fg, bg)   -- 8x8 bitmap font, monospace, scaled by scale
 ```
 
-矩形の指定は CASET (`0x2A`) → PASET (`0x2B`) → RAMWR (`0x2C`) の順。
-CASET / PASET の引数は 4 バイト（`x0` の上位・下位、`x1` の上位・下位）。
+The rectangle is selected with CASET (`0x2A`), then PASET (`0x2B`), then
+RAMWR (`0x2C`). CASET / PASET take 4 bytes (high and low byte of `x0`, high
+and low byte of `x1`).
 
-ピクセルは**行単位**で送る。1 行分のバッファは 320×2 = 640 バイト。
-全画面フレームバッファは持たない（RP2040 に載らない）。
+Pixels are sent row by row. One row is 320 x 2 = 640 bytes of buffer. There
+is no full-screen frame buffer (it does not fit on RP2040).
 
-文字列は `scale` 倍に拡大して描く（各ドットを `scale`×`scale` の正方形にする）。
-矩形は幅 `文字数 × 8 × scale`、高さ `8 × scale`。フォントの 1 行ごとに、拡大した
-1 ピクセル行を組み立てて**同じ行を `scale` 回** `spi.write` する（1 回の
-`cs` low の中で、フォントの 8 行 × `scale` 回 = `8 × scale` 回）。バッファは
-画面 1 行ぶんの 640 バイトで足りる（ゲストのシャドースタックは 8 KiB）。
+Text is drawn scaled by `scale` (each dot becomes a `scale` x `scale`
+square). The rectangle is `characters x 8 x scale` wide and `8 x scale` high.
+For each font row, build one scaled pixel row and `spi.write` the same row
+`scale` times (within one `cs` low: 8 font rows x `scale` = `8 x scale`
+writes). One screen row of 640 bytes is enough buffer (the guest shadow stack
+is 8 KiB).
 
-境界の扱い（両言語で同じ）:
+Bounds (the same in both languages):
 
-- `fill_rect` は `x + w > 320` または `y + h > 240` なら描かずに失敗を返す
-- `draw_text` は 40 文字を超えたら、または `scale == 0` なら描かずに失敗を返す
-  （黙って切り詰めない）。幅・高さは **u16 に落とす前に**画面と比べる
-- どちらも `w == 0` / `h == 0` / 空文字列は成功として何もしない
+- `fill_rect` fails without drawing if `x + w > 320` or `y + h > 240`
+- `draw_text` fails without drawing if the text is longer than 40 characters
+  or `scale == 0` (never truncate silently). Width and height are compared
+  with the screen before narrowing to u16
+- Both succeed and do nothing for `w == 0` / `h == 0` / an empty string
 
-### 色
+### Colors
 
-| 用途 | RGB565 |
+| Use | RGB565 |
 |---|---|
-| 背景 | `0x0841` |
-| 見出しの帯 | `0x1A3F` |
-| カードの地 | `0x2104` |
-| 数値・見出しの文字 | `0xFFFF` |
-| ラベル・目盛り | `0xA514` |
-| 温度カードの差し色 | `0xFC00` |
-| 湿度カードの差し色 | `0x07FF` |
-| ゲージの溝 | `0x4208` |
+| Background | `0x0841` |
+| Header band | `0x1A3F` |
+| Card background | `0x2104` |
+| Value and header text | `0xFFFF` |
+| Labels and tick marks | `0xA514` |
+| Temperature card accent | `0xFC00` |
+| Humidity card accent | `0x07FF` |
+| Gauge track | `0x4208` |
 
-ゲージの塗りは `bar_px` 上の区間で色を変える:
+The gauge fill changes color by zone on the `bar_px` axis:
 
-| 区間（`bar_px`） | 温度 | RGB565 |
+| Zone (`bar_px`) | Temperature | RGB565 |
 |---|---|---|
 | 0..77 | -45..10 °C | `0x041F` |
 | 77..105 | 10..30 °C | `0x07E0` |
 | 105..133 | 30..50 °C | `0xFFE0` |
 | 133..308 | 50..175 °C | `0xF800` |
 
-### 画面レイアウト
+### Screen layout
 
-**上から順に**この順で描く。センサーを読む前に枠（1〜5）を描き、
-読めたら値（6〜7）を描く。読めなければ枠だけ残る。
+Drawn top to bottom in this order. The frame (1-5) is drawn before the sensor
+is read; the values (6-7) are drawn once the reading succeeds. If the reading
+fails, only the frame remains.
 
-| # | 要素 | 呼び出し |
+| # | Element | Calls |
 |---|---|---|
-| 1 | 背景 | `fill_rect(0, 0, 320, 240, 背景)` |
-| 2 | 見出し | `fill_rect(0, 0, 320, 28, 帯)`、`draw_text(8, 6, "WASMICON", 2, 文字, 帯)`、`draw_text(272, 10, "SHT40", 1, 文字, 帯)` |
-| 3 | カード（温度、`x = 4`） | 下の「カード」。ラベル `TEMP`、単位 `C`、温度の差し色 |
-| 4 | カード（湿度、`x = 162`） | 同。ラベル `HUMIDITY`、単位 `%`、湿度の差し色 |
-| 5 | ゲージの枠 | `fill_rect(4, 162, 312, 72, カード)`、`fill_rect(6, 178, 308, 16, 溝)`、目盛り `fill_rect(6 + t, 196, 1, 5, ラベル)` を `t = 63, 98, 133, 203` の順（0 / 25 / 50 / 100 °C）、目盛りの文字 `draw_text(x, 206, s, 1, ラベル, カード)` を `(6, "-45")`、`(65, "0")`、`(131, "50")`、`(197, "100")`、`(282, "175C")` の順 |
-| 6 | 数値 | 温度、湿度の順に、カードの横中央へ `draw_text(x + (154 - 文字数 × 24) / 2, 84, 値, 3, 文字, カード)` |
-| 7 | ゲージの塗り | 上の区間を順に見て、`bar_px > 区間の始端` なら `fill_rect(6 + 始端, 178, min(bar_px, 区間の終端) - 始端, 16, 区間の色)`。`bar_px` が 0 なら何も描かない |
+| 1 | Background | `fill_rect(0, 0, 320, 240, background)` |
+| 2 | Header | `fill_rect(0, 0, 320, 28, band)`, `draw_text(8, 6, "WASMICON", 2, text, band)`, `draw_text(272, 10, "SHT40", 1, text, band)` |
+| 3 | Card (temperature, `x = 4`) | "One card" below. Label `TEMP`, unit `C`, temperature accent |
+| 4 | Card (humidity, `x = 162`) | "One card" below. Label `HUMIDITY`, unit `%`, humidity accent |
+| 5 | Gauge frame | `fill_rect(4, 162, 312, 72, card)`, `fill_rect(6, 178, 308, 16, track)`, tick marks `fill_rect(6 + t, 196, 1, 5, label)` for `t = 63, 98, 133, 203` in that order (0 / 25 / 50 / 100 °C), tick labels `draw_text(x, 206, s, 1, label, card)` for `(6, "-45")`, `(65, "0")`, `(131, "50")`, `(197, "100")`, `(282, "175C")` in that order |
+| 6 | Values | Temperature, then humidity, centered in the card: `draw_text(x + (154 - characters x 24) / 2, 84, value, 3, text, card)` |
+| 7 | Gauge fill | For each zone above, in order: if `bar_px > zone start`, `fill_rect(6 + start, 178, min(bar_px, zone end) - start, 16, zone color)`. If `bar_px` is 0, nothing is drawn |
 
-カード 1 枚は `fill_rect(x, 36, 154, 116, カード)`、`fill_rect(x, 36, 154, 4, 差し色)`、
-`draw_text(x + 8, 48, ラベル, 1, ラベル色, カード)`、`draw_text(x + 130, 46, 単位, 2, 差し色, カード)` の順。
+One card is `fill_rect(x, 36, 154, 116, card)`, `fill_rect(x, 36, 154, 4, accent)`,
+`draw_text(x + 8, 48, label, 1, label color, card)`, `draw_text(x + 130, 46, unit, 2, accent, card)`, in that order.
 
-数値の整形は「centi 値 → 符号 + 整数部 + `.` + 小数 2 桁」（ラベルと単位は付けない）。
-整数部は 0 埋めしない。負の値は先頭に `-` を付ける（小数部は絶対値）。
-最長は `-45.00` / `130.00` / `100.00` の 6 文字（144 px）で、カードの幅 154 px に収まる。
+A value is formatted as "centi value -> sign + integer part + `.` + two
+decimals" (no label or unit). The integer part is not zero-padded. Negative
+values get a leading `-` (the decimals are those of the absolute value). The
+longest are `-45.00` / `130.00` / `100.00`, 6 characters (144 px), which fit
+in the 154 px card.
 
-## 3. フォント
+## 3. Font
 
-8×8、1 バイト = 1 行、**ビット 7 が左端**。対応するのは次の 31 文字だけ。
-これ以外は空白として扱う。
+8x8, one byte per row, bit 7 is the leftmost pixel. Only these 31 characters
+are supported; anything else is drawn as the space.
 
 ```
 ' '  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
@@ -217,29 +235,32 @@ CASET / PASET の引数は 4 バイト（`x0` の上位・下位、`x1` の上�
 'Y'  0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x00
 ```
 
-## 4. 失敗したときの振る舞い
+## 4. Behavior on failure
 
-`board` / `gpio` / `spi` / `i2c` のどれかが失敗したら、`log.error` に理由を出して
-`run` から戻る。トラップはしない。両言語で同じメッセージを出す。
+If any of `board` / `gpio` / `spi` / `i2c` fails, log the reason with
+`log.error` and return from `run`. Do not trap. Both languages log the same
+message.
 
-| 状況 | メッセージ |
+| Situation | Message |
 |---|---|
-| 役割名が引けない | `role not found` |
-| ピンが開けない | `gpio open failed` |
-| SPI が開けない | `spi open failed` |
-| I2C が開けない | `i2c open failed` |
-| ディスプレイの初期化・描画が失敗した | `display failed` |
-| センサーが応答しない | `sensor read failed` |
-| CRC が合わない | `sensor crc failed` |
+| A role name cannot be resolved | `role not found` |
+| A pin cannot be opened | `gpio open failed` |
+| SPI cannot be opened | `spi open failed` |
+| I2C cannot be opened | `i2c open failed` |
+| Display init or drawing failed | `display failed` |
+| The sensor does not respond | `sensor read failed` |
+| The CRC does not match | `sensor crc failed` |
 
-### ハンドルの解放
+### Releasing handles
 
-**どの経路で `run` を抜けるときも、開けたハンドルを同じ順で解放する。**
-順序は `i2c` → `spi` → `rst` → `dc` → `cs`。開けていないものは飛ばす。
+Whichever path leaves `run`, the handles that were opened are released in
+the same order: `i2c`, `spi`, `rst`, `dc`, `cs`, skipping what was never
+opened.
 
-Rust は `Drop` が宣言の逆順に走るので、ハンドルを 1 つのスコープに
-この順で宣言する。AssemblyScript には `Drop` が無いので、
-`run` の出口を 1 箇所にまとめて明示的に `close()` を呼ぶ。
+In Rust, `Drop` runs in reverse declaration order, so the handles are
+declared in one scope in this order. AssemblyScript has no `Drop`, so `run`
+has a single exit that calls `close()` explicitly.
 
-失敗経路でも順序が揃っていないと、実機でエラーが起きたときに
-両言語のトレースが食い違う（Phase 5 の一致はハッピーパスだけの話になる）。
+If the order differed on a failure path, the two languages' traces would
+diverge when an error occurs on hardware, and the equality check would only
+cover the happy path.

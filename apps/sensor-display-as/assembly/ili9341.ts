@@ -1,5 +1,5 @@
-// ILI9341 の最小ドライバ。apps/README.md §2 が正。
-// Rust 版（apps/sensor-display-rs/src/ili9341.rs）と同じバイト列を送る。
+// Minimal ILI9341 driver. apps/README.md §2 is normative.
+// Sends the same bytes as the Rust version (apps/sensor-display-rs/src/ili9341.rs).
 
 import { Level, Pin, SpiBus, time } from "../../../bindings/assemblyscript/assembly/index";
 import { GLYPHS, indexOf } from "./font";
@@ -7,39 +7,43 @@ import { GLYPHS, indexOf } from "./font";
 export const WIDTH: u16 = 320;
 export const HEIGHT: u16 = 240;
 
-/// 文字列描画で一度に送れる最大文字数（8 px × 40 = 画面の幅）。
+/// Longest text `drawText` sends at once (8 px x 40 = the screen width).
 export const MAX_TEXT: i32 = 40;
 
-/// 1 行分のピクセルバッファ（320 px × 2 バイト）。
+/// One row of pixels (320 px x 2 bytes).
 const ROW = new Uint8Array(<i32>WIDTH * 2);
-/// 引数が不正なときに返す。ErrorCode.InvalidArgument のステータス（discriminant+1）。
+/// Returned for an invalid argument: the status of ErrorCode.InvalidArgument
+/// (discriminant + 1).
 const ERR_INVALID: u32 = 1;
 
-/// `start + len` が `limit` に収まるか。**u32 に広げてから足す。**
+/// Returns whether `start + len` fits in `limit`. Widens to u32 before adding.
 ///
-/// AssemblyScript は u16 同士の加算を比較の中でも u16 に丸める
-/// （`i32.add` のあとに `i32.and 0xffff` を出す）ので、u16 のまま足すと
-/// 折り返して画面外の座標が境界検査を通ってしまう。すり抜ける入力は
-/// `start + len` が 65536..65856 のもので、**結果は 2 つあり入力の範囲が違う**:
+/// AssemblyScript narrows a u16 + u16 sum to u16 even inside a comparison (it
+/// emits `i32.and 0xffff` after `i32.add`), so adding in u16 wraps and an
+/// off-screen coordinate would then pass the bounds check. The inputs that
+/// slip through have `start + len` in 65536..65856. There are two outcomes,
+/// for different input ranges:
 ///
-/// - `fillRect(65530, 0, 10, 1, c)` → `65530 + 10 == 4` で通り、`window` が
-///   `x0 > x1` の反転した矩形を送る。バッファは超えない（`n == 20`）
-/// - `fillRect(65216, 0, 640, 1, c)` → 折り返して 320 で通り、さらに
-///   `n = w * 2 == 1280` が 640 バイトの `ROW` を超える。**こちらだけが
-///   範囲外書き込み**で、`asconfig.json` は `noAssert: true` なので
-///   境界検査が無く、黙ってリニアメモリを壊す（Rust 側はトラップする）
+/// - `fillRect(65530, 0, 10, 1, c)`: `65530 + 10 == 4` passes, and `window`
+///   sends an inverted rectangle (`x0 > x1`). The buffer is not exceeded
+///   (`n == 20`).
+/// - `fillRect(65216, 0, 640, 1, c)`: wraps to 320 and passes, and then
+///   `n = w * 2 == 1280` exceeds the 640-byte `ROW`. Only this case is an
+///   out-of-bounds write, and because `asconfig.json` sets `noAssert: true`
+///   there is no bounds check: it silently corrupts linear memory (the Rust
+///   side traps).
 ///
-/// `drawText` は幅と高さを i32 で計算し、画面を超えたら u16 に落とす前に
-/// 弾くので、ここに折り返した値は来ない。
-/// Rust 版の `in_bounds()` と同じ形に揃えてある
-/// （`apps/sensor-display-rs/src/ili9341.rs`）。
+/// `drawText` computes the width and height in i32 and rejects anything
+/// larger than the screen before narrowing to u16, so no wrapped value
+/// reaches this function. Kept in the same shape as `in_bounds()` in the
+/// Rust version (apps/sensor-display-rs/src/ili9341.rs).
 function inBounds(start: u16, len: u16, limit: u16): bool {
   return <u32>start + <u32>len <= <u32>limit;
 }
 
-/// コマンド 1 バイト用。
+/// One command byte.
 const CMD = new Uint8Array(1);
-/// 引数用（最大 4 バイト）。
+/// Command arguments (at most 4 bytes).
 const ARGS = new Uint8Array(4);
 
 export class Display {
@@ -66,7 +70,7 @@ export class Display {
     return this.spi.write(buf.subarray(0, len));
   }
 
-  /// コマンドと引数を 1 回の CS で送る。0 なら成功。
+  /// Sends a command and its arguments within one CS assertion. 0 on success.
   private send(c: u8, argLen: i32): u32 {
     let st = this.begin();
     if (st != 0) return st;
@@ -79,7 +83,7 @@ export class Display {
     return this.end();
   }
 
-  /// リセットと初期化列。0 なら成功。
+  /// Resets the panel and sends the init sequence. 0 on success.
   init(rst: Pin): u32 {
     let st = this.cs.write(Level.High);
     if (st != 0) return st;
@@ -100,12 +104,12 @@ export class Display {
     st = this.send(0x3a, 1); // PIXFMT = RGB565
     if (st != 0) return st;
     ARGS[0] = 0x28;
-    st = this.send(0x36, 1); // MADCTL = 横向き
+    st = this.send(0x36, 1); // MADCTL = landscape
     if (st != 0) return st;
     return this.send(0x29, 0); // DISPON
   }
 
-  /// 書き込み先の矩形を決める。
+  /// Sets the rectangle that the next RAMWR writes to.
   private window(x: u16, y: u16, w: u16, h: u16): u32 {
     const x1: u16 = x + w - 1;
     const y1: u16 = y + h - 1;
@@ -122,10 +126,11 @@ export class Display {
     return this.send(0x2b, 4);
   }
 
-  /// 矩形を単色で塗る。行単位で送る。0 なら成功。
+  /// Fills a rectangle with one color, sending it row by row. 0 on success.
   fillRect(x: u16, y: u16, w: u16, h: u16, color: u16): u32 {
     if (w == 0 || h == 0) return 0;
-    // 画面外は描かない（apps/README.md §2）。ROW の範囲外書き込みも防ぐ。
+    // Do not draw off screen (apps/README.md §2). This also keeps the write
+    // within ROW.
     if (!inBounds(x, w, WIDTH) || !inBounds(y, h, HEIGHT)) return ERR_INVALID;
     let st = this.window(x, y, w, h);
     if (st != 0) return st;
@@ -147,23 +152,24 @@ export class Display {
     return this.end();
   }
 
-  /// 等幅 8×8 の文字を `scale` 倍に拡大して描く。0 なら成功。
+  /// Draws text in the monospace 8x8 font scaled by `scale`. 0 on success.
   ///
-  /// フォントの 1 行を拡大した 1 ピクセル行を組み立て、それを `scale` 回
-  /// 送る。バッファは画面 1 行ぶん（ROW）で足りる。
+  /// Builds one scaled pixel row per font row and sends it `scale` times,
+  /// so one screen row (ROW) is enough buffer.
   drawText(x: u16, y: u16, text: Uint8Array, len: i32, scale: u16, fg: u16, bg: u16): u32 {
     if (len == 0) return 0;
-    // **負の len を弾く。** Rust 版は `&[u8]` を取るので構造的に表現できない
-    // 穴で、AS 側だけに開いていた。`len == -8192` だと `<u16>(n * 8) == 0` に
-    // なって inBounds を通り、`window` が `x1 = x - 1` を送ったうえで
-    // `dataN` が負の長さで呼ばれる（`noAssert: true` なので止まらない）。
-    // 今の呼び出し元は 0 から増やすだけなので到達しない。
+    // Reject a negative len. The Rust version takes `&[u8]`, so this hole
+    // cannot be expressed there; it existed only on the AS side. With
+    // `len == -8192`, `<u16>(n * 8) == 0` passes inBounds, `window` sends
+    // `x1 = x - 1`, and `dataN` is called with a negative length (nothing
+    // stops it under `noAssert: true`). The current callers only count up
+    // from 0, so this is not reached today.
     if (len < 0) return ERR_INVALID;
-    // 黙って切り詰めない（apps/README.md §2）。
+    // Never truncate silently (apps/README.md §2).
     if (len > MAX_TEXT || scale == 0) return ERR_INVALID;
     const n = len;
     const s = <i32>scale;
-    // u16 に落とす前に画面と比べる（inBounds のコメント）。
+    // Compare against the screen before narrowing to u16 (see inBounds).
     const wi = n * 8 * s;
     const hi = 8 * s;
     if (wi > <i32>WIDTH || hi > <i32>HEIGHT) return ERR_INVALID;

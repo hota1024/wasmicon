@@ -1,5 +1,6 @@
-//! FPS の表示に使う 8×8 のビットマップフォント（1 バイト = 1 行、ビット 7 が左端）。
-//! 字形は `apps/README.md` §3 と同じ書体。要る文字だけ持つ。
+//! 8x8 bitmap font for the FPS display (one byte per row, bit 7 is the
+//! leftmost pixel). Same typeface as apps/README.md §3; only the characters
+//! this app needs.
 
 const GLYPHS: [[u8; 8]; 15] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // ' '
@@ -19,7 +20,8 @@ const GLYPHS: [[u8; 8]; 15] = [
     [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00], // 'S'
 ];
 
-/// 文字の字形。持っていない文字は空白。
+/// Returns the glyph of a character. Characters not in the table draw as the
+/// space.
 #[must_use]
 pub fn glyph(c: u8) -> &'static [u8; 8] {
     let i = match c {

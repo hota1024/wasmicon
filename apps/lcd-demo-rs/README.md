@@ -1,137 +1,148 @@
 # lcd-demo-rs
 
-ILI9341 に絵を出すだけのデモ。**センサーは要らない。LCD を 1 枚繋ぐだけで動く。**
+Demo that only draws on an ILI9341. No sensor needed: one LCD is enough.
 
-`sensor-display-rs` は SHT4x を I2C で読むので、センサーが無いと
-（I2C が開けない時点で戻って）画面に何も出ない。こちらは SPI と GPIO しか
-使わないので、ディスプレイだけで完結する。
+`sensor-display-rs` reads an SHT4x over I2C, so without the sensor it shows
+nothing (it returns as soon as I2C fails to open). This demo uses only SPI
+and GPIO, so the display alone is enough.
 
-Rust 版のみ。AssemblyScript の対になるものは用意していない
-（`sensor-display-*` と違い、2 実装の一致を見るためのアプリではないため）。
+Rust only. There is no AssemblyScript counterpart (unlike `sensor-display-*`,
+this app is not for comparing two implementations).
 
-**Raspberry Pi Pico 2 (W) と ESP32-S3 DevKitC-1 で同じ `.wasm` が動く。**
-ピン番号は `board.pin-by-role` でホストに問い合わせるので、ゲスト側に
-ボード固有のものは入っていない（abi-spec §8）。可搬性の確認は
-「同じバイナリを 2 ボードで焼いてトレースを突き合わせる」で行う
-（`docs/verification-report.md` §5）。
+The same `.wasm` runs on the Raspberry Pi Pico 2 (W) and the ESP32-S3
+DevKitC-1. The guest asks the host for pin numbers through
+`board.pin-by-role`, so nothing board-specific is in the guest
+(docs/abi-spec.md §8). Portability is checked by flashing the same binary to
+both boards and cross-checking the traces (docs/verification-report.md §5).
 
-## 出るもの
+## What it shows
 
-320×240 の横向き。上から順に:
+320x240, landscape. Top to bottom:
 
-| 要素 | 何を見ているか |
+| Element | What it checks |
 |---|---|
-| 青い帯に `WASMICON` / `RP2350` | 文字の描画 |
-| カラーバー 8 本（赤・橙・黄・緑・シアン・青・マゼンタ・白） | 色順。**赤と青が入れ替わっていたら** MADCTL (`0x36`) の BGR ビット |
-| グレーのランプ 16 段 | RGB565 の詰め方。段が色付いて見えたらビット位置がずれている |
-| 緑の四角が左右に 1 往復 | `time.sleep-ms` と繰り返しの描画 |
-| `HELLO PICO 2` / `ILI9341 SPI` | 文字の描画 |
-| 外周 1 px の白い枠 | アドレス指定の端。`x + w == 320` / `y + h == 240` ちょうどの矩形 |
+| `WASMICON` / `RP2350` on a blue band | Text drawing |
+| 8 color bars (red, orange, yellow, green, cyan, blue, magenta, white) | Color order. If red and blue are swapped, the BGR bit of MADCTL (`0x36`) |
+| A 16-step gray ramp | RGB565 packing. Tinted steps mean a bit position is off |
+| A green square moving right and back | `time.sleep-ms` and repeated drawing |
+| `HELLO PICO 2` / `ILI9341 SPI` | Text drawing |
+| A 1 px white frame around the screen | The edge of the address window: rectangles with exactly `x + w == 320` / `y + h == 240` |
 
-**ESP32-S3 でも画面には `RP2350` と `HELLO PICO 2` と出る。これは意図的。**
-このデモの目的は「同一バイナリが 2 ボードで同じ host call 列を出す」ことの
-確認なので、ボードごとに文字を変えると比べるものが無くなる。文字を変えると
-`.wasm` が変わり、`docs/verification-report.md` §6 に記録した 14,352 行という
-トレースも取り直しになる。
+The screen says `RP2350` and `HELLO PICO 2` on the ESP32-S3 too. This is
+intentional. The point of this demo is to confirm that one binary produces
+the same host-call sequence on two boards; per-board text would leave nothing
+to compare. Changing the text changes the `.wasm`, and the 14,352-line trace
+recorded in docs/verification-report.md §6 would have to be re-recorded.
 
-## 配線
+## Wiring
 
 ### Raspberry Pi Pico 2 W
 
-**この配線は 2026-09-26 に Pico 2 W 実機で確認済み**（`docs/verification-report.md` §6）。
-違うピンに繋ぎたいときは、役割（`lcd-cs` / `lcd-dc` / `lcd-rst`）は
-**`wasmicon.toml` の `[board.rp2350.roles]`**（`deploy` が設定スロットに書く。
-ファームは焼き直さなくてよい）、SPI のピンは `ports/rp2350/src/board.rs` の
-`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` を直す。
+This wiring was verified on a Pico 2 W on 2026-09-26
+(docs/verification-report.md §6). To use other pins: the roles (`lcd-cs` /
+`lcd-dc` / `lcd-rst`) are in `[board.rp2350.roles]` of `wasmicon.toml`
+(`deploy` writes them to the config slot; the firmware need not be
+reflashed), and the SPI pins are `SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO` in
+`ports/rp2350/src/board.rs`.
 
-| ILI9341 モジュール | Pico 2 W | ピン番号（物理） |
+| ILI9341 module | Pico 2 W | Physical pin |
 |---|---|---|
 | `VCC` | 3V3 OUT | 36 |
-| `GND` | GND | 23 / 28 など |
+| `GND` | GND | 23 / 28 etc. |
 | `CS` | GP17 | 22 |
 | `RESET` | GP21 | 27 |
 | `DC` / `D/C` / `RS` | GP20 | 26 |
 | `SDI` / `MOSI` | GP19 | 25 |
 | `SCK` / `SCL` | GP18 | 24 |
-| `LED` / `BL` | 3V3 OUT | 36（VCC と同じピン） |
-| `SDO` / `MISO` | GP16（繋がなくてよい） | 21 |
+| `LED` / `BL` | 3V3 OUT | 36 (the same pin as VCC) |
+| `SDO` / `MISO` | GP16 (may stay unconnected) | 21 |
 
-**LCD 側は全て基板の右列に集まっている。** USB を上にして持つと、右列は
-下から上へ 21, 22, 23, ... 40 と並ぶ（左列は上から下へ 1..20）。21 番が
-右下の角。シリアルの GP0/GP1 だけが左上（1 番・2 番）。
+All the LCD signals are on the right column of the board. With the USB
+connector at the top, the right column runs 21, 22, 23, ... 40 from bottom to
+top (the left column runs 1..20 from top to bottom). Pin 21 is the
+bottom-right corner. Only the serial GP0/GP1 are at the top left (pins 1 and
+2).
 
-**`3V3(OUT)` は 36 番の 1 本しかない。** `VCC` と `LED` の 2 つに供給するので、
-ブレッドボードの 3.3V レールに一度渡してから分岐する（または LCD 側で
-2 つを繋ぐ）。隣の 37 番 `3V3_EN` はレギュレータの制御入力で、電源ではない。
-GND は 8 本ある（3 / 8 / 13 / 18 / 23 / 28 / 33 / 38）。
+There is only one `3V3(OUT)`, pin 36. It feeds both `VCC` and `LED`, so route
+it to a breadboard 3.3 V rail and branch from there (or join the two on the
+LCD side). The neighboring pin 37, `3V3_EN`, is the regulator enable input,
+not a supply. There are 8 GND pins (3 / 8 / 13 / 18 / 23 / 28 / 33 / 38).
 
-- **`RESET` に 10 kΩ のプルアップ（`RESET` ↔ `3V3`）を入れておくと確実。**
-  手元の Pico 2 W では無くても絵は残ったが、それは保証ではなく観測にすぎない
-  （下の「描き終わると絵が消えて白くなる」。ESP32-S3 では無いと白に戻った）
-- **3.3 V ロジックの SPI モジュールであること。** 5 V 専用の基板や、
-  8080 パラレル設定の基板は繋がらない
-- `LED`（バックライト）を繋がないと、描けていても真っ暗にしか見えない
-- このデモは MISO を読まないので `SDO` は未接続でよい
-- タッチパネル付きのモジュールの `T_*` 系は全て未接続でよい
+- A 10 kΩ pull-up on `RESET` (`RESET` to `3V3`) is the safe choice. On the
+  Pico 2 W at hand the image stayed without it, but that is an observation,
+  not a guarantee (see "The image disappears and the screen turns white
+  after drawing" below; on the ESP32-S3 it turned white without one)
+- The module must be a 3.3 V logic SPI module. 5 V-only boards and boards
+  configured for the 8080 parallel interface will not work
+- Without `LED` (backlight) connected, the screen stays dark even though it
+  is drawing
+- The demo never reads MISO, so `SDO` may stay unconnected
+- On modules with a touch panel, all `T_*` pins may stay unconnected
 
-シリアル（トレースとログ）は **UART0: GP0=TX(1 番ピン) / GP1=RX(2 番ピン)、
-115200 8N1**。USB ではないので、USB-シリアル変換が要る（GND も共通にする）。
+Serial (trace and log) is UART0: GP0=TX (pin 1) / GP1=RX (pin 2),
+115200 8N1. It is not USB, so a USB-serial adapter is needed (share GND).
 
 ### ESP32-S3 DevKitC-1
 
-**この配線は 2026-09-26 に DevKitC-1 実機で確認済み**（`docs/verification-report.md` §7）。
-違うピンに繋ぎたいときは、役割は **`wasmicon.toml` の `[board.esp32s3.roles]`**、
-SPI のピンは `ports/esp32s3/src/board.rs` の `SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` を直す。
+This wiring was verified on a DevKitC-1 on 2026-09-26
+(docs/verification-report.md §7). To use other pins: the roles are in
+`[board.esp32s3.roles]` of `wasmicon.toml`, and the SPI pins are `SPI2_SCK` /
+`SPI2_MOSI` / `SPI2_MISO` in `ports/esp32s3/src/board.rs`.
 
-| ILI9341 モジュール | ESP32-S3 DevKitC-1 |
+| ILI9341 module | ESP32-S3 DevKitC-1 |
 |---|---|
 | `VCC` | `3V3` |
-| `GND` | `G`（`GND`） |
+| `GND` | `G` (`GND`) |
 | `CS` | `GPIO10` |
 | `RESET` | `GPIO15` |
 | `DC` / `D/C` / `RS` | `GPIO14` |
 | `SDI` / `MOSI` | `GPIO11` |
 | `SCK` / `SCL` | `GPIO12` |
-| `LED` / `BL` | `3V3`（`VCC` と同じ） |
-| `SDO` / `MISO` | `GPIO13`（繋がなくてよい） |
+| `LED` / `BL` | `3V3` (same as `VCC`) |
+| `SDO` / `MISO` | `GPIO13` (may stay unconnected) |
 
-**DevKitC-1 はシルクに GPIO 番号がそのまま書いてある**ので、Pico のように
-物理ピン番号から引く必要はない。上の 6 本はすべて `IO10`..`IO15` の並びで探せる。
+The DevKitC-1 silkscreen shows the GPIO numbers directly, so there is no
+physical-pin lookup as on the Pico. All six signals above are in the
+`IO10`..`IO15` run.
 
-**`RESET` に 10 kΩ のプルアップ（`RESET` ↔ `3V3`）を足すこと。** 無くても絵は
-出るが、**手元の ESP32-S3 では描き終わった瞬間に消えて白くなった**
-（理由は下の「描き終わると絵が消えて白くなる」）。
+Add a 10 kΩ pull-up on `RESET` (`RESET` to `3V3`). The image appears without
+it, but on the ESP32-S3 at hand it disappeared and the screen turned white
+the moment drawing finished (see "The image disappears and the screen turns
+white after drawing" below).
 
-`GPIO11` / `GPIO12` / `GPIO13` は SPI2 (FSPI) の IO_MUX 既定ピンでもある。
-ドライバは GPIO マトリクス経由で繋ぐので必須ではないが、既定に合わせてある。
+`GPIO11` / `GPIO12` / `GPIO13` are also the IO_MUX default pins of SPI2
+(FSPI). The driver routes through the GPIO matrix, so this is not required,
+but the defaults are used.
 
-`3V3` は両列にある（左列の先頭 2 本と右列に 1 本）ので、`VCC` と `LED` を
-別のピンから取れる。Pico と違って 1 本しかないという制約は無い。
+`3V3` is on both columns (the first two pins of the left column and one on
+the right), so `VCC` and `LED` can be fed from different pins. Unlike the
+Pico, there is no single-pin constraint.
 
-シリアル（トレースとログ）は **UART0: GPIO43=TX / GPIO44=RX、115200 8N1**。
-**DevKitC-1 では `USB-UART` と書かれた USB-C ポートが USB-シリアルブリッジ経由で
-ここに直結している**ので、そのケーブル 1 本で書き込みとトレースの取り込みが
-両方できる（USB-シリアル変換を別に用意しなくてよい）。もう一方の `USB-OTG`
-ポートは native USB で、このファームウェアは何も出さない（書き込みだけなら
-USB-Serial-JTAG 経由で通る）。
+Serial (trace and log) is UART0: GPIO43=TX / GPIO44=RX, 115200 8N1. On the
+DevKitC-1 the USB-C port labeled `USB-UART` connects to it through a
+USB-serial bridge, so one cable does both flashing and trace capture (no
+separate USB-serial adapter). The other port, `USB-OTG`, is native USB and
+this firmware prints nothing there (flashing alone works through
+USB-Serial-JTAG).
 
-**ブリッジの型番は個体差がある。** 公式の回路図は CP2102N（macOS では
-`/dev/cu.usbserial-*`）だが、手元のボードは **CH343**（VID 0x1A86 / PID 0x55D3）で
-**`/dev/cu.usbmodem*`** に見えた。`usbserial` を決め打ちで探すと見つからないので、
-`ls /dev/cu.usb*` で確かめること。
+The bridge chip varies between boards. The official schematic has a CP2102N
+(`/dev/cu.usbserial-*` on macOS), but the board at hand has a CH343 (VID
+0x1A86 / PID 0x55D3) that shows up as `/dev/cu.usbmodem*`. Searching only for
+`usbserial` finds nothing, so check with `ls /dev/cu.usb*`.
 
-- **どちらのボードでも `LED`（バックライト）は 3.3 V に繋ぐ。** 繋がないと
-  描けていても真っ暗にしか見えない
-- ILI9341 モジュールは 2 枚要らない。1 枚を差し替えて順に焼けばよい
+- On both boards, connect `LED` (backlight) to 3.3 V. Without it the screen
+  stays dark even though it is drawing
+- Two ILI9341 modules are not needed; move the one module and flash the
+  boards in turn
 
-## ビルドと書き込み
+## Build and flash
 
-**ファームにアプリは入っていない**（2026-10-07 に内蔵アプリを外した。
-`docs/app-workflow.md` §3.3）。ファームを一度焼き、このデモはスロットに焼く。
-**2 ボードに焼くのは同じ `lcd_demo_rs.wasm`**（ゲストは作り直さない）。
+The firmware carries no app (docs/app-workflow.md §3.3). Flash the firmware
+once, then flash this demo to the app slot. The same `lcd_demo_rs.wasm` is
+flashed to both boards (the guest is not rebuilt).
 
 ```bash
-# ゲストと CLI を作る
+# Build the guest and the CLI
 (cd apps && cargo build --release -p lcd-demo-rs)
 cargo build --release -p wasmicon-cli
 w=./target/release/wasmicon
@@ -141,143 +152,156 @@ app=apps/target/wasm32-unknown-unknown/release/lcd_demo_rs.wasm
 ### Raspberry Pi Pico 2 (W)
 
 ```bash
-# 1. ファームを作る（apps/ に依存しない）
+# 1. Build the firmware (it does not depend on apps/)
 (cd ports/rp2350 && cargo build --release)
 
-# 2. BOOTSEL を押しながら USB を挿して、ファームを焼く。
-#    -x を付けないと BOOTSEL のまま残るので、続けて 3 が焼ける
+# 2. Hold BOOTSEL while plugging in USB, then flash the firmware.
+#    Without -x the board stays in BOOTSEL, so step 3 can flash right after
 picotool load -u -v -t elf ports/rp2350/target/thumbv8m.main-none-eabihf/release/wasmicon-rp2350
 
-# 3. デモをスロットに焼く（ここで起動する）。トレースは UART0 から取る
-$w monitor --port /dev/cu.usbserial-XXXX --idle 0 -o pico.log &   # 先に開く
+# 3. Flash the demo to the slot (it starts here). The trace comes from UART0
+$w monitor --port /dev/cu.usbserial-XXXX --idle 0 -o pico.log &   # open first
 $w deploy "$app" --board rp2350
 ```
 
-`picotool` は 2.0 以降が要る（RP2350 対応）。`elf2uf2-rs` は RP2040 用で使えない。
-2 回目以降、ファームを変えないならスロットだけ焼き直せばよい（3 だけ）。
+`picotool` 2.0 or later is required (RP2350 support). `elf2uf2-rs` is for
+RP2040 and does not work. From the second time on, if the firmware is
+unchanged, only the slot needs reflashing (step 3 only).
 
 ### ESP32-S3 DevKitC-1
 
 ```bash
-# 1. ファームを作って焼く（build.sh が ~/export-esp.sh を読む）
+# 1. Build and flash the firmware (build.sh sources ~/export-esp.sh)
 sh ports/esp32s3/build.sh build --release
 espflash flash --non-interactive \
   ports/esp32s3/target/xtensa-esp32s3-none-elf/release/wasmicon-esp32s3
 
-# 2. デモをスロットに焼いて、そのままトレースを取り込む
+# 2. Flash the demo to the slot and capture the trace in the same command
 $w deploy "$app" --board esp32s3 --monitor -o esp32s3.log
 ```
 
-`espflash` が繋ぐ先は DevKitC-1 の **`USB-UART` ポート**。複数の USB シリアルが
-見えているときは `--port` で指定する（**ブリッジの型番で名前が変わる** — 上の
-「配線」参照）。
+`espflash` connects to the `USB-UART` port of the DevKitC-1. If several USB
+serial devices are visible, pass `--port` (the name depends on the bridge
+chip; see "Wiring" above).
 
-**USB からのリセットが効かずに走らないことがある**（2026-10-07 に踏んだ。
-`docs/verification-report.md` §12「ESP32-S3 で詰まったこと」）。そのときは
-書き込みを `USB-OTG` 側から、トレースを `USB-UART` 側で取り、基板の **EN
-（`RST`）ボタン**で起動する。
+Sometimes the reset over USB does not take and the app does not run (hit on
+2026-10-07; docs/verification-report.md §12 "Where the ESP32-S3 got stuck").
+Then flash through the `USB-OTG` side, capture the trace on the `USB-UART`
+side, and start the board with its EN (`RST`) button.
 
-**取り込んだログに NUL が混ざっていても `wasmicon trace diff` /
-`verify/diff-traces.sh` は落とす。** リセットや電源投入の瞬間にライン・ノイズで
-出るもので、放っておくと `grep` がファイルをバイナリと判断して 1 行しか返さない。
+A NUL byte in a captured log fails `wasmicon trace diff` and
+`verify/diff-traces.sh`. NULs come from line noise at reset or power-on; left
+in, `grep` treats the file as binary and returns a single line.
 
-### トレースを切ると速い
+### Faster without tracing
 
-既定の `trace` feature は host call を 1 件ずつ UART に出す。このデモは
-host call が約 7,200 件あるので、115200 baud では描き切るまで 1 分ほどかかる
-（画面が上から順に埋まっていく様子は見える）。
+The default `trace` feature writes every host call to the UART. This demo
+makes about 7,200 host calls, so at 115200 baud it takes about a minute to
+finish drawing (you can watch the screen fill from the top).
 
-絵だけ見たいならファームから切る（アプリは焼き直さなくてよい）:
+To just see the picture, build the firmware without it (the app need not be
+reflashed):
 
 ```bash
 (cd ports/rp2350 && cargo build --release --no-default-features)
 sh ports/esp32s3/build.sh build --release --no-default-features
 ```
 
-逆に**最初のブリングアップではトレースを付けたまま**にする。
-SPI が動いていないときに、どこまで進んだかが分かる唯一の手掛かりになる。
+For the first bring-up, though, keep tracing on. When SPI is not working, the
+trace is the only clue to how far the app got.
 
-## 描き終わると絵が消えて白くなる（両ボード共通）
+## The image disappears and the screen turns white after drawing (both boards)
 
-**バグではない。** `run()` を抜けるときゲストがハンドルを解放し、
-`docs/abi-spec.md` §5.2 の規定でピンが**入力・プル無し**に戻る。その結果
-**LCD の `RESET` が浮き**、モジュール側にプルアップが無いとパネルがリセットして
-画面が白に戻る（2026-09-26 に ESP32-S3 実機で観測。
-`docs/verification-report.md` §7「原因 3」）。
+Not a bug. When the guest leaves `run()` it releases its handles, and
+docs/abi-spec.md §5.2 returns the pins to input with no pull. The LCD's
+`RESET` then floats, and if the module has no pull-up the panel resets and
+the screen turns white (observed on an ESP32-S3 on 2026-09-26;
+docs/verification-report.md §7 "Cause 3").
 
-**`RESET` ↔ `3V3` に 10 kΩ のプルアップを入れれば直る**（2026-09-26 に ESP32-S3
-実機で確認。出荷する構成のまま絵が残る）。既存の `lcd-rst` の線は外さない。
-ESP32 が `RESET` を Low に駆動するときプルアップ経由で 330 µA 流れるだけで、
-初期化のリセットパルスは問題なく出る。抵抗値は 4.7 kΩ〜100 kΩ なら何でもよい。
+A 10 kΩ pull-up from `RESET` to `3V3` fixes it (verified on an ESP32-S3 on
+2026-09-26: the image stays with the as-shipped configuration). Keep the
+existing `lcd-rst` wire. When the ESP32 drives `RESET` low, only 330 µA flows
+through the pull-up, and the reset pulse of the init sequence goes out as
+before. Any value from 4.7 kΩ to 100 kΩ works.
 
-リセット入力を浮かせないのは回路としてまっとうで、コードも `.wasm` も触らずに
-済む。**ゲスト側でハンドルを解放せずに終わっても回避できない** —
-`docs/abi-spec.md` §5.2 は「`run` から戻ったとき、ホストは残っている全ハンドルを
-drop する」とも定めているので、解放は必ず起きる。
+Not leaving a reset input floating is sound circuit practice, and it touches
+neither the code nor the `.wasm`. Leaving the handles unreleased on the guest
+side does not avoid it: docs/abi-spec.md §5.2 also says that the host drops
+every remaining handle when `run` returns, so the release always happens.
 
-**症状が出るかどうかはボードで違う。** 手元の実測（2026-09-26、同じモジュール）:
+Whether the symptom appears depends on the board. Measured on 2026-09-26 with
+the same module:
 
-| ボード | プルアップ無し |
+| Board | Without pull-up |
 |---|---|
-| ESP32-S3 | **白に戻る** |
-| Raspberry Pi Pico 2 W | **残る** |
+| ESP32-S3 | Turns white |
+| Raspberry Pi Pico 2 W | Image stays |
 
-仕組みは両ポートで同一（§5.2 でピンは高インピーダンスに戻り、線のアイドル
-レベルをソフトウェアが決めていない）が、**浮いた線がパネルのしきい値を割るかは
-パッドのリーク量と容量で決まる**ので結果が違う。Pico 2 W で残るのは保証ではなく
-観測にすぎない。**どちらのボードでもプルアップを入れておくのが確実。**
+The mechanism is the same on both ports (the pin returns to high impedance
+per docs/abi-spec.md §5.2, and software does not set the idle level of the
+line), but whether the floating line crosses the panel's threshold depends on
+pad leakage and capacitance, hence the different result. The Pico 2 W keeping
+the image is an observation, not a guarantee. A pull-up on both boards is the
+safe choice.
 
-## 動かないとき
+## When it does not work
 
-この構成は Pico 2 W と ESP32-S3 DevKitC-1 の両方の実機で動くことを確認してある
-（`docs/verification-report.md` §6 / §7）。それでも出ないときに疑う順:
+This setup is verified on both a Pico 2 W and an ESP32-S3 DevKitC-1
+(docs/verification-report.md §6 / §7). If it still shows nothing, suspect in
+this order:
 
-1. **UART に何も出ない** — 配線（TX/RX の向き、GND）と 115200 8N1、
-   焼けているか。バナー `wasmicon rp2350` が最初に出る
-2. **`role not found` が出る** — 配線表が設定スロットに無い。バナーの
-   `wasmicon: roles …` の行を見る。`roles empty, no roles` なら、
-   `wasmicon.toml` のあるディレクトリから `deploy` し直す（表も一緒に書かれる）
-3. **`spi open failed` / `gpio open failed` が出る** — ポート側
-4. **トレースは最後まで流れるのに画面が真っ暗** — バックライト（`LED` ピン）、
-   `RESET` の配線、電源。ILI9341 は 3.3 V
-5. **表示が出るが化けている** — DC の配線を最初に疑う。次に SPI のクロック。
-   `SPI_HZ`（`src/lib.rs`）を 4 MHz あたりまで落として切り分ける。
-   配線が長いブレッドボードだと 15 MHz は通らないことがある
-6. **赤と青が逆、または色が反転** — MADCTL (`0x36`) の値。
-   `src/ili9341.rs` の `init` が `0x28`（横向き・BGR）を送っている
+1. Nothing on the UART: wiring (TX/RX direction, GND), 115200 8N1, and
+   whether the flash took. The banner `wasmicon rp2350` comes first
+2. `role not found`: the wiring table is not in the config slot. Look at the
+   `wasmicon: roles ...` line of the banner. If it says
+   `roles empty, no roles`, run `deploy` again from the directory that has
+   `wasmicon.toml` (the table is written along with the app)
+3. `spi open failed` / `gpio open failed`: the port side
+4. The trace runs to the end but the screen is dark: backlight (`LED` pin),
+   `RESET` wiring, power. The ILI9341 is 3.3 V
+5. Something shows but it is garbled: suspect the DC wiring first, then the
+   SPI clock. Lower `SPI_HZ` (`src/lib.rs`) to around 4 MHz to narrow it
+   down. On a breadboard with long wires, 15 MHz sometimes does not get
+   through
+6. Red and blue are swapped, or the colors are inverted: the MADCTL (`0x36`)
+   value. `init` in `src/ili9341.rs` sends `0x28` (landscape, BGR)
 
-### ESP32-S3 でだけ出ないとき
+### When only the ESP32-S3 shows nothing
 
-`ports/esp32s3` も実機で動くところまで来ている（`docs/verification-report.md` §7）。
-**§7 で実際に踏んだ順**に並べてある:
+`ports/esp32s3` also runs on hardware (docs/verification-report.md §7). In
+the order the problems were actually hit in docs/verification-report.md §7:
 
-1. **バナー `wasmicon esp32s3` も出ない** — UART の口を間違えている。
-   DevKitC-1 の USB-C は 2 つあり、トレースが出るのは **`USB-UART` 側**
-   （USB-シリアルブリッジ → GPIO43/44）。`USB-OTG` 側は native USB で、
-   このファームウェアは何も出さない。デバイス名はブリッジの型番で変わるので
-   `ls /dev/cu.usb*` で確かめる
-2. **`spi open failed`** — `spi_open` が `unsupported` を返している。
-   要求周波数が出せる範囲の外（APB 80 MHz のとき 78.125 kHz 未満、
-   または 80 MHz 超）のときだけそうなる。`SPI_HZ` は 16 MHz なので通常は起きない
-3. **トレースが host と完全一致するのに画面が真白** — §7 で実際に 2 段踏んだ形。
-   **トレースはここを一切教えてくれない**（host call は全部成功を返す）。
-   切り分けはゲストを通さずポート層を直接叩く
+1. Not even the banner `wasmicon esp32s3` appears: wrong UART port. The
+   DevKitC-1 has two USB-C ports, and the trace comes out of the `USB-UART`
+   side (USB-serial bridge to GPIO43/44). The `USB-OTG` side is native USB
+   and this firmware prints nothing there. The device name depends on the
+   bridge chip, so check with `ls /dev/cu.usb*`
+2. `spi open failed`: `spi_open` returned `unsupported`. That happens only
+   when the requested frequency is outside the producible range (below
+   78.125 kHz or above 80 MHz with APB at 80 MHz). `SPI_HZ` is 16 MHz, so
+   normally it does not
+3. The trace matches the host exactly but the screen is pure white: the
+   two-stage case actually hit in docs/verification-report.md §7. The trace
+   says nothing about this (every host call returns success). Narrow it down
+   by driving the port layer directly, bypassing the guest:
    `sh ports/esp32s3/build.sh run --release --features hw-probe`
-   （`ports/esp32s3/src/probe.rs`）で行う
-   - まず `ports/esp32s3/src/board.rs` の `SIG_GPIO_OUT`。**S3 は 256**
-     （128 は C3 / C6 の値）。間違っていると `GPIO_OUT` / `GPIO_ENABLE` は
-     正しく読めるのにピンがパッドで一切動かない
-   - 次に**ブレッドボードの配線の接触**。§7 では挿し直したら出た
-   - `SPI2_SCK` / `SPI2_MOSI` を GPIO12 / GPIO11 から変えたなら、
-     定数と abi-spec §8 の表の両方を直したか
-4. **途中で止まって最初からやり直す** — 電源。ブレッドボードの 3V3 で
-   バックライトまで賄うと足りないことがある（DevKitC-1 の 3V3 は
-   オンボードレギュレータ出力）
-5. **絵は出るが、描き終わると白に戻る** — 上の「描き終わると絵が消えて
-   白くなる」。`RESET` のプルアップで直る
-6. **トレースが途中で切れて、以降何も出ない** — ネイティブスタック。
-   `esp-hal` のリンカスクリプトは `.stack` を DRAM の余りに置くので、
-   `ports/esp32s3/src/main.rs` の `ARENA`（300 KB）を増やすとスタックが削れる
-   （今は 17.4 KiB）。溢れると panic handler に入るが、**理由は出せない**
-   （シリアルがボード側にあって panic handler から届かない）ので、
-   症状は「無言で止まる」だけになる
+   (`ports/esp32s3/src/probe.rs`)
+   - First `SIG_GPIO_OUT` in `ports/esp32s3/src/board.rs`. On the S3 it is
+     256 (128 is the C3 / C6 value). If it is wrong, `GPIO_OUT` /
+     `GPIO_ENABLE` read back correctly but the pin never moves at the pad
+   - Then the breadboard contacts. In docs/verification-report.md §7,
+     reseating the wires made it work
+   - If `SPI2_SCK` / `SPI2_MOSI` were moved from GPIO12 / GPIO11, were both
+     the constants and the table in docs/abi-spec.md §8 updated
+4. It stops partway and starts over: power. Feeding the backlight from the
+   breadboard 3V3 can be too much (the DevKitC-1 3V3 is the on-board
+   regulator output)
+5. The image appears but turns white after drawing: see "The image
+   disappears and the screen turns white after drawing" above. A pull-up on
+   `RESET` fixes it
+6. The trace stops partway and nothing follows: the native stack. The
+   `esp-hal` linker script puts `.stack` in whatever DRAM is left, so growing
+   `ARENA` (300 KB) in `ports/esp32s3/src/main.rs` shrinks the stack
+   (17.4 KiB today). An overflow enters the panic handler, but the reason
+   cannot be printed (the serial port lives on the board side and is
+   unreachable from the panic handler), so the only symptom is silence

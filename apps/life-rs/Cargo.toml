@@ -1,6 +1,6 @@
 [package]
 name = "life-rs"
-description = "ILI9341 にライフゲームを描き続けるデモ。センサーは要らない"
+description = "Demo that keeps drawing the game of life on an ILI9341. No sensor needed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,6 @@ crate-type = ["cdylib"]
 wasmicon-hal.workspace = true
 
 [features]
-# 計測モード。同じ種で 200 世代を、SPI のクロックを変えながら回し、
-# 世代の計算と描画の時間を UART のログに出す（src/bench.rs）。
+# Bench mode: runs 200 generations from the same seed at several SPI clocks
+# and logs the compute and draw times over the UART (src/bench.rs).
 bench = []

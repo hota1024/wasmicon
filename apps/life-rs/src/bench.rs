@@ -1,17 +1,20 @@
-//! 計測モード（`--features bench`）。
+//! Bench mode (`--features bench`).
 //!
-//! 毎回**同じ種**から `GENERATIONS` 世代を回して仕事量を揃え、SPI のクロックを
-//! `CLOCKS` の順に変えながら、1 回ごとに次の 1 行を UART のログに出す:
+//! Runs `GENERATIONS` generations from the same seed every time, so the
+//! amount of work is fixed, while stepping the SPI clock through `CLOCKS`.
+//! After each run it logs one line over the UART:
 //!
 //! ```text
-//! bench spi=24000000 gens=200 total_us=… step_us=… draw_us=… cells=… us_per_cell=… fps10=…
+//! bench spi=24000000 gens=200 total_us=... step_us=... draw_us=... cells=... us_per_cell=... fps10=...
 //! ```
 //!
-//! - `step_us` = 世代の計算、`draw_us` = 描き直し（host call と SPI）の合計
-//! - `fps10` = 10 倍した FPS（小数 1 桁を整数で）
+//! - `step_us` is the generation compute and `draw_us` the redraw (host
+//!   calls and SPI), both summed over the run
+//! - `fps10` is the FPS times 10 (one decimal as an integer)
 //!
-//! 全部のクロックを回すと `bench cycle done` を出して最初から繰り返す。
-//! 実際に出るクロックはポートが丸める（RP2350 は要求値を超えない最大）。
+//! After every clock has run it logs `bench cycle done` and starts over. The
+//! port rounds the clock actually used (RP2350: the largest value not above
+//! the request).
 
 use wasmicon_hal::gpio::Pin;
 use wasmicon_hal::spi::{Bus as SpiBus, Mode};
@@ -21,10 +24,10 @@ use crate::ili9341::{Display, HEIGHT, WIDTH};
 use crate::life::{Board, Rng};
 use crate::{BG, Cells, GENERATIONS, SEED, draw_diff};
 
-/// 試す SPI のクロック（Hz）。
+/// SPI clocks to try (Hz).
 const CLOCKS: [u32; 4] = [16_000_000, 24_000_000, 32_000_000, 48_000_000];
 
-/// 1 回分の結果。
+/// Results of one run.
 struct Stats {
     total_us: u64,
     step_us: u64,
@@ -32,7 +35,7 @@ struct Stats {
     cells: u64,
 }
 
-/// 計測を繰り返す。失敗したら理由を出して戻る。
+/// Repeats the measurement. On failure, logs the reason and returns.
 pub fn run(cs: &Pin, dc: &Pin, rst: &Pin, cells: &Cells) {
     log::info("bench start");
     let mut first = true;
@@ -43,7 +46,8 @@ pub fn run(cs: &Pin, dc: &Pin, rst: &Pin, cells: &Cells) {
                 return;
             };
             let d = Display::new(&spi, cs, dc);
-            // パネルの初期化は最初の 1 回だけ（SPI を開き直しても設定は残る）。
+            // Initialize the panel only once; reopening SPI keeps its
+            // settings.
             if first {
                 if d.init(rst).is_err() {
                     log::error("display failed");
@@ -63,7 +67,7 @@ pub fn run(cs: &Pin, dc: &Pin, rst: &Pin, cells: &Cells) {
     }
 }
 
-/// 同じ種から `GENERATIONS` 世代を回して測る。
+/// Runs `GENERATIONS` generations from the fixed seed and measures them.
 fn round(d: &Display, cells: &Cells) -> Result<Stats, ErrorCode> {
     let mut board = Board::EMPTY;
     board.randomize(&mut Rng::new(SEED));
@@ -91,7 +95,7 @@ fn round(d: &Display, cells: &Cells) -> Result<Stats, ErrorCode> {
     Ok(s)
 }
 
-/// 1 行にしてログに出す。
+/// Logs the results as one line.
 fn report(hz: u32, s: &Stats) {
     let mut l = Line::new();
     l.s("bench spi=").n(u64::from(hz));
@@ -108,7 +112,7 @@ fn report(hz: u32, s: &Stats) {
     log::info(l.as_str());
 }
 
-/// 短い ASCII の行を組む（`core::fmt` を使わない）。
+/// Builds a short ASCII line without `core::fmt`.
 struct Line {
     buf: [u8; 160],
     n: usize,

@@ -1,30 +1,32 @@
-//! 盤面と世代の計算。描画から切り離して、ホストで単体テストできるようにしてある。
+//! Board and generation step, kept separate from drawing so it can be
+//! unit-tested on the host.
 
-/// 盤面の幅（セル）。320 px / 8 px。
+/// Board width in cells: 320 px / 8 px.
 pub const COLS: usize = 40;
-/// 盤面の高さ（セル）。240 px のうち上の 8 px は FPS の表示に使うので 29 行。
+/// Board height in cells: 29 rows, because the top 8 px of the 240 show the
+/// FPS.
 pub const ROWS: usize = 29;
 
-/// 1 行 = `u64` の下位 `COLS` ビット（ビット x がセル (x, y)）。
+/// One row is the low `COLS` bits of a `u64` (bit x is cell (x, y)).
 const ROW_MASK: u64 = (1 << COLS) - 1;
 
-/// 40×29 の盤面。端は上下左右で繋がる（トーラス）。
+/// A 40x29 board whose edges wrap around (a torus).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Board {
     rows: [u64; ROWS],
 }
 
 impl Board {
-    /// 全部死んでいる盤面。
+    /// A board with every cell dead.
     pub const EMPTY: Board = Board { rows: [0; ROWS] };
 
-    /// (x, y) が生きているか。
+    /// Returns whether (x, y) is alive.
     #[must_use]
     pub fn get(&self, x: usize, y: usize) -> bool {
         self.rows[y] >> x & 1 == 1
     }
 
-    /// (x, y) を生かす / 殺す（テストで盤面を組むのに使う）。
+    /// Sets (x, y) alive or dead (used by tests to build boards).
     #[cfg(test)]
     pub fn set(&mut self, x: usize, y: usize, alive: bool) {
         if alive {
@@ -34,20 +36,20 @@ impl Board {
         }
     }
 
-    /// 1 行ぶんのビット。
+    /// Returns the bits of one row.
     #[must_use]
     pub fn row(&self, y: usize) -> u64 {
         self.rows[y]
     }
 
-    /// 生きているセルの数（テスト用）。
+    /// Number of live cells (for tests).
     #[cfg(test)]
     #[must_use]
     pub fn population(&self) -> u32 {
         self.rows.iter().map(|r| r.count_ones()).sum()
     }
 
-    /// 乱数で埋める。おおよそ 4 つに 1 つが生きる。
+    /// Fills the board at random; about one cell in four is alive.
     pub fn randomize(&mut self, rng: &mut Rng) {
         for y in 0..ROWS {
             let mut row = 0;
@@ -60,12 +62,13 @@ impl Board {
         }
     }
 
-    /// 次の世代（B3/S23）。
+    /// Computes the next generation (B3/S23).
     ///
-    /// **1 行（40 ビット）をまとめてビット演算で数える。** 近傍 8 方向の行を
-    /// 回転で作り、ビットごとの加算器で「近傍の数」を下位 2 ビット + 4 以上の
-    /// 印で持つ。1 セルずつループで数えるより桁違いに速い（インタプリタは
-    /// 1 命令に約 90 サイクルかかる）。
+    /// Counts a whole row (40 bits) at once with bit operations. The eight
+    /// neighbor rows are made by rotating, and a bitwise adder keeps the
+    /// neighbor count as its low 2 bits plus a "4 or more" flag. Orders of
+    /// magnitude faster than looping over cells (the interpreter spends
+    /// about 90 cycles per instruction).
     #[must_use]
     pub fn step(&self) -> Board {
         let mut next = Board::EMPTY;
@@ -83,7 +86,8 @@ impl Board {
                 down,
                 ror(down),
             ];
-            // b0, b1 = 数の下位 2 ビット、four = 4 以上になった印（以後は外す）。
+            // b0, b1 are the low 2 bits of the count; four marks a count of
+            // 4 or more (those cells are excluded from then on).
             let (mut b0, mut b1, mut four) = (0u64, 0u64, 0u64);
             for n in neighbours {
                 let c0 = b0 & n;
@@ -100,28 +104,30 @@ impl Board {
     }
 }
 
-/// 40 ビットの中で左に 1 回す（セル x の値が x + 1 に来る）。
+/// Rotates left by 1 within 40 bits (cell x moves to x + 1).
 fn rol(r: u64) -> u64 {
     ((r << 1) | (r >> (COLS - 1))) & ROW_MASK
 }
 
-/// 40 ビットの中で右に 1 回す（セル x の値が x - 1 に来る）。
+/// Rotates right by 1 within 40 bits (cell x moves to x - 1).
 fn ror(r: u64) -> u64 {
     ((r >> 1) | (r << (COLS - 1))) & ROW_MASK
 }
 
-/// xorshift32。HAL に乱数は無いので自前で持つ。種が同じなら同じ列を返すので、
-/// トレースが決定的になる（host と実機で突き合わせられる）。
+/// xorshift32. The HAL has no random source, so the app brings its own. The
+/// same seed gives the same sequence, which keeps the trace deterministic
+/// (comparable between the host and hardware).
 pub struct Rng(u32);
 
 impl Rng {
-    /// 種から作る。0 は xorshift の不動点なので避ける。
+    /// Creates a generator from a seed. 0 is a fixed point of xorshift, so
+    /// it is replaced.
     #[must_use]
     pub fn new(seed: u32) -> Self {
         Rng(if seed == 0 { 0x9E37_79B9 } else { seed })
     }
 
-    /// 次の値。
+    /// Returns the next value.
     pub fn next(&mut self) -> u32 {
         let mut x = self.0;
         x ^= x << 13;
@@ -167,7 +173,8 @@ mod tests {
 
     #[test]
     fn the_edges_wrap_around() {
-        // 右端と左端、下端と上端にまたがるブリンカー。
+        // A blinker that spans the right and left edges and the bottom and
+        // top edges.
         let b = board(&[(COLS - 1, 0), (0, 0), (1, 0)]);
         assert!(b.step() == board(&[(0, ROWS - 1), (0, 0), (0, 1)]));
     }

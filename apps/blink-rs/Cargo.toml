@@ -1,12 +1,12 @@
 [package]
 name = "blink-rs"
-description = "Lチカ。board.pin-by-role で LED のピンを引くので同一バイナリが両ボードで動く"
+description = "Blink. Looks up the LED pin with board.pin-by-role, so the same binary runs on every board"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-# cdylib にすると memory が "memory" として export される（abi-spec §3.3）。
+# cdylib exports the memory as "memory" (docs/abi-spec.md §3.3).
 crate-type = ["cdylib"]
 
 [dependencies]

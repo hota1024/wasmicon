@@ -1,7 +1,8 @@
-# wasmicon.toml（docs/app-workflow.md §4.7）。
-# 配線表（[board.<name>.roles]）は deploy が設定スロットに書き、ファームは
-# この表だけで pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
-# 配線の図は apps/lcd-demo-rs/README.md。
+# App manifest (docs/app-workflow.md §4.7).
+# deploy writes the wiring table ([board.<name>.roles]) to the device's config
+# slot, and the firmware answers pin-by-role from that table alone; it has no
+# built-in table (docs/app-workflow.md §3.9).
+# Wiring diagram: apps/lcd-demo-rs/README.md.
 version = 1
 
 [requirements]

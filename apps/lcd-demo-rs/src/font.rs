@@ -1,18 +1,20 @@
-//! 8×8 のビットマップフォント。
+//! 8x8 bitmap font.
 //!
-//! `sensor-display-rs` の 18 文字では足りないので、このデモ用に英大文字を
-//! 足して作り直したもの。形は `apps/README.md` §3 と同じ規則（1 バイト =
-//! 1 行、ビット 7 が左端、6×7 の字形を 8×8 のセルに置く）で、共通の
-//! 18 文字は同じ字形を使っている。
+//! The 18 characters of `sensor-display-rs` are not enough for this demo, so
+//! this table adds the upper-case letters. The shapes follow the same rules
+//! as apps/README.md §3 (one byte per row, bit 7 is the leftmost pixel, a 6x7
+//! glyph placed in an 8x8 cell), and the 18 shared characters use the same
+//! glyphs.
 //!
-//! `sensor-display-*` の表とは**別物**。あちらは Rust 版と AssemblyScript 版で
-//! 一致していることを検査される（`ports/host/tests/apps.rs`）ので、
-//! こちらを足したり引いたりしてもあの検査には影響しない。
+//! This is a separate table from the `sensor-display-*` ones. Those are
+//! checked for equality between the Rust and AssemblyScript versions
+//! (`ports/host/tests/apps.rs`); adding or removing glyphs here does not
+//! affect that check.
 
-/// 字形の数。
+/// Number of glyphs.
 pub const COUNT: usize = 42;
 
-/// 1 バイト = 1 行、ビット 7 が左端。
+/// One byte per row, bit 7 is the leftmost pixel.
 pub const GLYPHS: [[u8; 8]; COUNT] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // ' '
     [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00], // '-'
@@ -58,7 +60,8 @@ pub const GLYPHS: [[u8; 8]; COUNT] = [
     [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00], // 'Z'
 ];
 
-/// 文字から字形の番号へ。対応していない文字は空白にする。
+/// Maps a character to its glyph index. Unsupported characters map to the
+/// space.
 #[must_use]
 pub fn index_of(c: u8) -> usize {
     match c {

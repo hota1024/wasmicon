@@ -1,6 +1,6 @@
 [package]
 name = "sensor-display-rs"
-description = "SHT4x を読んで ILI9341 に表示する。sensor-display-as と同じ出力を出す"
+description = "Reads an SHT4x and shows it on an ILI9341. Same output as sensor-display-as"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

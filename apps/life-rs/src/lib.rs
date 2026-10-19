@@ -1,22 +1,30 @@
-//! ILI9341 にライフゲーム（B3/S23）を描き続けるデモ。センサーは要らない。
+//! Demo that keeps drawing the game of life (B3/S23) on an ILI9341. No sensor
+//! needed.
 //!
-//! - 盤面は 40×29 セル（1 セル 8×8 px、描くのは 7×7 で 1 px の隙間を格子にする）。
-//!   端は上下左右で繋がる。画面の上 8 px は FPS の表示（`FPS_EVERY` 世代ごとに更新）
-//! - FPS は `time.now-us` で測る。`time` はトレースに出ないが、**表示する数字は
-//!   実時間で変わる**ので、FPS の文字を描く SPI の中身はボードと実行ごとに違う
-//! - 固定の種の xorshift32 で盤面を埋め、`GENERATIONS` 世代ごとに種を変えて
-//!   やり直す（盤面の進み方は種で決まる）
-//! - 世代のあいだは待たない（計算と描画の速さで回す）
-//! - 全画面フレームバッファは持たない（RP2040 に載らない）。盤面はビットで持ち、
-//!   **前の世代と違うセルだけ**描き直す
-//! - **`run` から戻らない。** 実機ではずっと動き続け、`wasmicon run` も終わらない
-//!   （Ctrl-C で止める）
+//! - The board is 40x29 cells (8x8 px per cell; 7x7 is drawn, leaving a 1 px
+//!   grid). The edges wrap around. The top 8 px of the screen show the FPS,
+//!   updated every `FPS_EVERY` generations.
+//! - FPS is measured with `time.now-us`. `time` is not traced, but the number
+//!   shown depends on real time, so the SPI bytes of the FPS text differ per
+//!   board and per run.
+//! - The board is seeded by an xorshift32 with a fixed seed; every
+//!   `GENERATIONS` generations it restarts with the next seed (the seed fully
+//!   determines how the board evolves).
+//! - No delay between generations; it runs as fast as compute and drawing
+//!   allow.
+//! - No full-screen frame buffer (it does not fit on RP2040). The board is
+//!   stored as bits, and only the cells that changed since the previous
+//!   generation are redrawn.
+//! - `run` never returns. On hardware it runs forever, and `wasmicon run`
+//!   does not end either (stop it with Ctrl-C).
 //!
-//! ピンは `board.pin-by-role` で `lcd-cs` / `lcd-dc` / `lcd-rst` を引く
-//! （番号は `wasmicon.toml` の配線表）。配線は `apps/lcd-demo-rs/README.md` と同じ。
+//! The pins come from `board.pin-by-role` for `lcd-cs` / `lcd-dc` / `lcd-rst`
+//! (numbers in the wiring table of `wasmicon.toml`). Wiring is the same as
+//! `apps/lcd-demo-rs/README.md`.
 //!
-//! トレースを出すファームでは、1 世代に数百の host call を UART に流すので
-//! 動きが遅い。滑らかに見たいときは `trace` を切ったファームで走らせる。
+//! A tracing firmware pushes hundreds of host calls per generation through
+//! the UART, so the animation is slow. For a smooth picture, run a firmware
+//! built without `trace`.
 
 #![no_std]
 
@@ -33,34 +41,37 @@ use wasmicon_hal::{ErrorCode, board, log, time};
 use ili9341::{Display, HEIGHT, WIDTH};
 use life::{Board, ROWS, Rng};
 
-/// 背景（セルの隙間もこの色）。
+/// Background (the gaps between cells too).
 const BG: u16 = 0x0841;
-/// 生きているセル。
+/// Live cell.
 const LIVE: u16 = 0x3FE8;
-/// FPS の文字。
+/// FPS text.
 const TEXT: u16 = 0xA514;
 
-/// 盤面の上に取る表示の帯の高さ（px）。
+/// Height in px of the status band above the board.
 const TOP: u16 = 8;
-/// FPS を測って描き直す間隔（世代）。毎世代描くと、文字を描く時間で FPS が下がる。
+/// Generations between FPS measurements and redraws. Drawing it every
+/// generation would lower the FPS by the time spent on the text.
 const FPS_EVERY: u32 = 20;
 
-/// 1 セルの描画の大きさ（px）。8 px の升目に 7 px 描き、1 px を隙間にする。
+/// Cell geometry in px: 7 px drawn in an 8 px grid, leaving 1 px as the gap.
 const CELL: u16 = 8;
 const DOT: u16 = 7;
 
-/// 1 セルの画素のバイト数（7×7 px × 2 バイト）。
+/// Bytes of pixels per cell (7x7 px x 2 bytes).
 const DOT_BYTES: usize = DOT as usize * DOT as usize * 2;
 
-/// 1 回の種で回す世代数。
+/// Generations per seed.
 const GENERATIONS: u32 = 200;
-/// SPI のクロック。lcd-demo と同じく、ブリングアップで転びにくい値。
+/// SPI clock. As in lcd-demo, a value that is less likely to fail during
+/// bring-up.
 const SPI_HZ: u32 = 16_000_000;
 
-/// 最初の種。回ごとに足していく。
+/// First seed; each round adds to it.
 const SEED: u32 = 0x5EED_1F3E;
 
-/// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+/// Entry point. The host calls it once, right after instantiation
+/// (docs/abi-spec.md §3.3).
 #[unsafe(no_mangle)]
 pub extern "C" fn run() {
     log::info("life start");
@@ -81,13 +92,14 @@ pub extern "C" fn run() {
         log::error("gpio open failed");
         return;
     };
-    // セルの画素は 2 種類しか無いので、最初に 1 回だけ作って使い回す。
+    // There are only two kinds of cell pixels, so build them once and reuse
+    // them.
     let cells = Cells {
         live: dot(LIVE),
         dead: dot(BG),
     };
 
-    // 計測モードは SPI のクロックを変えながら開き直すので、ここで分かれる。
+    // Bench mode reopens SPI at several clocks, so it branches off here.
     #[cfg(feature = "bench")]
     {
         bench::run(&cs, &dc, &rst, &cells);
@@ -110,13 +122,13 @@ pub extern "C" fn run() {
     }
 }
 
-/// 生きたセルと死んだセルの画素。
+/// Pixels of a live cell and of a dead cell.
 struct Cells {
     live: [u8; DOT_BYTES],
     dead: [u8; DOT_BYTES],
 }
 
-/// 1 セルぶんの画素を単色で作る。
+/// Builds the pixels of one cell in a single color.
 fn dot(color: u16) -> [u8; DOT_BYTES] {
     let mut px = [0u8; DOT_BYTES];
     for p in px.chunks_exact_mut(2) {
@@ -126,7 +138,8 @@ fn dot(color: u16) -> [u8; DOT_BYTES] {
     px
 }
 
-/// 種を変えながら回し続ける。描画が失敗したときだけ戻る。
+/// Runs forever, changing the seed each round. Returns only when drawing
+/// fails.
 fn play(d: &Display, cells: &Cells) -> Result<(), ErrorCode> {
     let mut round: u32 = 0;
     loop {
@@ -153,13 +166,14 @@ fn play(d: &Display, cells: &Cells) -> Result<(), ErrorCode> {
     }
 }
 
-/// `frames` 世代に `elapsed_us` かかったときの FPS を、小数 1 桁で上の帯に描く。
+/// Draws the FPS for `frames` generations that took `elapsed_us`, with one
+/// decimal, in the top band.
 fn draw_fps(d: &Display, frames: u32, elapsed_us: u64) -> Result<(), ErrorCode> {
     let tenths = (u64::from(frames) * 10_000_000)
         .checked_div(elapsed_us)
         .unwrap_or(0);
     let mut text = *b"FPS     .  ";
-    // 整数部は右詰め 4 桁（9999.9 まで）。
+    // Integer part right-aligned in 4 digits (up to 9999.9).
     let int = tenths / 10;
     let mut v = int;
     let mut i = 7;
@@ -175,7 +189,8 @@ fn draw_fps(d: &Display, frames: u32, elapsed_us: u64) -> Result<(), ErrorCode> 
     d.draw_text(4, 0, &text[..10], TEXT, BG)
 }
 
-/// `old` から `new` で変わったセルだけ描き直す。描いたセルの数を返す。
+/// Redraws only the cells that changed from `old` to `new`. Returns how many
+/// cells were drawn.
 fn draw_diff(d: &Display, cells: &Cells, old: &Board, new: &Board) -> Result<u32, ErrorCode> {
     let mut drawn = 0;
     for y in 0..ROWS {
@@ -195,7 +210,7 @@ fn draw_diff(d: &Display, cells: &Cells, old: &Board, new: &Board) -> Result<u32
     Ok(drawn)
 }
 
-/// `no_std` なので自前で用意する。
+/// Required because the crate is `no_std` (docs/decisions.md A-04).
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

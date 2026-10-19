@@ -1,26 +1,29 @@
-//! SHT4x（SHT40 / SHT41 / SHT45）の読み出し。`apps/README.md` §1 が正。
+//! SHT4x (SHT40 / SHT41 / SHT45) readout. apps/README.md §1 is normative.
 
 use wasmicon_hal::i2c::Bus;
 use wasmicon_hal::time;
 
-/// I2C アドレス。**サフィックスで変わる**（-AD1B が 0x44）ので、
-/// 変えるなら 3 箇所: ここ、`sensor-display-as` の `ADDRESS`、
-/// `ports/host/tests/apps.rs` の `SHT4X_ADDR`（トレースの期待値）。
+/// I2C address. It depends on the part suffix (-AD1B is 0x44). Changing it
+/// means changing three places: here, `ADDRESS` in `sensor-display-as`, and
+/// `SHT4X_ADDR` in `ports/host/tests/apps.rs` (the expected trace).
 pub const ADDRESS: u16 = 0x44;
 
-/// 単発計測（高精度）。SHT4x のコマンドは **1 バイト**（SHT3x は 2 バイト）。
+/// Single-shot measurement, high precision. SHT4x commands are one byte
+/// (SHT3x commands are two).
 const MEASURE: [u8; 1] = [0xFD];
 
-/// 計測が終わるまでの待ち時間。SHT4x の高精度は最大 8.3 ms なので余裕がある。
-/// SHT3x のときと同じ 15 ms のまま据え置いている。
+/// Wait for the measurement to finish. The SHT4x high-precision measurement
+/// takes at most 8.3 ms, so 15 ms (kept from the SHT3x days) leaves margin.
 ///
-/// **変えるなら AS 版と必ず同時に変える。** `time` は abi-spec §9 でトレース
-/// 対象外なので、ここが 2 言語で食い違っても `sensor_display_rs_and_as_agree`
-/// も `diff-traces.sh` も気付かない。短くしすぎると実機で変換前の値を読んで
-/// CRC 不一致や古い値になるが、それも host では再現しない。
+/// Change it together with the AS version, always. `time` is excluded from
+/// the trace (docs/abi-spec.md §9), so if the two languages disagree here,
+/// neither `sensor_display_rs_and_as_agree` nor `diff-traces.sh` notices.
+/// Too short a wait reads the value before conversion on hardware (CRC
+/// mismatch or a stale value), and that does not reproduce on the host
+/// either.
 const MEASURE_MS: u32 = 15;
 
-/// CRC-8。多項式 0x31、初期値 0xFF、反転なし。
+/// CRC-8: polynomial 0x31, initial value 0xFF, no reflection.
 #[must_use]
 pub fn crc8(data: &[u8]) -> u8 {
     let mut crc: u8 = 0xFF;
@@ -39,24 +42,24 @@ pub fn crc8(data: &[u8]) -> u8 {
     crc
 }
 
-/// 生の測定値。
+/// Raw measurement.
 pub struct Reading {
     pub raw_t: u16,
     pub raw_h: u16,
 }
 
-/// 読み出しの失敗。
+/// Readout failure.
 pub enum Error {
-    /// 通信できない。
+    /// The bus transfer failed.
     Io,
-    /// CRC が合わない。
+    /// The CRC did not match.
     Crc,
 }
 
-/// 1 回測って読む。
+/// Takes one measurement and reads it back.
 ///
 /// # Errors
-/// 通信に失敗したら `Io`、CRC が合わなければ `Crc`。
+/// `Io` if a transfer fails, `Crc` if a checksum does not match.
 pub fn read(bus: &Bus) -> Result<Reading, Error> {
     if bus.write(ADDRESS, &MEASURE).is_err() {
         return Err(Error::Io);
@@ -77,22 +80,24 @@ pub fn read(bus: &Bus) -> Result<Reading, Error> {
     })
 }
 
-/// 温度（摂氏 ×100）。固定小数で計算する。
+/// Temperature in centi-degrees Celsius, computed in fixed point.
 #[must_use]
 pub fn temp_centi(raw_t: u16) -> i32 {
     -4500 + (17500 * i32::from(raw_t)) / 65535
 }
 
-/// 相対湿度（％ ×100）。
+/// Relative humidity in centi-percent.
 ///
-/// SHT4x は `-6 + 125·raw/65535` で、**SHT3x の `100·raw/65535` とは違う**。
-/// 素の式は 0 未満・100 超に振れるのでデータシートどおりクランプする。
-/// `12500 * 65535 = 819_187_500` は i32 に収まる。
+/// SHT4x uses `-6 + 125 * raw / 65535`, which differs from the SHT3x
+/// `100 * raw / 65535`. The raw formula can go below 0 and above 100, so it
+/// is clamped as the datasheet says. `12500 * 65535 = 819_187_500` fits in
+/// i32.
 ///
-/// clippy は `i32::clamp` を勧める。**整数演算なのでどちらでも値は同じ**で、
-/// `bar_px` の f32 クランプのような決定性の問題は無い。AS 版が `if` 2 本で
-/// 書かれているので、並べて読めるように構造だけ揃えてある（§2.1 の教訓で
-/// 2 つのゲストが食い違ったことがある）。
+/// clippy suggests `i32::clamp`. The value is the same either way because
+/// this is integer arithmetic; there is no determinism concern like the f32
+/// clamp in `bar_px`. The AS version is written as two `if`s, so the shape
+/// is kept the same for side-by-side reading; copies of the same logic have
+/// drifted apart before (docs/TODO.md §2.1).
 #[allow(clippy::manual_clamp)]
 #[must_use]
 pub fn humidity_centi(raw_h: u16) -> i32 {
@@ -110,12 +115,13 @@ pub fn humidity_centi(raw_h: u16) -> i32 {
 mod tests {
     use super::{crc8, humidity_centi, temp_centi};
 
-    /// `verify/sht4x-replay.txt`（実機の SHT40 から記録した応答）の**写し**。
-    /// あのファイルを差し替えるときは、ここも一緒に直す
-    /// （下の期待値は `FIXTURE` から導出しているので、片方だけ直すと落ちる）。
+    /// A copy of `verify/sht4x-replay.txt` (a response recorded from a real
+    /// SHT40). When that file is replaced, update this too: the expected
+    /// values below are derived from `FIXTURE`, so changing only one side
+    /// fails.
     const FIXTURE: [u8; 6] = [0x67, 0x54, 0xc0, 0xa4, 0xd8, 0x40];
 
-    /// `FIXTURE` の生の測定値。`read` と同じ組み立て方をする。
+    /// Raw values of `FIXTURE`, assembled the same way as `read`.
     fn fixture_raw() -> (u16, u16) {
         (
             (u16::from(FIXTURE[0]) << 8) | u16::from(FIXTURE[1]),
@@ -123,37 +129,40 @@ mod tests {
         )
     }
 
-    /// 応答の形式と CRC-8 は SHT3x と SHT4x で同一。
-    /// センサーを替えてもここは変わっていない。
+    /// The response layout and the CRC-8 are the same on SHT3x and SHT4x.
+    /// Switching sensors did not change this part.
     #[test]
     fn fixture_crc_is_valid() {
         assert_eq!(crc8(&FIXTURE[0..2]), FIXTURE[2]);
         assert_eq!(crc8(&FIXTURE[3..5]), FIXTURE[5]);
     }
 
-    /// 温度の式は SHT3x と SHT4x で同一（`-45 + 175·raw/65535`）。
-    /// **この値が動くと `bar_px` の f32 の題材も変わる**ので釘を打っておく。
+    /// The temperature formula is the same on SHT3x and SHT4x
+    /// (`-45 + 175 * raw / 65535`). Locked in because a change here also
+    /// changes the f32 input of `bar_px`.
     #[test]
     fn temperature_matches_fixture() {
         assert_eq!(temp_centi(fixture_raw().0), 2563); // 25.63 °C
-        assert_eq!(temp_centi(0), -4500); // 下端 -45.00 °C
-        assert_eq!(temp_centi(65535), 13000); // 上端 130.00 °C
+        assert_eq!(temp_centi(0), -4500); // lower end, -45.00 °C
+        assert_eq!(temp_centi(65535), 13000); // upper end, 130.00 °C
     }
 
-    /// 湿度は SHT4x で式が変わった（SHT3x は `100·raw/65535` で 6439 になる）。
+    /// The humidity formula changed with SHT4x (the SHT3x `100 * raw / 65535`
+    /// would give 6439).
     #[test]
     fn humidity_uses_the_sht4x_formula() {
-        // SHT3x の式なら 6439 になる値。
+        // The SHT3x formula would give 6439 for this value.
         assert_eq!(humidity_centi(fixture_raw().1), 7449); // 74.49 %
     }
 
-    /// 素の式は 0 未満・100 超に振れるので、データシートどおりクランプする。
+    /// The raw formula can go below 0 and above 100, so it is clamped as the
+    /// datasheet says.
     #[test]
     fn humidity_is_clamped_to_the_datasheet_range() {
-        assert_eq!(humidity_centi(0), 0); // 素の式では -600
-        assert_eq!(humidity_centi(3145), 0); // 素の式では -1
-        assert_eq!(humidity_centi(65535), 10000); // 素の式では 11900
-        // クランプの境目のすぐ上は通す（一律 0 にしていない）。
+        assert_eq!(humidity_centi(0), 0); // raw formula: -600
+        assert_eq!(humidity_centi(3145), 0); // raw formula: -1
+        assert_eq!(humidity_centi(65535), 10000); // raw formula: 11900
+        // Just above the clamp boundary passes through (not flattened to 0).
         assert_eq!(humidity_centi(3151), 1);
     }
 }

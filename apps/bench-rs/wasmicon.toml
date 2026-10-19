@@ -1,5 +1,6 @@
-# wasmicon.toml（docs/app-workflow.md §4.7）。
-# gpio.write の計測に led 役のピンを 1 本使う（何も繋がっていなくてよい）。
+# App manifest (docs/app-workflow.md §4.7).
+# One pin with the led role is used to measure gpio.write (nothing needs to
+# be connected to it).
 version = 1
 
 [requirements]
@@ -12,7 +13,8 @@ led = 15
 led = 2
 
 [board.esp32c5.roles]
-# GPIO4 は基板上に 10 kΩ のプルアップがある（入力のとき LED がわずかに光ることがある）。
+# GPIO4 has a 10 kΩ pull-up on the board (the LED may glow faintly while the
+# pin is an input).
 led = 4
 
 [board.rp2040.roles]

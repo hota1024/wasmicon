@@ -1,9 +1,9 @@
-//! 8×8 のビットマップフォント。`apps/README.md` §3 が正。
+//! 8x8 bitmap font. apps/README.md §3 is normative.
 //!
-//! AssemblyScript 版と同じ表でなければならない。食い違うと `spi.write` の
-//! CRC-32 がずれてトレースの突き合わせが落ちる。
+//! Must be the same table as the AssemblyScript version. Any difference
+//! changes the CRC-32 of `spi.write` and fails the trace cross-check.
 
-/// 1 バイト = 1 行、ビット 7 が左端。
+/// One byte per row, bit 7 is the leftmost pixel.
 pub const GLYPHS: [[u8; 8]; 31] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // ' '
     [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00], // '-'
@@ -38,7 +38,8 @@ pub const GLYPHS: [[u8; 8]; 31] = [
     [0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00], // 'Y'
 ];
 
-/// 文字から字形の番号へ。対応していない文字は空白。
+/// Maps a character to its glyph index. Unsupported characters map to the
+/// space.
 #[must_use]
 pub fn index_of(c: u8) -> usize {
     match c {
