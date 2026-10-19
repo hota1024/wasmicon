@@ -1,0 +1,18 @@
+# Commits to skip in git blame (git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# The 2026-10 translation of the repository from Japanese into English:
+# comments, docs, CLI and firmware strings. No behavior changed.
+ad21d7eab2a2aa14eec77e5c69e65c9adda77457  # docs: translate historical records to English
+4dc40d52a5ec002053b461719e7cc0035a427746  # refactor(gen): translate generator and WIT docs to English and regenerate bindings
+a3fbd5cd9a543978f44f68df49e2e247aa010eeb  # refactor(bindings): translate hand-written bindings to English
+fa2250dca392802c129ed7edebf01536d6332907  # refactor(rp2040): translate port to English
+e3727a0a7b163b6fa830bf6f0407e16c05a30e08  # refactor(rp2350): translate port to English
+d80d64fdff73b23788a2f392c67c086d89efc00c  # refactor(esp32c5): translate port to English
+f6ddda4c30c6c03b1f210bf5e03f3f4ce8149ccd  # refactor(esp32s3): translate port to English
+4dcca25c6c3691433e90ae0efe62f5d2e78e40e5  # refactor(cli): translate CLI output, templates and tests to English
+3fd5be2b4313097fe12afee695d1c35f9113e6fc  # refactor(tools): translate helper scripts to English
+b54f00cbc390a6ff08e50718e5b29d7bf821997f  # docs: translate README and living design docs to English
+4bdf5a4112d6cb9f12d34994f208f32e74a1271d  # ci: translate workflow comments to English
+52f22aa46deda6338c769026a55d5b6aa697c34f  # refactor(differential): translate to English
+ed5cf35438cbe3d2a10e37299918103f23b3bcad  # refactor(apps): translate apps and their READMEs to English
+cb7b7f5253620c1de4ff7ee232c806d4e4bf91f3  # refactor(runtime): translate comments and strings to English
+fbf0ae96ce80e8dec522391a98f2ee44c4de0e3e  # refactor(ports): translate ports/common and ports/host to English
