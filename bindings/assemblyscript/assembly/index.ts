@@ -1,10 +1,10 @@
-// Wasmicon HAL のゲスト向けバインディング（AssemblyScript）。
+// Guest-side bindings of the Wasmicon HAL (AssemblyScript).
 //
-// generated.ts は wasmicon-gen の出力。手で編集しない。
-// ここは生成された @external 宣言に薄いラッパをかぶせたもの。
+// generated.ts is the output of wasmicon-gen; do not edit it by hand.
+// This file adds thin wrappers over the generated @external declarations.
 //
-// Rust 版と違い、AssemblyScript には Drop が無い（--runtime stub では
-// ファイナライザも動かない）。ハンドルの解放は明示的に close() を呼ぶ。
+// Unlike the Rust binding, AssemblyScript has no Drop (and no finalizer runs
+// under --runtime stub). Release a handle by calling close() explicitly.
 
 import {
   ErrorCode,
@@ -37,49 +37,49 @@ import {
 
 export { ErrorCode, GpioLevel as Level, GpioPinMode as PinMode, I2cSpeed as Speed, LogLevel, SpiMode };
 
-/// out ポインタ用の作業領域。ゲストは単一スレッドなので使い回してよい。
+/// Scratch space for out-pointers. The guest is single-threaded, so it can be reused.
 const out32 = new Uint32Array(1);
 
-/// 確保済みの GPIO ピン。
+/// An open GPIO pin.
 export class Pin {
   constructor(public handle: u32) {}
 
-  /// ピンを確保しモードを設定する。失敗したら null。
+  /// Opens the pin in the given mode. Returns null on failure.
   static open(index: u32, mode: GpioPinMode): Pin | null {
     const status = gpio_pin_open(index, mode as u32, out32.dataStart);
     if (status != 0) return null;
     return new Pin(out32[0]);
   }
 
-  /// モードを変更する。成功したら 0。
+  /// Changes the pin mode. Returns 0 on success.
   setMode(mode: GpioPinMode): u32 {
     return gpio_pin_set_mode(this.handle, mode as u32);
   }
 
-  /// 現在の入力レベルを読む。失敗したら -1。
+  /// Reads the current input level. Returns -1 on failure.
   read(): i32 {
     const status = gpio_pin_read(this.handle, out32.dataStart);
     if (status != 0) return -1;
     return out32[0] as i32;
   }
 
-  /// 出力レベルを設定する。成功したら 0。
+  /// Sets the output level. Returns 0 on success.
   write(level: GpioLevel): u32 {
     return gpio_pin_write(this.handle, level as u32);
   }
 
-  /// 出力レベルを反転する。成功したら 0。
+  /// Inverts the output level. Returns 0 on success.
   toggle(): u32 {
     return gpio_pin_toggle(this.handle);
   }
 
-  /// 解放する。AssemblyScript には Drop が無いので明示的に呼ぶ。
+  /// Releases the pin. Call it explicitly; AssemblyScript has no Drop.
   close(): void {
     gpio_pin_drop(this.handle);
   }
 }
 
-/// 確保済みの I2C バス。
+/// An open I2C bus.
 export class I2cBus {
   constructor(public handle: u32) {}
 
@@ -93,7 +93,7 @@ export class I2cBus {
     return i2c_bus_write(this.handle, address as u32, data.dataStart, data.length);
   }
 
-  /// buf の長さだけ読む。成功したら読めたバイト数、失敗したら -1。
+  /// Reads buf.length bytes. Returns the number of bytes read, or -1 on failure.
   read(address: u16, buf: Uint8Array): i32 {
     const cap = buf.length as u32;
     const status = i2c_bus_read(
@@ -129,7 +129,7 @@ export class I2cBus {
   }
 }
 
-/// 確保済みの SPI バス。CS / DC はゲストが gpio で制御する。
+/// An open SPI bus. The guest drives CS and DC through gpio.
 export class SpiBus {
   constructor(public handle: u32) {}
 
@@ -161,7 +161,7 @@ export class SpiBus {
   }
 }
 
-/// 時間。
+/// Monotonic time and blocking delays.
 export namespace time {
   export function nowUs(): u64 {
     return time_now_us();
@@ -174,7 +174,7 @@ export namespace time {
   }
 }
 
-/// デバッグ出力。AssemblyScript の string は UTF-16 なので UTF-8 に直して渡す。
+/// Debug output. AssemblyScript strings are UTF-16, so they are re-encoded as UTF-8.
 export namespace log {
   export function write(level: LogLevel, message: string): void {
     const bytes = String.UTF8.encode(message);
@@ -188,9 +188,9 @@ export namespace log {
   }
 }
 
-/// ボード固有のピン割り当て。
+/// Board-specific pin assignment.
 export namespace board {
-  /// 役割名から GPIO 番号を引く。割り当てが無ければ -1。
+  /// Looks up the GPIO number of a role name. Returns -1 if there is no assignment.
   export function pinByRole(role: string): i32 {
     const bytes = String.UTF8.encode(role);
     const status = board_pin_by_role(

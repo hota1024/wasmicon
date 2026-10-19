@@ -2,7 +2,7 @@
   "name": "@wasmicon/hal",
   "version": "0.1.0",
   "private": true,
-  "description": "Wasmicon HAL のゲスト向けバインディング（AssemblyScript）",
+  "description": "Guest-side bindings of the Wasmicon HAL (AssemblyScript)",
   "type": "module",
   "ascMain": "assembly/index.ts",
   "exports": {

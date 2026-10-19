@@ -1,9 +1,10 @@
-//! Wasmicon HAL のゲスト向けバインディング。
+//! Guest-side bindings of the Wasmicon HAL.
 //!
-//! `generated` は `wasmicon-gen` の出力（Phase 1）。手で編集しない。
-//! `hal` は生成された extern 宣言を包む安全なラッパ（docs/handoff.md §5 Phase 3）。
+//! `generated` is the output of `wasmicon-gen`; do not edit it by hand.
+//! `hal` wraps the generated extern declarations in a safe API.
 
 #![no_std]
+#![warn(clippy::undocumented_unsafe_blocks)]
 
 pub mod generated;
 mod hal;

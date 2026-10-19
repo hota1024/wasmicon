@@ -1,7 +1,7 @@
 [package]
 name = "wasmicon-hal"
-description = "ゲスト向け HAL バインディング。生成された extern 宣言 + 安全ラッパ"
-# guest workspace は apps/。root workspace から exclude されているので明示する。
+description = "Guest-side HAL bindings: generated extern declarations plus safe wrappers"
+# The guest workspace is apps/. The root workspace excludes this crate, so name it here.
 workspace = "../../apps"
 version.workspace = true
 edition.workspace = true

@@ -1,20 +1,20 @@
 #!/bin/sh
-# C のゲストを .wasm にビルドする。ゲストのビルドフラグの C 側の実体。
+# Builds a C guest into a .wasm file. The C side of the guest build flags.
 #
-# 使い方: sh bindings/c/build.sh <出力.wasm> <ソース.c>...
-# clang は WASMICON_CLANG で差し替えられる（既定: clang）。wasm32 ターゲットと
-# wasm-ld が要る（wasi-sdk、または LLVM の clang + lld）。
+# Requires: clang with the wasm32 target and wasm-ld (wasi-sdk, or LLVM clang + lld).
+#   WASMICON_CLANG selects another clang (default: clang).
+# Usage: sh bindings/c/build.sh <output.wasm> <source.c>...
 #
-# 値の意味は Rust の apps/.cargo/config.toml と同じ（docs/app-workflow.md §4.4）:
-# - 対応機能セット（abi-spec §6.1）。mvp から必要なものだけを足す。
-#   clang の既定 CPU は reference-types などを有効にするので使わない
-# - 線形メモリ 1 ページ（64 KiB）。RP2040 の 2 ページ上限に収める
-# - シャドースタック 8 KiB。wasm-ld の既定（64 KiB）は 1 ページを食い尽くす
-# - libc は使わない（-nostdlib）。_start / _initialize は使わない（--no-entry）
+# The values mean the same as in apps/.cargo/config.toml for Rust (docs/app-workflow.md §4.4):
+# - supported feature set (docs/abi-spec.md §6.1): start from mvp and add only what is needed.
+#   clang's default CPU enables reference-types and more, so it is not used
+# - one page (64 KiB) of linear memory, within the two-page limit of RP2040
+# - 8 KiB shadow stack; the wasm-ld default (64 KiB) would eat the whole page
+# - no libc (-nostdlib); _start / _initialize are not used (--no-entry)
 set -eu
 
 if [ $# -lt 2 ]; then
-    echo "使い方: sh $0 <出力.wasm> <ソース.c>..." >&2
+    echo "Usage: sh $0 <output.wasm> <source.c>..." >&2
     exit 2
 fi
 

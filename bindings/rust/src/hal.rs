@@ -1,22 +1,23 @@
-//! 生成された extern 宣言に薄い安全ラッパをかぶせる。
+//! Thin safe wrappers over the generated extern declarations.
 //!
-//! - ステータス i32 を `Result<_, ErrorCode>` にする（abi-spec §4.4）
-//! - ハンドルは `Drop` で `[resource-drop]` を呼ぶ（abi-spec §5.2）
-//! - `list<u8>` の戻り値は呼び出し側のバッファを渡す（abi-spec §4.4）
+//! - The i32 status becomes `Result<_, ErrorCode>` (docs/abi-spec.md §4.4)
+//! - Handles call `[resource-drop]` from `Drop` (docs/abi-spec.md §5.2)
+//! - `list<u8>` return values go into a buffer the caller passes (docs/abi-spec.md §4.4)
 //!
-//! ここには数値のハードコードを書かない。エラーコードもピン番号も
-//! 生成物と `board` インターフェース経由で得る。
+//! No numbers are hard-coded here. Error codes come from the generated files and
+//! pin numbers from the `board` interface.
 
 use crate::generated::types::ErrorCode;
 
-/// HAL の結果。
+/// Result of a HAL call.
 pub type Result<T> = core::result::Result<T, ErrorCode>;
 
-/// ステータスを `Result` に変換する。
+/// Converts a status value into a `Result`.
 ///
-/// `ErrorCode::from_status` は 0（成功）と範囲外の両方で `None` を返すので、
-/// 0 かどうかを先に見る。範囲外のステータスを成功として通すと、
-/// 例えば `Pin::open` が無効ハンドル 0（abi-spec §5.1）を包んで返してしまう。
+/// `ErrorCode::from_status` returns `None` both for 0 (success) and for out-of-range
+/// values, so 0 is checked first. Treating an out-of-range status as success would,
+/// for example, let `Pin::open` wrap and return the invalid handle 0
+/// (docs/abi-spec.md §5.1).
 #[inline]
 fn check(status: u32) -> Result<()> {
     if status == 0 {
@@ -25,117 +26,132 @@ fn check(status: u32) -> Result<()> {
     Err(ErrorCode::from_status(status).unwrap_or(ErrorCode::Io))
 }
 
-/// 汎用デジタル入出力。
+/// General-purpose digital I/O.
 pub mod gpio {
     use super::{Result, check};
     use crate::generated::gpio as raw;
 
     pub use crate::generated::gpio::{Level, PinMode};
 
-    /// 確保済みの GPIO ピン。`Drop` で解放する。
+    /// An open GPIO pin. `Drop` releases it.
     pub struct Pin(u32);
 
     impl Pin {
-        /// ピンを確保しモードを設定する。
+        /// Opens the pin in the given mode.
         ///
         /// # Errors
-        /// 既に確保済みなら `Busy`、範囲外なら `InvalidArgument`。
+        /// `Busy` if the pin is already open, `InvalidArgument` if `index` is out of range.
         pub fn open(index: u32, mode: PinMode) -> Result<Pin> {
             let mut h: u32 = 0;
-            // SAFETY: h はスタック上の有効な u32。ホストは成功時のみ書き込む。
+            // SAFETY: `h` is a live `u32` on this stack frame and `&raw mut h` points to it for
+            // the whole call. The host writes at most 4 bytes there, and only on success.
             check(unsafe { raw::pin_open(index, mode as u32, &raw mut h) })?;
             Ok(Pin(h))
         }
 
-        /// モードを変更する。
+        /// Changes the pin mode.
         ///
         /// # Errors
-        /// ハンドルが無効なら `InvalidHandle`。
+        /// `InvalidHandle` if the handle is invalid.
         pub fn set_mode(&self, mode: PinMode) -> Result<()> {
-            // SAFETY: self.0 は open が返した有効なハンドル。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. The other argument is a scalar passed by value.
             check(unsafe { raw::pin_set_mode(self.0, mode as u32) })
         }
 
-        /// 現在の入力レベルを読む。
+        /// Reads the current input level.
         ///
         /// # Errors
-        /// ハンドルが無効なら `InvalidHandle`。
+        /// `InvalidHandle` if the handle is invalid.
         pub fn read(&self) -> Result<Level> {
             let mut v: u32 = 0;
-            // SAFETY: v はスタック上の有効な u32。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `v` is a live `u32` on this stack frame and `&raw mut v`
+            // points to it for the whole call; the host writes at most 4 bytes there.
             check(unsafe { raw::pin_read(self.0, &raw mut v) })?;
-            // ホストが範囲外の値を返すことは仕様上ないが、握りつぶさない。
+            // The spec never lets the host return an out-of-range value, but do not hide one.
             Level::from_u32(v).ok_or(super::ErrorCode::Io)
         }
 
-        /// 出力レベルを設定する。
+        /// Sets the output level.
         ///
         /// # Errors
-        /// 入力モードなら `InvalidArgument`。
+        /// `InvalidArgument` in input mode.
         pub fn write(&self, level: Level) -> Result<()> {
-            // SAFETY: self.0 は有効なハンドル。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. The other argument is a scalar passed by value.
             check(unsafe { raw::pin_write(self.0, level as u32) })
         }
 
-        /// 出力レベルを反転する。
+        /// Inverts the output level.
         ///
         /// # Errors
-        /// 入力モードなら `InvalidArgument`。
+        /// `InvalidArgument` in input mode.
         pub fn toggle(&self) -> Result<()> {
-            // SAFETY: self.0 は有効なハンドル。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. There are no pointer arguments.
             check(unsafe { raw::pin_toggle(self.0) })
         }
     }
 
     impl Drop for Pin {
         fn drop(&mut self) {
-            // SAFETY: 無効なハンドルの drop は無視される（abi-spec §5.2）。
+            // SAFETY: `self.0` is the handle `open` returned and this is its only release.
+            // The host ignores an invalid handle without an error or a trap
+            // (docs/abi-spec.md §5.2). There are no pointer arguments.
             unsafe { raw::pin_drop(self.0) }
         }
     }
 }
 
-/// I2C マスター。
+/// I2C master.
 pub mod i2c {
     use super::{Result, check};
     use crate::generated::i2c as raw;
 
     pub use crate::generated::i2c::Speed;
 
-    /// 確保済みの I2C バス。
+    /// An open I2C bus. `Drop` releases it.
     pub struct Bus(u32);
 
     impl Bus {
-        /// バスを初期化して確保する。
+        /// Initializes and opens the bus.
         ///
         /// # Errors
-        /// 既に確保済みなら `Busy`。
+        /// `Busy` if the bus is already open.
         pub fn open(index: u32, speed: Speed) -> Result<Bus> {
             let mut h: u32 = 0;
-            // SAFETY: h はスタック上の有効な u32。
+            // SAFETY: `h` is a live `u32` on this stack frame and `&raw mut h` points to it for
+            // the whole call. The host writes at most 4 bytes there, and only on success.
             check(unsafe { raw::bus_open(index, speed as u32, &raw mut h) })?;
             Ok(Bus(h))
         }
 
-        /// `data` を書く。
+        /// Writes `data` to the device at `address`.
         ///
         /// # Errors
-        /// NACK なら `Nack`、長さ 0 なら `InvalidArgument`。
+        /// `Nack` if the device answers with NACK, `InvalidArgument` if `data` is empty.
         pub fn write(&self, address: u16, data: &[u8]) -> Result<()> {
-            // SAFETY: data のポインタと長さは対になっている。ホストは読むだけ。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `data.as_ptr()` and `data.len()` describe one live slice that
+            // outlives the call; the host reads at most `len` bytes from it and writes nothing.
             check(unsafe {
                 raw::bus_write(self.0, u32::from(address), data.as_ptr(), data.len() as u32)
             })
         }
 
-        /// `buf` の長さだけ読む。読めたバイト数を返す。
+        /// Reads `buf.len()` bytes from the device at `address`. Returns the number of bytes
+        /// read.
         ///
         /// # Errors
-        /// NACK なら `Nack`。
+        /// `Nack` if the device answers with NACK.
         pub fn read(&self, address: u16, buf: &mut [u8]) -> Result<usize> {
             let mut len: u32 = 0;
             let cap = buf.len() as u32;
-            // SAFETY: buf は cap バイトの可変スライス。len はスタック上の u32。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `buf.as_mut_ptr()` and `cap` describe one live mutable slice
+            // that outlives the call; the host writes at most `cap` bytes into it. `len` is a
+            // live `u32` on this stack frame; the host writes at most 4 bytes there.
             check(unsafe {
                 raw::bus_read(
                     self.0,
@@ -149,14 +165,19 @@ pub mod i2c {
             Ok(len as usize)
         }
 
-        /// `data` を書いてから `buf` の長さだけ読む（Repeated START）。
+        /// Writes `data`, then reads `buf.len()` bytes after a repeated START.
         ///
         /// # Errors
-        /// NACK なら `Nack`。
+        /// `Nack` if the device answers with NACK.
         pub fn write_read(&self, address: u16, data: &[u8], buf: &mut [u8]) -> Result<usize> {
             let mut len: u32 = 0;
             let cap = buf.len() as u32;
-            // SAFETY: data / buf ともポインタと長さが対になっている。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `data.as_ptr()` and `data.len()` describe one live slice the
+            // host only reads; `buf.as_mut_ptr()` and `cap` describe one live mutable slice
+            // the host writes at most `cap` bytes into. Both outlive the call and cannot
+            // overlap (`&` and `&mut`). `len` is a live `u32` on this stack frame; the host
+            // writes at most 4 bytes there.
             check(unsafe {
                 raw::bus_write_read(
                     self.0,
@@ -175,50 +196,60 @@ pub mod i2c {
 
     impl Drop for Bus {
         fn drop(&mut self) {
-            // SAFETY: 無効なハンドルの drop は無視される。
+            // SAFETY: `self.0` is the handle `open` returned and this is its only release.
+            // The host ignores an invalid handle without an error or a trap
+            // (docs/abi-spec.md §5.2). There are no pointer arguments.
             unsafe { raw::bus_drop(self.0) }
         }
     }
 }
 
-/// SPI マスター。CS / DC はゲストが `gpio` で制御する（abi-spec §2 の設計）。
+/// SPI master. The guest drives CS and DC through `gpio` (docs/decisions.md D-08).
 pub mod spi {
     use super::{Result, check};
     use crate::generated::spi as raw;
 
     pub use crate::generated::spi::Mode;
 
-    /// 確保済みの SPI バス。
+    /// An open SPI bus. `Drop` releases it.
     pub struct Bus(u32);
 
     impl Bus {
-        /// バスを初期化して確保する。
+        /// Initializes and opens the bus.
         ///
         /// # Errors
-        /// 既に確保済みなら `Busy`。
+        /// `Busy` if the bus is already open.
         pub fn open(index: u32, frequency_hz: u32, mode: Mode) -> Result<Bus> {
             let mut h: u32 = 0;
-            // SAFETY: h はスタック上の有効な u32。
+            // SAFETY: `h` is a live `u32` on this stack frame and `&raw mut h` points to it for
+            // the whole call. The host writes at most 4 bytes there, and only on success.
             check(unsafe { raw::bus_open(index, frequency_hz, mode as u32, &raw mut h) })?;
             Ok(Bus(h))
         }
 
-        /// `data` を送信する。受信は捨てる。描画のホットパス。
+        /// Sends `data` and discards the received bytes. The hot path of display drawing.
         ///
         /// # Errors
-        /// 長さ 0 なら `InvalidArgument`。
+        /// `InvalidArgument` if `data` is empty.
         pub fn write(&self, data: &[u8]) -> Result<()> {
-            // SAFETY: data のポインタと長さは対になっている。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `data.as_ptr()` and `data.len()` describe one live slice that
+            // outlives the call; the host reads at most `len` bytes from it and writes nothing.
             check(unsafe { raw::bus_write(self.0, data.as_ptr(), data.len() as u32) })
         }
 
-        /// 全二重転送。`buf` は `data` 以上の長さが要る。
+        /// Full-duplex transfer. `buf` must be at least as long as `data`.
         ///
         /// # Errors
-        /// `buf` が短ければ `InvalidArgument`。
+        /// `InvalidArgument` if `buf` is shorter than `data`.
         pub fn transfer(&self, data: &[u8], buf: &mut [u8]) -> Result<usize> {
             let mut len: u32 = 0;
-            // SAFETY: data / buf ともポインタと長さが対になっている。
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `data.as_ptr()` and `data.len()` describe one live slice the
+            // host only reads; `buf.as_mut_ptr()` and `buf.len()` describe one live mutable
+            // slice the host writes at most `buf.len()` bytes into. Both outlive the call and
+            // cannot overlap (`&` and `&mut`). `len` is a live `u32` on this stack frame; the
+            // host writes at most 4 bytes there.
             check(unsafe {
                 raw::bus_transfer(
                     self.0,
@@ -235,73 +266,80 @@ pub mod spi {
 
     impl Drop for Bus {
         fn drop(&mut self) {
-            // SAFETY: 無効なハンドルの drop は無視される。
+            // SAFETY: `self.0` is the handle `open` returned and this is its only release.
+            // The host ignores an invalid handle without an error or a trap
+            // (docs/abi-spec.md §5.2). There are no pointer arguments.
             unsafe { raw::bus_drop(self.0) }
         }
     }
 }
 
-/// 時間。
+/// Monotonic time and blocking delays.
 pub mod time {
     use crate::generated::time as raw;
 
-    /// 起動からの単調増加マイクロ秒。
+    /// Monotonic microseconds since boot.
     #[must_use]
     pub fn now_us() -> u64 {
-        // SAFETY: 引数なし・副作用なしの読み出し。
+        // SAFETY: the import takes no arguments and touches no guest memory; it only returns
+        // a scalar.
         unsafe { raw::now_us() }
     }
 
-    /// ミリ秒待つ。
+    /// Blocks for `ms` milliseconds.
     pub fn sleep_ms(ms: u32) {
-        // SAFETY: 引数はスカラーのみ。
+        // SAFETY: the import takes one scalar argument by value and touches no guest memory.
         unsafe { raw::sleep_ms(ms) }
     }
 
-    /// マイクロ秒待つ。
+    /// Blocks for `us` microseconds.
     pub fn sleep_us(us: u32) {
-        // SAFETY: 引数はスカラーのみ。
+        // SAFETY: the import takes one scalar argument by value and touches no guest memory.
         unsafe { raw::sleep_us(us) }
     }
 }
 
-/// デバッグ出力。
+/// Debug output.
 pub mod log {
     use crate::generated::log as raw;
 
     pub use crate::generated::log::Level;
 
-    /// メッセージを出す。改行はホストが付ける。
+    /// Writes a message at `level`. The host appends the newline.
     pub fn write(level: Level, message: &str) {
-        // SAFETY: message のポインタと長さは対になっている。ホストは読むだけ。
+        // SAFETY: `message.as_ptr()` and `message.len()` describe one live UTF-8 slice that
+        // outlives the call; the host reads at most `len` bytes from it and writes nothing.
         unsafe { raw::log(level as u32, message.as_ptr(), message.len() as u32) }
     }
 
-    /// `info` で出す。
+    /// Writes a message at `info`.
     pub fn info(message: &str) {
         write(Level::Info, message);
     }
 
-    /// `error` で出す。
+    /// Writes a message at `error`.
     pub fn error(message: &str) {
         write(Level::Error, message);
     }
 }
 
-/// ボード固有のピン割り当て。
+/// Board-specific pin assignment.
 pub mod board {
     use super::{Result, check};
     use crate::generated::board as raw;
 
-    /// 役割名から GPIO 番号を引く。
+    /// Looks up the GPIO number of a role name.
     ///
-    /// これを使うと同一バイナリが複数のボードで動く（abi-spec §8）。
+    /// Lets the same binary run on several boards (docs/abi-spec.md §8).
     ///
     /// # Errors
-    /// そのボードに割り当てが無ければ `Unsupported`。
+    /// `Unsupported` if the board has no assignment for the role.
     pub fn pin_by_role(role: &str) -> Result<u32> {
         let mut index: u32 = 0;
-        // SAFETY: role のポインタと長さは対になっている。index はスタック上の u32。
+        // SAFETY: `role.as_ptr()` and `role.len()` describe one live UTF-8 slice that outlives
+        // the call; the host only reads it. `index` is a live `u32` on this stack frame and
+        // `&raw mut index` points to it for the whole call; the host writes at most 4 bytes
+        // there, and only on success.
         check(unsafe { raw::pin_by_role(role.as_ptr(), role.len() as u32, &raw mut index) })?;
         Ok(index)
     }
