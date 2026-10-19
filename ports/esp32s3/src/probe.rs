@@ -1,17 +1,18 @@
-//! 実機の切り分け用。**ゲストを走らせる前に、ポート層 (`Board`) を直接叩く。**
+//! Hardware diagnosis: drives the port layer (`Board`) directly, before the
+//! guest runs.
 //!
-//! `--features hw-probe` のときだけ `main` が呼ぶ。トレースが host と完全一致して
-//! いても画面が出ないとき、「ポートのレジスタ設定がパッドまで届いているか」は
-//! トレースからは分からない。ここが唯一それを確かめられる場所:
+//! Called from `main` only with `--features hw-probe`. When the trace matches
+//! the host exactly but the screen stays blank, the trace cannot tell whether
+//! the port's register setup reaches the pads. This is the one place that can:
 //!
-//! - **ILI9341 の ID を読む**（`0xD3` / `0x04`）。`SDO`/`MISO` を `GPIO13` に
-//!   繋いでいれば `0xD3` は `00 00 93 41` を返す。返ってくれば
-//!   CS / DC / SCK / MOSI / MISO が全て生きていることになる。
-//!   `00 00 00 00` や `ff ff ff ff` なら経路が死んでいる
-//! - **DC を 1 Hz で振る**。テスターや LED で当たれば、GPIO がパッドまで
-//!   届いているかを目で確認できる
+//! - Read the ILI9341 ID (`0xD3` / `0x04`). With `SDO`/`MISO` wired to
+//!   `GPIO13`, `0xD3` returns `00 00 93 41`; a reply proves that CS / DC /
+//!   SCK / MOSI / MISO all work. `00 00 00 00` or `ff ff ff ff` means a dead
+//!   path.
+//! - Toggle DC at 1 Hz, so a meter or an LED shows whether the GPIO reaches
+//!   the pad.
 //!
-//! 切り分け専用。済んだら feature ごと落として構わない。
+//! Diagnosis only; the feature can be dropped once it has served.
 
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::spi::Mode as SpiMode;
@@ -21,23 +22,23 @@ use wasmicon_port::Board;
 
 use crate::board::{EspBoard, Serial};
 
-/// 役割名で引ける番号だが、ここは `Board` を直接叩くので定数で持つ
-/// （abi-spec §8 の ESP32-S3 の表と同じ）。
+/// These can be looked up by role, but this drives `Board` directly, so they
+/// are constants (the ESP32-S3 table in docs/abi-spec.md §8).
 const CS: u32 = 10;
 const DC: u32 = 14;
 const RST: u32 = 15;
 
-/// 読み出しは遅いほうが通りやすいので、デモより落としてある。
+/// Slower reads are more likely to succeed, so this is below the demo's rate.
 const SPI_HZ: u32 = 1_000_000;
 
-/// DC を 1 Hz で振る回数。
+/// Number of 1 Hz DC toggles.
 const WIGGLE: u32 = 10;
 
-/// 画面の大きさ（横向き）。
+/// Screen size (landscape).
 const WIDTH: u16 = 320;
 const HEIGHT: u16 = 240;
 
-/// 1 行分のバイト数。
+/// Bytes per row.
 const ROW_BYTES: usize = WIDTH as usize * 2;
 
 fn say<S: Serial>(b: &mut EspBoard<S>, s: &str) {
@@ -45,12 +46,12 @@ fn say<S: Serial>(b: &mut EspBoard<S>, s: &str) {
     b.serial().write(b"\r\n");
 }
 
-/// `<label>: ok` か `<label>: err=<n>` を出す。
+/// Prints `<label>: ok` or `<label>: err=<n>`.
 ///
-/// `<n>` は **abi-spec §4.1 のステータス（discriminant + 1）**。`e as u32` では
-/// なく `status()` を通す: `invalid-argument` の discriminant は 0 なので、
-/// 生の値を出すと失敗が `err=0` になって成功と見分けが付かず、トレースに出る
-/// 番号とも 1 ずれる。
+/// `<n>` is the status of docs/abi-spec.md §4.1 (discriminant + 1), through
+/// `status()` rather than `e as u32`: the discriminant of `invalid-argument`
+/// is 0, so the raw value would print a failure as `err=0`, indistinguishable
+/// from success and off by one from the number in the trace.
 fn say_result<S: Serial>(b: &mut EspBoard<S>, label: &str, r: Result<(), ErrorCode>) {
     let mut raw = [0u8; 64];
     let mut out = Buf::new(&mut raw);
@@ -66,7 +67,7 @@ fn say_result<S: Serial>(b: &mut EspBoard<S>, label: &str, r: Result<(), ErrorCo
     b.serial().write(b"\r\n");
 }
 
-/// 読んだバイト列を 16 進で出す。
+/// Prints the bytes read, in hex.
 fn say_bytes<S: Serial>(b: &mut EspBoard<S>, label: &str, data: &[u8]) {
     let mut raw = [0u8; 96];
     let mut out = Buf::new(&mut raw);
@@ -79,7 +80,8 @@ fn say_bytes<S: Serial>(b: &mut EspBoard<S>, label: &str, data: &[u8]) {
     b.serial().write(b"\r\n");
 }
 
-/// CS を握って 1 コマンド（+ 引数）を送る。ゲストの `ili9341.rs` と同じ手順。
+/// Sends one command (plus arguments) with CS held; the same sequence as the
+/// guest's `ili9341.rs`.
 fn send<S: Serial>(b: &mut EspBoard<S>, cmd: u8, args: &[u8]) -> Result<(), ErrorCode> {
     b.gpio_write(CS, Level::Low)?;
     b.gpio_write(DC, Level::Low)?;
@@ -91,7 +93,8 @@ fn send<S: Serial>(b: &mut EspBoard<S>, cmd: u8, args: &[u8]) -> Result<(), Erro
     b.gpio_write(CS, Level::High)
 }
 
-/// コマンドを送って `n` バイト読む。ILI9341 は先頭 1 バイトがダミー。
+/// Sends a command and reads `n` bytes. The first byte from the ILI9341 is a
+/// dummy.
 fn read_id<S: Serial>(b: &mut EspBoard<S>, cmd: u8, n: usize) -> Result<[u8; 5], ErrorCode> {
     let mut rx = [0u8; 5];
     b.gpio_write(CS, Level::Low)?;
@@ -104,8 +107,9 @@ fn read_id<S: Serial>(b: &mut EspBoard<S>, cmd: u8, n: usize) -> Result<[u8; 5],
     Ok(rx)
 }
 
-/// 画面全体を 1 色で塗る。**ゲストもインタプリタも通さずに SPI が生きているかを
-/// 目で見るためのもの。** 赤くなればポート層の SPI とピンは全部生きている。
+/// Fills the whole screen with one color, to see with your own eyes whether
+/// SPI works without the guest or the interpreter. Red means the port layer's
+/// SPI and pins all work.
 fn fill_screen<S: Serial>(b: &mut EspBoard<S>, color: u16) -> Result<(), ErrorCode> {
     let x1 = WIDTH - 1;
     let y1 = HEIGHT - 1;
@@ -132,15 +136,17 @@ fn fill_screen<S: Serial>(b: &mut EspBoard<S>, color: u16) -> Result<(), ErrorCo
     b.gpio_write(CS, Level::High)
 }
 
-// **MOSI をソフトだけで読み返す検査は成立しない。** MISO を MOSI と同じピンに
-// 向けて全二重転送すれば読み返せるはずだが、ESP32-S3 では GPIO11 が FSPID
-// そのものなので、`with_mosi` は GPIO マトリクスを使わず IO_MUX の直結機能を
-// 選ぶ。そこへ `with_miso` を同じピンに向けると `set_alternate_function` が
-// `mcu_sel` を GPIO 機能に書き換え、**直結していた MOSI 出力が切り離される**。
-// 実際に試すと送ったバイトではなく `ff ff ff ff` が返る（浮いたパッドを
-// 読んでいる）。MOSI がパッドに出ているかは外から当てるしかない。
+// Reading MOSI back in software alone cannot work. Routing MISO to the same
+// pin as MOSI for a full-duplex transfer should read the bytes back, but on
+// the ESP32-S3 GPIO11 is FSPID itself, so `with_mosi` picks the direct IO_MUX
+// function instead of the GPIO matrix. Pointing `with_miso` at the same pin
+// then makes `set_alternate_function` rewrite `mcu_sel` to the GPIO function,
+// which disconnects the direct MOSI output. In practice the read returns
+// `ff ff ff ff` (a floating pad), not the bytes sent. Whether MOSI reaches
+// the pad can only be probed from outside.
 
-/// 順に試す。失敗しても止めない（どこまで届くかを見たい）。
+/// Runs the checks in order and does not stop on failure (the point is to see
+/// how far they get).
 pub fn run<S: Serial>(b: &mut EspBoard<S>) {
     say(b, "probe: start (hw-probe)");
     say(
@@ -165,17 +171,17 @@ pub fn run<S: Serial>(b: &mut EspBoard<S>) {
     let r = b.spi_open(0, SPI_HZ, SpiMode::Mode0);
     say_result(b, "probe: spi_open(0, 1MHz, mode0)", r);
 
-    // 初期化列（ゲストと同じ。apps/README.md §2）。
+    // Init sequence (the same as the guest's; apps/README.md §2).
     let mut init = send(b, 0x01, &[]); // SWRESET
     b.sleep_ms(120);
     init = init.and_then(|()| send(b, 0x11, &[])); // SLPOUT
     b.sleep_ms(120);
     init = init.and_then(|()| send(b, 0x3A, &[0x55])); // PIXFMT = RGB565
-    init = init.and_then(|()| send(b, 0x36, &[0x28])); // MADCTL = 横向き
+    init = init.and_then(|()| send(b, 0x36, &[0x28])); // MADCTL = landscape
     init = init.and_then(|()| send(b, 0x29, &[])); // DISPON
     say_result(b, "probe: init sequence", init);
 
-    // ここが本題。MISO が繋がっていれば 0xD3 は 00 00 93 41 を返す。
+    // The main check. With MISO wired, 0xD3 returns 00 00 93 41.
     match read_id(b, 0xD3, 5) {
         Ok(rx) => say_bytes(b, "probe: 0xD3 (want 00 00 93 41) ->", &rx[..5]),
         Err(e) => say_result(b, "probe: 0xD3", Err(e)),
@@ -185,14 +191,14 @@ pub fn run<S: Serial>(b: &mut EspBoard<S>) {
         Err(e) => say_result(b, "probe: 0x04", Err(e)),
     }
 
-    // 全画面を赤で塗る。ここで赤くなればポート層の SPI とピンは全部生きている。
-    // 同時に SCK / MOSI に 150 KB ぶんのクロックが出るので、そちらに
-    // USB シリアル変換の RXD を当てていれば大量のバイトが観測できる。
+    // Fill the screen red. Red here means the port layer's SPI and pins all
+    // work. It also puts 150 KB worth of clocks on SCK / MOSI, so a USB-serial
+    // RXD on either of them shows a flood of bytes.
     say(b, "probe: filling screen red (port layer only)");
     let r = fill_screen(b, 0xF800);
     say_result(b, "probe: fill_screen", r);
 
-    // GPIO がパッドまで届いているかをテスター / LED で見るための 1 Hz。
+    // 1 Hz on DC, so a meter or an LED shows whether the GPIO reaches the pad.
     say(b, "probe: wiggling DC (GPIO14) at 1Hz for 10s");
     let mut i = 0;
     while i < WIGGLE {

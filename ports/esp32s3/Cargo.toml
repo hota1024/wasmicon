@@ -1,46 +1,49 @@
-# ESP32-S3 (DevKitC-1) 用ポート。
-# Xtensa は upstream Rust 非対応なので espup が入れる esp toolchain を使う。
-# root workspace とは toolchain もターゲットも違うので別 workspace。
+# Port for the ESP32-S3 (DevKitC-1).
+# Xtensa is not supported by upstream Rust, so this uses the esp toolchain
+# from espup (docs/decisions.md P-10). Its own workspace: toolchain and target
+# differ from the root workspace.
 [workspace]
 
 [package]
 name = "wasmicon-esp32s3"
-description = "Wasmicon の ESP32-S3 ポート"
+description = "Wasmicon port for the ESP32-S3"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 
 [features]
-# docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+# Build that writes the trace. On by default.
 default = ["trace"]
 trace = []
-# 実機の切り分け用。ゲストの前にポート層を直接叩いて ILI9341 の ID を読む
-# （src/probe.rs）。切り分け専用なので既定では入れない。
+# Hardware diagnosis: drives the port layer directly before the guest runs and
+# reads the ILI9341 ID (src/probe.rs). Diagnosis only, so off by default.
 hw-probe = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }
 wasmicon-port = { path = "../common" }
 esp-hal = { version = "1.1", features = ["esp32s3", "unstable"] }
-# ESP-IDF の 2 段目ブートローダが要求する app descriptor（`esp_app_desc!`）のため。
-# これが無いと espflash 4.5 が「App Descriptor missing」で書き込みを拒否する。
-# パーティションテーブルの検査は使わないので default-features は切る。
+# For the app descriptor (`esp_app_desc!`) that the ESP-IDF second-stage
+# bootloader requires; without it espflash 4.5 refuses to flash
+# ("App Descriptor missing"). The partition-table check is unused, so default
+# features are off.
 esp-bootloader-esp-idf = { version = "0.6", default-features = false, features = [
     "esp32s3",
 ] }
-# アプリスロットをフラッシュから読む（docs/app-workflow.md §3.3）。
-# ESP32-S3 は任意オフセットが XIP にマップされている前提を置けないので、
-# Pico 系と違って RAM に写す。写すのは**ヘッダが持つ長さの分だけ**
-# （スロットは 64 KiB だがアプリは数 KB。DRAM はほぼ使い切っている）。
+# Reads the app slot from flash (docs/app-workflow.md §3.3). The ESP32-S3
+# cannot assume an arbitrary offset is mapped into XIP, so unlike the Pico
+# ports the app is copied to RAM, and only the length in the header (the slot
+# is 64 KiB, an app a few KB, and DRAM is nearly full).
 esp-storage = { version = "0.10", features = ["esp32s3"] }
-# 出力は自前の UART で行うので esp-println / esp-backtrace は入れない。
-# panic handler は自前で持つ（docs/handoff.md §3 #4: ログを出して停止、再起動しない）。
+# Output goes through our own UART, so esp-println / esp-backtrace are not used.
+# The panic handler is our own (docs/decisions.md A-04: log and halt, no restart).
 
 [profile.release]
-# 速度優先（2026-10-11。docs/TODO.md §4）。rp2350 の実機で、z と比べて計算が
-# 16〜35%、host call が 7〜37% 速くなった（コードは 71 → 116 KB。フラッシュは
-# 十分に余っている）。インタプリタとポートの HAL だけ 3 にする上書きも試したが、
-# fat LTO の最後の最適化が z で走るせいか、呼び出しと host call が速くならなかった。
+# Speed over size (docs/TODO.md §4). On the RP2350, compared with opt-level z,
+# computation ran 16-35% faster and host calls 7-37% faster for 71 -> 116 KB
+# of code; flash has plenty of room. Raising only the interpreter and the port
+# HAL to 3 did not speed up calls or host calls, probably because fat LTO runs
+# its final optimization at z.
 opt-level = 3
 lto = "fat"
 codegen-units = 1

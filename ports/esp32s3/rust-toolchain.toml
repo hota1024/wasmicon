@@ -1,3 +1,4 @@
 [toolchain]
-# espup が入れる Xtensa 対応のフォーク。
+# The espup fork with Xtensa support (docs/decisions.md P-10); the other four
+# rust-toolchain.toml files pin upstream Rust. See README.md "Toolchain".
 channel = "esp"

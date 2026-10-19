@@ -1,5 +1,5 @@
-# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
-# ビルドは `cd ports/esp32s3 && cargo build --release`。
+# cargo reads .cargo/config.toml relative to the current directory, so the
+# target lives here and the port is built from ports/esp32s3 (through build.sh).
 [build]
 target = "xtensa-esp32s3-none-elf"
 
@@ -8,5 +8,5 @@ runner = "espflash flash --monitor"
 rustflags = ["-Clink-arg=-Tlinkall.x"]
 
 [unstable]
-# Xtensa 向けのプリビルド core は配られていないので自前で組む。
+# No prebuilt core is shipped for Xtensa, so it is built from source.
 build-std = ["core"]
