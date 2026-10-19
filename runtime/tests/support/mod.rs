@@ -1,11 +1,11 @@
-//! spec テストランナーの補助（`spectest` シムと値の突き合わせ）。
+//! Helpers for the spec test runner: the `spectest` shim and value matching.
 //!
-//! `runtime/tests/spec.rs` から `include!` して使う。単独のテストではない。
+//! Used by `runtime/tests/spec.rs` as `mod support`. Not a test on its own.
 
 use wasmicon_core::error::{Error, Result};
 use wasmicon_core::instance::{Extern, ExternType, Resolver};
 
-/// spec testsuite が import する `spectest` モジュールの最小実装。
+/// Minimal implementation of the `spectest` module the spec testsuite imports.
 pub struct SpecTest;
 
 impl Resolver for SpecTest {
@@ -16,7 +16,7 @@ impl Resolver for SpecTest {
         match ty {
             ExternType::Func(_) if name.starts_with("print") => Some(Extern::Func(0)),
             ExternType::Global(g) => {
-                // spectest のグローバルは全て 666 相当。
+                // Every spectest global is 666 (or 666.6).
                 let v = match (name, g.val) {
                     ("global_i32", _) => 666u64,
                     ("global_i64", _) => 666u64,
@@ -37,12 +37,12 @@ impl Resolver for SpecTest {
         _results: &mut [u64],
         _mem: &mut [u8],
     ) -> Result<()> {
-        // print* は何もしない。戻り値は無い。
+        // print* does nothing and returns nothing.
         Ok(())
     }
 }
 
-/// 期待値。NaN は「どの NaN でもよい」種別がある。
+/// Expected value. NaN has "any NaN of this class" variants.
 pub enum Expected {
     Bits32(u32),
     Bits64(u64),
@@ -50,11 +50,11 @@ pub enum Expected {
     NanArithmetic32,
     NanCanonical64,
     NanArithmetic64,
-    /// 対応機能セット外の値（v128 や参照型）。
+    /// A value outside the supported feature set (v128 or a reference type).
     Unsupported,
 }
 
-/// JSON の値をスタックスロットへ。
+/// Converts a JSON value to a stack slot.
 pub fn parse_arg(v: &serde_json::Value) -> Option<u64> {
     let t = v["type"].as_str()?;
     let s = v["value"].as_str()?;
@@ -65,7 +65,7 @@ pub fn parse_arg(v: &serde_json::Value) -> Option<u64> {
     }
 }
 
-/// JSON の期待値を解釈する。
+/// Interprets a JSON expected value.
 pub fn parse_expected(v: &serde_json::Value) -> Expected {
     let Some(t) = v["type"].as_str() else {
         return Expected::Unsupported;
@@ -87,7 +87,7 @@ pub fn parse_expected(v: &serde_json::Value) -> Expected {
 }
 
 impl Expected {
-    /// 実際の値と一致するか。
+    /// Whether the actual value matches.
     pub fn matches(&self, actual: u64) -> bool {
         match self {
             Expected::Bits32(b) => actual as u32 == *b,
@@ -112,7 +112,7 @@ impl Expected {
     }
 }
 
-/// エラーがトラップか（`assert_trap` の判定）。
+/// Whether the error is a trap (the `assert_trap` check).
 pub fn is_trap(e: &Error) -> bool {
     matches!(e, Error::Trap(_))
 }

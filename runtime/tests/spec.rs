@@ -1,16 +1,19 @@
-//! WebAssembly spec testsuite ランナー（docs/handoff.md §5 Phase 2 の完了条件）。
+//! WebAssembly spec testsuite runner.
 //!
-//! `third_party/testsuite`（`tools/fetch-testsuite.sh` が固定 SHA で取得）の
-//! `.wast` を `wasm-tools json-from-wast` で JSON に変換し、コマンドを順に実行する。
+//! Converts the `.wast` files in `third_party/testsuite` (fetched at a pinned
+//! SHA by `tools/fetch-testsuite.sh`) to JSON with `wasm-tools json-from-wast`
+//! and runs the commands in order.
 //!
-//! 「全通過」の定義: `FILES` に挙げた `.wast` の、対応済みコマンド種別が全て通ること。
-//! 除外は `EXCLUDED` に理由つきで列挙する（docs/handoff.md §3 のデフォルトと同じ扱い）。
+//! "All passing" means: every supported command kind in every `.wast` listed in
+//! `FILES` passes. Exclusions are listed in `EXCLUDED` with a reason; they are
+//! adopted defaults, not frozen decisions.
 //!
-//! スキップの内訳は実行時に出る（`-- --nocapture`）。手で書くと必ずずれるので
-//! ここには書かない。JSON を静的に数えた値ともずれる: 機能セット外と判定した
-//! チャンクは後続のコマンドまで「機能セット外」に数えるため。
+//! The skip breakdown is printed at run time (`-- --nocapture`). It is not
+//! written here because a hand-maintained count always drifts, and it differs
+//! from a static count of the JSON: once a chunk is judged outside the feature
+//! set, its remaining commands are counted as outside the feature set too.
 //!
-//! 開発用に全ファイルを走らせて現状を一覧する調査モードがある:
+//! A survey mode for development runs every file and lists the current state:
 //! `cargo test -p wasmicon-core --test spec -- --ignored --nocapture`
 
 use std::path::{Path, PathBuf};
@@ -21,10 +24,10 @@ mod support;
 use support::{SpecTest, is_trap, parse_arg, parse_expected};
 use wasmicon_core::{Arena, Config, Error, ErrorKind, Exec, decode, instantiate, invoke, validate};
 
-/// 実行対象の `.wast`。段階が進むごとに増やす。
+/// The `.wast` files that run. Grows as support grows.
 const FILES: &[&str] = &[
-    // Wasm コア仕様のうち、対応機能セット（docs/handoff.md §2-7）に収まるファイル。
-    // ここに無いものは EXCLUDED の理由で外している。
+    // The core spec files that fit the supported feature set (docs/decisions.md D-07).
+    // Everything else is left out for the reasons in EXCLUDED.
     "address.wast",
     "align.wast",
     "binary.wast",
@@ -101,34 +104,40 @@ const FILES: &[&str] = &[
     "utf8-invalid-encoding.wast",
 ];
 
-/// 除外したファイルと理由。
+/// Excluded files and why.
 const EXCLUDED: &[(&str, &str)] = &[
     (
         "simd_*, i8x16_*, i16x8_*, i32x4_*, relaxed_*",
-        "SIMD 非対応（docs/handoff.md §2-7）",
+        "SIMD is not supported (docs/decisions.md D-07)",
     ),
-    ("*atomic*", "threads 非対応"),
+    ("*atomic*", "threads are not supported"),
     (
         "ref*, br_on_*, call_ref, i31",
-        "reference-types / GC 非対応",
+        "reference types and GC are not supported",
     ),
-    ("table*", "table.* 命令が非対応"),
-    ("return_call*", "tail-call 非対応"),
-    ("throw*, try_table, tag 系", "exception-handling 非対応"),
-    ("*64.wast, memory64*", "memory64 非対応"),
+    ("table*", "the table.* instructions are not supported"),
+    ("return_call*", "tail calls are not supported"),
     (
-        "address0/1, load0/1/2, data0, exports0 など数字付き",
-        "multi-memory 非対応",
+        "throw*, try_table, tag*",
+        "exception handling is not supported",
     ),
-    ("array*, struct, type-rec, type-canon など", "GC 非対応"),
+    ("*64.wast, memory64*", "memory64 is not supported"),
+    (
+        "numbered files such as address0/1, load0/1/2, data0, exports0",
+        "multi-memory is not supported",
+    ),
+    (
+        "array*, struct, type-rec, type-canon and the like",
+        "GC is not supported",
+    ),
     (
         "linking*, imports*, instance",
-        "複数モジュールのリンクは v0.1 の範囲外",
+        "linking several modules is out of scope for v0.1",
     ),
-    ("memory_grow", "multi-memory のモジュールを含む"),
+    ("memory_grow", "contains multi-memory modules"),
 ];
 
-/// 対応済みコマンド種別。段階が進むごとに増やす。
+/// Supported command kinds. Grows as support grows.
 const SUPPORTED: &[&str] = &[
     "module",
     "assert_malformed",
@@ -141,17 +150,17 @@ const SUPPORTED: &[&str] = &[
     "action",
 ];
 
-/// arena の大きさ。残りが線形メモリになる（`Arena::alloc_rest`）。
+/// Arena size. The remainder becomes linear memory (`Arena::alloc_rest`).
 const ARENA: usize = 48 << 20;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
-/// `.wast` を JSON + `.wasm` 群に変換し、(json, wasm ディレクトリ) を返す。
+/// Converts a `.wast` to JSON plus `.wasm` files and returns `(json, wasm directory)`.
 fn convert(root: &Path, wast: &str) -> Option<(serde_json::Value, PathBuf)> {
     let src = root.join("third_party/testsuite").join(wast);
     if !src.exists() {
@@ -172,7 +181,7 @@ fn convert(root: &Path, wast: &str) -> Option<(serde_json::Value, PathBuf)> {
         .arg(&out_dir)
         .stderr(std::process::Stdio::null())
         .status()
-        .expect("wasm-tools を起動できない。`brew install wasm-tools` などで導入する");
+        .expect("cannot run wasm-tools; install it, e.g. `brew install wasm-tools`");
     if !status.success() {
         return None;
     }
@@ -184,13 +193,13 @@ fn convert(root: &Path, wast: &str) -> Option<(serde_json::Value, PathBuf)> {
 struct Tally {
     ran: usize,
     skipped: usize,
-    /// 対応機能セット外でスキップした件数（docs/handoff.md §2-7）。
+    /// Commands skipped as outside the supported feature set (docs/decisions.md D-07).
     unsupported: usize,
-    /// スキップの内訳。テキスト形式のモジュール（WAT パーサを持たない）。
+    /// Skip breakdown: text-format modules (there is no WAT parser).
     skip_text: usize,
-    /// 名前つきモジュールへの操作。複数インスタンスは v0.1 の範囲外。
+    /// Actions on named modules. Multiple instances are out of scope for v0.1.
     skip_named: usize,
-    /// `register` など、対応していないコマンド種別。
+    /// Unsupported command kinds such as `register`.
     skip_kind: usize,
     failures: Vec<String>,
 }
@@ -202,7 +211,7 @@ impl Tally {
 }
 
 fn arena_buf() -> Vec<u8> {
-    // alloc_zeroed なので実際に触ったページしか実体化しない。
+    // alloc_zeroed, so only the pages actually touched are materialized.
     vec![0u8; ARENA]
 }
 
@@ -210,7 +219,7 @@ fn cfg() -> Config {
     Config::default()
 }
 
-/// デコード + 検証だけ行う（`assert_malformed` / `assert_invalid` 用）。
+/// Decodes and validates only (for `assert_malformed` / `assert_invalid`).
 fn load(bytes: &[u8]) -> Result<(), Error> {
     let mut buf = arena_buf();
     let mut scratch_buf = vec![0u8; 8 << 20];
@@ -221,7 +230,7 @@ fn load(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// インスタンス化まで行う（`assert_unlinkable` / `assert_uninstantiable` 用）。
+/// Goes as far as instantiation (for `assert_unlinkable` / `assert_uninstantiable`).
 fn load_and_instantiate(bytes: &[u8]) -> Result<(), Error> {
     let mut buf = arena_buf();
     let mut scratch_buf = vec![0u8; 8 << 20];
@@ -238,7 +247,7 @@ fn load_and_instantiate(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// 読み込みが指定した区分で失敗することを確かめる。
+/// Checks that loading fails with the given category.
 fn expect(
     tally: &mut Tally,
     wast: &str,
@@ -255,13 +264,13 @@ fn expect(
     };
     match r {
         Err(e) if e.kind() == want => tally.ran += 1,
-        // 対応機能セット外の構文を含むケースは、期待どおりに落ちたかを判定できない。
+        // A case that uses syntax outside the feature set cannot be judged either way.
         Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
         Err(e) => tally.fail(
             wast,
             line,
             format!(
-                "{} を期待したが {} [{}]（期待: {}）",
+                "expected {} but got {} [{}] (expected text: {})",
                 want.name(),
                 e.kind().name(),
                 e.reason(),
@@ -272,7 +281,7 @@ fn expect(
             wast,
             line,
             format!(
-                "{} を期待したが成功した（{}）",
+                "expected {} but it succeeded ({})",
                 want.name(),
                 cmd["text"].as_str().unwrap_or("?")
             ),
@@ -280,8 +289,8 @@ fn expect(
     }
 }
 
-/// モジュールを伴わない検査（malformed / invalid / unlinkable / uninstantiable）。
-/// 扱えたら `true`。
+/// Standalone checks (malformed / invalid / unlinkable / uninstantiable) that do
+/// not act on the current module. Returns `true` when handled.
 fn standalone(tally: &mut Tally, wast: &str, dir: &Path, cmd: &serde_json::Value) -> bool {
     let ty = cmd["type"].as_str().unwrap_or("");
     let line = cmd["line"].as_u64().unwrap_or(0);
@@ -307,7 +316,7 @@ fn standalone(tally: &mut Tally, wast: &str, dir: &Path, cmd: &serde_json::Value
     true
 }
 
-/// 1 つのモジュールと、それに続くコマンド列を実行する。
+/// Runs one module and the commands that follow it.
 fn run_chunk(
     tally: &mut Tally,
     wast: &str,
@@ -343,7 +352,7 @@ fn run_chunk(
             tally.fail(
                 wast,
                 line,
-                format!("デコード失敗: {} [{}]", e.reason(), e.kind().name()),
+                format!("decode failed: {} [{}]", e.reason(), e.kind().name()),
             );
             return;
         }
@@ -358,16 +367,20 @@ fn run_chunk(
             tally.fail(
                 wast,
                 line,
-                format!("検証失敗: {} [{}]", e.reason(), e.kind().name()),
+                format!("validation failed: {} [{}]", e.reason(), e.kind().name()),
             );
             return;
         }
     };
-    // Exec は線形メモリ（arena の残り全部）より先に確保する。
+    // Exec must be allocated before linear memory (the rest of the arena).
     let mut exec = match Exec::new(&c, &mut arena) {
         Ok(e) => e,
         Err(e) => {
-            tally.fail(wast, line, format!("Exec 確保失敗: {}", e.reason()));
+            tally.fail(
+                wast,
+                line,
+                format!("Exec allocation failed: {}", e.reason()),
+            );
             return;
         }
     };
@@ -382,14 +395,14 @@ fn run_chunk(
             tally.fail(
                 wast,
                 line,
-                format!("インスタンス化失敗: {} [{}]", e.reason(), e.kind().name()),
+                format!("instantiation failed: {} [{}]", e.reason(), e.kind().name()),
             );
             return;
         }
     };
     if let Some(start) = inst.module.start {
         if let Err(e) = invoke(&mut inst, &mut exec, &mut res, start, &[], &mut []) {
-            tally.fail(wast, line, format!("start 関数が失敗: {}", e.reason()));
+            tally.fail(wast, line, format!("start function failed: {}", e.reason()));
             return;
         }
     }
@@ -407,7 +420,8 @@ fn run_chunk(
             continue;
         }
         let action = &cmd["action"];
-        // 名前つきモジュールへの操作は扱わない（複数インスタンスは v0.1 の範囲外）。
+        // Actions on named modules are not handled (multiple instances are out of
+        // scope for v0.1).
         if action["module"].is_string() {
             tally.skipped += 1;
             tally.skip_named += 1;
@@ -417,7 +431,7 @@ fn run_chunk(
             Some("invoke") => {
                 let name = action["field"].as_str().unwrap_or("");
                 let Some(func) = inst.export_func(name) else {
-                    tally.fail(wast, line, format!("export {name} が無い"));
+                    tally.fail(wast, line, format!("missing export {name}"));
                     continue;
                 };
                 let raw = action["args"].as_array().cloned().unwrap_or_default();
@@ -441,7 +455,7 @@ fn run_chunk(
             Some("get") => {
                 let name = action["field"].as_str().unwrap_or("");
                 let Some(v) = inst.export_global(name) else {
-                    tally.fail(wast, line, format!("global {name} が無い"));
+                    tally.fail(wast, line, format!("missing global {name}"));
                     continue;
                 };
                 check(tally, wast, line, cmd, ty, Ok(()), &[v]);
@@ -451,7 +465,7 @@ fn run_chunk(
     }
 }
 
-/// 実行結果を期待値と突き合わせる。
+/// Cross-checks the result against the expected values.
 fn check(
     tally: &mut Tally,
     wast: &str,
@@ -472,7 +486,7 @@ fn check(
                         return;
                     }
                     let Some(&got) = out.get(i) else {
-                        tally.fail(wast, line, format!("戻り値が足りない（{i} 番目）"));
+                        tally.fail(wast, line, format!("missing result {i}"));
                         return;
                     };
                     if !e.matches(got) {
@@ -480,7 +494,7 @@ fn check(
                             wast,
                             line,
                             format!(
-                                "{i} 番目の戻り値が違う: {got:#x} != {}",
+                                "result {i} differs: {got:#x} != {}",
                                 w["value"].as_str().unwrap_or("?")
                             ),
                         );
@@ -490,7 +504,7 @@ fn check(
                 tally.ran += 1;
             }
             Err(e) if e.kind() == ErrorKind::Unsupported => tally.unsupported += 1,
-            Err(e) => tally.fail(wast, line, format!("実行に失敗: {}", e.reason())),
+            Err(e) => tally.fail(wast, line, format!("execution failed: {}", e.reason())),
         },
         "assert_trap" => match r {
             Err(ref e) if is_trap(e) => tally.ran += 1,
@@ -498,9 +512,13 @@ fn check(
             Err(e) => tally.fail(
                 wast,
                 line,
-                format!("trap を期待したが {} [{}]", e.kind().name(), e.reason()),
+                format!(
+                    "expected a trap but got {} [{}]",
+                    e.kind().name(),
+                    e.reason()
+                ),
             ),
-            Ok(()) => tally.fail(wast, line, "trap を期待したが成功した".to_string()),
+            Ok(()) => tally.fail(wast, line, "expected a trap but it succeeded".to_string()),
         },
         "assert_exhaustion" => match r {
             Err(e) if e.kind() == ErrorKind::Exhausted => tally.ran += 1,
@@ -508,23 +526,27 @@ fn check(
                 wast,
                 line,
                 format!(
-                    "exhaustion を期待したが {} [{}]",
+                    "expected exhaustion but got {} [{}]",
                     e.kind().name(),
                     e.reason()
                 ),
             ),
-            Ok(()) => tally.fail(wast, line, "exhaustion を期待したが成功した".to_string()),
+            Ok(()) => tally.fail(
+                wast,
+                line,
+                "expected exhaustion but it succeeded".to_string(),
+            ),
         },
         _ => tally.skipped += 1,
     }
 }
 
-/// 1 ファイル分のコマンドを実行する。失敗は `tally.failures` に積む。
+/// Runs the commands of one file. Failures are pushed onto `tally.failures`.
 fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
     let Some((json, dir)) = convert(root, wast) else {
-        tally
-            .failures
-            .push(format!("{wast}: 変換できない（取得もれか対象外の構文）"));
+        tally.failures.push(format!(
+            "{wast}: cannot convert (not fetched, or syntax outside the subset)"
+        ));
         return;
     };
     let Some(commands) = json["commands"].as_array() else {
@@ -555,9 +577,9 @@ fn run_file(root: &Path, wast: &str, tally: &mut Tally) {
 fn spec_testsuite() {
     let root = repo_root();
     if !root.join("third_party/testsuite/binary.wast").exists() {
-        // CI では fetch-testsuite.sh を先に走らせている。手元で未取得なら明示して抜ける。
+        // CI runs fetch-testsuite.sh first. Locally, say so and return when it is missing.
         println!(
-            "spec: third_party/testsuite が無いので実行しない。\n                   `sh tools/fetch-testsuite.sh` で取得すること。"
+            "spec: third_party/testsuite is missing; skipping. Fetch it with `sh tools/fetch-testsuite.sh`."
         );
         return;
     }
@@ -566,7 +588,7 @@ fn spec_testsuite() {
         run_file(&root, wast, &mut tally);
     }
     println!(
-        "spec: {} コマンド実行 / {} 機能セット外 / {} スキップ / {} ファイル / 除外 {} 分類",
+        "spec: {} commands run / {} outside the feature set / {} skipped / {} files / {} exclusion groups",
         tally.ran,
         tally.unsupported,
         tally.skipped,
@@ -574,29 +596,29 @@ fn spec_testsuite() {
         EXCLUDED.len()
     );
     println!(
-        "      スキップの内訳: テキスト形式 {} / 名前つきモジュール {} / 未対応の種別 {} / その他 {}",
+        "      skipped: text format {} / named module {} / unsupported kind {} / other {}",
         tally.skip_text,
         tally.skip_named,
         tally.skip_kind,
         tally.skipped - tally.skip_text - tally.skip_named - tally.skip_kind
     );
-    assert!(tally.ran > 0, "1 つもコマンドを実行していない");
+    assert!(tally.ran > 0, "no command was run");
     assert!(
         tally.failures.is_empty(),
-        "{} 件失敗:\n{}",
+        "{} failures:\n{}",
         tally.failures.len(),
         tally.failures.join("\n")
     );
 }
 
-/// 開発用。testsuite 全ファイルを走らせて現状を一覧する。CI では回さない。
+/// Development only: runs every testsuite file and lists the current state. Not run in CI.
 #[test]
-#[ignore = "開発用の調査モード"]
+#[ignore = "survey mode for development"]
 fn spec_survey() {
     let root = repo_root();
     let dir = root.join("third_party/testsuite");
     let mut files: Vec<String> = std::fs::read_dir(&dir)
-        .expect("testsuite が無い")
+        .expect("testsuite is missing")
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.ends_with(".wast"))
@@ -610,7 +632,7 @@ fn spec_survey() {
         run_file(&root, f, &mut t);
         if !t.failures.is_empty() {
             bad_files += 1;
-            println!("--- {f}: {} 件", t.failures.len());
+            println!("--- {f}: {} failures", t.failures.len());
             for msg in t.failures.iter().take(3) {
                 println!("    {msg}");
             }
@@ -624,7 +646,7 @@ fn spec_survey() {
         total.failures.extend(t.failures);
     }
     println!(
-        "\n調査: {} ファイル中 {} ファイルに失敗あり / 実行 {} / 機能セット外 {} / スキップ {} / 失敗 {}",
+        "\nsurvey: {} files, {} with failures / run {} / outside the feature set {} / skipped {} / failed {}",
         files.len(),
         bad_files,
         total.ran,

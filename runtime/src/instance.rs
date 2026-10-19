@@ -1,9 +1,10 @@
-//! インスタンス化。import の解決、メモリ・テーブル・グローバルの確保、
-//! セグメントの適用。
+//! Instantiation: import resolution, allocation of memory, table and globals,
+//! and segment application.
 //!
-//! import の解決はコアに埋め込まず、ポートが渡す `Resolver` に委ねる。
-//! HAL の完全一致リンク（abi-spec §6.4）はポートの方針であってコアの仕事ではない。
-//! spec テストの `spectest` シムもこの仕組みで供給する。
+//! Import resolution is not built into the core; it is delegated to the
+//! `Resolver` the port passes in. The exact-match HAL link
+//! (docs/abi-spec.md §6.4) is port policy, not the core's job. The `spectest`
+//! shim for the spec tests is supplied through the same mechanism.
 
 use crate::arena::Arena;
 use crate::config::Config;
@@ -13,13 +14,13 @@ use crate::reader::Reader;
 use crate::types::{FuncType, GlobalType, Limits, ValType};
 use crate::validate::Validated;
 
-/// 1 ページのバイト数。
+/// Bytes per page.
 pub const PAGE_SIZE: usize = 65536;
 
-/// テーブルの空きスロット。
+/// Empty table slot.
 pub const NO_FUNC: u32 = u32::MAX;
 
-/// import が要求している型。
+/// The type an import asks for.
 pub enum ExternType<'m> {
     Func(FuncType<'m>),
     Global(GlobalType),
@@ -27,28 +28,29 @@ pub enum ExternType<'m> {
     Table(Limits),
 }
 
-/// import に対してホストが返すもの。
+/// What the host returns for an import.
 #[derive(Clone, Copy)]
 pub enum Extern {
-    /// ホスト関数。`u32` は `Resolver::call` に渡す識別子。
+    /// Host function. The `u32` is the identifier passed to `Resolver::call`.
     Func(u32),
-    /// グローバルの初期値。
+    /// Initial value of a global.
     Global(u64),
 }
 
-/// import を解決し、ホスト関数を呼ぶ口。
+/// Resolves imports and calls host functions.
 pub trait Resolver {
-    /// import を解決する。型が合わない・見つからないなら `None`。
+    /// Resolves an import. Returns `None` when it is missing or the type does not match.
     fn resolve(&mut self, module: &str, name: &str, ty: &ExternType<'_>) -> Option<Extern>;
 
-    /// ホスト関数を呼ぶ。
+    /// Calls a host function.
     ///
-    /// `mem` はゲストの線形メモリ。`list<u8>` 引数と out ポインタの
-    /// 範囲検査はホスト関数の責務（abi-spec §4.2 / §4.4）。
+    /// `mem` is the guest's linear memory. Range-checking `list<u8>` arguments
+    /// and out-pointers is the host function's responsibility
+    /// (docs/abi-spec.md §4.2, §4.4).
     fn call(&mut self, host: u32, args: &[u64], results: &mut [u64], mem: &mut [u8]) -> Result<()>;
 }
 
-/// 線形メモリ。arena の残り全部を持ち、現在のページ数だけを動かす。
+/// Linear memory. Owns the rest of the arena and moves only the current page count.
 pub struct Memory<'a> {
     data: &'a mut [u8],
     pages: u32,
@@ -82,35 +84,35 @@ impl<'a> Memory<'a> {
         &mut self.data[..n]
     }
 
-    /// `delta` ページ増やす。成功したら増やす前のページ数、失敗したら `None`。
+    /// Grows by `delta` pages. Returns the previous page count, or `None` on failure.
     pub fn grow(&mut self, delta: u32) -> Option<u32> {
         let old = self.pages;
         let new = old.checked_add(delta)?;
         if new > self.max_pages || new as usize * PAGE_SIZE > self.data.len() {
             return None;
         }
-        // 伸ばした分は 0 でなければならない。
+        // The new pages must be zero.
         self.data[old as usize * PAGE_SIZE..new as usize * PAGE_SIZE].fill(0);
         self.pages = new;
         Some(old)
     }
 }
 
-/// インスタンス。
+/// Instance.
 pub struct Instance<'m, 'a> {
     pub module: Module<'m, 'a>,
     pub validated: Validated<'a>,
     pub memory: Option<Memory<'a>>,
     pub globals: &'a mut [u64],
     pub table: &'a mut [u32],
-    /// import 関数のホスト側識別子（import 順）。
+    /// Host-side identifiers of the imported functions, in import order.
     pub host_funcs: &'a [u32],
-    /// `data.drop` 済みか。
+    /// Whether each data segment has been dropped with `data.drop`.
     pub dropped_data: &'a mut [bool],
 }
 
 impl<'m> Instance<'m, '_> {
-    /// export された関数のインデックスを引く。
+    /// Looks up the index of an exported function.
     #[must_use]
     pub fn export_func(&self, name: &str) -> Option<u32> {
         match self.module.export(name)? {
@@ -119,7 +121,7 @@ impl<'m> Instance<'m, '_> {
         }
     }
 
-    /// export されたグローバルの値を引く。
+    /// Looks up the value of an exported global.
     #[must_use]
     pub fn export_global(&self, name: &str) -> Option<u64> {
         match self.module.export(name)? {
@@ -128,14 +130,14 @@ impl<'m> Instance<'m, '_> {
         }
     }
 
-    /// 関数の型。
+    /// Type of a function.
     #[must_use]
     pub fn func_type(&self, idx: u32) -> Option<FuncType<'m>> {
         self.module.func_type(idx)
     }
 }
 
-/// 定数式を評価する。検証済みなので型は合っている前提。
+/// Evaluates a constant expression. Validation has already checked its type.
 fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64> {
     let mut r = Reader::new(expr);
     let op = r.u8()?;
@@ -152,10 +154,10 @@ fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64> {
     })
 }
 
-/// モジュールをインスタンス化する。
+/// Instantiates a module.
 ///
-/// `arena` の残り全部が線形メモリになるので、メモリの上限はポートが
-/// arena の大きさで決めることになる。
+/// The rest of `arena` becomes linear memory, so the port bounds memory by the
+/// size of the arena it hands in.
 pub fn instantiate<'m, 'a>(
     module: Module<'m, 'a>,
     validated: Validated<'a>,
@@ -206,19 +208,19 @@ pub fn instantiate<'m, 'a>(
         }
     }
     if fi != n_func_imports || gi != module.imported_globals as usize {
-        // メモリ・テーブルの import は v0.1 では受け付けない。
+        // Imported memories and tables are not accepted in v0.1.
         return Err(Error::Unsupported(
             "imported memories and tables are not supported",
         ));
     }
 
-    // --- グローバル ---
+    // --- globals ---
     for (i, g) in module.globals.iter().enumerate() {
         let idx = module.imported_globals as usize + i;
         globals[idx] = eval_const(g.init, &globals[..idx])?;
     }
 
-    // --- テーブル ---
+    // --- table ---
     let table_len = module.tables.first().map_or(0, |l| l.min) as usize;
     if table_len > cfg.max_table_elems as usize {
         return Err(Error::Invalid("table size exceeds the port limit"));
@@ -227,7 +229,7 @@ pub fn instantiate<'m, 'a>(
 
     let dropped_data = arena.alloc(module.datas.len(), false)?;
 
-    // --- 線形メモリ（arena の残り全部）---
+    // --- linear memory (the rest of the arena) ---
     let memory = if module.mem_count() > 0 {
         let lim = *module
             .mems
@@ -242,7 +244,7 @@ pub fn instantiate<'m, 'a>(
         if used > data.len() {
             return Err(Error::OutOfArena);
         }
-        // 使うページだけ 0 埋めする（arena は初期化されていない）。
+        // Zero only the pages in use (the arena is not initialized).
         data[..used].fill(0);
         Some(Memory {
             data,
@@ -263,7 +265,7 @@ pub fn instantiate<'m, 'a>(
         dropped_data,
     };
 
-    // --- 要素セグメント ---
+    // --- element segments ---
     for e in inst.module.elems {
         let offset = eval_const(e.offset, inst.globals)? as u32 as usize;
         let end = offset
@@ -275,7 +277,7 @@ pub fn instantiate<'m, 'a>(
         inst.table[offset..end].copy_from_slice(e.funcs);
     }
 
-    // --- データセグメント ---
+    // --- data segments ---
     let datas: &[Data<'m>] = inst.module.datas;
     for d in datas {
         let Some((_, off)) = d.active else { continue };
@@ -296,7 +298,7 @@ pub fn instantiate<'m, 'a>(
     Ok(inst)
 }
 
-/// 値の型からスタックスロットの解釈を選ぶための補助（トレース用）。
+/// Picks the stack slot interpretation from a value type (for traces).
 #[must_use]
 pub fn slot_is_float(t: ValType) -> bool {
     matches!(t, ValType::F32 | ValType::F64)

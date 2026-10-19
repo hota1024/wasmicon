@@ -1,11 +1,12 @@
-//! Wasmicon の Core Wasm インタプリタ。
+//! Core Wasm interpreter for Wasmicon.
 //!
-//! 規約は `CLAUDE.md` と `docs/handoff.md` §5 Phase 2 が正。
+//! The rules for this crate live in `runtime/AGENTS.md`:
 //!
-//! - `no_std`、依存クレートゼロ、`alloc` 不使用。arena はポート層から注入する
-//! - Wasm の算術は wrapping。`wrapping_*` / `rotate_*` / `checked_*` を明示的に使う
-//! - `core::fmt` を使わない（バイナリが肥大する）
-//! - `unsafe` は最小限。書くときは直前に `// SAFETY:` を添える
+//! - `no_std`, zero dependency crates, no `alloc`; the port injects the arena
+//!   (docs/decisions.md D-11)
+//! - Wasm arithmetic wraps: use `wrapping_*` / `rotate_*` / `checked_*` explicitly
+//! - no `core::fmt`, which bloats the binary (docs/decisions.md P-09)
+//! - `unsafe` is kept to a minimum, and every block carries a `// SAFETY:` comment
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]

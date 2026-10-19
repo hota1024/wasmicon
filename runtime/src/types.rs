@@ -1,9 +1,9 @@
-//! Wasm の型。対応機能セット（docs/handoff.md §2-7）の範囲だけを持つ。
+//! Wasm types. Only what the supported feature set (docs/decisions.md D-07) needs.
 
 use crate::error::{Error, Result};
 use crate::reader::Reader;
 
-/// 値型。reference-types は非対応なので数値型だけ。
+/// Value type. Numeric types only, since reference types are not supported.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ValType {
     I32,
@@ -13,15 +13,16 @@ pub enum ValType {
 }
 
 impl ValType {
-    /// バイナリ表現から。
+    /// Decodes the binary encoding.
     pub const fn from_byte(b: u8) -> Result<ValType> {
         match b {
             0x7f => Ok(ValType::I32),
             0x7e => Ok(ValType::I64),
             0x7d => Ok(ValType::F32),
             0x7c => Ok(ValType::F64),
-            // 0x63..=0x7b は現行仕様の参照型・GC 型・v128。Wasm としては正しいが
-            // 対応機能セット外（docs/handoff.md §2-7）なので malformed と区別する。
+            // 0x63..=0x7b are the current spec's reference, GC and v128 types. They
+            // are valid Wasm but outside the supported feature set
+            // (docs/decisions.md D-07), so they are kept distinct from malformed.
             0x7b => Err(Error::Unsupported("SIMD is not supported")),
             0x63..=0x7a => Err(Error::Unsupported("reference types are not supported")),
             _ => Err(Error::Malformed("malformed value type")),
@@ -38,15 +39,16 @@ impl ValType {
         }
     }
 
-    /// スタックスロット上の表現が 64bit かどうか（トレース用）。
+    /// Whether the stack slot representation is 64-bit (for traces).
     #[must_use]
     pub const fn is_64(self) -> bool {
         matches!(self, ValType::I64 | ValType::F64)
     }
 }
 
-/// 関数型。パラメータと結果はモジュールのバイト列を直接指す（ゼロコピー）。
-/// 対応機能セットでは値型は 1 バイトなので、スライス長がそのまま個数になる。
+/// Function type. Parameters and results point straight into the module bytes
+/// (zero copy). In the supported feature set a value type is one byte, so the
+/// slice length is the count.
 #[derive(Clone, Copy, Default)]
 pub struct FuncType<'m> {
     params: &'m [u8],
@@ -59,13 +61,13 @@ impl<'m> FuncType<'m> {
         FuncType { params, results }
     }
 
-    /// 引数型のバイト列（型の等値比較に使う）。
+    /// Parameter type bytes (used for type equality).
     #[must_use]
     pub const fn params_bytes(&self) -> &'m [u8] {
         self.params
     }
 
-    /// 結果型のバイト列。
+    /// Result type bytes.
     #[must_use]
     pub const fn results_bytes(&self) -> &'m [u8] {
         self.results
@@ -81,13 +83,13 @@ impl<'m> FuncType<'m> {
         self.results.len()
     }
 
-    /// i 番目のパラメータ型。範囲外なら `None`。
+    /// The i-th parameter type, or `None` when out of range.
     #[must_use]
     pub fn param(&self, i: usize) -> Option<ValType> {
         self.params.get(i).and_then(|b| ValType::from_byte(*b).ok())
     }
 
-    /// i 番目の結果型。
+    /// The i-th result type.
     #[must_use]
     pub fn result(&self, i: usize) -> Option<ValType> {
         self.results
@@ -107,8 +109,9 @@ impl<'m> FuncType<'m> {
             .filter_map(|b| ValType::from_byte(*b).ok())
     }
 
-    /// `params:results` 表記のシグネチャと一致するか（abi-spec §7）。
-    /// 生成された import 表との完全一致リンクに使う。
+    /// Whether this type matches a signature in `params:results` notation
+    /// (docs/abi-spec.md §7). Used for the exact-match link against the generated
+    /// import table.
     #[must_use]
     pub fn sig_matches(&self, sig: &str) -> bool {
         let mut it = sig.chars();
@@ -128,14 +131,14 @@ impl<'m> FuncType<'m> {
         it.next().is_none()
     }
 
-    /// 型が等しいか。import の照合とインダイレクト呼び出しで使う。
+    /// Whether the types are equal. Used for import matching and indirect calls.
     #[must_use]
     pub fn matches(&self, other: &FuncType<'_>) -> bool {
         self.params == other.params && self.results == other.results
     }
 }
 
-/// シグネチャ表記の 1 文字（abi-spec §7）。
+/// One character of the signature notation (docs/abi-spec.md §7).
 const fn sig_char(t: ValType) -> char {
     match t {
         ValType::I32 => 'i',
@@ -145,7 +148,7 @@ const fn sig_char(t: ValType) -> char {
     }
 }
 
-/// メモリ・テーブルの上下限。
+/// Lower and upper bounds of a memory or table.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Limits {
     pub min: u32,
@@ -153,10 +156,10 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// `limits` をデコードする。`upper` は仕様上の上限（メモリは 65536）。
+    /// Decodes `limits`. `upper` is the spec's upper bound (65536 for memories).
     pub fn decode(r: &mut Reader<'_>, upper: u32, what: &'static str) -> Result<Limits> {
-        // 上限超過は仕様上 invalid（malformed ではない）なので、u32 に収まらない
-        // 値も一度 u64 で受けてから判定する。
+        // Exceeding the bound is invalid per spec (not malformed), so values that do
+        // not fit in u32 are read as u64 first and judged afterwards.
         let flag = r.u8()?;
         let (min, max) = match flag {
             0x00 => (r.u64_leb()?, None),
@@ -188,7 +191,7 @@ impl Limits {
     }
 }
 
-/// グローバルの型。
+/// Global type.
 #[derive(Clone, Copy)]
 pub struct GlobalType {
     pub val: ValType,
@@ -216,14 +219,14 @@ impl GlobalType {
     }
 }
 
-/// ブロックの型。
+/// Block type.
 #[derive(Clone, Copy, Default)]
 pub enum BlockType {
-    /// 結果なし。
+    /// No result.
     #[default]
     Empty,
-    /// 単一の値型。
+    /// A single value type.
     Val(ValType),
-    /// 型インデックス（multi-value）。
+    /// A type index (multi-value).
     Type(u32),
 }

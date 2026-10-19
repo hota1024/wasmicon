@@ -1,10 +1,10 @@
-//! インタプリタ本体。検証済みバイトコードを直接実行する。
+//! The interpreter. Executes validated bytecode directly.
 //!
-//! - 制御スタックは持たない。分岐は `validate` が作った side table を引く
-//! - Rust の再帰を使わない。呼び出しは明示的なフレームスタックで表現し、
-//!   深さの上限を超えたら `Exhausted` を返す（`assert_exhaustion` はこれ）
-//! - オペランドは型なしの 64 ビットスロット。型は検証で保証済み
-//! - 算術は全て wrapping。`wrapping_*` を明示的に使う（CLAUDE.md）
+//! - No control stack: branches look up the side table built by `validate`
+//! - No Rust recursion: calls are an explicit frame stack, and exceeding the
+//!   depth limit returns `Exhausted` (which is what `assert_exhaustion` checks)
+//! - Operands are untyped 64-bit slots; validation has already checked the types
+//! - All arithmetic wraps, with `wrapping_*` spelled out (`runtime/AGENTS.md`)
 
 use crate::arena::Arena;
 use crate::config::Config;
@@ -13,7 +13,7 @@ use crate::float;
 use crate::instance::{Instance, Memory, NO_FUNC, Resolver};
 use crate::validate::FuncInfo;
 
-/// 呼び出しフレーム。
+/// Call frame.
 #[derive(Clone, Copy, Default)]
 struct Frame {
     func: u32,
@@ -22,14 +22,14 @@ struct Frame {
     ret: u32,
 }
 
-/// 実行用の作業領域。ポートが arena から確保して使い回す。
+/// Working memory for execution. The port allocates it from the arena and reuses it.
 pub struct Exec<'a> {
     stack: &'a mut [u64],
     frames: &'a mut [Frame],
 }
 
 impl<'a> Exec<'a> {
-    /// 設定に従って確保する。
+    /// Allocates according to the config.
     pub fn new(cfg: &Config, arena: &mut Arena<'a>) -> Result<Self> {
         Ok(Exec {
             stack: arena.alloc(cfg.operand_stack_slots, 0u64)?,
@@ -38,11 +38,12 @@ impl<'a> Exec<'a> {
     }
 }
 
-// ---------------------------------------------------------------- 読み出し補助
+// ---------------------------------------------------------------- read helpers
 
-/// LEB128 を読む。**1 バイトで収まる値（即値のほとんど）はその場で返し**、
-/// 2 バイト以上だけ遅い道（`*_slow`）に回す。毎回ループに入っていたのが、
-/// host のプロファイルで時間の 1 割強だった（2026-10-11。docs/TODO.md §4）。
+/// Reads a LEB128. Values that fit in one byte (most immediates) are returned
+/// inline; only longer encodings take the slow path (`*_slow`). Entering the
+/// loop every time cost a little over 10% of run time in a host profile
+/// (docs/TODO.md §4).
 #[inline(always)]
 fn leb_u32(body: &[u8], pc: &mut usize) -> u32 {
     match body.get(*pc) {
@@ -65,7 +66,7 @@ fn leb_u64(body: &[u8], pc: &mut usize) -> u64 {
     }
 }
 
-/// 1 バイトの符号付き LEB は 7 ビットの 2 の補数（ビット 6 が符号）。
+/// A one-byte signed LEB is 7-bit two's complement (bit 6 is the sign).
 #[inline(always)]
 fn leb_i32(body: &[u8], pc: &mut usize) -> i32 {
     match body.get(*pc) {
@@ -88,7 +89,8 @@ fn leb_i64(body: &[u8], pc: &mut usize) -> i64 {
     }
 }
 
-/// 2 バイト以上の LEB（遅い道）。検証済みなので必ず正しい。範囲外だけ 0 で受け止める。
+/// LEB of two or more bytes (slow path). Validated, so always well-formed; only
+/// an out-of-range read yields 0.
 #[cold]
 #[inline(never)]
 fn leb_u32_slow(body: &[u8], pc: &mut usize) -> u32 {
@@ -171,7 +173,7 @@ fn leb_i64_slow(body: &[u8], pc: &mut usize) -> i64 {
     }
 }
 
-/// ブロック型の即値を読み飛ばす。
+/// Skips a block type immediate.
 #[inline]
 fn skip_block_type(body: &[u8], pc: &mut usize) {
     let b = *body.get(*pc).unwrap_or(&0);
@@ -182,14 +184,14 @@ fn skip_block_type(body: &[u8], pc: &mut usize) {
     }
 }
 
-/// `memarg` を読む。align は使わないので捨てる。
+/// Reads a `memarg`. The alignment is unused and discarded.
 #[inline(always)]
 fn memarg(body: &[u8], pc: &mut usize) -> u32 {
     leb_u32(body, pc);
     leb_u64(body, pc) as u32
 }
 
-// ---------------------------------------------------------------- メモリ
+// ---------------------------------------------------------------- memory
 
 #[inline]
 fn load_at<'x>(mem: &'x Memory<'_>, addr: u32, offset: u32, n: usize) -> Result<&'x [u8]> {
@@ -212,8 +214,9 @@ fn store_at(mem: &mut Memory<'_>, addr: u32, offset: u32, src: &[u8]) -> Result<
     Ok(())
 }
 
-/// 浮動小数から整数へのトラップつき変換。範囲外・NaN はトラップ。
-/// `lo` は含み、`hi` は含まない。境界は 2 のべき乗なので f64 で厳密に表せる。
+/// Trapping float-to-integer conversion. Out of range and NaN trap.
+/// `lo` is inclusive, `hi` exclusive. The bounds are powers of two, so f64
+/// represents them exactly.
 #[inline]
 fn trunc_check(x: f64, lo: f64, hi: f64) -> Result<f64> {
     if x.is_nan() {
@@ -226,12 +229,12 @@ fn trunc_check(x: f64, lo: f64, hi: f64) -> Result<f64> {
     Ok(t)
 }
 
-// ---------------------------------------------------------------- 実行
+// ---------------------------------------------------------------- execution
 
-/// export された関数を呼ぶ。
+/// Calls an exported function.
 ///
-/// `args` / `results` は型なしのスロット。i32 は下位 32 ビット、
-/// f32 はビットパターンを下位 32 ビットに入れる。
+/// `args` / `results` are untyped slots: an i32 goes in the low 32 bits, and an
+/// f32 puts its bit pattern in the low 32 bits.
 pub fn invoke(
     inst: &mut Instance<'_, '_>,
     exec: &mut Exec<'_>,
@@ -256,7 +259,7 @@ pub fn invoke(
     stack[..args.len()].copy_from_slice(args);
     let mut sp = args.len();
 
-    // ホスト関数を直接呼ぶ場合。
+    // Calling a host function directly.
     if func < inst.module.imported_funcs {
         let host = inst.host_funcs[func as usize];
         let nres = ty.result_count();
@@ -297,7 +300,7 @@ pub fn invoke(
     Ok(())
 }
 
-/// 実行中の関数の位置。
+/// Position within the executing function.
 #[derive(Clone, Copy)]
 struct Cursor<'m> {
     func: u32,
@@ -308,10 +311,10 @@ struct Cursor<'m> {
     ret: usize,
 }
 
-/// 関数に入る。引数は既にスタック上位に積まれている。
+/// Enters a function. The arguments are already on top of the stack.
 ///
-/// `nparams` / `nresults` は `func` の型から呼び出し側が引いた値
-/// （呼び出しごとに型を 2 度引かないため）。
+/// `nparams` / `nresults` come from the caller, which already looked up the
+/// type of `func` (so the type is not looked up twice per call).
 #[allow(clippy::too_many_arguments)]
 fn enter<'m>(
     inst: &Instance<'m, '_>,
@@ -340,12 +343,12 @@ fn enter<'m>(
 
     let locals = *sp - nparams;
     let slots = info.frame_slots as usize;
-    // このフレームで積める最大量を先に確保できているか確かめる。
-    // ここを通れば以降の push とローカル書き込みは範囲内に収まる。
+    // Check up front that the most this frame can push fits. Once past this
+    // point, every push and local write stays in bounds.
     if locals + slots + info.max_stack as usize > stack.len() {
         return Err(Error::Exhausted("operand stack overflow"));
     }
-    // 宣言されたローカルは 0 で初期化する。
+    // Declared locals start as 0.
     for i in nparams..slots {
         stack[locals + i] = 0;
     }
@@ -400,7 +403,7 @@ fn run<'m>(
         }
 
         match op {
-            // --- 制御 ---
+            // --- control ---
             0x00 => return Err(Error::Trap(Trap::Unreachable)),
             0x01 => {}
             0x02 | 0x03 => skip_block_type(cur.body, &mut cur.pc),
@@ -423,7 +426,7 @@ fn run<'m>(
                 cur.pc = b.target as usize;
             }
             0x0b => {
-                // 関数末尾の end だけが復帰。ブロックの end は何もしない。
+                // Only the end of the function returns. A block's end does nothing.
                 if cur.pc >= cur.body.len()
                     && finish_frame(inst, &mut cur, stack, &mut sp, frames, nframes)
                 {
@@ -466,7 +469,7 @@ fn run<'m>(
                 }
             }
             0x0f => {
-                // return: 戻り値だけ残してフレームを閉じる。
+                // return: keep only the results and close the frame.
                 let n = cur.ret;
                 stack.copy_within(sp - n..sp, cur.locals);
                 sp = cur.locals + n;
@@ -480,7 +483,7 @@ fn run<'m>(
             }
             0x11 => {
                 let t = leb_u32(cur.body, &mut cur.pc);
-                leb_u32(cur.body, &mut cur.pc); // table index（検証済みで 0）
+                leb_u32(cur.body, &mut cur.pc); // table index (validated to be 0)
                 let i = pop!() as u32;
                 let slot = *inst
                     .table
@@ -506,7 +509,7 @@ fn run<'m>(
                 )?;
             }
 
-            // --- パラメトリック ---
+            // --- parametric ---
             0x1a => {
                 sp -= 1;
             }
@@ -517,7 +520,7 @@ fn run<'m>(
                 push!(if c != 0 { a } else { b });
             }
 
-            // --- 変数 ---
+            // --- variables ---
             0x20 => {
                 let i = leb_u32(cur.body, &mut cur.pc) as usize;
                 push!(stack[cur.locals + i]);
@@ -542,7 +545,7 @@ fn run<'m>(
                 inst.globals[i] = v;
             }
 
-            // --- ロード ---
+            // --- loads ---
             0x28 => {
                 let o = memarg(cur.body, &mut cur.pc);
                 let a = pop!() as u32;
@@ -632,7 +635,7 @@ fn run<'m>(
                 push!(u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])));
             }
 
-            // --- ストア ---
+            // --- stores ---
             0x36 | 0x38 => {
                 let o = memarg(cur.body, &mut cur.pc);
                 let v = pop!() as u32;
@@ -672,12 +675,12 @@ fn run<'m>(
             0x40 => {
                 cur.pc += 1; // 0x00
                 let d = pop!() as u32;
-                // 失敗したら -1（abi-spec §6.2）。
+                // -1 on failure (docs/abi-spec.md §6.2).
                 let r = mem!().grow(d).unwrap_or(-1i32 as u32);
                 push!(u64::from(r));
             }
 
-            // --- 定数 ---
+            // --- constants ---
             0x41 => {
                 let v = leb_i32(cur.body, &mut cur.pc);
                 push!(u64::from(v as u32));
@@ -702,7 +705,7 @@ fn run<'m>(
             0xfc => {
                 let sub = leb_u32(cur.body, &mut cur.pc);
                 match sub {
-                    // trunc_sat: Rust の `as` が仕様どおり飽和し NaN を 0 にする。
+                    // trunc_sat: Rust's `as` saturates and maps NaN to 0, as the spec requires.
                     0 => {
                         let v = f32::from_bits(pop!() as u32);
                         push!(u64::from(v as i32 as u32));
@@ -797,7 +800,7 @@ fn run<'m>(
     Ok(())
 }
 
-/// 分岐する。持ち越す値を下へ詰めてから飛ぶ。
+/// Branches. Moves the carried values down, then jumps.
 #[inline]
 fn do_branch(
     cur: &mut Cursor<'_>,
@@ -816,7 +819,7 @@ fn do_branch(
     cur.pc = target as usize;
 }
 
-/// 関数末尾の `end` に来たときの後始末。呼び出し元が無ければ `true`。
+/// Cleanup on reaching the function's final `end`. Returns `true` when there is no caller.
 fn finish_frame<'m>(
     inst: &Instance<'m, '_>,
     cur: &mut Cursor<'m>,
@@ -831,7 +834,7 @@ fn finish_frame<'m>(
     finish_return(inst, cur, frames, nframes)
 }
 
-/// フレームを 1 つ戻す。呼び出し元が無ければ `true`。
+/// Pops one frame. Returns `true` when there is no caller.
 fn finish_return<'m>(
     inst: &Instance<'m, '_>,
     cur: &mut Cursor<'m>,
@@ -853,10 +856,10 @@ fn finish_return<'m>(
     false
 }
 
-/// ホスト関数の引数・戻り値の最大個数。
+/// Maximum number of host function arguments and results.
 const MAX_HOST_ARITY: usize = 16;
 
-/// 関数を呼ぶ。ホスト関数ならその場で実行し、Wasm 関数ならフレームを積む。
+/// Calls a function: a host function runs inline, a Wasm function pushes a frame.
 #[allow(clippy::too_many_arguments)]
 fn call<'m>(
     inst: &mut Instance<'m, '_>,
@@ -908,7 +911,7 @@ fn call<'m>(
     Ok(())
 }
 
-/// 数値命令。スタックの上位だけを見るのでインスタンスに触らない。
+/// Numeric instructions. They touch only the top of the stack, never the instance.
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
     macro_rules! pop {
@@ -923,7 +926,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
             *sp += 1;
         }};
     }
-    /// i32 の 2 項演算。
+    /// Binary operation on i32.
     macro_rules! i32_bin {
         (|$a:ident, $b:ident| $e:expr) => {{
             let $b = pop!() as u32;
@@ -975,7 +978,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
     }
 
     match op {
-        // --- i32 比較 ---
+        // --- i32 comparisons ---
         0x45 => {
             let a = pop!() as u32;
             cmp!(a == 0);
@@ -1031,7 +1034,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
             cmp!(a >= b);
         }
 
-        // --- i64 比較 ---
+        // --- i64 comparisons ---
         0x50 => {
             let a = pop!();
             cmp!(a == 0);
@@ -1087,7 +1090,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
             cmp!(a >= b);
         }
 
-        // --- f32 / f64 比較 ---
+        // --- f32 / f64 comparisons ---
         0x5b => {
             let b = f32::from_bits(pop!() as u32);
             let a = f32::from_bits(pop!() as u32);
@@ -1149,7 +1152,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
             cmp!(a >= b);
         }
 
-        // --- i32 算術 ---
+        // --- i32 arithmetic ---
         0x67 => {
             let a = pop!() as u32;
             push!(u64::from(a.leading_zeros()));
@@ -1213,7 +1216,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
         0x77 => i32_bin!(|a, b| a.rotate_left(b % 32)),
         0x78 => i32_bin!(|a, b| a.rotate_right(b % 32)),
 
-        // --- i64 算術 ---
+        // --- i64 arithmetic ---
         0x79 => {
             let a = pop!();
             push!(u64::from(a.leading_zeros()));
@@ -1309,7 +1312,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
         0xa5 => f64_bin!(|a, b| float::max_f64(a, b)),
         0xa6 => f64_bin!(|a, b| float::copysign_f64(a, b)),
 
-        // --- 変換 ---
+        // --- conversions ---
         0xa7 => {
             let a = pop!();
             push!(u64::from(a as u32));
@@ -1412,7 +1415,7 @@ fn numeric(op: u8, sp: &mut usize, stack: &mut [u64]) -> Result<()> {
             };
             push!(r.to_bits());
         }
-        // reinterpret はビットをそのまま通す。
+        // reinterpret passes the bits through unchanged.
         0xbc..=0xbf => {}
 
         // --- sign-extension-ops ---

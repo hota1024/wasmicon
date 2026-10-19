@@ -1,11 +1,12 @@
-//! デコード済みモジュールの表現。
+//! Representation of a decoded module.
 //!
-//! 命令列・名前・型のバイト列はモジュールのバイナリ（フラッシュ上）を
-//! そのまま指す。索引が要るもの（型表、関数表など）だけを arena に置く。
+//! Instruction bodies, names and type bytes point straight into the module
+//! binary (in flash). Only what needs an index (the type table, the function
+//! table and so on) lives in the arena.
 
 use crate::types::{FuncType, GlobalType, Limits, ValType};
 
-/// import の対象。
+/// What an import refers to.
 #[derive(Clone, Copy)]
 pub enum ImportDesc {
     Func(u32),
@@ -20,7 +21,7 @@ impl Default for ImportDesc {
     }
 }
 
-/// import 1 つ。
+/// One import.
 #[derive(Clone, Copy, Default)]
 pub struct Import<'m> {
     pub module: &'m str,
@@ -28,7 +29,7 @@ pub struct Import<'m> {
     pub desc: ImportDesc,
 }
 
-/// export の対象。
+/// What an export refers to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ExportDesc {
     Func(u32),
@@ -43,56 +44,56 @@ impl Default for ExportDesc {
     }
 }
 
-/// export 1 つ。
+/// One export.
 #[derive(Clone, Copy, Default)]
 pub struct Export<'m> {
     pub name: &'m str,
     pub desc: ExportDesc,
 }
 
-/// グローバル定義。初期化式はバイト列のまま持つ。
+/// Global definition. The initializer is kept as bytes.
 #[derive(Clone, Copy, Default)]
 pub struct Global<'m> {
     pub ty: GlobalType,
-    /// 定数式のバイト列（末尾の `end` を含まない）。
+    /// Bytes of the constant expression (without the trailing `end`).
     pub init: &'m [u8],
 }
 
-/// 関数本体。
+/// Function body.
 #[derive(Clone, Copy, Default)]
 pub struct Code<'m> {
-    /// ローカル宣言のバイト列（個数 LEB の後ろから、本体の直前まで）。
+    /// Bytes of the local declarations (after the group count LEB, up to the body).
     pub locals: &'m [u8],
-    /// ローカルの合計個数（引数を含まない）。
+    /// Total number of locals (parameters excluded).
     pub local_count: u32,
-    /// 命令列。末尾の `end` (0x0B) を含む。
+    /// Instruction sequence, including the trailing `end` (0x0B).
     pub body: &'m [u8],
-    /// モジュール先頭からの body のオフセット（トレース用）。
+    /// Offset of the body from the start of the module (for traces).
     pub body_offset: usize,
 }
 
-/// 要素セグメント。v0.1 は active のみ（table.* 命令が非対応のため）。
+/// Element segment. v0.1 has active segments only (the `table.*` instructions are unsupported).
 #[derive(Clone, Copy, Default)]
 pub struct Elem<'m, 'a> {
     pub table: u32,
-    /// オフセットを与える定数式。
+    /// Constant expression that gives the offset.
     pub offset: &'m [u8],
     pub funcs: &'a [u32],
 }
 
-/// データセグメント。
+/// Data segment.
 #[derive(Clone, Copy, Default)]
 pub struct Data<'m> {
-    /// active なら (メモリ番号, オフセット定数式)。passive なら `None`。
+    /// `(memory index, offset constant expression)` when active; `None` when passive.
     pub active: Option<(u32, &'m [u8])>,
     pub bytes: &'m [u8],
 }
 
-/// デコード済みモジュール。
+/// Decoded module.
 pub struct Module<'m, 'a> {
     pub types: &'a [FuncType<'m>],
     pub imports: &'a [Import<'m>],
-    /// 定義済み関数の型インデックス。import 由来は含まない。
+    /// Type indices of the defined functions. Imports are not included.
     pub funcs: &'a [u32],
     pub tables: &'a [Limits],
     pub mems: &'a [Limits],
@@ -106,41 +107,41 @@ pub struct Module<'m, 'a> {
     pub imported_tables: u32,
     pub imported_mems: u32,
     pub imported_globals: u32,
-    /// import された関数の型インデックス（import 順）。`func_type` を
-    /// import の走査なしで引くため（呼び出しのたびに引くので）。
+    /// Type indices of the imported functions, in import order. Lets `func_type`
+    /// skip the import scan, which matters because it runs on every call.
     pub imported_func_types: &'a [u32],
-    /// import されたグローバルの型（定数式の検証で使う）。
+    /// Types of the imported globals (used when validating constant expressions).
     pub imported_global_types: &'a [GlobalType],
-    /// DataCount セクションの値。`memory.init` / `data.drop` に必要。
+    /// Value of the DataCount section. Needed by `memory.init` / `data.drop`.
     pub data_count: Option<u32>,
 }
 
 impl<'m> Module<'m, '_> {
-    /// import を含む関数の総数。
+    /// Total number of functions, imports included.
     #[must_use]
     pub fn func_count(&self) -> u32 {
         self.imported_funcs + self.funcs.len() as u32
     }
 
-    /// import を含むグローバルの総数。
+    /// Total number of globals, imports included.
     #[must_use]
     pub fn global_count(&self) -> u32 {
         self.imported_globals + self.globals.len() as u32
     }
 
-    /// import を含むテーブルの総数。
+    /// Total number of tables, imports included.
     #[must_use]
     pub fn table_count(&self) -> u32 {
         self.imported_tables + self.tables.len() as u32
     }
 
-    /// import を含むメモリの総数。
+    /// Total number of memories, imports included.
     #[must_use]
     pub fn mem_count(&self) -> u32 {
         self.imported_mems + self.mems.len() as u32
     }
 
-    /// 関数インデックスから型を引く。
+    /// Looks up the type of a function index.
     #[must_use]
     pub fn func_type(&self, idx: u32) -> Option<FuncType<'m>> {
         let type_idx = if idx < self.imported_funcs {
@@ -151,7 +152,7 @@ impl<'m> Module<'m, '_> {
         self.types.get(type_idx as usize).copied()
     }
 
-    /// グローバルインデックスから型を引く。
+    /// Looks up the type of a global index.
     #[must_use]
     pub fn global_type(&self, idx: u32) -> Option<GlobalType> {
         if idx < self.imported_globals {
@@ -163,13 +164,13 @@ impl<'m> Module<'m, '_> {
         }
     }
 
-    /// 名前から export を引く。
+    /// Looks up an export by name.
     #[must_use]
     pub fn export(&self, name: &str) -> Option<ExportDesc> {
         self.exports.iter().find(|e| e.name == name).map(|e| e.desc)
     }
 
-    /// ローカルの型を順に返す（検証で使う）。
+    /// Returns the local types in order (used by validation).
     pub fn locals_of(&self, code: &Code<'m>) -> LocalIter<'m> {
         LocalIter {
             bytes: code.locals,
@@ -180,7 +181,7 @@ impl<'m> Module<'m, '_> {
     }
 }
 
-/// ローカル宣言 `(count, type)*` を 1 個ずつ展開する。
+/// Expands the local declarations `(count, type)*` one local at a time.
 pub struct LocalIter<'m> {
     bytes: &'m [u8],
     pos: usize,
@@ -193,7 +194,7 @@ impl Iterator for LocalIter<'_> {
 
     fn next(&mut self) -> Option<ValType> {
         while self.remaining == 0 {
-            // 次のグループ。`decode` が検証済みなのでここでは失敗しない前提。
+            // Next group. `decode` has already checked these bytes, so this cannot fail.
             let mut r = crate::reader::Reader::new(&self.bytes[self.pos..]);
             let n = r.u32_leb().ok()?;
             let t = ValType::from_byte(r.u8().ok()?).ok()?;

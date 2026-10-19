@@ -1,11 +1,13 @@
-//! 型検査と、分岐先を先に計算する side table の構築。
+//! Type checking, plus construction of the side table that precomputes branch targets.
 //!
-//! アルゴリズムは Wasm 仕様の付録（validation algorithm）どおり。
-//! 到達不能コードは「未知の型」を積む多相スタックとして扱う。自前の簡略版に
-//! すると `unreached-valid.wast` のような境界例で落ちる。
+//! The algorithm follows the validation algorithm in the appendix of the Wasm
+//! spec. Unreachable code is handled as a polymorphic stack that pushes an
+//! "unknown" type; a home-grown simplification fails on edge cases such as
+//! `unreached-valid.wast`.
 //!
-//! side table は「分岐命令の位置 → 飛び先・持ち越す値の数・捨てる値の数」。
-//! 実行時はここを二分探索で引くので、インタプリタは制御スタックを持たない。
+//! The side table maps a branch instruction's position to its target, the
+//! number of values carried over and the number of values dropped. The
+//! interpreter binary-searches it at run time, so it needs no control stack.
 
 use crate::arena::Arena;
 use crate::config::Config;
@@ -16,38 +18,38 @@ use crate::types::{FuncType, ValType};
 
 use ValType::{F32, F64, I32, I64};
 
-/// side table の 1 エントリ。
+/// One side table entry.
 #[derive(Clone, Copy, Default)]
 pub struct Branch {
-    /// 分岐命令のオペコード位置（関数本体内のオフセット）。
+    /// Opcode position of the branch instruction (offset within the function body).
     pub src: u32,
-    /// 飛び先（関数本体内のオフセット）。
+    /// Target (offset within the function body).
     pub target: u32,
-    /// 飛び先に持ち越す値の個数。
+    /// Number of values carried over to the target.
     pub keep: u32,
-    /// 持ち越す値の下から捨てる値の個数。
+    /// Number of values dropped from below the carried values.
     pub drop: u32,
 }
 
-/// 関数 1 つ分の検証結果。
+/// Validation result for one function.
 #[derive(Clone, Copy, Default)]
 pub struct FuncInfo {
     pub branch_start: u32,
     pub branch_len: u32,
-    /// 実行時に必要なオペランドスタックの最大段数。
+    /// Maximum operand stack depth needed at run time.
     pub max_stack: u32,
-    /// 引数 + ローカルの合計スロット数。
+    /// Total slots for parameters plus locals.
     pub frame_slots: u32,
 }
 
-/// モジュール全体の検証結果。
+/// Validation result for the whole module.
 pub struct Validated<'a> {
     pub funcs: &'a [FuncInfo],
     pub branches: &'a [Branch],
 }
 
 impl Validated<'_> {
-    /// 分岐命令の位置から n 番目のエントリを引く（`br_table` は n > 0）。
+    /// Looks up the n-th entry for a branch instruction's position (`br_table` uses n > 0).
     #[must_use]
     pub fn branch(&self, info: &FuncInfo, pc: u32, n: usize) -> Option<&Branch> {
         let start = info.branch_start as usize;
@@ -60,7 +62,7 @@ impl Validated<'_> {
     }
 }
 
-/// 値スタックの要素。到達不能コードでは型が決まらない。
+/// Value stack element. In unreachable code the type is unknown.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MaybeVal {
     Unknown,
@@ -73,19 +75,19 @@ impl MaybeVal {
     }
 }
 
-/// 制御フレーム。
+/// Control frame.
 #[derive(Clone, Copy)]
 struct Ctrl<'m> {
     opcode: u8,
     ty: FuncType<'m>,
     height: u32,
     unreachable: bool,
-    /// `loop` の飛び先。それ以外は `None` で `end` に来たときに解決する。
+    /// Target of a `loop`. `None` otherwise; resolved on reaching `end`.
     known_target: Option<u32>,
-    /// 未解決の分岐エントリのチェーン先頭（`NO_PENDING` で空）。
-    /// 解決までは `Branch::target` に次のインデックスを入れて数珠つなぎにする。
+    /// Head of the chain of unresolved branch entries (`NO_PENDING` when empty).
+    /// Until resolution, `Branch::target` holds the index of the next entry in the chain.
     pending: u32,
-    /// `if` の条件が偽のときの飛び先エントリ（`else` か `end` で解決する）。
+    /// Entry for the jump taken when the `if` condition is false (resolved at `else` or `end`).
     if_entry: u32,
     saw_else: bool,
 }
@@ -108,7 +110,7 @@ impl Default for Ctrl<'_> {
 const NO_PENDING: u32 = u32::MAX;
 const TYPE_MISMATCH: Error = Error::Invalid("type mismatch");
 
-/// 分岐エントリの行き先。数える回と書き込む回で使い分ける。
+/// Where branch entries go. The counting pass and the writing pass use different sinks.
 enum Sink<'s> {
     Count(usize),
     Fill(&'s mut [Branch], usize),
@@ -138,7 +140,7 @@ impl Sink<'_> {
     }
 }
 
-/// 検証器。値スタックとローカル表は scratch arena から 1 度だけ取って使い回す。
+/// Validator. The value stack and local table come from the scratch arena once and are reused.
 struct Validator<'m, 's> {
     vals: &'s mut [MaybeVal],
     ctrls: &'s mut [Ctrl<'m>],
@@ -149,10 +151,11 @@ struct Validator<'m, 's> {
     max_stack: u32,
 }
 
-/// モジュールを検証する。
+/// Validates a module.
 ///
-/// `arena` には結果（side table）を、`scratch` には検証中だけ使う作業領域を取る。
-/// scratch は検証が終われば捨ててよい。
+/// The result (the side table) is allocated from `arena`; the working memory
+/// used only during validation comes from `scratch`, which may be discarded
+/// afterwards.
 pub fn validate<'m, 'a, 's>(
     m: &Module<'m, '_>,
     cfg: &Config,
@@ -174,7 +177,7 @@ where
         max_stack: 0,
     };
 
-    // 1 回目: 分岐エントリの個数を数える。
+    // First pass: count the branch entries.
     let mut total = 0usize;
     for (i, code) in m.code.iter().enumerate() {
         let mut sink = Sink::Count(0);
@@ -187,7 +190,7 @@ where
     let funcs = arena.alloc(m.code.len(), FuncInfo::default())?;
     let branches = arena.alloc(total, Branch::default())?;
 
-    // 2 回目: 実際に書き込む。
+    // Second pass: write them.
     let mut used = 0usize;
     for (i, code) in m.code.iter().enumerate() {
         let start = used;
@@ -202,9 +205,9 @@ where
             max_stack,
             frame_slots,
         };
-        // 実行時に二分探索するので src 昇順でなければならない。検証器は本体を
-        // 前から 1 回走査するだけなので押し込む順が自然に昇順になる。念のため確かめる
-        // （`br_table` は src が同じエントリが分岐先の順に並ぶ）。
+        // The run-time binary search needs ascending `src`. The validator walks the
+        // body once from the front, so the push order is naturally ascending; this
+        // checks it anyway (`br_table` entries share one `src`, ordered by target).
         for w in branches[start..used].windows(2) {
             if w[0].src > w[1].src {
                 return Err(Error::Invalid("internal: side table is not ordered"));
@@ -215,7 +218,7 @@ where
     Ok(Validated { funcs, branches })
 }
 
-// ---------------------------------------------------------------- モジュール全体
+// ---------------------------------------------------------------- whole module
 
 fn check_module(m: &Module<'_, '_>, cfg: &Config) -> Result<()> {
     if m.mems.len() as u32 + m.imported_mems > 1 {
@@ -241,7 +244,7 @@ fn check_module(m: &Module<'_, '_>, cfg: &Config) -> Result<()> {
             return Err(Error::Invalid("unknown type"));
         }
     }
-    // export 名は重複してはならない。
+    // Export names must be unique.
     for (i, e) in m.exports.iter().enumerate() {
         if m.exports[..i].iter().any(|o| o.name == e.name) {
             return Err(Error::Invalid("duplicate export name"));
@@ -262,7 +265,7 @@ fn check_module(m: &Module<'_, '_>, cfg: &Config) -> Result<()> {
             return Err(Error::Invalid("start function"));
         }
     }
-    // グローバルの初期化式。
+    // Global initializers.
     for (i, g) in m.globals.iter().enumerate() {
         let declared = m.imported_globals + i as u32;
         let t = const_expr_type(m, g.init, declared)?;
@@ -296,7 +299,8 @@ fn check_module(m: &Module<'_, '_>, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// 定数式の型を求める。`limit` より小さいインデックスのグローバルだけ参照できる。
+/// Computes the type of a constant expression. Only globals with an index below
+/// `limit` may be referenced.
 fn const_expr_type(m: &Module<'_, '_>, expr: &[u8], limit: u32) -> Result<ValType> {
     let mut r = Reader::new(expr);
     let mut ty = None;
@@ -323,7 +327,7 @@ fn const_expr_type(m: &Module<'_, '_>, expr: &[u8], limit: u32) -> Result<ValTyp
             }
             0x23 => {
                 let idx = r.u32_leb()?;
-                // 現行仕様では、先に宣言されたイミュータブルなグローバルを参照できる。
+                // The current spec allows references to earlier immutable globals.
                 if idx >= limit {
                     return Err(Error::Invalid("unknown global"));
                 }
@@ -339,9 +343,9 @@ fn const_expr_type(m: &Module<'_, '_>, expr: &[u8], limit: u32) -> Result<ValTyp
     ty.ok_or(TYPE_MISMATCH)
 }
 
-// ---------------------------------------------------------------- 命令列
+// ---------------------------------------------------------------- instructions
 
-/// ラベルが持つ値の型（`loop` は引数、それ以外は結果）。
+/// Types of the values a label carries (parameters for `loop`, results otherwise).
 fn label_arity(f: &Ctrl<'_>) -> u32 {
     if f.opcode == OP_LOOP {
         f.ty.param_count() as u32
@@ -425,7 +429,7 @@ impl<'m> Validator<'m, '_> {
         f.unreachable = true;
     }
 
-    /// 仕様の `push_ctrl`。引数の pop は呼び出し側（block / loop / if）が先に行う。
+    /// The spec's `push_ctrl`. The caller (block / loop / if) pops the parameters first.
     fn push_ctrl(&mut self, opcode: u8, ty: FuncType<'m>, known_target: Option<u32>) -> Result<()> {
         if self.nctrls >= self.ctrls.len() {
             return Err(Error::Exhausted("control stack overflow"));
@@ -448,7 +452,7 @@ impl<'m> Validator<'m, '_> {
         Ok(())
     }
 
-    /// block / loop / if の共通処理。引数を pop してからフレームを積む。
+    /// Shared by block / loop / if. Pops the parameters, then pushes the frame.
     fn enter_block(
         &mut self,
         opcode: u8,
@@ -461,7 +465,7 @@ impl<'m> Validator<'m, '_> {
         self.push_ctrl(opcode, ty, known_target)
     }
 
-    /// 深さ `depth` のラベルの持つ値の個数。
+    /// Number of values carried by the label at depth `depth`.
     fn label_arity_at(&self, depth: u32) -> Result<u32> {
         let idx = self
             .nctrls
@@ -482,12 +486,12 @@ impl<'m> Validator<'m, '_> {
         Ok(f)
     }
 
-    /// ラベルの型がスタック上位と一致するか調べる（値は消費しない）。
+    /// Checks that the label's types match the top of the stack (without consuming values).
     ///
-    /// `meet` は `br_table` 用。仕様の `push_vals(pop_vals(...))` のとおり、
-    /// 期待型ではなく「実際に取り出した値」を積み直す。到達不能コードでは
-    /// それが未知の型（bottom）になり、次の分岐先が別の型でも通る
-    /// （`unreached-valid.wast` の meet-bottom）。
+    /// `meet` is for `br_table`. As in the spec's `push_vals(pop_vals(...))`, it
+    /// pushes back the values actually popped rather than the expected types. In
+    /// unreachable code those are the unknown type (bottom), so a later target
+    /// with different types still passes (`unreached-valid.wast`, meet-bottom).
     fn check_label(&mut self, frame: &Ctrl<'m>, meet: bool) -> Result<u32> {
         let n = label_arity(frame) as usize;
         let before = self.nvals;
@@ -501,7 +505,7 @@ impl<'m> Validator<'m, '_> {
             return Ok(n as u32);
         }
 
-        // 実際に減った分だけが本物の値。足りない分は未知の型として下に差し込む。
+        // Only what was actually popped is real. The shortfall is inserted below as unknown.
         let after = self.nvals;
         let real = before - after;
         let virt = n - real;
@@ -523,7 +527,7 @@ impl<'m> Validator<'m, '_> {
         Ok(n as u32)
     }
 
-    /// 深さ `depth` のラベルへの分岐を side table に積む。
+    /// Pushes a branch to the label at depth `depth` onto the side table.
     fn emit_branch(&mut self, sink: &mut Sink<'_>, depth: u32, src: u32, meet: bool) -> Result<()> {
         let idx = self
             .nctrls
@@ -555,7 +559,7 @@ impl<'m> Validator<'m, '_> {
         Ok(())
     }
 
-    /// 未解決の分岐チェーンを飛び先で埋める。
+    /// Fills an unresolved branch chain with its target.
     fn resolve(sink: &mut Sink<'_>, mut head: u32, target: u32) {
         while head != NO_PENDING {
             let next = match sink.entry(head) {
@@ -586,7 +590,7 @@ impl<'m> Validator<'m, '_> {
             .func_type(m.imported_funcs + func_idx as u32)
             .ok_or(Error::Invalid("unknown function"))?;
 
-        // ローカル表（引数 → 宣言されたローカル）。
+        // Local table (parameters, then the declared locals).
         let total = ftype.param_count() + code.local_count as usize;
         if total > cfg.max_locals || total > self.locals.len() {
             return Err(Error::Invalid("too many locals"));
@@ -604,7 +608,7 @@ impl<'m> Validator<'m, '_> {
             return Err(Error::Malformed("malformed local declarations"));
         }
 
-        // 関数全体を 1 つの制御フレームとして扱う。ラベルの型は戻り値。
+        // The whole function is one control frame whose label types are the results.
         self.ctrls[0] = Ctrl {
             opcode: OP_FUNC,
             ty: FuncType::new(&[], ftype.results_bytes()),
@@ -633,21 +637,21 @@ impl<'m> Validator<'m, '_> {
     }
 }
 
-/// `memarg` を読み、アライメントが自然幅を超えていないか調べる。
+/// Reads a `memarg` and checks that the alignment does not exceed the natural width.
 fn memarg(r: &mut Reader<'_>, natural: u32) -> Result<()> {
     let align = r.u32_leb()?;
-    // memop flags は 1 バイトに収まる範囲だけが正しい（align.wast）。
+    // memop flags are valid only when they fit in one byte (align.wast).
     if align >= 0x80 {
         return Err(Error::Malformed("malformed memop flags"));
     }
-    // ビット 6 は multi-memory のメモリ番号が続く印。
+    // Bit 6 means a multi-memory memory index follows.
     if align & 0x40 != 0 {
         return Err(Error::Unsupported("multi-memory is not supported"));
     }
     if align > natural {
         return Err(Error::Invalid("alignment must not be larger than natural"));
     }
-    // offset が u32 に収まらないのは仕様上 invalid（memory64 では u64）。
+    // An offset that does not fit in u32 is invalid per spec (u64 only with memory64).
     if r.u64_leb()? > u64::from(u32::MAX) {
         return Err(Error::Invalid("offset out of range"));
     }
@@ -655,7 +659,7 @@ fn memarg(r: &mut Reader<'_>, natural: u32) -> Result<()> {
 }
 
 impl<'m> Validator<'m, '_> {
-    /// ブロック型を読む。
+    /// Reads a block type.
     fn block_type(&self, m: &Module<'m, '_>, r: &mut Reader<'m>) -> Result<FuncType<'m>> {
         let at = r.pos();
         match r.peek_u8()? {
@@ -695,7 +699,7 @@ impl<'m> Validator<'m, '_> {
     ) -> Result<()> {
         let _ = end_of_body;
         match op {
-            // --- 制御 ---
+            // --- control ---
             0x00 => self.set_unreachable(),
             0x01 => {}
             OP_BLOCK => {
@@ -711,7 +715,7 @@ impl<'m> Validator<'m, '_> {
                 let ty = self.block_type(m, r)?;
                 self.pop_t(I32)?;
                 self.enter_block(OP_IF, ty, None)?;
-                // 条件が偽のときの飛び先。else か end で解決する。
+                // Jump taken when the condition is false. Resolved at else or end.
                 let e = sink.push(Branch {
                     src: pc,
                     target: NO_PENDING,
@@ -725,14 +729,14 @@ impl<'m> Validator<'m, '_> {
                 if f.opcode != OP_IF || f.saw_else {
                     return Err(Error::Invalid("unexpected else"));
                 }
-                // then 側の末尾から end へ飛ぶ。
+                // Jump from the end of the then branch to end.
                 let e = sink.push(Branch {
                     src: pc,
                     target: f.pending,
                     keep: 0,
                     drop: 0,
                 });
-                // 条件が偽なら else 本体の先頭へ。
+                // A false condition jumps to the start of the else body.
                 Self::resolve(sink, f.if_entry, r.pos() as u32);
                 self.push_ctrl(OP_IF, f.ty, None)?;
                 let top = self.nctrls - 1;
@@ -743,7 +747,7 @@ impl<'m> Validator<'m, '_> {
                 let f = self.pop_ctrl()?;
                 let after = r.pos() as u32;
                 if f.opcode == OP_IF && !f.saw_else {
-                    // else の無い if は 引数型 == 結果型 でなければならない。
+                    // An if without else needs parameter types == result types.
                     if f.ty.params_bytes() != f.ty.results_bytes() {
                         return Err(TYPE_MISMATCH);
                     }
@@ -767,7 +771,7 @@ impl<'m> Validator<'m, '_> {
             0x0e => {
                 let count = r.u32_leb()? as usize;
                 self.pop_t(I32)?;
-                // 既定の飛び先が先に要るので、一度読み飛ばしてから戻って検証する。
+                // The default target is needed first, so skip ahead, then come back and check.
                 let targets_start = r.pos();
                 for _ in 0..count {
                     r.u32_leb()?;
@@ -788,7 +792,7 @@ impl<'m> Validator<'m, '_> {
                 self.set_unreachable();
             }
             0x0f => {
-                // return は関数の戻り値だけ残す。飛び先は不要。
+                // return keeps only the function results. No target needed.
                 for i in (0..ftype.result_count()).rev() {
                     self.pop_t(ftype.result(i).ok_or(TYPE_MISMATCH)?)?;
                 }
@@ -823,7 +827,7 @@ impl<'m> Validator<'m, '_> {
                 }
             }
 
-            // --- パラメトリック ---
+            // --- parametric ---
             0x1a => {
                 self.pop()?;
             }
@@ -840,7 +844,7 @@ impl<'m> Validator<'m, '_> {
             }
             0x1c => return Err(Error::Unsupported("typed select is not supported")),
 
-            // --- 変数 ---
+            // --- variables ---
             0x20..=0x22 => {
                 let i = r.u32_leb()? as usize;
                 let t = *self
@@ -870,7 +874,7 @@ impl<'m> Validator<'m, '_> {
                 }
             }
 
-            // --- メモリ ---
+            // --- memory ---
             0x28..=0x35 => {
                 if m.mem_count() == 0 {
                     return Err(Error::Invalid("unknown memory"));
@@ -902,7 +906,7 @@ impl<'m> Validator<'m, '_> {
                 self.push(I32)?;
             }
 
-            // --- 定数 ---
+            // --- constants ---
             0x41 => {
                 r.i32_leb()?;
                 self.push(I32)?;
@@ -920,7 +924,7 @@ impl<'m> Validator<'m, '_> {
                 self.push(F64)?;
             }
 
-            // --- 比較 ---
+            // --- comparisons ---
             0x45 => self.unary(I32, I32)?,
             0x46..=0x4f => self.binary(I32, I32)?,
             0x50 => self.unary(I64, I32)?,
@@ -928,7 +932,7 @@ impl<'m> Validator<'m, '_> {
             0x5b..=0x60 => self.binary(F32, I32)?,
             0x61..=0x66 => self.binary(F64, I32)?,
 
-            // --- 数値 ---
+            // --- numeric ---
             0x67..=0x69 => self.unary(I32, I32)?,
             0x6a..=0x78 => self.binary(I32, I32)?,
             0x79..=0x7b => self.unary(I64, I64)?,
@@ -959,7 +963,8 @@ impl<'m> Validator<'m, '_> {
 
             0xfc => self.step_fc(m, r)?,
 
-            // 対応機能セット外の命令。Wasm としては正しいので malformed と区別する。
+            // Instructions outside the supported feature set. Valid Wasm, so kept
+            // distinct from malformed.
             0x06..=0x09 | 0x18 | 0x19 | 0x1f => {
                 return Err(Error::Unsupported("exception handling is not supported"));
             }
@@ -976,7 +981,7 @@ impl<'m> Validator<'m, '_> {
         Ok(())
     }
 
-    /// 0xFC 接頭辞（trunc_sat と bulk-memory の memory 系）。
+    /// The 0xFC prefix (trunc_sat and the bulk-memory `memory.*` instructions).
     fn step_fc(&mut self, m: &Module<'m, '_>, r: &mut Reader<'m>) -> Result<()> {
         let sub = r.u32_leb()?;
         match sub {
@@ -997,7 +1002,7 @@ impl<'m> Validator<'m, '_> {
             }
             9 => {
                 let d = r.u32_leb()?;
-                // data.drop はメモリを必要としない（bulk.wast）。
+                // data.drop does not need a memory (bulk.wast).
                 self.check_data(m, d, false)?;
             }
             10 => {
@@ -1042,7 +1047,7 @@ impl<'m> Validator<'m, '_> {
     }
 }
 
-/// ロード命令の (自然アライメントの log2, 結果型)。
+/// `(log2 of the natural alignment, result type)` of a load instruction.
 const fn load_shape(op: u8) -> (u32, ValType) {
     match op {
         0x28 => (2, I32),
@@ -1057,7 +1062,7 @@ const fn load_shape(op: u8) -> (u32, ValType) {
     }
 }
 
-/// ストア命令の (自然アライメントの log2, 値の型)。
+/// `(log2 of the natural alignment, value type)` of a store instruction.
 const fn store_shape(op: u8) -> (u32, ValType) {
     match op {
         0x36 => (2, I32),

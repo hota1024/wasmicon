@@ -1,13 +1,13 @@
 [package]
 name = "wasmicon-core"
-description = "Wasmicon の Core Wasm インタプリタ。no_std、依存クレートゼロ、alloc 不使用"
+description = "Core Wasm interpreter for Wasmicon: no_std, zero dependency crates, no alloc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-# 依存クレートを追加しない（docs/handoff.md §2-11）。コア本体は依存ゼロを保つ。
+# No dependency crates (docs/decisions.md D-11). The core itself stays at zero.
 [dependencies]
 
-# spec テストランナー（runtime/tests/）だけは依存を持ってよい。
+# Only the spec test runner (runtime/tests/) may have dependencies.
 [dev-dependencies]
 serde_json = "1"

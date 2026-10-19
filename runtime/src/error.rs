@@ -1,9 +1,9 @@
-//! エラー型。`core::fmt` を使わないので、理由は `&'static str` で持つ。
+//! Error types. Reasons are `&'static str` because the core does not use `core::fmt`.
 //!
-//! 区分は Wasm 仕様のフェーズに対応する。spec テストの
-//! `assert_malformed` / `assert_invalid` / `assert_trap` はこの区分で判定する。
+//! The categories follow the phases of the Wasm spec. The spec tests'
+//! `assert_malformed` / `assert_invalid` / `assert_trap` are judged by category.
 
-/// 実行時トラップの理由。
+/// Reason for a run-time trap.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Trap {
     Unreachable,
@@ -19,7 +19,7 @@ pub enum Trap {
 }
 
 impl Trap {
-    /// トレース用の短い名前。`core::fmt` を避けるため文字列を直接返す。
+    /// Short name for traces. Returns a string directly to avoid `core::fmt`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -37,28 +37,28 @@ impl Trap {
     }
 }
 
-/// ランタイムのエラー。
+/// Runtime error.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// デコード時の不正（Wasm 仕様の malformed）。
+    /// Rejected while decoding (malformed in the Wasm spec).
     Malformed(&'static str),
-    /// 検証時の不正（Wasm 仕様の invalid）。
+    /// Rejected while validating (invalid in the Wasm spec).
     Invalid(&'static str),
-    /// インスタンス化時の不正（Wasm 仕様の unlinkable）。
+    /// Rejected while instantiating (unlinkable in the Wasm spec).
     Unlinkable(&'static str),
-    /// Wasm としては正しいが、対応機能セット（docs/handoff.md §2-7）の外。
-    /// 仕様上の invalid とは区別する。ゲストのバグではなくランタイムの守備範囲外。
+    /// Valid Wasm, but outside the supported feature set (docs/decisions.md D-07).
+    /// Kept distinct from invalid: not a guest bug, but outside what the runtime covers.
     Unsupported(&'static str),
-    /// 実行時トラップ。
+    /// Run-time trap.
     Trap(Trap),
-    /// スタックまたは呼び出し深さの上限超過。
+    /// Stack or call depth limit exceeded.
     Exhausted(&'static str),
-    /// ポートから渡された arena が足りない。ホスト側の設定不足。
+    /// The arena the port handed in is too small. A host-side configuration problem.
     OutOfArena,
 }
 
 impl Error {
-    /// 区分。spec テストの assert_* の判定に使う。
+    /// Category. Used to judge the spec tests' `assert_*`.
     #[must_use]
     pub const fn kind(self) -> ErrorKind {
         match self {
@@ -72,7 +72,7 @@ impl Error {
         }
     }
 
-    /// トレース用の短い理由。
+    /// Short reason for traces.
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
@@ -82,12 +82,12 @@ impl Error {
             | Error::Unsupported(m)
             | Error::Exhausted(m) => m,
             Error::Trap(t) => t.name(),
-            Error::OutOfArena => "arena が足りない",
+            Error::OutOfArena => "out of arena",
         }
     }
 }
 
-/// エラーの区分。
+/// Error category.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     Malformed,

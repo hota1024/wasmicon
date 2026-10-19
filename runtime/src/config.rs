@@ -1,30 +1,30 @@
-//! ポートが決める上限。arena と同じくコアは自分で決めない。
+//! Limits chosen by the port. As with the arena, the core does not decide them itself.
 
-/// ランタイムの上限設定。
+/// Runtime limits.
 #[derive(Clone, Copy)]
 pub struct Config {
-    /// 検証時の値スタックの最大段数。
+    /// Maximum depth of the value stack during validation.
     pub max_value_stack: usize,
-    /// 制御構造のネスト上限。
+    /// Maximum nesting depth of control structures.
     pub max_control_depth: usize,
-    /// 1 関数のローカル（引数を含む）の上限。
+    /// Maximum number of locals (parameters included) in one function.
     pub max_locals: usize,
-    /// 線形メモリの最大ページ数（1 ページ = 64 KiB）。
+    /// Maximum number of linear memory pages (1 page = 64 KiB).
     pub max_memory_pages: u32,
-    /// テーブルの最大要素数。
+    /// Maximum number of table elements.
     pub max_table_elems: u32,
-    /// 実行時の呼び出し深さ上限。超えたら `Exhausted`。
+    /// Maximum call depth at run time. Exceeding it returns `Exhausted`.
     pub max_call_depth: usize,
-    /// 実行時のオペランドスタックのスロット数。
+    /// Number of operand stack slots at run time.
     pub operand_stack_slots: usize,
 }
 
 impl Config {
-    /// ホスト PC 向けの既定値。マイコンのポートは小さくする。
+    /// Defaults for a host PC. Microcontroller ports use smaller values.
     ///
-    /// `Default` から分けて `const` にしてあるのは、ボードプロファイル
-    /// （`ports/common` の `profile`）が const 文脈でこれを使うため。
-    /// 二重に書くと必ず食い違う。
+    /// This is a `const` separate from `Default` because the board profiles
+    /// (`profile` in `ports/common`) use it in a const context. Writing the
+    /// values twice would let them drift apart.
     pub const DEFAULT: Config = Config {
         max_value_stack: 8192,
         max_control_depth: 2048,

@@ -1,12 +1,12 @@
-//! バイト列リーダ。LEB128 と即値の読み出し。
+//! Byte reader: LEB128 and immediate decoding.
 //!
-//! Cortex-M0+ は非アライメントのワードアクセスで HardFault するので、
-//! 多バイト値は必ず `from_le_bytes` でバイト単位に組み立てる
-//! （ポインタキャストや `align_to` は使わない）。
+//! Cortex-M0+ HardFaults on unaligned word access, so multi-byte values are
+//! always assembled byte by byte with `from_le_bytes`, never through pointer
+//! casts or `align_to` (docs/decisions.md P-06).
 
 use crate::error::{Error, Result};
 
-/// フラッシュ上のスライスを前から読むカーソル。
+/// Cursor that reads a slice in flash from front to back.
 pub struct Reader<'m> {
     bytes: &'m [u8],
     pos: usize,
@@ -35,13 +35,13 @@ impl<'m> Reader<'m> {
         self.pos >= self.bytes.len()
     }
 
-    /// 残り全部を切り出す。
+    /// Returns everything that is left.
     #[must_use]
     pub fn rest(&self) -> &'m [u8] {
         &self.bytes[self.pos..]
     }
 
-    /// 元のバイト列の [from, to) を切り出す。定数式の範囲取りに使う。
+    /// Returns [from, to) of the underlying bytes. Used to slice out constant expressions.
     #[must_use]
     pub fn slice(&self, from: usize, to: usize) -> &'m [u8] {
         &self.bytes[from..to]
@@ -53,7 +53,7 @@ impl<'m> Reader<'m> {
         Ok(b)
     }
 
-    /// 次の 1 バイトを消費せずに見る。
+    /// Returns the next byte without consuming it.
     pub fn peek_u8(&self) -> Result<u8> {
         self.bytes.get(self.pos).copied().ok_or(END)
     }
@@ -69,7 +69,7 @@ impl<'m> Reader<'m> {
         self.bytes(n).map(|_| ())
     }
 
-    /// 符号なし LEB128（32bit）。冗長な長さと範囲外を拒否する。
+    /// Unsigned LEB128 (32-bit). Rejects over-long encodings and out-of-range values.
     pub fn u32_leb(&mut self) -> Result<u32> {
         let mut result: u32 = 0;
         let mut shift: u32 = 0;
@@ -92,7 +92,7 @@ impl<'m> Reader<'m> {
         }
     }
 
-    /// 符号なし LEB128（64bit）。
+    /// Unsigned LEB128 (64-bit).
     pub fn u64_leb(&mut self) -> Result<u64> {
         let mut result: u64 = 0;
         let mut shift: u32 = 0;
@@ -115,7 +115,7 @@ impl<'m> Reader<'m> {
         }
     }
 
-    /// 符号つき LEB128（32bit）。
+    /// Signed LEB128 (32-bit).
     pub fn i32_leb(&mut self) -> Result<i32> {
         let mut result: u32 = 0;
         let mut shift: u32 = 0;
@@ -125,7 +125,7 @@ impl<'m> Reader<'m> {
                 if byte & 0x80 != 0 {
                     return Err(Error::Malformed("integer representation too long"));
                 }
-                // 残り 4 ビット。上位 3 ビットは符号拡張でなければならない。
+                // 4 bits remain. The top 3 must be the sign extension.
                 let b = byte & 0x7f;
                 let sign = (b >> 3) & 1;
                 let top = b >> 4;
@@ -145,7 +145,7 @@ impl<'m> Reader<'m> {
         }
     }
 
-    /// 符号つき LEB128（64bit）。
+    /// Signed LEB128 (64-bit).
     pub fn i64_leb(&mut self) -> Result<i64> {
         let mut result: u64 = 0;
         let mut shift: u32 = 0;
@@ -155,7 +155,7 @@ impl<'m> Reader<'m> {
                 if byte & 0x80 != 0 {
                     return Err(Error::Malformed("integer representation too long"));
                 }
-                // 残り 1 ビット。上位 6 ビットは符号拡張でなければならない。
+                // 1 bit remains. The top 6 must be the sign extension.
                 let b = byte & 0x7f;
                 let sign = b & 1;
                 let top = b >> 1;
@@ -175,13 +175,13 @@ impl<'m> Reader<'m> {
         }
     }
 
-    /// 4 バイト little-endian。非アライメントでも安全。
+    /// 4-byte little-endian. Safe on unaligned input.
     pub fn f32_bits(&mut self) -> Result<u32> {
         let b = self.bytes(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    /// 8 バイト little-endian。
+    /// 8-byte little-endian.
     pub fn f64_bits(&mut self) -> Result<u64> {
         let b = self.bytes(8)?;
         Ok(u64::from_le_bytes([
@@ -189,7 +189,7 @@ impl<'m> Reader<'m> {
         ]))
     }
 
-    /// 長さつき UTF-8 名。妥当性は `core::str::from_utf8` で検査する。
+    /// Length-prefixed UTF-8 name. Validity is checked with `core::str::from_utf8`.
     pub fn name(&mut self) -> Result<&'m str> {
         let len = self.u32_leb()? as usize;
         let b = self.bytes(len)?;

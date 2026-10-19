@@ -1,21 +1,22 @@
-//! 生成されたエラーコードの意味づけを固定する。
+//! Locks in the meaning of the generated error codes.
 //!
-//! `from_status` は 0（成功）と範囲外の両方で `None` を返す。この 2 つを
-//! 区別せずに書くとバインディング側で「未知のステータス = 成功」になり、
-//! 無効ハンドル 0 を包んで返してしまう。ここでその前提を明文化しておく。
+//! `from_status` returns `None` both for 0 (success) and for out-of-range
+//! values. A binding that does not tell these apart treats an unknown status
+//! as success and hands back the invalid handle 0 wrapped in `Ok`. This test
+//! spells out that assumption.
 
 use wasmicon_core::generated::ErrorCode;
 
 #[test]
 fn status_is_discriminant_plus_one() {
-    // abi-spec §4.4: n > 0 のとき n - 1 が discriminant。
+    // docs/abi-spec.md §4.4: for n > 0, the discriminant is n - 1.
     let mut i = 0;
     while i < ErrorCode::COUNT {
-        let e = ErrorCode::from_u32(i).expect("範囲内なのに復元できない");
-        assert_eq!(e.status(), i + 1, "discriminant {i} のステータスが違う");
+        let e = ErrorCode::from_u32(i).expect("in range but not recoverable");
+        assert_eq!(e.status(), i + 1, "wrong status for discriminant {i}");
         assert!(
             ErrorCode::from_status(e.status()) == Some(e),
-            "ステータス {} から復元できない",
+            "status {} does not round-trip",
             e.status()
         );
         i += 1;
@@ -26,11 +27,11 @@ fn status_is_discriminant_plus_one() {
 fn from_status_returns_none_for_success_and_out_of_range() {
     assert!(
         ErrorCode::from_status(0).is_none(),
-        "0 は成功であってエラーではない"
+        "0 is success, not an error"
     );
     assert!(
         ErrorCode::from_status(ErrorCode::COUNT + 1).is_none(),
-        "範囲外のステータスは復元できない"
+        "an out-of-range status must not decode"
     );
     assert!(ErrorCode::from_status(u32::MAX).is_none());
 }

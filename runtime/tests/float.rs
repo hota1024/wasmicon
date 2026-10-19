@@ -1,11 +1,12 @@
-//! `float.rs` の自前実装を std の実装と突き合わせる。
+//! Cross-checks the hand-written `float.rs` against the std implementations.
 //!
-//! コアは no_std なのでこれらを自前で書いている。ここが狂うと spec テストの
-//! `f32.wast` / `f64.wast` / `float_misc.wast` が大量に落ちるので、先に潰しておく。
+//! The core is `no_std`, so these operations are written by hand. A bug here
+//! fails `f32.wast` / `f64.wast` / `float_misc.wast` in bulk, so it is caught
+//! here first.
 
 use wasmicon_core::float::*;
 
-/// 再現性のある擬似乱数（依存クレートを増やさないため）。
+/// Reproducible pseudo-random numbers (avoids a dependency crate).
 struct Lcg(u64);
 
 impl Lcg {
@@ -30,7 +31,7 @@ fn bits_eq_f32(a: f32, b: f32) -> bool {
 fn sqrt_f64_matches_std() {
     let mut rng = Lcg(0x1234_5678_9abc_def0);
     let mut checked = 0;
-    // 代表値
+    // Representative values
     for x in [
         0.0f64,
         -0.0,
@@ -51,7 +52,7 @@ fn sqrt_f64_matches_std() {
         assert!(bits_eq_f64(sqrt_f64(x), x.sqrt()), "sqrt({x:e})");
         checked += 1;
     }
-    // 乱数（正の値のみ。負・NaN・Inf は個別に検査する）
+    // Random values (positive only; negative, NaN and Inf are checked separately)
     for _ in 0..200_000 {
         let b = rng.next() & 0x7fff_ffff_ffff_ffff;
         let x = f64::from_bits(b);
@@ -127,17 +128,17 @@ fn rounding_matches_std() {
 
 #[test]
 fn min_max_follow_the_spec() {
-    // ±0 の扱い（仕様: min(-0,+0) = -0、max(-0,+0) = +0）
+    // Signed zeros (spec: min(-0,+0) = -0, max(-0,+0) = +0)
     assert_eq!(min_f64(-0.0, 0.0).to_bits(), (-0.0f64).to_bits());
     assert_eq!(min_f64(0.0, -0.0).to_bits(), (-0.0f64).to_bits());
     assert_eq!(max_f64(-0.0, 0.0).to_bits(), 0.0f64.to_bits());
     assert_eq!(max_f64(0.0, -0.0).to_bits(), 0.0f64.to_bits());
     assert_eq!(min_f32(-0.0, 0.0).to_bits(), (-0.0f32).to_bits());
     assert_eq!(max_f32(-0.0, 0.0).to_bits(), 0.0f32.to_bits());
-    // NaN はどちらかが NaN なら NaN
+    // NaN if either operand is NaN
     assert!(min_f64(f64::NAN, 1.0).is_nan());
     assert!(max_f64(1.0, f64::NAN).is_nan());
-    // 通常の比較
+    // Ordinary comparisons
     assert_eq!(min_f64(1.0, 2.0), 1.0);
     assert_eq!(max_f64(1.0, 2.0), 2.0);
     assert_eq!(min_f64(f64::NEG_INFINITY, 0.0), f64::NEG_INFINITY);

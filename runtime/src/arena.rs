@@ -1,46 +1,46 @@
-//! ポートから渡された 1 枚のバッファを前から切り出すだけのアロケータ。
+//! Bump allocator over the single buffer the port hands in.
 //!
-//! `alloc` を使わない代わりに、モジュールの解決に必要な表（型表、関数表、
-//! side table、線形メモリなど）をここから取る。解放はしない。
-//! モジュールを捨てるときはポートが arena ごと作り直す。
+//! Instead of `alloc`, the tables a module needs (types, functions, the side
+//! table, linear memory and so on) are carved out of this buffer. Nothing is
+//! ever freed: to discard a module, the port rebuilds the whole arena.
 
 use crate::error::{Error, Result};
 
-/// 前方に伸びるだけのバンプアロケータ。
+/// Bump allocator that only grows forward.
 pub struct Arena<'a> {
     buf: &'a mut [u8],
     used: usize,
 }
 
 impl<'a> Arena<'a> {
-    /// ポートから受け取ったバッファで初期化する。
+    /// Wraps the buffer received from the port.
     #[must_use]
     pub fn new(buf: &'a mut [u8]) -> Self {
         Arena { buf, used: 0 }
     }
 
-    /// 使用済みバイト数。
+    /// Bytes handed out so far.
     #[must_use]
     pub fn used(&self) -> usize {
         self.used
     }
 
-    /// 総容量。
+    /// Total capacity.
     #[must_use]
     pub fn capacity(&self) -> usize {
         self.buf.len()
     }
 
-    /// `n` 個の `T` を確保し、全要素を `init` で埋めて返す。
+    /// Allocates `n` values of `T`, fills every element with `init` and returns the slice.
     ///
-    /// 未初期化のまま外へ出さないので、呼び出し側は安全に読める。
-    /// `T: Copy` なので `Drop` は無く、解放しなくても漏れない。
+    /// Nothing leaves this function uninitialized, so callers can read the slice
+    /// safely. `T: Copy` means there is no `Drop`, so never freeing cannot leak.
     pub fn alloc<T: Copy>(&mut self, n: usize, init: T) -> Result<&'a mut [T]> {
         let align = align_of::<T>();
         let size = size_of::<T>();
 
         let base = self.buf.as_mut_ptr();
-        // アラインは「バッファ先頭のアドレス + used」を基準に取る。
+        // Alignment is computed on the absolute address (buffer start + used).
         let start = base as usize + self.used;
         let aligned = start
             .checked_next_multiple_of(align)
@@ -56,11 +56,12 @@ impl<'a> Arena<'a> {
             return Err(Error::OutOfArena);
         }
 
-        // SAFETY: `aligned` は buf の範囲内（end <= buf.len() を確認済み）で、
-        // T のアラインに合わせてある。この領域は used を進めることで二度と
-        // 配られない。書き込んでから参照を作るので未初期化は読ませない。
-        // 返す参照の寿命 'a は buf 自体の寿命であり、arena が生きている間
-        // この領域が再利用されないことは used の単調増加が保証する。
+        // SAFETY: `aligned` lies inside `buf` (end <= buf.len() was checked above)
+        // and is aligned for `T`. Advancing `used` past this region means it is
+        // never handed out again. Every element is written before the reference
+        // is created, so no uninitialized memory is exposed. The returned
+        // lifetime 'a is the lifetime of `buf` itself, and `used` only grows, so
+        // the region is not reused while the arena lives.
         let slice = unsafe {
             let ptr = aligned as *mut T;
             for i in 0..n {
@@ -72,24 +73,25 @@ impl<'a> Arena<'a> {
         Ok(slice)
     }
 
-    /// `n` バイトを 0 で埋めて確保する。
+    /// Allocates `n` bytes filled with 0.
     pub fn alloc_bytes(&mut self, n: usize) -> Result<&'a mut [u8]> {
         self.alloc(n, 0u8)
     }
 
-    /// 残り全部を確保する。**中身は初期化しない。**
+    /// Hands out everything that is left. The contents are NOT initialized.
     ///
-    /// 線形メモリ用。bump allocator は伸長できないので、最後にこれで残りを渡し、
-    /// `memory.grow` はその範囲内で現在ページ数を増やすだけにする。
-    /// これを呼んだ後は他の確保ができない。
+    /// Used for linear memory. A bump allocator cannot grow an allocation, so
+    /// the remainder is handed out last and `memory.grow` only moves the current
+    /// page count within it. No further allocation is possible after this call.
     ///
-    /// 0 埋めをここでやらないのは、arena 全体を触ると使わないページまで
-    /// 実体化してしまうため。実際に使うページだけを `instantiate` と
-    /// `Memory::grow` が 0 埋めする。
+    /// The bytes are not zeroed here because touching the whole arena would
+    /// materialize pages that are never used. `instantiate` and `Memory::grow`
+    /// zero only the pages that are actually used.
     pub fn alloc_rest(&mut self) -> &'a mut [u8] {
         let n = self.buf.len() - self.used;
-        // SAFETY: [used, len) はまだ誰にも配っていない領域で、buf の範囲内。
-        // used をここまで進めるので二度と配られない。u8 なのでアラインは不要。
+        // SAFETY: [used, len) has not been handed out to anyone and lies inside
+        // `buf`. `used` is advanced to the end, so the region is never handed
+        // out again. `u8` needs no alignment.
         let slice =
             unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr().add(self.used), n) };
         self.used = self.buf.len();

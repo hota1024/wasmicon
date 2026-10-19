@@ -1,7 +1,8 @@
-//! セクション解析。バイナリを読んで `Module` を組み立てる。
+//! Section parsing. Reads the binary and builds a `Module`.
 //!
-//! ここで返すエラーは全て `Error::Malformed`（構文の不正）か
-//! `Error::Invalid`（形だけで分かる意味の不正）。型検査は `validate` の仕事。
+//! Every error returned here is `Error::Malformed` (bad syntax) or
+//! `Error::Invalid` (bad meaning that the shape alone reveals). Type checking
+//! is the job of `validate`.
 
 use crate::arena::Arena;
 use crate::error::{Error, Result};
@@ -12,12 +13,12 @@ use crate::types::{FuncType, GlobalType, Limits, ValType};
 const MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 const VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
-/// メモリの最大ページ数（仕様上の上限）。
+/// Maximum number of memory pages (spec upper bound).
 pub const MAX_MEMORY_PAGES: u32 = 65536;
-/// テーブルの最大要素数（仕様上の上限）。
+/// Maximum number of table elements (spec upper bound).
 pub const MAX_TABLE_ELEMS: u32 = 0xffff_ffff;
 
-/// セクション ID から並び順の順位へ。custom (0) は任意位置。
+/// Maps a section id to its ordering rank. Custom sections (0) may appear anywhere.
 const fn section_rank(id: u8) -> Option<u8> {
     match id {
         1 => Some(1),   // type
@@ -36,7 +37,7 @@ const fn section_rank(id: u8) -> Option<u8> {
     }
 }
 
-/// モジュールバイナリをデコードする。
+/// Decodes a module binary.
 pub fn decode<'m, 'a>(bytes: &'m [u8], arena: &mut Arena<'a>) -> Result<Module<'m, 'a>> {
     let mut r = Reader::new(bytes);
 
@@ -77,7 +78,7 @@ pub fn decode<'m, 'a>(bytes: &'m [u8], arena: &mut Arena<'a>) -> Result<Module<'
         let mut s = Reader::new(body);
 
         if id == 0 {
-            // custom セクション。名前が UTF-8 であることだけ確かめて読み飛ばす。
+            // Custom section. Only check that the name is UTF-8, then skip it.
             let _ = s.name()?;
             continue;
         }
@@ -155,8 +156,8 @@ fn decode_types<'m, 'a>(r: &mut Reader<'m>, arena: &mut Arena<'a>) -> Result<&'a
     Ok(out)
 }
 
-/// 値型のベクタ。対応機能セットでは 1 型 = 1 バイトなので、
-/// 検査したうえでバイト列をそのまま返す。
+/// Vector of value types. In the supported feature set one type is one byte,
+/// so the bytes are checked and returned as they are.
 fn decode_valtypes<'m>(r: &mut Reader<'m>) -> Result<&'m [u8]> {
     let n = r.u32_leb()? as usize;
     let bytes = r.bytes(n)?;
@@ -254,7 +255,7 @@ fn decode_u32_vec<'a>(r: &mut Reader<'_>, arena: &mut Arena<'a>) -> Result<&'a [
 }
 
 fn decode_table_type(r: &mut Reader<'_>) -> Result<Limits> {
-    // 要素型は funcref のみ（reference-types 非対応）。
+    // The element type is funcref only (reference types are unsupported).
     match r.u8()? {
         0x70 => {}
         0x40 => {
@@ -333,7 +334,7 @@ fn decode_elems<'m, 'a>(r: &mut Reader<'m>, arena: &mut Arena<'a>) -> Result<&'a
                 let t = r.u32_leb()?;
                 (t, const_expr(r)?)
             }
-            // passive / declarative は table.init / elem.drop が非対応なので使い道が無い。
+            // Passive and declarative segments are useless without table.init / elem.drop.
             1 | 3 => {
                 return Err(Error::Unsupported(
                     "passive element segments are not supported",
@@ -346,7 +347,7 @@ fn decode_elems<'m, 'a>(r: &mut Reader<'m>, arena: &mut Arena<'a>) -> Result<&'a
             }
         };
         if flags == 2 {
-            // elemkind。0x00 = funcref のみ。
+            // elemkind. Only 0x00 = funcref.
             if r.u8()? != 0x00 {
                 return Err(Error::Malformed("malformed element kind"));
             }
@@ -417,8 +418,8 @@ fn decode_code<'m, 'a>(
     Ok(out)
 }
 
-/// 定数式のバイト列を切り出す（末尾の `end` は含めない）。
-/// 型の整合は `validate` が見る。
+/// Slices out the bytes of a constant expression (without the trailing `end`).
+/// Type consistency is checked by `validate`.
 fn const_expr<'m>(r: &mut Reader<'m>) -> Result<&'m [u8]> {
     let start = r.pos();
     let mut end_at = start;
@@ -441,7 +442,8 @@ fn const_expr<'m>(r: &mut Reader<'m>) -> Result<&'m [u8]> {
             0x23 => {
                 r.u32_leb()?;
             }
-            // extended-const 提案の算術。Wasm としては正しいが対応機能セット外。
+            // Arithmetic from the extended-const proposal. Valid Wasm, but outside the
+            // supported feature set.
             0x6a..=0x6c | 0x7c..=0x7e => {
                 return Err(Error::Unsupported(
                     "extended constant expressions are not supported",
@@ -451,6 +453,6 @@ fn const_expr<'m>(r: &mut Reader<'m>) -> Result<&'m [u8]> {
         }
         end_at = r.pos();
     }
-    // start..end_at が `end` を除いた本体。
+    // start..end_at is the body without the `end`.
     Ok(r.slice(start, end_at))
 }
