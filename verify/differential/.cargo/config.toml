@@ -1,2 +1,2 @@
-# root workspace とは別なので、ここで cargo を実行する。
+# This crate is a separate workspace from the root, so run cargo from this directory:
 # `cd verify/differential && cargo test`

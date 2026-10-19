@@ -1,13 +1,13 @@
-//! 自作インタプリタと wasmtime で同じ `.wasm` を走らせ、トレースを突き合わせる。
+//! Runs the same `.wasm` on wasmicon-core and on wasmtime and cross-checks the traces.
 //!
-//! docs/handoff.md §5 Phase 6 の (3)。実機とは無関係に**インタプリタの正しさ**を
-//! 外部の参照実装で検証する。
+//! This verifies the interpreter against an external reference implementation,
+//! independently of any hardware (docs/verification-report.md §2).
 //!
-//! 肝は **HAL を共有する**こと。`wasmicon-port` の `Hal` は
-//! `wasmicon_core::Resolver` を実装しているが、その `call` はエンジンに依存しない
-//! （引数のスロット列とゲストメモリのスライスしか触らない）。同じ `Hal` を
-//! wasmtime からも駆動するので、トレースに差が出たらそれは**エンジンの差**、
-//! つまり自作インタプリタのバグということになる。
+//! The key is that the two engines **share the HAL**. `Hal` from `wasmicon-port`
+//! implements `wasmicon_core::Resolver`, but its `call` does not depend on the engine
+//! (it touches only the argument slots and a slice of guest memory). The same `Hal` is
+//! driven from wasmtime too, so a difference between the traces is a difference between
+//! the engines, that is, a bug in our interpreter.
 
 use anyhow::{Result, anyhow, bail};
 use wasmicon_core::instance::Resolver;
@@ -15,26 +15,25 @@ use wasmicon_host::hal::HostBoard;
 use wasmicon_port::Hal;
 use wasmtime::{Caller, Engine, Extern, FuncType, Linker, Module, Store, Val, ValType};
 
-/// AssemblyScript が import する `env.abort`（docs/handoff.md §6）。
+/// The `env.abort` that AssemblyScript imports (docs/decisions.md P-02).
 const HOST_ENV_ABORT: u32 = 0xffff;
 
-/// ホスト関数の引数・戻り値の最大個数。
+/// Maximum number of arguments or results of a host function.
 ///
-/// `wasmicon_core::interp` の `MAX_HOST_ARITY` と同じ値にしてある。
-/// 現状の最大は `i2c.write-read` の 8 なので余裕はあるが、超えたときに
-/// wasmtime のコールバックの中で添字外れの panic になるのは読みにくいので
-/// 明示的に検査する。
+/// Kept equal to `MAX_HOST_ARITY` in `wasmicon_core::interp`. The current maximum is 8
+/// (`i2c.write-read`), so there is slack, but an index-out-of-bounds panic inside a
+/// wasmtime callback would be hard to read, so the limit is checked explicitly.
 const MAX_ARITY: usize = 16;
 
-/// wasmtime の `Store` に載せる状態。
+/// The state carried by the wasmtime `Store`.
 struct State {
     hal: Hal<HostBoard>,
 }
 
-/// シグネチャ文字列（abi-spec §7）から wasmtime の関数型へ。
+/// Converts a signature string (docs/abi-spec.md §7) into a wasmtime function type.
 fn func_type(engine: &Engine, sig: &str) -> Result<FuncType> {
     let Some((params, results)) = sig.split_once(':') else {
-        bail!("シグネチャが壊れている: {sig}");
+        bail!("malformed signature `{sig}`");
     };
     let map = |s: &str| -> Result<Vec<ValType>> {
         s.chars()
@@ -43,7 +42,7 @@ fn func_type(engine: &Engine, sig: &str) -> Result<FuncType> {
                 'I' => Ok(ValType::I64),
                 'f' => Ok(ValType::F32),
                 'F' => Ok(ValType::F64),
-                _ => bail!("知らないシグネチャ文字: {c}"),
+                _ => bail!("unknown signature character `{c}`"),
             })
             .collect()
     };
@@ -70,19 +69,19 @@ fn from_slot(ty: &ValType, slot: u64) -> Val {
     }
 }
 
-/// ゲストの線形メモリと状態を同時に借りる。
+/// Borrows the guest's linear memory and the state at the same time.
 fn memory_and_state<'a>(
     caller: &'a mut Caller<'_, State>,
 ) -> wasmtime::Result<(&'a mut [u8], &'a mut State)> {
     let Some(Extern::Memory(mem)) = caller.get_export("memory") else {
         return Err(wasmtime::Error::msg(
-            "ゲストが memory を export していない（abi-spec §3.3）",
+            "missing export `memory` (docs/abi-spec.md §3.3)",
         ));
     };
     Ok(mem.data_and_store_mut(caller))
 }
 
-/// 1 つのホスト関数を wasmtime に登録する。`Hal::call` に委ねる。
+/// Registers one host function with wasmtime. The body delegates to `Hal::call`.
 fn define(
     linker: &mut Linker<State>,
     engine: &Engine,
@@ -101,7 +100,7 @@ fn define(
             let m = result_types.len();
             if n > MAX_ARITY || m > MAX_ARITY {
                 return Err(wasmtime::Error::msg(format!(
-                    "{module_name}/{fn_name} の引数か戻り値が {MAX_ARITY} を超えている"
+                    "{module_name}/{fn_name} has more than {MAX_ARITY} arguments or results"
                 )));
             }
             let mut args = [0u64; MAX_ARITY];
@@ -125,22 +124,22 @@ fn define(
     Ok(())
 }
 
-/// 同じ `.wasm` を 2 つのエンジンで走らせた結果。
+/// The result of running the same `.wasm` on the two engines.
 pub struct Comparison {
-    /// 自作インタプリタのトレース。
+    /// The trace from our interpreter.
     pub wasmicon: String,
-    /// wasmtime のトレース。
+    /// The trace from wasmtime.
     pub wasmtime: String,
 }
 
 impl Comparison {
-    /// 一致しているか。
+    /// Returns whether the two traces are identical.
     #[must_use]
     pub fn agrees(&self) -> bool {
         self.wasmicon == self.wasmtime
     }
 
-    /// 最初に食い違う行（1 始まり）と、その両側。
+    /// Returns the first differing line (1-based) together with both sides.
     #[must_use]
     pub fn first_difference(&self) -> Option<(usize, String, String)> {
         let a: Vec<&str> = self.wasmicon.lines().collect();
@@ -154,22 +153,22 @@ impl Comparison {
             let i = a.len().min(b.len());
             return Some((
                 i + 1,
-                a.get(i).map_or("(終わり)", |s| s).to_string(),
-                b.get(i).map_or("(終わり)", |s| s).to_string(),
+                a.get(i).map_or("(end)", |s| s).to_string(),
+                b.get(i).map_or("(end)", |s| s).to_string(),
             ));
         }
         None
     }
 }
 
-/// wasmtime で走らせてトレースを返す。
+/// Runs the module on wasmtime and returns its trace.
 ///
 /// # Errors
-/// モジュールが読めない、リンクできない、実行が失敗したとき。
+/// When the module cannot be loaded, linked or run.
 pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> {
     let engine = Engine::default();
     let module =
-        Module::new(&engine, wasm).map_err(|e| anyhow!("wasmtime がモジュールを読めない: {e}"))?;
+        Module::new(&engine, wasm).map_err(|e| anyhow!("wasmtime cannot load the module: {e}"))?;
 
     let mut linker: Linker<State> = Linker::new(&engine);
     for desc in &wasmicon_core::generated::IMPORTS {
@@ -182,8 +181,8 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
             u32::from(desc.host_fn.index()),
         )?;
     }
-    // world app には無い例外的な import（docs/handoff.md §6）。
-    // 綴りの正は ports/common の AS_ABORT（リンクを決めているのはあちら）。
+    // The one import outside world app (docs/decisions.md P-02).
+    // ports/common's AS_ABORT is the source of truth for the spelling (it decides the link).
     define(
         &mut linker,
         &engine,
@@ -202,21 +201,21 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
     );
     let instance = linker
         .instantiate(&mut store, &module)
-        .map_err(|e| anyhow!("wasmtime がインスタンス化できない: {e}"))?;
+        .map_err(|e| anyhow!("wasmtime cannot instantiate the module: {e}"))?;
 
     let run = instance
         .get_typed_func::<(), ()>(&mut store, "run")
-        .map_err(|e| anyhow!("export run が無い（abi-spec §3.3）: {e}"))?;
+        .map_err(|e| anyhow!("missing export `run` (docs/abi-spec.md §3.3): {e}"))?;
     run.call(&mut store, ())
-        .map_err(|e| anyhow!("wasmtime で run が失敗した: {e}"))?;
+        .map_err(|e| anyhow!("run failed on wasmtime: {e}"))?;
 
     Ok(store.data_mut().hal.board_mut().trace_output().to_string())
 }
 
-/// 同じ `.wasm` を自作インタプリタと wasmtime で走らせて比べる。
+/// Runs the same `.wasm` on our interpreter and on wasmtime and compares the traces.
 ///
 /// # Errors
-/// どちらかのエンジンで実行が失敗したとき。
+/// When either engine fails to run the module.
 pub fn compare(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<Comparison> {
     let ours = wasmicon_host::run_wasm_with(wasm, true, i2c_replay.clone())
         .map_err(|e| anyhow!("wasmicon: {} [{}]", e.reason(), e.kind().name()))?;

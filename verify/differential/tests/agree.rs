@@ -1,7 +1,8 @@
-//! 自作インタプリタと wasmtime が同じトレースを出すことを確かめる。
+//! Locks in that our interpreter and wasmtime produce the same trace.
 //!
-//! docs/handoff.md §5 Phase 6 の (3)。ゲストは `apps/` の 4 つ全部。
-//! 実機とは無関係に、インタプリタの正しさを外部の参照実装で検証する。
+//! The guests are the four apps the trace-equality tests use: blink and sensor-display,
+//! Rust and AS versions. This verifies the interpreter against an external reference
+//! implementation, independently of any hardware (docs/verification-report.md §2).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,10 +11,10 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
-/// guest workspace で Rust のアプリをビルドする。
+/// Builds a Rust app in the guest workspace.
 fn build_rust_app(pkg: &str) -> Vec<u8> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
@@ -21,21 +22,21 @@ fn build_rust_app(pkg: &str) -> Vec<u8> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let root = repo_root();
-    // cargo test が渡す RUSTUP_TOOLCHAIN は toolchain override を無効にする。
+    // The RUSTUP_TOOLCHAIN that cargo test passes down would disable the toolchain override.
     let status = Command::new("cargo")
         .current_dir(root.join("apps"))
         .env_remove("RUSTUP_TOOLCHAIN")
         .args(["build", "--release", "-p", pkg])
         .status()
-        .expect("cargo を起動できない");
-    assert!(status.success(), "{pkg} のビルドに失敗した");
+        .expect("cannot start cargo");
+    assert!(status.success(), "build of {pkg} failed");
     let wasm = root
         .join("apps/target/wasm32-unknown-unknown/release")
         .join(format!("{}.wasm", pkg.replace('-', "_")));
-    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
 }
 
-/// AssemblyScript のアプリを asc でビルドする。
+/// Builds an AssemblyScript app with asc.
 fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
@@ -46,7 +47,7 @@ fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
     let app = root.join("apps").join(dir);
     assert!(
         root.join("node_modules/assemblyscript").exists(),
-        "AssemblyScript が入っていない。リポジトリルートで `npm install` を実行すること"
+        "AssemblyScript is not installed; run `npm install` at the repository root"
     );
     let status = Command::new("npx")
         .current_dir(&app)
@@ -59,29 +60,27 @@ fn build_as_app(dir: &str, out: &str) -> Vec<u8> {
             "release",
         ])
         .status()
-        .expect("npx を起動できない");
-    assert!(status.success(), "{dir} のビルドに失敗した");
-    std::fs::read(app.join("build").join(out)).expect("ビルド結果を読めない")
+        .expect("cannot start npx");
+    assert!(status.success(), "build of {dir} failed");
+    std::fs::read(app.join("build").join(out)).expect("cannot read the build output")
 }
 
 fn sht4x_replay() -> Vec<Vec<u8>> {
     wasmicon_host::load_i2c_replay(&repo_root().join("verify/sht4x-replay.txt"))
-        .expect("記録済み応答を読めない")
+        .expect("cannot read the recorded responses")
 }
 
-/// 2 つのエンジンでトレースが一致することを確かめる。
+/// Asserts that the two engines produce identical traces.
 fn assert_agrees(wasm: &[u8], replay: Vec<Vec<u8>>, label: &str) {
     let c = wasmicon_differential::compare(wasm, replay)
-        .unwrap_or_else(|e| panic!("{label}: 実行に失敗: {e:#}"));
+        .unwrap_or_else(|e| panic!("{label}: run failed: {e:#}"));
     if let Some((line, ours, theirs)) = c.first_difference() {
-        panic!(
-            "{label}: {line} 行目でエンジンが食い違う\n  wasmicon: {ours}\n  wasmtime: {theirs}"
-        );
+        panic!("{label}: engines differ at line {line}\n  wasmicon: {ours}\n  wasmtime: {theirs}");
     }
-    assert!(c.agrees(), "{label}: トレースが一致しない");
+    assert!(c.agrees(), "{label}: traces mismatch");
     assert!(
         !c.wasmicon.is_empty(),
-        "{label}: トレースが空（何も検証していない）"
+        "{label}: trace is empty (nothing was verified)"
     );
 }
 
