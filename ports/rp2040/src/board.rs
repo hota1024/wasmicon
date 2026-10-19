@@ -1,7 +1,8 @@
-//! Raspberry Pi Pico WH のボード実装。
+//! Board implementation for the Raspberry Pi Pico WH.
 //!
-//! GPIO は番号で動的に触る必要があるので、型付きピンではなく SIO / IO_BANK0 /
-//! PADS_BANK0 のレジスタを直接叩く。HAL の共通部分は `wasmicon-port` にある。
+//! GPIOs are addressed by number at run time, so instead of typed pins this
+//! drives the SIO / IO_BANK0 / PADS_BANK0 registers directly. The shared part
+//! of the HAL lives in `wasmicon-port`.
 
 use rp2040_hal::pac;
 use wasmicon_core::generated::ErrorCode;
@@ -11,60 +12,61 @@ use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_port::{Board, BoardResult};
 
-/// RP2040 の GPIO は GP0..GP29。
+/// The RP2040 has GP0..GP29.
 const NUM_GPIO: u32 = 30;
 
-// 配線表の検査（CLI とファーム。`wasmicon_port::roles`）はプロファイルの
-// `gpio_count` / `reserved` を使う。ここの値と食い違うと、検査を通った表で
-// `pin.open` が落ちるので、コンパイル時に突き合わせる。役割の表そのものは
-// ファームに無い（`docs/app-workflow.md` §3.9）。
+// The wiring-table check (CLI and firmware, `wasmicon_port::roles`) uses the
+// profile's `gpio_count` / `reserved`. If they disagreed with the values here,
+// `pin.open` would fail on a table that passed the check, so they are
+// cross-checked at compile time. The firmware holds no role table of its own
+// (docs/app-workflow.md §3.9).
 const _: () = assert!(NUM_GPIO == wasmicon_port::profile::RP2040.gpio_count);
 const _: () = assert!(wasmicon_port::profile::same_pins(
     RESERVED,
     wasmicon_port::profile::RP2040.reserved
 ));
 
-// プロファイルの「実装済みインターフェース」と、下の `Board` 実装の
-// `unsupported` スタブを縛る。**片方だけ直すとここで落ちる。**
+// Ties the profile's "implemented interfaces" to the `unsupported` stubs in
+// the `Board` impl below. Fixing only one side fails here.
 const _: () = {
     let i = wasmicon_port::profile::RP2040.interfaces;
     assert!(
         !i.i2c && !i.spi,
-        "I2C / SPI を実装したら profile::RP2040.interfaces も true にする"
+        "set profile::RP2040.interfaces.i2c / .spi once I2C / SPI are implemented"
     );
     assert!(i.gpio && i.time && i.log && i.board);
 };
 
-/// SIO の FUNCSEL。ソフトウェア制御の GPIO。
+/// SIO FUNCSEL value: software-controlled GPIO.
 const FUNCSEL_SIO: u8 = 5;
 
-/// ゲストに開放しない GPIO。
+/// GPIOs not released to the guest.
 ///
-/// GP0/GP1 はトレース用の UART0。開けられるとトレースが途切れる。
-/// GP23/24/25/29 は Pico W(H) では CYW43439（無線と オンボード LED）との
-/// 接続に使われている。
+/// GP0/GP1 are UART0, which carries the trace; opening them would cut it off.
+/// GP23/24/25/29 connect to the CYW43439 (radio and on-board LED) on the
+/// Pico W(H).
 const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 
-/// トレースとログを出す先。
+/// Where traces and logs go.
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
 }
 
-/// Pico のボード。
+/// The Pico board.
 pub struct PicoBoard<S: Serial> {
     serial: S,
-    /// オープンドレインとして開いているピン。
+    /// Pins open as open-drain outputs.
     ///
-    /// RP2040 のパッドにはオープンドレイン制御が無い（`OD` は出力ディセーブル）
-    /// ので、出力イネーブルで擬似する: low は OE=1 かつ OUT=0、high は OE=0 で
-    /// ハイインピーダンス。
+    /// RP2040 pads have no open-drain control (`OD` is output disable), so it
+    /// is emulated with output enable: low is OE=1 and OUT=0, high is OE=0
+    /// (high impedance).
     open_drain: u32,
 }
 
 impl<S: Serial> PicoBoard<S> {
     /// # Safety
-    /// SIO / IO_BANK0 / PADS_BANK0 / TIMER をこのボードが排他的に使うこと。
-    /// 呼び出し側は同じペリフェラルを他で触らない責任を負う。
+    /// This board must have exclusive use of SIO / IO_BANK0 / PADS_BANK0 /
+    /// TIMER. The caller must not touch those peripherals anywhere else.
     #[must_use]
     pub unsafe fn new(serial: S) -> Self {
         PicoBoard {
@@ -73,18 +75,19 @@ impl<S: Serial> PicoBoard<S> {
         }
     }
 
-    /// シリアルへの参照。失敗の理由を出すのに使う。
+    /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
     }
 
     fn sio() -> pac::SIO {
-        // SAFETY: PicoBoard::new の契約により、SIO はこのボードだけが触る。
+        // SAFETY: by the contract of PicoBoard::new, only this board touches SIO.
         unsafe { pac::Peripherals::steal().SIO }
     }
 
     fn timer() -> pac::TIMER {
-        // SAFETY: 同上。TIMER は読み出しのみ。
+        // SAFETY: by the contract of PicoBoard::new, only this board touches
+        // TIMER, and it is only read.
         unsafe { pac::Peripherals::steal().TIMER }
     }
 }
@@ -103,10 +106,11 @@ impl<S: Serial> Board for PicoBoard<S> {
             return Err(ErrorCode::InvalidArgument);
         }
         let n = index as usize;
-        // SAFETY: PicoBoard::new の契約により、これらのペリフェラルは排他。
+        // SAFETY: by the contract of PicoBoard::new, only this board touches
+        // SIO / IO_BANK0 / PADS_BANK0.
         let p = unsafe { pac::Peripherals::steal() };
 
-        // パッドの設定。入力バッファと プル、出力ディセーブル。
+        // Pad setup: input buffer, pulls, output disable.
         p.PADS_BANK0.gpio(n).write(|w| {
             w.ie().set_bit();
             w.od().clear_bit();
@@ -127,26 +131,35 @@ impl<S: Serial> Board for PicoBoard<S> {
             w
         });
 
-        // ソフトウェア制御にする。
+        // Hand the pin to software control.
         p.IO_BANK0
             .gpio(n)
             .gpio_ctrl()
+            // SAFETY: FUNCSEL_SIO (5) fits the 5-bit FUNCSEL field.
             .write(|w| unsafe { w.funcsel().bits(FUNCSEL_SIO) });
 
         let mask = 1u32 << index;
         match mode {
             PinMode::OutputOpenDrain => {
-                // ハイインピーダンスから始める（外部プルアップに任せる）。
+                // Start in high impedance; the external pull-up holds the line.
                 self.open_drain |= mask;
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 30-bit GPIO_OUT_CLR field.
                 p.SIO.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 30-bit GPIO_OE_CLR field.
                 p.SIO.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
             }
             PinMode::Output => {
                 self.open_drain &= !mask;
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 30-bit GPIO_OE_SET field.
                 p.SIO.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
             }
             _ => {
                 self.open_drain &= !mask;
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 30-bit GPIO_OE_CLR field.
                 p.SIO.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
             }
         }
@@ -160,22 +173,32 @@ impl<S: Serial> Board for PicoBoard<S> {
         let sio = Self::sio();
         let mask = 1u32 << index;
         if self.open_drain & mask != 0 {
-            // オープンドレイン: low は駆動、high はハイインピーダンス。
+            // Open drain: low is driven, high is high impedance.
             match level {
                 Level::Low => {
+                    // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                    // 30-bit GPIO_OUT_CLR field.
                     sio.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
+                    // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                    // 30-bit GPIO_OE_SET field.
                     sio.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
                 }
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 30-bit GPIO_OE_CLR field.
                 Level::High => sio.gpio_oe_clr().write(|w| unsafe { w.bits(mask) }),
             }
             return Ok(());
         }
-        // 出力に設定されていなければ書けない。
+        // A pin that is not configured as an output cannot be written.
         if sio.gpio_oe().read().bits() & mask == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
         match level {
+            // SAFETY: index < NUM_GPIO (30), so mask is one bit of the 30-bit
+            // GPIO_OUT_SET field.
             Level::High => sio.gpio_out_set().write(|w| unsafe { w.bits(mask) }),
+            // SAFETY: index < NUM_GPIO (30), so mask is one bit of the 30-bit
+            // GPIO_OUT_CLR field.
             Level::Low => sio.gpio_out_clr().write(|w| unsafe { w.bits(mask) }),
         }
         Ok(())
@@ -187,9 +210,10 @@ impl<S: Serial> Board for PicoBoard<S> {
         }
         let sio = Self::sio();
         let mask = 1u32 << index;
-        // 出力モードなら出力値、入力モードなら入力値（WIT の read の定義）。
+        // Output mode reads the output value, input mode the input value (the
+        // definition of read in the WIT).
         let bits = if self.open_drain & mask != 0 {
-            // オープンドレインは線の実際の状態を読む。
+            // Open drain reads the actual state of the line.
             sio.gpio_in().read().bits()
         } else if sio.gpio_oe().read().bits() & mask != 0 {
             sio.gpio_out().read().bits()
@@ -207,17 +231,18 @@ impl<S: Serial> Board for PicoBoard<S> {
         if index >= NUM_GPIO {
             return;
         }
-        // abi-spec §5.2: 入力・プル無しに戻す。
+        // docs/abi-spec.md §5.2: back to input with no pulls.
         self.open_drain &= !(1u32 << index);
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C / SPI は Phase 5 で実装する ---
+    // --- I2C / SPI are not implemented on this port ---
     //
-    // **実装したら `profile::RP2040.interfaces` の i2c / spi も true にする。**
-    // 下の const がその組を縛っていて、片方だけ直すとコンパイルが落ちる。
-    // 揃っていないと `wasmicon check --board rp2040` が、動くアプリを
-    // 「このポートは未実装」で落とし続ける（docs/TODO.md §1.2）。
+    // When they are, also set i2c / spi in `profile::RP2040.interfaces`. The
+    // const above ties the two together, so fixing only one side fails to
+    // compile. While they disagree, `wasmicon check --board rp2040` keeps
+    // rejecting working apps as "not implemented on this port"
+    // (docs/TODO.md §1.2).
 
     fn i2c_open(&mut self, _index: u32, _speed: Speed) -> BoardResult<()> {
         Err(ErrorCode::Unsupported)
@@ -250,11 +275,11 @@ impl<S: Serial> Board for PicoBoard<S> {
     }
     fn spi_close(&mut self, _index: u32) {}
 
-    // --- 時間。TIMER は 1 MHz なのでそのままマイクロ秒。 ---
+    // --- Time. TIMER runs at 1 MHz, so the count is microseconds. ---
 
     fn now_us(&mut self) -> u64 {
         let t = Self::timer();
-        // TIMELR を読むと TIMEHR がラッチされる。順序を守る。
+        // Reading TIMELR latches TIMEHR, so the order matters.
         let lo = t.timelr().read().bits();
         let hi = t.timehr().read().bits();
         (u64::from(hi) << 32) | u64::from(lo)
@@ -272,7 +297,7 @@ impl<S: Serial> Board for PicoBoard<S> {
         }
     }
 
-    // --- 出力 ---
+    // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
         self.serial.write(b"[wasm] ");

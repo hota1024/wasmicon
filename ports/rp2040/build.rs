@@ -1,4 +1,4 @@
-//! `memory.x` をリンカが見つけられる場所へ置き、`git describe` を埋める。
+//! Puts `memory.x` where the linker finds it and embeds `git describe`.
 
 use std::io::Write;
 

@@ -1,5 +1,5 @@
-# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
-# ビルドは `cd ports/rp2040 && cargo build --release`。
+# cargo reads .cargo/config.toml relative to the current directory, so the
+# target lives here and the port is built from ports/rp2040.
 [build]
 target = "thumbv6m-none-eabi"
 

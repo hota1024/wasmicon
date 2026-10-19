@@ -1,16 +1,16 @@
-# RP2040 (Raspberry Pi Pico WH) 用ポート。
-# root workspace とはターゲットも toolchain も profile も違うので別 workspace。
+# Port for the RP2040 (Raspberry Pi Pico WH).
+# Its own workspace: target, toolchain and profile differ from the root workspace.
 [workspace]
 
 [package]
 name = "wasmicon-rp2040"
-description = "Wasmicon の RP2040 ポート"
+description = "Wasmicon port for the RP2040"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
 [features]
-# docs/handoff.md §5 Phase 4: トレースを出すビルド。既定で有効にしておく。
+# Build that writes the trace. On by default.
 default = ["trace"]
 trace = []
 
@@ -25,13 +25,14 @@ panic-halt = "1"
 embedded-hal = "1"
 
 [profile.release]
-# 速度優先（2026-10-11。docs/TODO.md §4）。rp2350 の実機で、z と比べて計算が
-# 16〜35%、host call が 7〜37% 速くなった（コードは 71 → 116 KB。フラッシュは
-# 十分に余っている）。インタプリタとポートの HAL だけ 3 にする上書きも試したが、
-# fat LTO の最後の最適化が z で走るせいか、呼び出しと host call が速くならなかった。
+# Speed over size (docs/TODO.md §4). On the RP2350, compared with opt-level z,
+# computation ran 16-35% faster and host calls 7-37% faster for 71 -> 116 KB
+# of code; flash has plenty of room. Raising only the interpreter and the port
+# HAL to 3 did not speed up calls or host calls, probably because fat LTO runs
+# its final optimization at z.
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
-# デバッグ情報は残す（probe-rs で追える）。フラッシュには載らない。
+# Keep debug info for probe-rs. It is not flashed.
 debug = true

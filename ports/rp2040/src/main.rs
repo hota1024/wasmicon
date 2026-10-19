@@ -1,21 +1,25 @@
-//! Wasmicon の RP2040 (Raspberry Pi Pico WH) ポート。
+//! Wasmicon port for the RP2040 (Raspberry Pi Pico WH).
 //!
-//! ゲストの `.wasm` はアプリスロット（フラッシュ）から読み、XIP 上のスライスを
-//! そのままランタイムに渡す（RAM にコピーしない。design-notes §4）。ファームに
-//! アプリは入っていない（`docs/app-workflow.md` §3.3）。
-//! トレースは UART0 (GP0=TX, GP1=RX) 115200 8N1 に出す。
+//! The guest `.wasm` is read from the app slot in flash and handed to the
+//! runtime as a slice of XIP memory; it is not copied to RAM
+//! (docs/design-notes.md §4). The firmware embeds no app
+//! (docs/app-workflow.md §3.3). If the slot is empty, print the reason and
+//! park (`wasmicon_port::idle`; pins are not driven).
+//! Traces go to UART0 (GP0=TX, GP1=RX) at 115200 8N1.
 //!
-//! **評価対象外**（2026-10-07。`docs/handoff.md` §0）。実機で動作確認しておらず、
-//! I2C / SPI は `unsupported` のまま。ビルドが通ることだけを CI で見ている。
+//! Not an evaluation board (README.md): never run on hardware, and I2C / SPI
+//! stay `unsupported`. CI only checks that it builds.
 
 #![no_std]
 #![no_main]
+#![warn(clippy::undocumented_unsafe_blocks)]
 
 mod board;
 
-// panic 時は停止するだけ。理由は出せない（シリアルがボード側にあり
-// panic handler から届かない）。ランタイム由来の失敗は main が捕まえて
-// UART に出すので、ここに来るのはポート自身のバグに限られる。
+// On panic the firmware only halts. It cannot print the reason: the serial
+// port belongs to the board and the panic handler cannot reach it. Runtime
+// failures are caught by `main` and printed to the UART, so a panic here is
+// always a bug in the port itself.
 use panic_halt as _;
 use rp2040_hal as hal;
 use rp2040_hal::Clock;
@@ -28,55 +32,57 @@ use wasmicon_port::{Hal, idle, slot};
 
 use board::{PicoBoard, Serial};
 
-/// 二段目のブートローダ。フラッシュの先頭 256 バイトに置く。
+/// Second-stage bootloader. Must occupy the first 256 bytes of flash.
 #[unsafe(link_section = ".boot2")]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
-/// Pico の水晶振動子。
+/// Crystal oscillator of the Pico.
 const XTAL_HZ: u32 = 12_000_000;
 
-/// XIP の先頭。フラッシュはここから memory-mapped で読める。
-/// RP2040 は先頭 256 バイトが二段目のブートローダ（`.boot2`）。
+/// Start of XIP: flash is memory-mapped from here.
+/// On the RP2040 the first 256 bytes hold the second-stage bootloader (`.boot2`).
 const XIP_BASE: usize = 0x1000_0000;
 
-/// アプリスロット（`ports/common` の `profile::RP2040`）。
-/// 設定スロット（配線表。`docs/app-workflow.md` §3.9）。アプリスロットの直後。
+/// Config slot (wiring table, docs/app-workflow.md §3.9), right after the app slot.
 const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2040.role_slot {
     Some(s) => s,
-    None => panic!("RP2040 のプロファイルに設定スロットが無い"),
+    None => panic!("the RP2040 profile has no config slot"),
 };
 
-/// 配線表で割り当ててよい GPIO の制約。
+/// Limits on the GPIOs the wiring table may assign.
 const LIMITS: Limits<'static> = Limits::of(&wasmicon_port::profile::RP2040);
 
+/// App slot (`profile::RP2040` in `ports/common`).
 const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2040.slot {
     Some(s) => s,
-    None => panic!("RP2040 のプロファイルにスロットが無い"),
+    None => panic!("the RP2040 profile has no app slot"),
 };
 
-// リンカが置く「ファームの末尾」（`memory.x` の `.wasmicon_fw_end`）。
-// スロットと重なっていないことを起動時に検査する。
+// SAFETY: the symbol is defined by the linker (`.wasmicon_fw_end` in
+// `memory.x`) and marks the end of the firmware image. Only its address is
+// used, to check at boot that the slots do not overlap the firmware.
 unsafe extern "C" {
     static __flash_binary_end: u8;
 }
 
-/// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
-/// RP2040 の SRAM は 264 KB なので、線形メモリ 2 ページ（128 KB）が
-/// 収まる大きさにしてある（docs/handoff.md §5 Phase 4）。
+/// Runtime arena; whatever is left becomes linear memory (`Arena::alloc_rest`).
+/// The RP2040 has 264 KB of SRAM, so the size fits two pages of linear memory
+/// (128 KB).
 static mut ARENA: [u8; wasmicon_port::profile::RP2040.arena] =
     [0; wasmicon_port::profile::RP2040.arena];
 
-/// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
+/// Scratch space used only during validation. Sized for the `MCU_CONFIG` limits.
 static mut SCRATCH: [u8; wasmicon_port::profile::RP2040.scratch] =
     [0; wasmicon_port::profile::RP2040.scratch];
 
-/// マイコン向けの上限。**正は `ports/common` の `profile::RP2040.config`**
-/// （CLI が同じ表を読む。docs/app-workflow.md §4.3）。
-/// ホストの既定値のままだと scratch が足りない。
+/// Limits for the microcontroller. The source of truth is
+/// `profile::RP2040.config` in `ports/common`; the CLI reads the same table
+/// (docs/app-workflow.md §4.3). With the host defaults the scratch space would
+/// be too small.
 const MCU_CONFIG: Config = wasmicon_port::profile::RP2040.config;
 
-/// UART0 の型。長いので別名にする。
+/// Type of UART0, aliased because it is long.
 type Uart0 = hal::uart::UartPeripheral<
     hal::uart::Enabled,
     hal::pac::UART0,
@@ -86,7 +92,7 @@ type Uart0 = hal::uart::UartPeripheral<
     ),
 >;
 
-/// UART0 への出力。
+/// Output to UART0.
 struct Uart(Uart0);
 
 impl Serial for Uart {
@@ -136,15 +142,16 @@ fn main() -> ! {
         .ok()
         .unwrap();
 
-    // TIMER はリセットが掛かったまま起動するので、ここで解除する。
-    // rp2040-hal はこの解除を Timer::new の中でしか行わない。解除せずに
-    // TIMELR を読むとバスフォルトか常時 0 になり、sleep が効かなくなる。
+    // TIMER comes out of boot held in reset, so release it here; rp2040-hal
+    // only does that inside Timer::new. Reading TIMELR while it is still in
+    // reset bus-faults or reads 0 forever, and sleep never finishes.
     let _timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let mut serial = Uart(uart);
     serial.write(b"wasmicon rp2040\r\n");
-    // 自分が何者かを 1 行で名乗る（docs/app-workflow.md §3.8）。版・git・ABI・
-    // 構成をトレースの取り込みに残し、どのビルドで取ったかを後から追えるようにする。
+    // Identify this firmware in one line (docs/app-workflow.md §3.8): version,
+    // git, ABI and configuration, so a captured trace records which build
+    // produced it.
     {
         let mut line = [0u8; 192];
         let mut out = Buf::new(&mut line);
@@ -161,34 +168,37 @@ fn main() -> ! {
         serial.write(b"\r\n");
     }
 
-    // SAFETY: PicoBoard がこれ以降 SIO / IO_BANK0 / PADS_BANK0 / TIMER を
-    // 排他的に使う。上で取った Pins は UART の GP0/GP1 だけで、役割名に
-    // 割り当てた GPIO とは重ねていない。
+    // SAFETY: from here on PicoBoard has exclusive use of SIO / IO_BANK0 /
+    // PADS_BANK0 / TIMER. The Pins taken above are only the UART's GP0/GP1,
+    // which are reserved and never assigned to a role.
     let board = unsafe { PicoBoard::new(serial) };
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
-    // 役割は設定スロットの表だけで決まる。ファームは既定の表を持たない
-    // （空・壊れていれば役割は 1 つも配らない。docs/app-workflow.md §3.9）。
+    // Roles come only from the table in the config slot. The firmware has no
+    // default table: an empty or corrupt slot hands out no roles at all
+    // (docs/app-workflow.md §3.9).
     let map = pick_roles(hal.board_mut().serial());
     let mut hal = hal.with_roles(map);
 
-    // SAFETY: シングルコアで割り込みからも触らないので、可変静的への参照は
-    // ここでしか作らない。
+    // SAFETY: single core, and no interrupt touches ARENA, so this is the only
+    // place that creates a reference to it, and it runs once.
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
+    // SAFETY: single core, and no interrupt touches SCRATCH, so this is the
+    // only place that creates a reference to it, and it runs once.
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
-    // スロットが空・壊れているなら、理由は pick_guest が出している。
+    // The firmware embeds no app (docs/app-workflow.md §3.3). If the slot is
+    // empty or corrupt, pick_guest has already printed the reason.
     let Some(guest) = pick_guest(hal.board_mut().serial()) else {
         idle::park(hal.board_mut());
     };
     let outcome = run(&mut hal, guest, arena_buf, scratch_buf);
 
-    // **理由を先に出す。** 下の release_all は無制限に待ちうる
-    // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
-    // 先に回すとペリフェラルが固まったときに理由が出ないまま無言で止まる
-    // ——  docs/handoff.md §3 #4「ログを出して停止する」が守れない。
-    // abi-spec §6.6 は drop → ログの順で書いてあるが、順序を入れ替えても
-    // 観測できるのは「理由が出る」ことだけ増える（docs/TODO.md §2 に記録）。
+    // Print the reason first. release_all below may wait without bound (the
+    // `BSY` wait in `spi_close`, say; docs/TODO.md §2.1), so cleaning up first
+    // would leave a hung peripheral with no reason printed, which breaks "log
+    // and halt" (docs/decisions.md A-04). docs/abi-spec.md §6.6 lists drop
+    // before log, but swapping the order only adds the reason to what can be
+    // observed (recorded in docs/TODO.md §2).
     if let Err(e) = outcome {
         let s = hal.board_mut().serial();
         s.write(b"wasmicon: ");
@@ -198,23 +208,24 @@ fn main() -> ! {
         s.write(b"]\r\n");
     }
 
-    // abi-spec §5.2 / §6.6: `run` から戻ったら（トラップでも）残っている
-    // ハンドルを全部 drop する。ゲストの Drop は走らないので、ここだけが
-    // 片付ける。トレース行は出さない（`Hal::release_all` のコメント）。
+    // docs/abi-spec.md §5.2, §6.6: once `run` returns (trap included), drop
+    // every handle still open. Guest destructors never run, so this is the
+    // only cleanup. No trace line is written (see `Hal::release_all`).
     hal.release_all();
     loop {
         cortex_m::asm::wfi();
     }
 }
 
-/// 設定スロットから配線表を読む。読めた表（または読めない理由）をシリアルに出す。
+/// Reads the wiring table from the config slot and prints the table, or the
+/// reason it cannot be read, to the serial port.
 fn pick_roles(serial: &mut impl Serial) -> RoleMap {
-    // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
-    // だけ（中身は見ない）。
+    // `__flash_binary_end` is a linker symbol; only its address is used, never
+    // its contents.
     let fw_end = (&raw const __flash_binary_end) as usize;
-    // SAFETY: XIP は読み出し専用でマップされていて、設定スロット
-    // （アプリスロットの直後の 4 KiB）はフラッシュに収まる。ファームとの
-    // 重なりは xip_region が fw_end で弾く。
+    // SAFETY: XIP is mapped read-only, and the config slot (4 KiB right after
+    // the app slot) lies inside the flash. Overlap with the firmware is
+    // rejected by xip_region using fw_end.
     let result = unsafe { roles::read_xip(XIP_BASE, ROLE_SLOT, fw_end, &LIMITS) };
     let mut line = [0u8; 192];
     let mut out = Buf::new(&mut line);
@@ -224,22 +235,23 @@ fn pick_roles(serial: &mut impl Serial) -> RoleMap {
     result.unwrap_or(RoleMap::EMPTY)
 }
 
-/// スロットから走らせるアプリを選ぶ。
+/// Picks the app to run from the slot.
 ///
-/// 走らせるものが無ければ `None`（ファームにアプリは入っていない。
-/// `docs/app-workflow.md` §3.3）。読めない理由はシリアルに出す
-/// （§3.1。空は失敗ではないので、そのことも出す）。
-/// 読み出しは `ports/common` の `slot::read_xip`（RP2350 と同じ）。
+/// Returns `None` when there is nothing to run; the firmware embeds no app
+/// (docs/app-workflow.md §3.3). The reason the slot cannot be read goes to
+/// the serial port (docs/app-workflow.md §3.1); an empty slot is not a
+/// failure, so that is printed as well. Reading is `slot::read_xip` in
+/// `ports/common`, the same as on the RP2350.
 fn pick_guest(serial: &mut impl Serial) -> Option<&'static [u8]> {
-    // SAFETY: __flash_binary_end はリンカが置くシンボルで、読むのはアドレス
-    // だけ（中身は見ない）。
+    // `__flash_binary_end` is a linker symbol; only its address is used, never
+    // its contents.
     let fw_end = (&raw const __flash_binary_end) as usize;
 
     let mut line = [0u8; 96];
     let mut out = Buf::new(&mut line);
-    // SAFETY: XIP は読み出し専用でマップされていて、2 MB のフラッシュに
-    // 対して offset + len（1 MiB + 64 KiB）は収まる。ファームとの重なりは
-    // read_xip が fw_end で弾く。
+    // SAFETY: XIP is mapped read-only, and offset + len (1 MiB + 64 KiB) lies
+    // inside the 2 MB flash. Overlap with the firmware is rejected by read_xip
+    // using fw_end.
     match unsafe { slot::read_xip(XIP_BASE, SLOT, fw_end) } {
         Ok(wasm) => {
             out.str("wasmicon: slot ");
@@ -261,7 +273,7 @@ fn pick_guest(serial: &mut impl Serial) -> Option<&'static [u8]> {
     }
 }
 
-/// デコードから `run` の呼び出しまで。
+/// From decoding to the `run` call.
 fn run(
     hal: &mut Hal<PicoBoard<Uart>>,
     guest: &[u8],
@@ -273,7 +285,7 @@ fn run(
 
     let m = decode::decode(guest, &mut arena)?;
     let v = validate::validate(&m, &MCU_CONFIG, &mut arena, &mut scratch)?;
-    // Exec は線形メモリ（arena の残り全部）より先に確保する。
+    // Exec is allocated before linear memory, which takes the rest of the arena.
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;
     let mut inst = instantiate(m, v, &MCU_CONFIG, &mut arena, hal)?;
 
@@ -282,6 +294,6 @@ fn run(
     }
     let entry = inst
         .export_func("run")
-        .ok_or(wasmicon_core::Error::Unlinkable("export run が無い"))?;
+        .ok_or(wasmicon_core::Error::Unlinkable("missing export `run`"))?;
     invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])
 }
