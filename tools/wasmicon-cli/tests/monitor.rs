@@ -1,18 +1,18 @@
-//! `wasmicon monitor` の**止めどきの判定**を固定する。
+//! Locks in when `wasmicon monitor` stops.
 //!
-//! シリアルそのものは実機が要るので、`stream` に好きな `Read` を渡して
-//! 「いつ、どの理由で止まったか」だけを見る。
+//! The serial port itself needs hardware, so `stream` is fed an arbitrary
+//! `Read` and only "when, and for which reason, it stopped" is checked.
 //!
-//! **止まった理由は報告に出る。** ここを間違えると、途中で切れたログが
-//! 「無音になった」と出て**きれいに終わったように見える** —— トレースの
-//! 突き合わせでは行数が合わないところで初めて気付く形になる。
+//! The reason appears in the report. Getting it wrong makes a capture cut
+//! off mid-stream say "went silent" and look like a clean end; the trace
+//! comparison then notices only when the line counts differ.
 
 use std::io::Read;
 use std::time::Duration;
 
 use wasmicon_cli::monitor::{self, Stopped};
 
-/// 1 回だけ返して、あとは黙るシリアル。
+/// A serial port that returns once and then stays silent.
 struct OnceThenSilent {
     sent: bool,
 }
@@ -25,13 +25,14 @@ impl Read for OnceThenSilent {
             buf[..line.len()].copy_from_slice(line);
             return Ok(line.len());
         }
-        // **閉じない**（`Ok(0)` を返さない）。実機は黙るだけで、口は開いたまま。
+        // Never closes (no `Ok(0)`). A board just goes quiet; the port stays
+        // open.
         std::thread::sleep(Duration::from_secs(3600));
         Ok(0)
     }
 }
 
-/// すぐ閉じるシリアル（USB が抜けた形）。
+/// A serial port that closes at once (USB unplugged).
 struct Closed;
 
 impl Read for Closed {
@@ -42,12 +43,11 @@ impl Read for Closed {
 
 #[test]
 fn hitting_the_overall_limit_is_not_reported_as_silence() {
-    // **`--idle` と `--timeout` が両方あるとき**、無音の待ち時間は上限の
-    // 残りで詰められる。だから `recv_timeout` の時間切れだけでは
-    // どちらで切れたのか分からない。上限を先に見ないと、
-    // **流れている最中に打ち切ったログが「無音になった」になり**、
-    // `Stopped::Timeout` が（`--idle` は既定で入っているので）事実上
-    // 出なくなる。
+    // With both `--idle` and `--timeout`, the silence wait is capped by what
+    // is left of the limit, so a `recv_timeout` expiry alone does not say
+    // which one it was. Unless the limit is checked first, a capture cut off
+    // mid-stream becomes "went silent" and `Stopped::Timeout` is in practice
+    // never reported (`--idle` is on by default).
     let mut sink: Vec<u8> = Vec::new();
     let stats = monitor::stream(
         OnceThenSilent { sent: false },
@@ -55,11 +55,11 @@ fn hitting_the_overall_limit_is_not_reported_as_silence() {
         Some(Duration::from_secs(5)),
         Some(Duration::from_millis(600)),
     )
-    .expect("書き出せる");
+    .expect("writes");
 
     assert!(
         stats.stopped == Stopped::Timeout,
-        "上限で切れたのに「{}」と言っている",
+        "hit the limit but says \"{}\"",
         stats.stopped.reason()
     );
     assert_eq!(stats.trace_lines, 1);
@@ -67,8 +67,8 @@ fn hitting_the_overall_limit_is_not_reported_as_silence() {
 
 #[test]
 fn silence_without_a_limit_is_reported_as_silence() {
-    // 上限が無ければ、無音はそのまま無音（アプリが終わってファームが
-    // idle に入った形）。
+    // Without a limit, silence is silence (the app finished and the
+    // firmware parked).
     let mut sink: Vec<u8> = Vec::new();
     let stats = monitor::stream(
         OnceThenSilent { sent: false },
@@ -76,22 +76,22 @@ fn silence_without_a_limit_is_reported_as_silence() {
         Some(Duration::from_millis(200)),
         None,
     )
-    .expect("書き出せる");
+    .expect("writes");
 
     assert!(stats.stopped == Stopped::Idle, "{}", stats.stopped.reason());
     assert_eq!(stats.trace_lines, 1);
     assert!(
         String::from_utf8_lossy(&sink).contains("log(2"),
-        "受けたバイトを書き出していない"
+        "the received bytes were not written out"
     );
 }
 
 #[test]
 fn a_closed_port_is_distinguished_from_silence() {
-    // USB が抜けたのを「無音」と言うと、アプリが終わったように見える。
+    // Calling an unplugged USB "silence" makes it look like the app finished.
     let mut sink: Vec<u8> = Vec::new();
     let stats =
-        monitor::stream(Closed, &mut sink, Some(Duration::from_secs(5)), None).expect("書き出せる");
+        monitor::stream(Closed, &mut sink, Some(Duration::from_secs(5)), None).expect("writes");
 
     assert!(
         stats.stopped == Stopped::Closed,

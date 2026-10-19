@@ -1,25 +1,26 @@
-//! `wasmicon new` — アプリの雛形を出す（`docs/app-workflow.md` §4.6 の 3）。
+//! `wasmicon new`: writes an app scaffold (docs/app-workflow.md §4.6, step 3).
 //!
-//! **ビルドフラグは `flags` から書き出すだけ**にしてある。ここで文字列を
-//! 持つと `apps/` と 3 重化して、食い違っても静かに通る（§4.4）。
+//! The build flags are only written out from `flags`. Holding the strings
+//! here would make a third copy next to `apps/`, and a mismatch would pass
+//! silently (docs/app-workflow.md §4.4).
 //!
-//! `wasmicon-hal` は **crates.io / npm に出していない**（`docs/TODO.md` §5 の
-//! 「`new` と bindings の配布」）。なので依存はパスで書く。パスは
-//! `--hal` で渡すか、無ければ**新しいディレクトリから上に `bindings/` を
-//! 探す**。見つからなければ版指定で書き、その旨を出す（配布の決定を
-//! ここで先取りしない）。
+//! `wasmicon-hal` is not published to crates.io / npm (docs/TODO.md §5,
+//! "distributing `new` and the bindings"), so the dependency is written as a
+//! path. The path comes from `--hal`, or else from a search for `bindings/`
+//! upward from the new directory. If neither finds it, a version requirement
+//! is written and the user is told (the distribution decision is not
+//! preempted here).
 //!
-//! 作ったあと `cargo build --release` が通り `wasmicon check` が 4 ボード
-//! すべてで通ることを `tests/new.rs` が実際にやって見る。**雛形は
-//! 「`apps/` と一致している」だけでは足りない**（一致していても動かない形は
-//! あり得る）。
+//! `tests/new.rs` builds the scaffold with `cargo build --release` and runs
+//! `wasmicon check` on all four boards. Matching `apps/` byte for byte is not
+//! enough: a scaffold can match and still not work.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Component, Path, PathBuf};
 
 use crate::{flags, pack};
 
-/// 雛形の言語。`docs/app-workflow.md` §4.6 の `--lang` の値。
+/// Scaffold language. The values of `--lang` (docs/app-workflow.md §4.6).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     Rust,
@@ -27,80 +28,85 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// `--lang` の値から。
+    /// Parses the value of `--lang`.
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "rust" | "rs" => Ok(Lang::Rust),
             "as" | "assemblyscript" => Ok(Lang::AssemblyScript),
-            other => bail!("知らない言語 {other}（あるのは rust / as）"),
+            other => bail!("unknown language `{other}` (rust or as)"),
         }
     }
 }
 
 pub struct Options {
-    /// 作る場所。最後の要素がアプリ名になる。
+    /// Where to create. The last component becomes the app name.
     pub dir: PathBuf,
     pub lang: Lang,
-    /// `wasmicon.toml` の `[defaults] board` に書く値。
+    /// Value written to `[defaults] board` in `wasmicon.toml`.
     pub board: Option<String>,
-    /// バインディングの置き場所（`bindings/` を含むディレクトリ）。
+    /// Where the bindings are (the directory that contains `bindings/`).
     pub hal: Option<PathBuf>,
 }
 
-/// 書いたもの。
+/// What was written.
 pub struct Created {
     pub dir: PathBuf,
     pub name: String,
     pub files: Vec<PathBuf>,
-    /// バインディングをパスで参照できたか。できなければ版指定を書いてある。
+    /// The bindings path, when one could be referenced. Otherwise a version
+    /// requirement was written.
     pub hal: Option<PathBuf>,
-    /// 既存の cargo workspace の中に作ったか（rustflags が二重に効く）。
+    /// Created inside an existing cargo workspace (rustflags apply twice).
     pub inside_workspace: bool,
 }
 
-/// 雛形を書く。
+/// Writes the scaffold.
 ///
 /// # Errors
-/// 名前が使えない、置き場所が空でない、書けないとき。
+/// When the name is unusable, the directory is not empty, or a file cannot
+/// be written.
 pub fn create(opts: &Options) -> Result<Created> {
     let name = app_name(&opts.dir)?;
 
-    // **ボード名はここで弾く。** `manifest::load` は `[defaults] board` を
-    // 検証しない（役割名は語彙と突き合わせるが、ボード名は素通り）ので、
-    // 打ち間違えると `new` は成功して**そのあと全部のコマンドが落ちる**。
+    // The board name is rejected here. `manifest::load` does not validate
+    // `[defaults] board` (it checks role name format but passes board names
+    // through), so with a typo `new` would succeed and every later command
+    // would fail.
     if let Some(b) = &opts.board {
         pack::resolve_board(b)?;
     }
 
-    // **空でないところには書かない**（cargo new と同じ）。見てから書く。
+    // Never write into a non-empty directory (like cargo new). Look first.
     if opts.dir.exists() {
         let mut entries = std::fs::read_dir(&opts.dir)
-            .with_context(|| format!("{} を見られない", opts.dir.display()))?;
+            .with_context(|| format!("cannot list `{}`", opts.dir.display()))?;
         if entries.next().is_some() {
-            bail!("{} は空でない", opts.dir.display());
+            bail!("`{}` is not empty", opts.dir.display());
         }
     }
     std::fs::create_dir_all(&opts.dir)
-        .with_context(|| format!("{} を作れない", opts.dir.display()))?;
+        .with_context(|| format!("cannot create `{}`", opts.dir.display()))?;
 
-    // 相対パスを出すために実体が要る（上で作ってある）。
+    // Relative paths need the real directory (created above).
     let dir = opts
         .dir
         .canonicalize()
-        .with_context(|| format!("{} の実体を取れない", opts.dir.display()))?;
+        .with_context(|| format!("cannot resolve `{}`", opts.dir.display()))?;
 
     let hal = match &opts.hal {
         Some(p) => {
             let p = p
                 .canonicalize()
-                .with_context(|| format!("--hal {} が無い", p.display()))?;
-            // **中身まで見る。** canonicalize だけだと、どんなディレクトリでも
-            // 受けて `<渡された所>/rust` を Cargo.toml に書いてしまい、
-            // `cargo build` が「no Cargo.toml」で落ちるまで分からない
-            // （探索の枝は同じ条件で判定しているので、片方だけ緩い）。
+                .with_context(|| format!("--hal `{}` does not exist", p.display()))?;
+            // Look inside. With canonicalize alone any directory is accepted,
+            // `<given>/rust` is written to Cargo.toml, and nothing is noticed
+            // until `cargo build` fails with "no Cargo.toml" (the search
+            // branch applies the same condition, so only this branch was
+            // lax).
             if !p.join("rust/Cargo.toml").is_file() {
                 bail!(
-                    "--hal {} に bindings が無い（{}/rust/Cargo.toml を探した）。\n                       渡すのは bindings そのもののディレクトリ",
+                    "--hal `{}` has no bindings (looked for {}/rust/Cargo.toml); \
+                     pass the bindings directory itself",
                     p.display(),
                     p.display()
                 );
@@ -116,9 +122,10 @@ pub fn create(opts: &Options) -> Result<Created> {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("{} を作れない", parent.display()))?;
+                .with_context(|| format!("cannot create `{}`", parent.display()))?;
         }
-        std::fs::write(&path, body).with_context(|| format!("{} を書けない", path.display()))?;
+        std::fs::write(&path, body)
+            .with_context(|| format!("cannot write `{}`", path.display()))?;
         files.push(PathBuf::from(rel));
         Ok(())
     };
@@ -154,15 +161,15 @@ pub fn create(opts: &Options) -> Result<Created> {
     })
 }
 
-/// 雛形を書いて、次にやることを出す。
+/// Writes the scaffold and prints what to do next.
 ///
 /// # Errors
-/// `create` が失敗したとき。
+/// When `create` fails.
 pub fn run(opts: &Options) -> Result<bool> {
     let made = create(opts)?;
 
-    // **渡されたパスで出す**（`made.dir` は canonicalize 済みの絶対パスで、
-    // そのまま `cd` の案内に使うと読みにくい）。
+    // Shown as the path that was passed (`made.dir` is canonicalized and
+    // absolute, which reads badly in a `cd` hint).
     let shown = opts.dir.display();
     println!("{shown}/");
     for f in &made.files {
@@ -170,52 +177,53 @@ pub fn run(opts: &Options) -> Result<bool> {
     }
 
     if made.hal.is_none() {
-        // **ここは黙ってはいけない。** 版指定の依存は今は解決できないので、
-        // そのまま `cargo build` すると「見つからない」で止まる。
+        // This must not stay silent. A version requirement cannot be
+        // resolved yet, so a plain `cargo build` stops with "not found".
         println!();
-        println!("※ バインディングが見つからなかったので依存を版指定で書いた。");
-        println!("  まだ crates.io / npm に出していないので、");
-        println!("  `--hal <wasmicon の bindings ディレクトリ>` を渡し直すこと");
-        println!("  （リポジトリの中からなら `--hal bindings`）");
+        println!("note: no bindings found, so the dependency is written with a version.");
+        println!("  They are not published to crates.io / npm yet, so run again with");
+        println!("  `--hal <wasmicon's bindings directory>`");
+        println!("  (`--hal bindings` from inside the repository)");
     }
     if made.inside_workspace {
-        // cargo は入れ子の .cargo/config.toml の rustflags を**連結**する。
-        // 同じ値が 2 回並ぶだけなので害は無いが、驚かないように言う。
+        // cargo concatenates the rustflags of nested .cargo/config.toml
+        // files. The same values just apply twice, which is harmless, but
+        // say so to avoid surprise.
         println!();
-        println!("※ 既存の cargo workspace の中に作った。");
-        println!("  rustflags は連結されるので同じ値が 2 回効く（害は無い）");
+        println!("note: created inside an existing cargo workspace.");
+        println!("  rustflags are concatenated, so the same values apply twice (harmless)");
     }
 
     println!();
-    println!("次にやること:");
+    println!("Next:");
     match opts.lang {
         Lang::Rust => println!("    cd {shown} && cargo build --release"),
         Lang::AssemblyScript => println!("    cd {shown} && npm install && npm run build"),
     }
-    println!("    wasmicon check <出力された .wasm> --board <ボード>");
+    println!("    wasmicon check <the .wasm that was built> --board <board>");
     Ok(true)
 }
 
-/// ディレクトリ名からアプリ名を取る。
+/// Derives the app name from the directory name.
 fn app_name(dir: &Path) -> Result<String> {
     let Some(name) = dir.file_name().and_then(|s| s.to_str()) else {
-        bail!("{} からアプリ名を取れない", dir.display());
+        bail!("cannot derive an app name from `{}`", dir.display());
     };
-    // cargo のパッケージ名として通る範囲に絞る。弾くのは、あとで
-    // `cargo build` が落ちるより早く言えるから。
+    // Limited to what cargo accepts as a package name. Rejecting here is
+    // earlier than a `cargo build` failure.
     if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
-        bail!("アプリ名は英字で始めること: {name}");
+        bail!("the app name must start with a letter: `{name}`");
     }
     if let Some(bad) = name
         .chars()
         .find(|c| !c.is_ascii_alphanumeric() && *c != '-' && *c != '_')
     {
-        bail!("アプリ名に使えない文字: {bad:?}（英数字と - と _ だけ）");
+        bail!("the app name contains {bad:?}; only letters, digits, - and _ are allowed");
     }
     Ok(name.to_string())
 }
 
-/// `bindings/` を含むディレクトリを上に向かって探す。
+/// Searches upward for a directory that contains `bindings/`.
 fn find_bindings(from: &Path) -> Option<PathBuf> {
     for dir in from.ancestors() {
         if dir.join("bindings/rust/Cargo.toml").is_file() {
@@ -225,7 +233,7 @@ fn find_bindings(from: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 既存の cargo workspace の中かどうか。
+/// Whether the directory is inside an existing cargo workspace.
 fn enclosing_workspace(from: &Path) -> Option<PathBuf> {
     for dir in from.ancestors().skip(1) {
         let manifest = dir.join("Cargo.toml");
@@ -238,10 +246,10 @@ fn enclosing_workspace(from: &Path) -> Option<PathBuf> {
     None
 }
 
-/// `from` から `to` への相対パス。
+/// The relative path from `from` to `to`.
 ///
-/// `std` に無いので自前で持つ。**両方とも実体のある絶対パス**
-/// （`canonicalize` 済み）であることを前提にする。
+/// `std` has none, so it is written here. Both arguments must be absolute
+/// paths of existing directories (`canonicalize`d).
 fn relative(from: &Path, to: &Path) -> PathBuf {
     let f: Vec<Component> = from.components().collect();
     let t: Vec<Component> = to.components().collect();
@@ -256,10 +264,10 @@ fn relative(from: &Path, to: &Path) -> PathBuf {
     out
 }
 
-/// パスを TOML / TypeScript に書ける形（`/` 区切り）にする。
+/// Formats a path for TOML / TypeScript (`/` separators).
 ///
-/// **root を特別扱いする。** `Component::RootDir` の `as_os_str()` は `/`
-/// なので、素朴に `join("/")` すると `//Users/...` になる（実際に出した）。
+/// The root is special: `Component::RootDir` is `/` as an `OsStr`, so a
+/// naive `join("/")` produces `//Users/...` (it happened).
 fn slashed(p: &Path) -> String {
     let mut out = String::new();
     for c in p.components() {
@@ -275,11 +283,12 @@ fn slashed(p: &Path) -> String {
     out
 }
 
-/// 雛形に書き込むパス。**相対と絶対の短い方**を選ぶ。
+/// The path written into the scaffold: the shorter of relative and absolute.
 ///
-/// 相対にしておけばディレクトリごと移動しても壊れないが、共通の祖先が
-/// 無いと `../` が延々と並ぶ（`/private/tmp` から `/Users` へ 8 段、という
-/// のを実際に出した）。読めない方が害が大きいので長さで決める。
+/// A relative path survives moving the directory, but without a common
+/// ancestor it becomes a long run of `../` (eight levels from `/private/tmp`
+/// to `/Users` happened). An unreadable path does more harm, so length
+/// decides.
 fn written_path(from: &Path, to: &Path) -> String {
     let rel = slashed(&relative(from, to));
     let abs = slashed(to);
@@ -296,26 +305,28 @@ targets = [\"wasm32-unknown-unknown\"]
 fn manifest_toml(name: &str, board: Option<&str>) -> String {
     let defaults = match board {
         Some(b) => format!("[defaults]\nboard = \"{b}\"\n"),
-        // 既定のボードを勝手に決めない（`deploy` が「どこに書くか決まらない」と
-        // 言うので、分からないまま焼かれることはない）。
+        // No default board is chosen here (`deploy` then says "no target
+        // board", so nothing is flashed to a guessed board).
         None => "# [defaults]\n# board = \"rp2350\"\n".to_string(),
     };
     format!(
         "\
-# {name} の設定（docs/app-workflow.md §4.7）。
+# App manifest (docs/app-workflow.md §4.7).
 #
-# 書くのは「アプリの性質」と「配線」。アプリ名と言語は Cargo.toml /
-# asconfig.json から取るので、ここには書かない。
+# Describes what {name} needs and how each board is wired. The app name and
+# language come from Cargo.toml / asconfig.json and are not repeated here.
 version = 1
 
 [requirements]
-# このアプリが board.pin-by-role で引く役割名（名前は自由。英小文字・数字・-）。
-# 番号はここではなく下の配線表に書く。check / deploy が配線表と突き合わせる。
+# Role names this app looks up through board.pin-by-role (free-form: lowercase
+# letters, digits and -). GPIO numbers go in the wiring tables below, not here;
+# check / deploy cross-check the two.
 pin-roles = []
 
 {defaults}
-# ボードごとの配線表。deploy が設定スロットに書き、ファームはこの表だけで
-# pin-by-role に答える（ファームは既定の表を持たない。§3.9）。
+# Per-board wiring. deploy writes it to the config slot and the firmware
+# answers pin-by-role from this table alone (it has no default table;
+# docs/app-workflow.md §3.9).
 # [board.rp2350.roles]
 # led = 15
 #
@@ -331,13 +342,13 @@ fn cargo_toml(name: &str, hal: Option<&Path>, dir: &Path) -> String {
             "wasmicon-hal = {{ path = \"{}\" }}",
             written_path(dir, &b.join("rust"))
         ),
-        // 出していないので、これは今は解決できない。`run` が警告を出す。
+        // Not published, so this cannot be resolved yet. `run` prints a note.
         None => "wasmicon-hal = \"0.1\"".to_string(),
     };
     format!(
         "\
-# 単体で立つ workspace にしてある。これが無いと、既存の workspace の
-# 中に置いたときに cargo が「workspace に入っていない」で止まる。
+# A standalone workspace. Without this, cargo stops with \"not a member of
+# the workspace\" when the app sits inside another workspace.
 [workspace]
 
 [package]
@@ -346,13 +357,13 @@ version = \"0.1.0\"
 edition = \"2024\"
 
 [lib]
-# cdylib にすると memory が \"memory\" として export される（abi-spec §3.3）。
+# cdylib exports the linear memory as \"memory\" (docs/abi-spec.md §3.3).
 crate-type = [\"cdylib\"]
 
 [dependencies]
 {dep}
 
-# ゲストはサイズが全て。トラップは abort に落とす。
+# Size is everything for a guest. Traps become abort.
 [profile.release]
 opt-level = \"z\"
 lto = \"fat\"
@@ -366,41 +377,43 @@ strip = true
 fn rust_lib(name: &str) -> String {
     format!(
         "\
-//! {name}。
+//! {name}: a Wasmicon app.
 
 #![no_std]
 
 use wasmicon_hal::log;
 
-/// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+/// Entry point. The host calls it once, right after instantiation
+/// (docs/abi-spec.md §3.3).
 #[unsafe(no_mangle)]
 pub extern \"C\" fn run() {{
     log::info(\"{name} start\");
 
-    // ピン番号はボードごとに違うので**役割名で引く**（abi-spec §8）。
-    // 同じ .wasm がどのボードでも動くのはこれがあるから。
-    // 使う役割は wasmicon.toml の [requirements] pin-roles に、番号は
-    // [board.<name>.roles] に書くこと（ファームは既定の表を持たない）。
+    // GPIO numbers differ per board, so pins are looked up by role name
+    // (docs/abi-spec.md §8). That is what lets the same .wasm run on every
+    // board. Declare the roles in [requirements] pin-roles of wasmicon.toml
+    // and the numbers in [board.<name>.roles] (the firmware has no default
+    // table).
     //
     // use wasmicon_hal::gpio::{{Level, Pin, PinMode}};
     // use wasmicon_hal::board;
     //
     // let Ok(index) = board::pin_by_role(\"led\") else {{
-    //     log::error(\"led の割り当てが無い\");
+    //     log::error(\"no pin assigned to role led\");
     //     return;
     // }};
     // let Ok(pin) = Pin::open(index, PinMode::Output) else {{
-    //     log::error(\"led のピンを開けない\");
+    //     log::error(\"cannot open led pin\");
     //     return;
     // }};
     // let _ = pin.write(Level::High);
 }}
 
-/// `no_std` なので自前で用意する。トラップに落として、ホストに
-/// ログを出させて停止させる（docs/handoff.md §3 #4）。
+/// `no_std` needs its own panic handler. It traps, so the host logs the
+/// reason and halts (docs/decisions.md A-04).
 ///
-/// `cfg(not(test))` なのは、`cargo clippy --all-targets` がテストハーネスを
-/// 組むときに std の panic handler と衝突するため。
+/// `cfg(not(test))` because `cargo clippy --all-targets` builds the test
+/// harness, whose std panic handler would conflict with this one.
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {{
@@ -430,8 +443,8 @@ fn package_json(name: &str) -> String {
 }
 
 fn as_index(name: &str, hal: Option<&Path>, dir: &Path) -> String {
-    // asc はスコープ付き npm パッケージを ~lib として解決できないので
-    // **相対パスで参照する**（apps/*-as と同じ理由）。
+    // asc cannot resolve a scoped npm package as `~lib`, so the bindings are
+    // referenced by relative path (same reason as in apps/*-as).
     let import = match hal {
         Some(b) => written_path(
             &dir.join("assembly"),
@@ -441,21 +454,23 @@ fn as_index(name: &str, hal: Option<&Path>, dir: &Path) -> String {
     };
     format!(
         "\
-// {name}。
+// {name}: a Wasmicon app.
 
 import {{ log }} from \"{import}\";
 
-// エントリポイント。ホストがインスタンス化直後に 1 回呼ぶ（abi-spec §3.3）。
+// Entry point. The host calls it once, right after instantiation
+// (docs/abi-spec.md §3.3).
 export function run(): void {{
   log.info(\"{name} start\");
 
-  // ピン番号はボードごとに違うので**役割名で引く**（abi-spec §8）。
-  // 使う役割は wasmicon.toml の [requirements] pin-roles に、番号は
-  // [board.<name>.roles] に書くこと（ファームは既定の表を持たない）。
+  // GPIO numbers differ per board, so pins are looked up by role name
+  // (docs/abi-spec.md §8). Declare the roles in [requirements] pin-roles of
+  // wasmicon.toml and the numbers in [board.<name>.roles] (the firmware has
+  // no default table).
   //
-  // const index = board.pinByRole(\"led\");   // 割り当てが無ければ -1
-  // if (index < 0) {{ log.error(\"led の割り当てが無い\"); return; }}
-  // const pin = Pin.open(index as u32, GpioPinMode.Output);  // 失敗したら null
+  // const index = board.pinByRole(\"led\");   // -1 when no pin is assigned
+  // if (index < 0) {{ log.error(\"no pin assigned to role led\"); return; }}
+  // const pin = Pin.open(index as u32, GpioPinMode.Output);  // null on failure
 }}
 "
     )

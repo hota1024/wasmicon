@@ -1,13 +1,15 @@
-//! `wasmicon deploy` — アプリをボードのスロットに送る（`docs/app-workflow.md` §3.5）。
+//! `wasmicon deploy`: sends an app to the board's slot (docs/app-workflow.md §3.5).
 //!
-//! **1 段は外のフラッシャに渡す。** USB の制御チャネル（2 段）が入るまでは
-//! `picotool` を呼ぶので、Pico は BOOTSEL 押下が残る。2 段で消える。
+//! Stage 1 hands the image to an external flasher. Until the USB control
+//! channel (stage 2) exists, `picotool` is called, so the Pico still needs
+//! BOOTSEL. Stage 2 removes that.
 //!
-//! **送る前に `check` を通す。** そのボードで走らないものをスロットに書いても、
-//! 実機で落ちるまで分からない（§4.3）。`check` が落ちたら焼かない。
+//! `check` runs before anything is sent. Writing an app that does not run on
+//! that board into the slot is only noticed when it fails on hardware
+//! (docs/app-workflow.md §4.3). If `check` fails, nothing is flashed.
 //!
-//! 判定と画像の用意（`prepare`）を、フラッシャの呼び出し（`run`）から
-//! 分けてある。前者はテストから呼べる。
+//! The verdict and the image preparation (`prepare`) are separate from the
+//! flasher call (`run`); the former can be called from tests.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -21,67 +23,71 @@ use wasmicon_port::roles::RoleMap;
 
 pub struct Options {
     pub path: PathBuf,
-    /// 送り先。`--board` か `wasmicon.toml` の `[defaults] board`。
-    /// **省略できない**（どこに書くか決まらない）。
+    /// Target board: `--board` or `[defaults] board` in `wasmicon.toml`.
+    /// Required (otherwise there is no way to know where to write).
     pub board: Option<String>,
-    /// `wasmicon.toml`。`[requirements] pin-roles` があれば照合に使う。
+    /// `wasmicon.toml`. `[requirements] pin-roles`, when present, is
+    /// cross-checked.
     pub manifest: Option<Manifest>,
-    /// 焼いたあとリセットしない（既定はリセットして走らせる）。
+    /// Do not reset after flashing (the default resets and runs).
     pub no_run: bool,
-    /// 焼いてリセットしたあと、そのままトレースを取り込む。
+    /// After flashing and resetting, capture the trace.
     pub monitor: bool,
-    /// `--monitor` のときの取り込み先（`None` なら標準出力だけ）。
+    /// Where `--monitor` writes the capture (`None` = stdout only).
     pub out: Option<PathBuf>,
-    /// `--monitor` のときのシリアルの口（`None` なら `/dev/cu.usb*` から選ぶ）。
+    /// Serial port for `--monitor` (`None` = pick from `/dev/cu.usb*`).
     pub port: Option<PathBuf>,
 }
 
-/// 焼く前に決まること。副作用は画像の書き出しだけ。
+/// Everything decided before flashing. The only side effect is writing the
+/// image.
 ///
-/// `Debug` は付けない（`Profile` / `Slot` がポート側で持っていない。
-/// あちらは `core::fmt` を避けている）。テストは `match` で取り出す。
+/// No `Debug`: `Profile` / `Slot` on the port side do not implement it (the
+/// port avoids `core::fmt`). Tests take the fields out with `match`.
 pub struct Plan {
     pub board: &'static Profile,
     pub slot: Slot,
-    /// 書き出したスロット画像。
+    /// The slot image that was written.
     pub image: PathBuf,
-    /// `picotool` に渡すアドレス（**オフセットではない**）。
+    /// The address passed to `picotool` (not the offset).
     pub addr: u64,
     pub wasm_len: usize,
     pub image_len: usize,
     pub crc: u32,
-    /// 一緒に書く配線表（`lcd-cs=17 …`）。`None` = 役割を配らない。
+    /// The wiring table written alongside (`lcd-cs=17 ...`). `None` = no
+    /// roles handed out.
     pub roles: Option<String>,
 }
 
-/// 焼き方の判断。**ボード名ではなくフラッシャで決まる。**
+/// How to flash. Decided by the flasher, not by the board name.
 ///
-/// `run` から切り出してあるのは、ここがテストできる唯一の分岐だから
-/// （外のフラッシャを呼ぶ部分は実機が要る）。
+/// Split out of `run` because it is the only branch that can be tested (the
+/// part that calls the external flasher needs hardware).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Mode {
-    /// 書き込みのあと走らせない（`espflash --after no-reset`）。
+    /// Do not run after writing (`espflash --after no-reset`).
     pub keep_halted: bool,
-    /// リセットと取り込みを `espflash monitor` に渡す。
+    /// Hand reset and capture to `espflash monitor`.
     pub hand_off: bool,
-    /// 書き込みとトレースが同じ口。
+    /// Flashing and the trace share one serial port.
     pub shared_port: bool,
 }
 
 impl Mode {
-    /// オプションとフラッシャから決める。
+    /// Decides from the options and the flasher.
     #[must_use]
     pub fn of(opts: &Options, flasher: Flasher) -> Self {
-        // **同じ口のボードは取り込みも同じ道具に任せる**（§10）。
+        // A board with a shared port leaves the capture to the same tool
+        // (docs/verification-report.md §10).
         let shared_port = flasher == Flasher::Espflash;
         let hand_off = opts.monitor && !opts.no_run && shared_port;
         Mode {
-            // **`--no-run` のときも走らせない。** `espflash write-bin` は
-            // 既定で `--after hard-reset` までやるので、ここで抑えないと
-            // **焼いた直後に走ってしまう**のに「リセットすると走る」と
-            // 出す（嘘になる）。プローブを当てる前や、モータに繋いだ
-            // ボードでは走らせたくない。picotool はリセットを別に呼ぶので
-            // 抑える必要が無い。
+            // `--no-run` must not run the app either. `espflash write-bin`
+            // does `--after hard-reset` by default, so without this the app
+            // runs right after flashing while the output says "runs on the
+            // next reset" (a lie). Nobody wants that before attaching a probe
+            // or on a board wired to a motor. picotool resets in a separate
+            // call, so it needs no suppression.
             keep_halted: hand_off || (opts.no_run && shared_port),
             hand_off,
             shared_port,
@@ -89,28 +95,26 @@ impl Mode {
     }
 }
 
-/// 検査して画像を用意する。
+/// Checks the app and prepares the image.
 ///
 /// # Errors
-/// ボードが決まらない、置き場所が未決、スロットに入らない、`check` が落ちた、
-/// 読み書きができないとき。
+/// When no board is named, the slot location is not decided, the image does
+/// not fit the slot, `check` fails, or a file cannot be read or written.
 pub fn prepare(opts: &Options) -> Result<Plan> {
     let Some(name) = opts
         .board
         .clone()
         .or_else(|| opts.manifest.as_ref().and_then(|m| m.default_board.clone()))
     else {
-        bail!(
-            "どのボードに送るか決まらない。--board を渡すか、\
-             wasmicon.toml に [defaults] board を書くこと"
-        );
+        bail!("no target board: pass --board or set [defaults] board in wasmicon.toml");
     };
     let board = pack::resolve_board(&name)?;
 
-    let wasm =
-        std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
+    let wasm = std::fs::read(&opts.path)
+        .with_context(|| format!("cannot read `{}`", opts.path.display()))?;
 
-    // **走らないものを焼かない。** 役割名は宣言があれば保証になる（§4.7）。
+    // Never flash what does not run. Declared role names are part of the
+    // guarantee (docs/app-workflow.md §4.7).
     let facts = check::facts(&wasm)?;
     let declared: Option<&[String]> = opts
         .manifest
@@ -120,7 +124,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
     let provided = check::provided_roles(board, opts.manifest.as_ref());
     if facts.failures() > 0 {
         bail!(
-            "check が落ちた（全ボード共通で {} 件）。`wasmicon check {}` を見ること",
+            "check failed ({} failures common to every board); see `wasmicon check {}`",
             facts.failures(),
             opts.path.display()
         );
@@ -128,9 +132,9 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
     let verdict = check::judge(&wasm, board, &facts, declared, &provided);
     if !verdict.is_ok() {
         bail!(
-            "check が落ちた（{} で {} 件）。`wasmicon check {} --board {}` を見ること",
-            board.name,
+            "check failed ({} failures on {}); see `wasmicon check {} --board {}`",
             verdict.fails(),
+            board.name,
             opts.path.display(),
             board.name
         );
@@ -138,18 +142,20 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 
     let app = pack::build(&wasm);
     let slot = pack::fits(board, app.len())?;
-    // 配線表（§3.9）。ファームは既定の表を持たないので毎回書く。
+    // The wiring table (docs/app-workflow.md §3.9). The firmware has no
+    // default table, so it is written every time.
     let roles = match &opts.manifest {
         Some(m) => m.role_map(board)?,
         None => RoleMap::EMPTY,
     };
     let image = pack::with_roles(&app, board, &roles)?;
 
-    // 画像はアプリの隣に置く（`pack` と同じ名前）。消さないのは、同じものを
-    // もう一度焼いたり、デバイスのログと CRC を突き合わせたりするため。
+    // The image goes next to the app (same name as `pack` uses). It is kept
+    // so the same image can be flashed again and its CRC cross-checked
+    // against the device's log.
     let mut out = opts.path.clone();
     out.set_extension("bin");
-    std::fs::write(&out, &image).with_context(|| format!("{} を書けない", out.display()))?;
+    std::fs::write(&out, &image).with_context(|| format!("cannot write `{}`", out.display()))?;
 
     Ok(Plan {
         board,
@@ -163,19 +169,19 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
     })
 }
 
-/// 検査して焼く。
+/// Checks, then flashes.
 ///
 /// # Errors
-/// `prepare` が失敗したとき。フラッシャが失敗した場合は `Ok(false)`
-/// （使い方の誤りではないので）。
+/// When `prepare` fails. A flasher failure is `Ok(false)` (it is not a usage
+/// error).
 pub fn run(opts: &Options) -> Result<bool> {
     let plan = prepare(opts)?;
 
-    // **出すのはスロットのオフセット。** `plan.addr` は picotool に渡す
-    // 絶対アドレスで、ESP32-S3 では意味を持たない（あちらはオフセットで
-    // 書く）。要約にアドレスを出すと、ボードによって嘘になる。
+    // The summary shows the slot offset. `plan.addr` is the absolute address
+    // picotool takes and means nothing on ESP32-S3 (which flashes by offset).
+    // Showing the address would be wrong for one board or the other.
     println!(
-        "{} → {} のスロット（+{:#x}）  {} B（wasm {} B、crc32 {:08x}）",
+        "{} -> {} slot (+{:#x})  {} B (wasm {} B, crc32 {:08x})",
         plan.image.display(),
         plan.board.name,
         plan.slot.offset,
@@ -184,29 +190,31 @@ pub fn run(opts: &Options) -> Result<bool> {
         plan.crc
     );
     match &plan.roles {
-        Some(r) => println!("  配線表: {r}"),
+        Some(r) => println!("  wiring: {r}"),
         None => println!(
-            "  配線表: なし（役割を配らない。wasmicon.toml の [board.{}.roles]）",
+            "  wiring: none (no roles handed out; see [board.{}.roles] in wasmicon.toml)",
             plan.board.name
         ),
     }
 
     let mode = Mode::of(opts, plan.slot.flasher);
 
-    // 1 段は外のフラッシャ（§3.5）。ボードで道具が違う。
+    // Stage 1 uses an external flasher (docs/app-workflow.md §3.5). The tool
+    // differs per board.
     if !write_slot(&plan, opts.port.as_deref(), mode.keep_halted)? {
         return Ok(false);
     }
 
     if opts.no_run {
-        println!("→ 書いた。リセットすると走る");
+        println!("-> written; the app runs on the next reset");
         return Ok(true);
     }
 
     if mode.hand_off {
-        // `espflash monitor` が DTR/RTS でリセットしてから読む。**口を
-        // 自分で開かない**（開くと `Resource busy` で espflash が使えない）。
-        println!("→ espflash monitor にリセットと取り込みを任せる:");
+        // `espflash monitor` resets through DTR/RTS and then reads. The port
+        // is not opened here (an open port makes espflash fail with
+        // `Resource busy`).
+        println!("-> handing reset and capture to espflash monitor:");
         let mut args = vec!["monitor", "-c", plan.board.name, "--non-interactive"];
         let p;
         if let Some(dev) = opts.port.as_deref() {
@@ -225,42 +233,44 @@ pub fn run(opts: &Options) -> Result<bool> {
             },
         );
         if taken.is_err() {
-            // `--after no-reset` で焼いたので、**ボードはブートローダに
-            // 居る**。黙って終わると「電源は入っているのに何も出ない」に
-            // 見える（`espflash reset` は居座るので助けにならない。§10）。
+            // The image was flashed with `--after no-reset`, so the board is
+            // parked in the bootloader. Exiting silently looks like "powered
+            // but nothing comes out" (`espflash reset` does not help: it
+            // never exits; docs/verification-report.md §10).
             eprintln!(
-                "  ボードはブートローダで止まっている（--after no-reset で焼いた）。\n  \
-                 EN を押すか、もう一度 deploy すること"
+                "  the board is parked in the bootloader (flashed with --after no-reset).\n  \
+                 press EN or run deploy again"
             );
         }
         return taken;
     }
 
-    // **`--monitor` ならリセットの前に開いて baud を当てる。**
-    // 流れ始めてから当てると行が混ざる（`monitor` の罠 2）。
+    // With `--monitor`, open the port and set the baud rate before the reset.
+    // Setting it while data flows mixes up the lines (item 2 in the `monitor`
+    // module docs).
     let session = if opts.monitor {
         let port = monitor::choose(&monitor::ports(), opts.port.as_deref())?;
         let s = monitor::open(&port, monitor::DEFAULT_BAUD)?;
-        eprintln!("{} を開いた（リセット前）", s.port().display());
+        eprintln!("opened {} (before reset)", s.port().display());
         Some(s)
     } else {
         None
     };
 
-    // espflash は `write-bin` が既定でリセットまでやる（上）。
+    // espflash `write-bin` resets by default (see above).
     if !mode.shared_port && !reset(&plan)? {
-        eprintln!("  書けたがリセットできなかった。USB を抜き差しすること");
+        eprintln!("  written, but the reset failed; unplug and replug USB");
         return Ok(false);
     }
 
     let Some(session) = session else {
-        println!("→ 走っている。トレースを取り込むなら:");
-        println!("    wasmicon monitor -o app.log   # そのあとリセット");
-        println!("  次からは deploy --monitor で 1 回で済む");
+        println!("-> running. To capture the trace:");
+        println!("    wasmicon monitor -o app.log   # then reset the board");
+        println!("  next time, deploy --monitor does both in one step");
         return Ok(true);
     };
 
-    println!("→ 走っている。トレースを取り込む:");
+    println!("-> running; capturing the trace:");
     monitor::capture(
         session,
         &monitor::Options {
@@ -273,20 +283,20 @@ pub fn run(opts: &Options) -> Result<bool> {
     )
 }
 
-/// スロットに書く。ボードで道具が違う。
+/// Writes the slot. The tool differs per board.
 fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<bool> {
     let image = plan.image.to_string_lossy().into_owned();
-    // **ボード名の文字列で分岐しない。** プロファイルが道具を持っているので、
-    // 新しいポートを足したときに既定の枝へ落ちることがない。
+    // Never branch on the board name string. The profile carries the tool, so
+    // a new port cannot fall into a default branch.
     match plan.slot.flasher {
-        // ESP32-S3 は ROM ブートローダに DTR/RTS で落ちるので**ボタン操作が
-        // 要らない**。`write-bin` はフラッシュのオフセットを取る。
+        // ESP32-S3 enters the ROM bootloader through DTR/RTS, so no button is
+        // needed. `write-bin` takes a flash offset.
         Flasher::Espflash => {
-            // **`write-bin` はフラッシュのオフセットを取る**（picotool の
-            // `-o` がアドレスなのと違う）。既定で `--after hard-reset` まで
-            // やるので、**別に reset を呼ばない** —— 呼ぶと終了せずに
-            // DTR/RTS を握ったままになり、ボードがダウンロードモードで
-            // 止まる（2026-10-04 に実機で踏んだ。§10）。
+            // `write-bin` takes a flash offset (unlike picotool's `-o`, which
+            // is an address). It does `--after hard-reset` by default, so
+            // reset is not called separately: `espflash reset` never exits,
+            // keeps DTR/RTS asserted and leaves the board parked in download
+            // mode (seen on hardware; docs/verification-report.md §10).
             let offset = format!("{:#x}", plan.slot.offset);
             let mut args = vec!["write-bin"];
             let p;
@@ -294,30 +304,31 @@ fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<boo
                 p = dev.to_string_lossy().into_owned();
                 args.extend_from_slice(&["--port", &p]);
             }
-            // `--monitor` のときは**ここでリセットしない**。走らせてしまうと、
-            // 次に開くまでに出力が終わっている（§10 で踏んだ形）。
-            // リセットは `espflash monitor` に任せる。
+            // With `--monitor` the board is not reset here. If it ran now,
+            // the output would be over before the port is opened
+            // (docs/verification-report.md §10). `espflash monitor` does the
+            // reset.
             if keep_halted {
                 args.extend_from_slice(&["--after", "no-reset"]);
             }
             args.extend_from_slice(&[&offset, &image]);
             let ok = spawn("espflash", &args)?;
             if !ok {
-                eprintln!("  口が複数あるなら --port で選ぶこと");
+                eprintln!("  if several serial ports exist, pick one with --port");
             }
             Ok(ok)
         }
-        // Pico 系は BOOTSEL が要る（2 段の USB 制御チャネルで消える）。
-        // `-t bin` を明示するのは、ファイル名の拡張子に判定を任せないため。
-        // `-o` は picotool の help が "Load offset (memory address)" と
-        // 書いているとおり**アドレス**で、オフセットを渡すと弾かれる。
+        // Pico boards need BOOTSEL (the stage 2 USB control channel removes
+        // that). `-t bin` is explicit so the file type does not depend on
+        // the extension. `-o` is an address, as picotool's help says ("Load
+        // offset (memory address)"); an offset is rejected.
         Flasher::Picotool => {
             let addr = format!("{:#x}", plan.addr);
             let ok = spawn("picotool", &["load", &image, "-t", "bin", "-o", &addr])?;
             if !ok {
                 eprintln!(
-                    "  BOOTSEL を押しながら USB を挿してから、もう一度実行すること\n  \
-                     （USB の制御チャネルが入れば押下は要らなくなる。§3.5）"
+                    "  hold BOOTSEL while plugging in USB, then run again\n  \
+                     (the USB control channel will remove this step; docs/app-workflow.md §3.5)"
                 );
             }
             Ok(ok)
@@ -325,16 +336,16 @@ fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<boo
     }
 }
 
-/// 走らせるためにリセットする（Pico 系だけ。ESP32-S3 は `write-bin` が
-/// 既定でやる）。
+/// Resets the board so the app runs (Pico boards only; ESP32-S3's
+/// `write-bin` does it by default).
 fn reset(_plan: &Plan) -> Result<bool> {
     spawn("picotool", &["reboot"])
 }
 
-/// 外のコマンドを呼ぶ。見つからないのはエラー、失敗は `false`。
+/// Runs an external command. Not found is an error; failure is `false`.
 fn spawn(cmd: &str, args: &[&str]) -> Result<bool> {
     let status = Command::new(cmd).args(args).status().with_context(|| {
-        format!("{cmd} を起動できない（`wasmicon doctor` で入っているか見ること）")
+        format!("cannot start {cmd} (run `wasmicon doctor` to see what is installed)")
     })?;
     Ok(status.success())
 }

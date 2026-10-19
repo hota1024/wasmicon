@@ -1,13 +1,16 @@
-//! `wasmicon pack` — `.wasm` をスロット画像にする（`docs/app-workflow.md` §3.4）。
+//! `wasmicon pack`: turns a `.wasm` into a slot image (docs/app-workflow.md §3.4).
 //!
-//! 形は `ports/common` の `slot` が持つ（**書く側と読む側で 2 回書かない**）。
+//! The format belongs to `slot` in `ports/common` (the writer and the reader
+//! share one definition).
 //!
-//! これは `deploy --persist` の素材で、1 段では**外のフラッシャに渡す**
-//! （`espflash write-bin <offset>` / `picotool load -o <offset>`。§3.5）。
-//! オフセットはボードごとの決めごとなので、ここでは画像を作るだけにする。
+//! The image is the input of `deploy --persist`; stage 1 hands it to an
+//! external flasher (`espflash write-bin <offset>` / `picotool load -o
+//! <offset>`; docs/app-workflow.md §3.5). The offset is a per-board decision,
+//! so this command only builds the image.
 //!
-//! **送る前に `check` を通す。** 壊れたものや、そのボードで走らないものを
-//! スロットに書いても、実機で落ちるまで分からない。
+//! Run `check` before sending. Writing a corrupt app, or one that does not
+//! run on that board, into the slot is only noticed when it fails on
+//! hardware.
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
@@ -19,33 +22,35 @@ use wasmicon_port::slot;
 
 pub struct Options {
     pub path: PathBuf,
-    /// 出力先。`None` なら `<入力>.slot`。
+    /// Output path. `None` = `<input>.bin`.
     pub out: Option<PathBuf>,
-    /// `--board`。渡すと**スロットに収まるかを検査**し、書き込むコマンドを出す。
+    /// `--board`. When given, the image is checked against the slot size and
+    /// the flash command is printed.
     pub board: Option<String>,
 }
 
-/// スロット画像を書く。
+/// Writes the slot image.
 ///
 /// # Errors
-/// 入力が読めない、出力が書けないとき。
+/// When the input cannot be read or the output cannot be written.
 pub fn run(opts: &Options) -> Result<bool> {
-    let wasm =
-        std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
+    let wasm = std::fs::read(&opts.path)
+        .with_context(|| format!("cannot read `{}`", opts.path.display()))?;
     let image = build(&wasm);
 
-    // **拡張子は `.bin`。** `picotool load` は拡張子でファイル種別を判定する
-    // ので、`.slot` のような独自の名前だと
-    // 「does not have a recognized file type (extension)」で弾かれる
-    // （2026-10-04 に Pico 2 W で踏んだ）。
+    // The extension is `.bin`. `picotool load` decides the file type by
+    // extension, so a custom name like `.slot` is rejected with "does not
+    // have a recognized file type (extension)" (seen on Pico 2 W;
+    // docs/verification-report.md §9).
     let out = opts.out.clone().unwrap_or_else(|| {
         let mut p = opts.path.clone();
         p.set_extension("bin");
         p
     });
 
-    // ボードが分かるなら、スロットに収まるかを**書く前に**見る。
-    // 入らないものを焼いても、実機で「slot truncated」が出るまで分からない。
+    // When the board is known, check that the image fits the slot before
+    // writing. Flashing one that does not fit is only noticed when
+    // "slot truncated" appears on hardware.
     let board = match &opts.board {
         None => None,
         Some(name) => Some(resolve_board(name)?),
@@ -54,47 +59,48 @@ pub fn run(opts: &Options) -> Result<bool> {
         fits(p, image.len())?;
     }
 
-    std::fs::write(&out, &image).with_context(|| format!("{} を書けない", out.display()))?;
+    std::fs::write(&out, &image).with_context(|| format!("cannot write `{}`", out.display()))?;
     let crc = crc_of(&image);
     println!(
-        "{}  {} B（wasm {} B + ヘッダ {} B、crc32 {crc:08x}）",
+        "{}  {} B (wasm {} B + header {} B, crc32 {crc:08x})",
         out.display(),
         image.len(),
         wasm.len(),
         slot::HEADER_LEN
     );
 
-    // 1 段は外のフラッシャに渡す（§3.5）。**ボードで道具も引数も違う。**
+    // Stage 1 hands the image to an external flasher
+    // (docs/app-workflow.md §3.5). Tool and arguments differ per board.
     if let Some(p) = board
         && let Some(sl) = p.slot
     {
         if sl.flasher == Flasher::Espflash {
-            // espflash は**フラッシュのオフセット**を取る。既定で
-            // `--after hard-reset` までやるので、別にリセットは要らない。
+            // espflash takes a flash offset. It does `--after hard-reset` by
+            // default, so no separate reset is needed.
             println!(
-                "→ 書き込み: espflash write-bin --port <dev> {:#x} {}",
+                "-> flash: espflash write-bin --port <dev> {:#x} {}",
                 sl.offset,
                 out.display()
             );
-            println!("  （ボタン操作は要らない。DTR/RTS でリセットされる）");
+            println!("  (no button needed; DTR/RTS resets the board)");
         } else {
-            // **picotool の `-o` は絶対アドレス**（フラッシュのオフセットでは
-            // ない）。オフセットを渡すと
-            // 「invalid memory range 0x00100000-...」で弾かれる
-            // （2026-10-04 に Pico 2 W で踏んだ）。XIP は 0x1000_0000 から。
+            // picotool's `-o` is an absolute address, not a flash offset.
+            // An offset is rejected with "invalid memory range
+            // 0x00100000-..." (seen on Pico 2 W;
+            // docs/verification-report.md §9). XIP starts at 0x1000_0000.
             let addr = XIP_BASE + u64::from(sl.offset);
-            println!("→ 書き込み: picotool load -o {addr:#x} {}", out.display());
-            println!("  （BOOTSEL を押しながら USB を挿してから）");
+            println!("-> flash: picotool load -o {addr:#x} {}", out.display());
+            println!("  (hold BOOTSEL while plugging in USB first)");
         }
-        println!("  `wasmicon deploy` なら 1 コマンドで済む");
+        println!("  `wasmicon deploy` does this in one command");
     }
     Ok(true)
 }
 
-/// RP2040 / RP2350 の XIP の先頭。`picotool` に渡すアドレスの基準。
+/// Start of XIP on RP2040 / RP2350. Base of the address passed to `picotool`.
 pub const XIP_BASE: u64 = 0x1000_0000;
 
-/// スロット画像を組む（ヘッダ + wasm）。
+/// Builds the slot image (header + wasm).
 #[must_use]
 pub fn build(wasm: &[u8]) -> Vec<u8> {
     let mut image = Vec::with_capacity(slot::image_len(wasm.len()));
@@ -103,24 +109,24 @@ pub fn build(wasm: &[u8]) -> Vec<u8> {
     image
 }
 
-/// 画像のヘッダに入っている CRC（§3.4 の 12..16）。
+/// Appends the config slot (wiring table) to the app slot image, making one
+/// image that is flashed in one go (used by `deploy`;
+/// docs/app-workflow.md §3.9).
 ///
-/// デバイス側のログと突き合わせられるよう、同じ値を出すために使う。
-/// アプリスロットの画像の後ろに設定スロット（配線表）を足して、1 回で書ける
-/// 1 本の画像にする（`deploy` が使う。`docs/app-workflow.md` §3.9）。
-///
-/// アプリの後ろはスロットの終わりまで `0xff`（消去済みと同じ）で埋める。
-/// **配線表は毎回書く。** 表が空でも書くので、`deploy` の結果はその時の
-/// `wasmicon.toml` だけで決まる（前に焼いた表が残らない）。
+/// The space after the app is filled with `0xff` (same as erased flash) up
+/// to the end of the slot. The wiring table is always written, even when
+/// empty, so the result of `deploy` depends only on the current
+/// `wasmicon.toml` (a previously flashed table never survives).
 ///
 /// # Errors
-/// 設定スロットがアプリスロットの直後に無いとき（プロファイルの誤り）。
+/// When the config slot does not directly follow the app slot (a profile
+/// error).
 pub fn with_roles(app: &[u8], p: &profile::Profile, map: &RoleMap) -> Result<Vec<u8>> {
     let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
-        bail!("{} にはスロットか設定スロットが無い", p.name);
+        bail!("{} has no app slot or no config slot", p.name);
     };
     if rs.offset != sl.offset + sl.len {
-        bail!("{} の設定スロットがアプリスロットの直後に無い", p.name);
+        bail!("the config slot of {} does not follow its app slot", p.name);
     }
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(map, &mut body);
@@ -131,7 +137,7 @@ pub fn with_roles(app: &[u8], p: &profile::Profile, map: &RoleMap) -> Result<Vec
     Ok(image)
 }
 
-/// 表を 1 行で表す（`lcd-cs=17 lcd-dc=20`、空なら `None`）。
+/// Describes the table on one line (`lcd-cs=17 lcd-dc=20`; `None` when empty).
 #[must_use]
 pub fn describe_roles(map: &RoleMap) -> Option<String> {
     if map.is_empty() {
@@ -143,34 +149,40 @@ pub fn describe_roles(map: &RoleMap) -> Option<String> {
     Some(parts.join(" "))
 }
 
+/// The CRC stored in the image header (bytes 12..16, docs/app-workflow.md §3.4).
+///
+/// Printed so it can be cross-checked against the device's log.
 #[must_use]
 pub fn crc_of(image: &[u8]) -> u32 {
     u32::from_le_bytes([image[12], image[13], image[14], image[15]])
 }
 
-/// `--board` を解決する。
+/// Resolves `--board`.
 ///
 /// # Errors
-/// 知らない名前のとき。
+/// When the name is unknown.
 pub fn resolve_board(name: &str) -> Result<&'static profile::Profile> {
     profile::by_name(name).with_context(|| {
         let known: Vec<&str> = profile::PROFILES.iter().map(|p| p.name).collect();
-        format!("知らないボード {name}（あるのは {}）", known.join(" / "))
+        format!(
+            "unknown board `{name}` (known boards: {})",
+            known.join(", ")
+        )
     })
 }
 
-/// そのボードのスロットに収まるか。
+/// Checks that the image fits the board's slot.
 ///
 /// # Errors
-/// 置き場所が決まっていない、または入らないとき。
+/// When the slot location is not decided, or the image does not fit.
 pub fn fits(p: &profile::Profile, image_len: usize) -> Result<profile::Slot> {
     match p.slot {
         None => bail!(
-            "{} のスロットの置き場所がまだ決まっていない（docs/TODO.md §5-2）",
+            "the slot location for {} is not decided yet (docs/TODO.md §5-2)",
             p.name
         ),
         Some(sl) if image_len > sl.len as usize => bail!(
-            "{} のスロットに入らない（{image_len} B > {} B）",
+            "does not fit in the {} slot ({image_len} B > {} B)",
             p.name,
             sl.len
         ),

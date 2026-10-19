@@ -1,13 +1,13 @@
-//! `wasmicon check` の判定を `apps/` の実物で固定する。
+//! Locks in the `wasmicon check` verdicts on the real apps in `apps/`.
 //!
-//! 要点は 2 つ:
+//! Two points:
 //!
-//! - **`blink-rs` は 4 ボードすべてで通る**（gpio / time / log / board しか
-//!   使わないので、SPI / I2C が未実装の rp2040 でも走る）
-//! - **`sensor-display-rs` は rp2040 だけで落ちる**（I2C と SPI が未実装）。
-//!   これが `check --board` の存在理由で、**host 実行では分からない**
+//! - `blink-rs` passes on all four boards (it uses only gpio / time / log /
+//!   board, so it runs even on rp2040, which has no SPI / I2C).
+//! - `sensor-display-rs` fails only on rp2040 (I2C and SPI not implemented).
+//!   That is why `check --board` exists, and a host run cannot show it.
 //!
-//! ゲストのビルドは `ports/host/tests/apps.rs` と同じやり方。
+//! The guests are built the same way as in `ports/host/tests/apps.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,43 +19,44 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
-/// guest workspace でアプリをビルドして `.wasm` を返す。
+/// Builds an app in the guest workspace and returns the `.wasm`.
 fn build(pkg: &str) -> Vec<u8> {
-    // 同じプロセス内のテストを直列化する。
+    // Serializes the tests within this process.
     //
-    // **プロセスをまたぐ競合は防げない。** `ports/host/tests/apps.rs` が
-    // 同じ `.wasm` を同じ target に作るので、テストバイナリが並走する
-    // ランナー（nextest など）では、片方のリンカが書いている途中で
-    // もう片方が読む形が残る。cargo のロックはビルドを直列化するが
-    // 読み出しは守らない。共有のヘルパに切り出す件は docs/TODO.md §5。
+    // Races across processes are not prevented. `ports/host/tests/apps.rs`
+    // builds the same `.wasm` into the same target, so a runner that runs
+    // test binaries in parallel (nextest and the like) can read a file while
+    // the other linker is still writing it. cargo's lock serializes builds
+    // but not reads. Extracting a shared helper is docs/TODO.md §5.
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let root = repo_root();
-    // cargo test はテストプロセスに RUSTUP_TOOLCHAIN を渡す。立っていると
-    // rustup が toolchain override を見ないので、apps/rust-toolchain.toml の
-    // targets（wasm32 の自動導入）が効かない。外してから起動する。
+    // cargo test passes RUSTUP_TOOLCHAIN to the test process. While it is
+    // set, rustup ignores the toolchain override, so the `targets` of
+    // apps/rust-toolchain.toml (automatic wasm32 install) do not apply.
+    // Remove it before starting.
     let status = Command::new("cargo")
         .current_dir(root.join("apps"))
         .env_remove("RUSTUP_TOOLCHAIN")
         .args(["build", "--release", "-p", pkg])
         .status()
-        .expect("cargo を起動できない");
-    assert!(status.success(), "{pkg} のビルドに失敗した");
+        .expect("cannot start cargo");
+    assert!(status.success(), "building {pkg} failed");
 
     let wasm = root
         .join("apps/target/wasm32-unknown-unknown/release")
         .join(format!("{}.wasm", pkg.replace('-', "_")));
-    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
 }
 
 fn facts_of(wasm: &[u8]) -> Facts {
-    check::facts(wasm).unwrap_or_else(|e| panic!("decode できない: {e:#}"))
+    check::facts(wasm).unwrap_or_else(|e| panic!("cannot decode: {e:#}"))
 }
 
 #[test]
@@ -65,10 +66,10 @@ fn blink_rs_passes_on_every_board() {
 
     assert!(
         matches!(f.run_export, Some(Ok(()))) && f.has_memory_export,
-        "run: func() と memory がある"
+        "run: func() and memory are present"
     );
-    assert_eq!(f.import_failures(), 0, "import は全て表と一致する");
-    // blink は gpio / time / board しか触らない。
+    assert_eq!(f.import_failures(), 0, "every import matches the table");
+    // blink touches only gpio / time / board.
     assert!(!f.per_iface.contains_key("i2c"));
     assert!(!f.per_iface.contains_key("spi"));
 
@@ -76,7 +77,7 @@ fn blink_rs_passes_on_every_board() {
         let v = check::judge(&wasm, p, &f, None, &[]);
         assert!(
             v.is_ok(),
-            "{} で落ちた（{} 件、未実装 {:?}）",
+            "fails on {} ({} failures, unimplemented {:?})",
             p.name,
             v.fails(),
             v.unimplemented
@@ -90,29 +91,36 @@ fn sensor_display_fails_only_on_rp2040() {
     let f = facts_of(&wasm);
 
     assert_eq!(f.import_failures(), 0);
-    assert!(f.per_iface.contains_key("i2c"), "SHT4x を I2C で読む");
-    assert!(f.per_iface.contains_key("spi"), "ILI9341 を SPI で描く");
+    assert!(f.per_iface.contains_key("i2c"), "reads the SHT4x over I2C");
+    assert!(
+        f.per_iface.contains_key("spi"),
+        "draws on the ILI9341 over SPI"
+    );
 
     let rp2040 = check::judge(&wasm, &profile::RP2040, &f, None, &[]);
-    assert!(!rp2040.is_ok(), "rp2040 は I2C / SPI が未実装なので落ちる");
+    assert!(
+        !rp2040.is_ok(),
+        "rp2040 fails because I2C / SPI are not implemented"
+    );
     let mut unimpl = rp2040.unimplemented.clone();
     unimpl.sort();
-    assert_eq!(unimpl, ["i2c", "spi"], "落ちる理由はこの 2 つだけ");
+    assert_eq!(unimpl, ["i2c", "spi"], "these two are the only reasons");
     assert!(
         rp2040.validate.is_ok(),
-        "初期 1 ページは RP2040 の 2 ページ上限に収まる"
+        "an initial 1 page fits the RP2040 2-page limit"
     );
 
     for p in [&profile::RP2350, &profile::ESP32S3, &profile::HOST] {
         let v = check::judge(&wasm, p, &f, None, &[]);
-        assert!(v.is_ok(), "{} では通る（{} 件落ちた）", p.name, v.fails());
+        assert!(v.is_ok(), "passes on {} ({} failures)", p.name, v.fails());
     }
 }
 
 #[test]
 fn memory_limit_is_per_board() {
-    // 「host で通っても実機で落ちる」を実際に見る（§4.3）。
-    // 4 ページを要求する .wasm は host と rp2350 では通り、rp2040 では落ちる。
+    // "Passes on the host, fails on hardware", observed
+    // (docs/app-workflow.md §4.3). A .wasm that asks for 4 pages passes on
+    // host and rp2350 and fails on rp2040.
     let wasm = wat_memory_pages(4);
     let f = facts_of(&wasm);
 
@@ -121,31 +129,31 @@ fn memory_limit_is_per_board() {
         check::judge(&wasm, &profile::HOST, &f, None, &[])
             .validate
             .is_ok(),
-        "host は 65536 ページまで"
+        "host allows up to 65536 pages"
     );
     assert!(
         check::judge(&wasm, &profile::RP2350, &f, None, &[])
             .validate
             .is_ok(),
-        "rp2350 は 4 ページまで"
+        "rp2350 allows up to 4 pages"
     );
     assert!(
         check::judge(&wasm, &profile::RP2040, &f, None, &[])
             .validate
             .is_err(),
-        "rp2040 は 2 ページまでなので validate が落ちる"
+        "rp2040 allows up to 2 pages, so validate fails"
     );
 }
 
 #[test]
 fn the_arena_is_part_of_the_judgement() {
-    // **validate だけでは足りない。** 線形メモリは arena の残り全部を取るので、
-    // max_memory_pages に収まっていても「先に取られた残りに min_pages * 64 KiB
-    // が入らない」ことがある。実機はそこで instantiate が落ちる。
+    // validate alone is not enough. Linear memory takes the rest of the
+    // arena, so even within max_memory_pages the min_pages * 64 KiB may not
+    // fit in what was left. On hardware, instantiate fails there.
     //
-    // 2 ページ (128 KiB) を要求するモジュールを、arena が 100 KiB しかない
-    // ボードに当てる。Config は RP2040 のまま（2 ページ上限）なので
-    // validate は通り、**instantiate だけが落ちる**。
+    // A module asking for 2 pages (128 KiB) meets a board whose arena is
+    // only 100 KiB. The Config stays RP2040's (2-page limit), so validate
+    // passes and only instantiate fails.
     let wasm = wat_memory_pages(2);
     let tight = Profile {
         name: "tight",
@@ -160,40 +168,39 @@ fn the_arena_is_part_of_the_judgement() {
         slot: None,
         role_slot: None,
     };
-    let (stage, err) =
-        check::instantiate_with(&wasm, &tight).expect_err("arena が足りないので落ちる");
+    let (stage, err) = check::instantiate_with(&wasm, &tight).expect_err("fails: not enough arena");
     assert_eq!(
         stage.label(),
         "instantiate",
-        "validate ではなく instantiate で落ちたと言う（{err}）"
+        "reports instantiate, not validate ({err})"
     );
     assert!(
         err.contains("arena") || err.contains("Arena") || err.contains("out of"),
-        "arena が足りないことが分かるメッセージ: {err}"
+        "the message says the arena ran out: {err}"
     );
 
-    // 同じモジュールは実寸の RP2040（160 KiB）なら通る。
+    // The same module passes with RP2040's real size (160 KiB).
     assert!(
         check::instantiate_with(&wasm, &profile::RP2040).is_ok(),
-        "RP2040 の実寸なら 2 ページが収まる"
+        "2 pages fit RP2040's real arena"
     );
 }
 
 #[test]
 fn every_board_can_instantiate_its_advertised_maximum() {
-    // **上限いっぱいのページ数が実際に収まるか**を全ボードで見る。
-    // ESP32-S3 が一番きつい（4 ページ = 256 KiB を 300 KiB の arena）。
-    // TODO §1.4 のとおり DRAM はほぼ使い切っているので、arena を削ると
-    // ここで `max_memory_pages: 4` が嘘になることが分かる。
+    // Checks on every board that the advertised maximum page count really
+    // fits. ESP32-S3 is the tightest (4 pages = 256 KiB in a 300 KiB arena).
+    // Its DRAM is nearly used up (docs/TODO.md §1.4), so shrinking the arena
+    // shows up here as `max_memory_pages: 4` becoming a lie.
     for p in profile::PROFILES {
         if p.name == "host" {
-            continue; // host は 65536 ページを名乗るが arena は 256 ページ分
+            continue; // host advertises 65536 pages but has a 256-page arena
         }
-        let pages = u8::try_from(p.config.max_memory_pages).expect("ページ数が u8 に入る");
+        let pages = u8::try_from(p.config.max_memory_pages).expect("page count fits u8");
         let wasm = wat_memory_pages(pages);
         assert!(
             check::instantiate_with(&wasm, p).is_ok(),
-            "{}: 名乗っている {pages} ページが arena {} B に収まらない",
+            "{}: the advertised {pages} pages do not fit the {} B arena",
             p.name,
             p.arena
         );
@@ -202,50 +209,53 @@ fn every_board_can_instantiate_its_advertised_maximum() {
 
 #[test]
 fn a_board_that_copies_the_app_into_the_arena_has_less_room() {
-    // **ESP32-S3 はスロットを RAM に写す**（XIP に任意オフセットを期待
-    // できない）。写す先は線形メモリと同じ arena なので、**アプリが大きい
-    // ほど instantiate の余裕が減る**。これを模していないと
-    // 「`check` は通るのに実機で落ちる」—— この関数が防ぐためにある形 ——
-    // をそのまま作る。
+    // ESP32-S3 copies the slot into RAM (XIP at an arbitrary offset cannot
+    // be relied on). The copy goes into the same arena as linear memory, so
+    // the bigger the app, the less headroom instantiate has. Without
+    // modeling that, `check` passes where hardware fails, which is exactly
+    // what this function exists to prevent.
     //
-    // 上限いっぱいのページ数に、余裕より大きいカスタムセクションを足す。
+    // Take the maximum page count and add a custom section bigger than the
+    // headroom.
     let pages = u8::try_from(profile::ESP32S3.config.max_memory_pages).expect("u8");
     let padded = with_custom_section(&wat_memory_pages(pages), 40 * 1024);
 
-    // 写さないボード（XIP）では**アプリの大きさは arena を食わない**ので、
-    // 同じものが通る。ここが通らないと、下の失敗が「写す分」ではなく
-    // 「decode がバイト列を arena に写している」ことの証拠になってしまう。
+    // On a board that does not copy (XIP), the app's size costs no arena,
+    // so the same module passes. If this failed, the failure below would
+    // prove "decode copies the bytes into the arena" instead of "the copy
+    // costs arena".
     assert!(
         check::instantiate_with(&padded, &profile::RP2350).is_ok(),
-        "XIP のボードでアプリの大きさが arena を食っている"
+        "the app's size costs arena on an XIP board"
     );
 
-    // 写すボードでは落ちる。
+    // On a copying board it fails.
     assert!(
         check::instantiate_with(&padded, &profile::ESP32S3).is_err(),
-        "写す分を見ていない（アプリの大きさだけ余裕を多く見積もっている）"
+        "the copy is not modeled (headroom overestimated by the app's size)"
     );
 
-    // 同じページ数でも、小さいアプリなら通る（落ちた理由が大きさだと示す）。
+    // With the same page count, a small app passes (showing that size was
+    // the reason).
     assert!(
         check::instantiate_with(&wat_memory_pages(pages), &profile::ESP32S3).is_ok(),
-        "小さいアプリまで落としている"
+        "even a small app fails"
     );
 }
 
-/// 末尾にカスタムセクションを足して `.wasm` を大きくする。
+/// Appends a custom section to make the `.wasm` bigger.
 ///
-/// 名前だけのカスタムセクションは decode が読み飛ばすので、**中身の意味を
-/// 変えずにファイルの大きさだけ**変えられる。
+/// decode skips a name-only custom section, so this changes the file size
+/// without changing the module's meaning.
 fn with_custom_section(wasm: &[u8], extra: usize) -> Vec<u8> {
     let mut w = wasm.to_vec();
-    // 名前 "pad"（長さ 3）+ 詰め物。
+    // Name "pad" (length 3) + padding.
     let payload = 1 + 3 + extra;
-    w.push(0x00); // section id = 0（custom）
+    w.push(0x00); // section id = 0 (custom)
     let mut len = payload;
     loop {
-        // LEB128（符号なし）。
-        let mut byte = u8::try_from(len & 0x7f).expect("7 bit");
+        // Unsigned LEB128.
+        let mut byte = u8::try_from(len & 0x7f).expect("7 bits");
         len >>= 7;
         if len != 0 {
             byte |= 0x80;
@@ -263,50 +273,52 @@ fn with_custom_section(wasm: &[u8], extra: usize) -> Vec<u8> {
 
 #[test]
 fn the_run_export_must_take_and_return_nothing() {
-    // abi-spec §3.3 は `run: func()`。引数が付いていると実行時に
-    // `wrong arity` で落ちるので、**export の有無だけでは足りない**。
+    // docs/abi-spec.md §3.3 says `run: func()`. A `run` with a parameter
+    // fails at run time with `wrong arity`, so checking that the export
+    // exists is not enough.
     let ok = wat_memory_pages(1);
     let f = facts_of(&ok);
-    assert!(matches!(f.run_export, Some(Ok(()))), "() -> () は通る");
+    assert!(matches!(f.run_export, Some(Ok(()))), "() -> () passes");
     assert_eq!(f.failures(), 0);
 
     let bad = wat_run_with_param();
     let f = facts_of(&bad);
     assert!(
         matches!(f.run_export, Some(Err(_))),
-        "引数付きの run は落とす"
+        "a run with a parameter is rejected"
     );
-    assert_eq!(f.failures(), 1, "run の型違いを 1 件として数える");
+    assert_eq!(f.failures(), 1, "the wrong run type counts as one failure");
 }
 
 #[test]
 fn declared_roles_must_be_in_the_boards_wiring() {
-    // 実機ボードは既定の表を持たない（§3.9）。宣言した役割は、その
-    // ボードの配線表（wasmicon.toml の [board.<name>.roles]）に無ければ
-    // **送る前に**落とす。実機で `unsupported` になるのを先に言う。
+    // Hardware boards have no default table (docs/app-workflow.md §3.9). A
+    // declared role missing from the board's wiring table (`[board.<name>.roles]`
+    // in wasmicon.toml) fails before anything is sent, instead of becoming
+    // `unsupported` on hardware.
     let wasm = wat_memory_pages(1);
     let f = facts_of(&wasm);
     let declared = vec!["status-led".to_string(), "lcd-cs".to_string()];
 
-    // 宣言が無ければ役割では落とさない。
+    // Without a declaration, roles never fail the check.
     let without = check::judge(&wasm, &profile::RP2350, &f, None, &[]);
-    assert!(without.is_ok(), "宣言が無ければ役割では落とさない");
+    assert!(without.is_ok(), "no declaration, no role failure");
 
-    // 配線表が片方しか持たないと、無い方が失敗になる。
+    // When the wiring table has only one of the two, the other one fails.
     let provided = vec!["status-led".to_string()];
     let with = check::judge(&wasm, &profile::RP2350, &f, Some(&declared), &provided);
     assert_eq!(with.missing_declared_roles, ["lcd-cs"]);
-    assert!(!with.is_ok(), "宣言した役割が配られないので落ちる");
+    assert!(!with.is_ok(), "a declared role that is not provided fails");
     assert_eq!(with.fails(), 1);
 
-    // 実機ボードは toml が無ければ何も配らない。
+    // A hardware board hands out nothing without a manifest.
     assert!(check::provided_roles(&profile::RP2350, None).is_empty());
-    // host は mock の表を配る。
+    // The host hands out the mock's table.
     let host = check::provided_roles(&profile::HOST, None);
     assert!(host.contains(&"lcd-cs".to_string()), "{host:?}");
 }
 
-/// `run` が `(i32) -> ()` のモジュール。abi-spec §3.3 違反。
+/// A module whose `run` is `(i32) -> ()`, violating docs/abi-spec.md §3.3.
 fn wat_run_with_param() -> Vec<u8> {
     let mut w = Vec::new();
     w.extend_from_slice(b"\0asm");
@@ -320,14 +332,14 @@ fn wat_run_with_param() -> Vec<u8> {
         0x00,
     ];
     w.push(0x07);
-    w.push(u8::try_from(exports.len()).expect("export セクションが大きすぎる"));
+    w.push(u8::try_from(exports.len()).expect("export section too large"));
     w.extend_from_slice(exports);
     w.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
     w
 }
 
-/// `(module (memory n) (export "memory" ...) (func (export "run")))` を
-/// 手で組む。wat の組み立て器を持ち込まずに最小の `.wasm` を作る。
+/// Builds `(module (memory n) (export "memory" ...) (func (export "run")))`
+/// by hand: the smallest `.wasm` without pulling in a wat assembler.
 fn wat_memory_pages(pages: u8) -> Vec<u8> {
     let mut w = Vec::new();
     w.extend_from_slice(b"\0asm");
@@ -335,20 +347,20 @@ fn wat_memory_pages(pages: u8) -> Vec<u8> {
 
     // type: () -> ()
     w.extend_from_slice(&[0x01, 0x04, 0x01, 0x60, 0x00, 0x00]);
-    // func: 1 つ、型 0
+    // func: one, of type 0
     w.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]);
-    // memory: min = pages、max なし
+    // memory: min = pages, no max
     w.extend_from_slice(&[0x05, 0x03, 0x01, 0x00, pages]);
-    // export: "run" = func 0、"memory" = mem 0
+    // export: "run" = func 0, "memory" = mem 0
     let exports: &[u8] = &[
-        0x02, // 2 件
+        0x02, // 2 entries
         0x03, b'r', b'u', b'n', 0x00, 0x00, //
         0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00,
     ];
     w.push(0x07);
-    w.push(u8::try_from(exports.len()).expect("export セクションが大きすぎる"));
+    w.push(u8::try_from(exports.len()).expect("export section too large"));
     w.extend_from_slice(exports);
-    // code: 空の body
+    // code: an empty body
     w.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
     w
 }

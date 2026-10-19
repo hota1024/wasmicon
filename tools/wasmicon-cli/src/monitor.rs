@@ -1,25 +1,29 @@
-//! `wasmicon monitor` — シリアルを開いてトレースを取る（`docs/app-workflow.md` §4.2）。
+//! `wasmicon monitor`: opens the serial port and captures the trace
+//! (docs/app-workflow.md §4.2).
 //!
-//! **手順に罠が 3 つある。** 実機で全部踏んだ（`docs/verification-report.md` §9）
-//! ので、ここに閉じ込める。
+//! Three things go wrong in this procedure. All three happened on hardware
+//! (docs/verification-report.md §9), so they are contained here.
 //!
-//! 1. **`stty` は開いたまま当てる。** macOS の `stty -f` は開いて設定して
-//!    閉じるので、保持されない（次に開くと 9600 に戻る）。一度、全部ノイズの
-//!    ログを取った。**先にポートを開き、その handle を持ったまま当てる。**
-//! 2. **流れ始める前に当てる。** データが流れている最中に当てると行が混ざって
-//!    バイトが落ちる。だから `monitor` は開いて設定してから、呼び出し側が
-//!    ボードをリセットする（`deploy --monitor` がその順でやる）。
-//! 3. **バイト列として扱う。** リセットの瞬間に NUL やライン・ノイズが入る。
-//!    `String` に落とすと UTF-8 でないバイトが潰れるので、**行は `Vec<u8>`**
-//!    で持つ（`trace` と同じ理由）。
+//! 1. Apply `stty` while the port is open. On macOS, `stty -f` opens the
+//!    device, configures it and closes it, so the settings do not persist
+//!    (the next open is back at 9600). One capture came out as pure noise
+//!    that way. Open the port first and keep the handle while applying it.
+//! 2. Apply it before the data starts. Configuring while bytes flow mixes up
+//!    the lines and drops bytes. So `monitor` opens and configures first and
+//!    the caller resets the board afterwards (`deploy --monitor` does it in
+//!    that order).
+//! 3. Treat the data as bytes. NUL and line noise arrive at the moment of
+//!    reset. Converting to `String` mangles non-UTF-8 bytes, so a line is a
+//!    `Vec<u8>` (same reason as in `trace`).
 //!
-//! 止めどきは**無音**で決める。アプリは `run` を抜けるとファームが idle に
-//! 入って何も出なくなるので、「N 秒無音なら終わり」が自然な区切りになる。
-//! Ctrl-C を待つだけだと自動化に使えない。
+//! The capture ends on silence. When the app returns from `run`, the firmware
+//! parks and nothing more arrives, so "N seconds without data" is the natural
+//! end. Waiting for Ctrl-C alone cannot be automated.
 //!
-//! identity（§3.8）の刻印は `info` が入ってから（2 段）。今はファームの
-//! バナー（`wasmicon rp2350`）とスロットの行（`slot <len> B crc32=<..>`）が
-//! シリアルに出るので、それが由来の記録になっている。
+//! `monitor` stamps nothing on the capture. The record of origin is the
+//! `wasmicon id ...` line the firmware prints after its banner
+//! (docs/app-workflow.md §3.8); `trace diff` warns when two logs disagree
+//! on it.
 
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
@@ -28,40 +32,40 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// 既定のボーレート（`ports/*` の UART0 と揃える）。
+/// Default baud rate (matches UART0 in `ports/*`).
 pub const DEFAULT_BAUD: u32 = 115_200;
 
-/// 既定の無音の長さ。これだけ何も来なければ終わり。
+/// Default silence that ends the capture.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(3);
 
 pub struct Options {
-    /// `--port`。`None` なら `/dev/cu.usb*` から選ぶ。
+    /// `--port`. `None` picks from `/dev/cu.usb*`.
     pub port: Option<PathBuf>,
     pub baud: u32,
-    /// `-o`。標準出力に出すのとは別に、ファイルにも書く。
+    /// `-o`. Also written to this file, besides stdout.
     pub out: Option<PathBuf>,
-    /// 無音で終わる長さ。`None` なら終わらない（Ctrl-C で止める）。
+    /// Silence that ends the capture. `None` never ends (stop with Ctrl-C).
     pub idle: Option<Duration>,
-    /// 全体の上限。`None` なら無し。
+    /// Overall limit. `None` = none.
     pub timeout: Option<Duration>,
 }
 
-/// 取り込みの結果。
+/// Result of a capture.
 pub struct Stats {
     pub bytes: usize,
-    /// `>` / `<` で始まる行（abi-spec §9 のトレース行）。
+    /// Lines starting with `>` / `<` (trace lines, docs/abi-spec.md §9).
     pub trace_lines: usize,
-    /// 止まった理由。
+    /// Why it stopped.
     pub stopped: Stopped,
 }
 
 #[derive(PartialEq, Eq)]
 pub enum Stopped {
-    /// 無音が続いた（アプリが終わってファームが idle に入った形）。
+    /// Silence (the app finished and the firmware parked).
     Idle,
-    /// 上限に達した。
+    /// The overall limit was reached.
     Timeout,
-    /// 相手が閉じた（USB が抜けた）。
+    /// The other end closed (USB unplugged).
     Closed,
 }
 
@@ -69,14 +73,14 @@ impl Stopped {
     #[must_use]
     pub fn reason(&self) -> &'static str {
         match self {
-            Stopped::Idle => "無音になった",
-            Stopped::Timeout => "上限に達した",
-            Stopped::Closed => "ポートが閉じた（USB が抜けた）",
+            Stopped::Idle => "went silent",
+            Stopped::Timeout => "hit the time limit",
+            Stopped::Closed => "port closed (USB unplugged)",
         }
     }
 }
 
-/// 開いたシリアル。**`stty` を当てたあとの状態**。
+/// An open serial port, after `stty` has been applied.
 pub struct Session {
     port: PathBuf,
     file: std::fs::File,
@@ -89,10 +93,11 @@ impl Session {
     }
 }
 
-/// 候補になるシリアルの口を挙げる。
+/// Lists the candidate serial ports.
 ///
-/// **`usbserial` を決め打ちしない。** ブリッジの型番で名前が変わる
-/// （手元の ESP32-S3 は CH343 で `usbmodem` になる。`docs/TODO.md` §1.1）。
+/// Not hard-coded to `usbserial`: the name depends on the bridge chip (the
+/// ESP32-S3 at hand has a CH343 and shows up as `usbmodem`;
+/// docs/TODO.md §1.1).
 #[must_use]
 pub fn ports() -> Vec<PathBuf> {
     let Ok(dir) = std::fs::read_dir("/dev") else {
@@ -111,35 +116,36 @@ pub fn ports() -> Vec<PathBuf> {
     found
 }
 
-/// 口の名前の頭。
+/// Prefixes of port names.
 ///
-/// **macOS だけにしない。** `open` は Linux の `stty -F` の枝を持っている
-/// のに、ここが `cu.usb` だけだと Linux では候補が 0 件になり、
-/// 「USB-シリアル変換を挿して」と配線のせいにしてしまう（あちらは
-/// `ttyUSB*` / `ttyACM*`）。
+/// Not macOS only. `open` has a branch for Linux's `stty -F`, and with only
+/// `cu.usb` here Linux would find zero candidates and blame the wiring
+/// ("plug in a USB-serial adapter"); there the names are `ttyUSB*` /
+/// `ttyACM*`.
 const PREFIXES: &[&str] = &["cu.usb", "ttyUSB", "ttyACM"];
 
-/// どの口を使うか決める。
+/// Decides which port to use.
 ///
-/// 候補が 1 つならそれ。複数あって指定が無ければ**選ばない**
-/// （間違った口を黙って開くと「何も出ない」になって配線を疑い始める）。
+/// One candidate is used as is. With several and no explicit choice, none is
+/// picked (opening the wrong port silently produces "nothing comes out" and
+/// sends people to check the wiring).
 ///
 /// # Errors
-/// 候補が無い、または複数あって指定が無いとき。
+/// When there is no candidate, or several and no explicit choice.
 pub fn choose(candidates: &[PathBuf], explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p.to_path_buf());
     }
     match candidates {
         [] => bail!(
-            "シリアルの口が見つからない（/dev/cu.usb* が無い）。\n  \
-             USB-シリアル変換を挿して、ボードの TX を繋ぐこと"
+            "no serial port found (no /dev/cu.usb*).\n  \
+             plug in a USB-serial adapter and connect the board's TX"
         ),
         [one] => Ok(one.clone()),
         many => {
             let list: Vec<String> = many.iter().map(|p| p.display().to_string()).collect();
             bail!(
-                "シリアルの口が {} 個ある。--port で選ぶこと:\n  {}",
+                "{} serial ports found; pick one with --port:\n  {}",
                 many.len(),
                 list.join("\n  ")
             )
@@ -147,18 +153,18 @@ pub fn choose(candidates: &[PathBuf], explicit: Option<&Path>) -> Result<PathBuf
     }
 }
 
-/// 開いてボーレートを当てる。
+/// Opens the port and sets the baud rate.
 ///
-/// **順序が肝。** 先に開き、その handle を持ったまま `stty` を当てる
-/// （閉じると設定が戻る。このモジュールの罠 1）。
+/// The order matters: open first, then apply `stty` while holding the handle
+/// (closing resets the settings; item 1 in the module docs).
 ///
 /// # Errors
-/// 開けない、`stty` が無い・失敗したとき。
+/// When the port cannot be opened, or `stty` is missing or fails.
 pub fn open(port: &Path, baud: u32) -> Result<Session> {
     let file =
-        std::fs::File::open(port).with_context(|| format!("{} を開けない", port.display()))?;
+        std::fs::File::open(port).with_context(|| format!("cannot open `{}`", port.display()))?;
 
-    // ここで handle は開いたまま。`stty` は同じデバイスに当てる。
+    // The handle stays open here. `stty` is applied to the same device.
     let flag = if cfg!(target_os = "linux") {
         "-F"
     } else {
@@ -173,9 +179,9 @@ pub fn open(port: &Path, baud: u32) -> Result<Session> {
             "-echo",
         ])
         .status()
-        .context("stty を起動できない")?;
+        .context("cannot start stty")?;
     if !status.success() {
-        bail!("{} に {baud} baud を設定できなかった", port.display());
+        bail!("cannot set `{}` to {baud} baud", port.display());
     }
     Ok(Session {
         port: port.to_path_buf(),
@@ -183,20 +189,22 @@ pub fn open(port: &Path, baud: u32) -> Result<Session> {
     })
 }
 
-/// 読み続けて `sink` に流す。
+/// Reads continuously and forwards to `sink`.
 ///
-/// 行は**バイト列のまま**扱う（罠 3）。`>` / `<` で始まる行だけ数える。
+/// Lines are kept as bytes (item 3 in the module docs). Only lines starting
+/// with `>` / `<` are counted.
 ///
 /// # Errors
-/// 書き出しに失敗したとき。
+/// When writing fails.
 pub fn stream<R: Read + Send + 'static>(
     src: R,
     sink: &mut dyn Write,
     idle: Option<Duration>,
     timeout: Option<Duration>,
 ) -> Result<Stats> {
-    // 読みに時限を付けるため、別スレッドで読んでチャネルで受ける
-    // （シリアルの read はブロックするので、タイマだけでは抜けられない）。
+    // Reading happens on another thread and arrives through a channel so
+    // that it can be timed (a serial read blocks, so a timer alone cannot
+    // break out of it).
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut src = src;
@@ -226,7 +234,8 @@ pub fn stream<R: Read + Send + 'static>(
             stopped = Stopped::Timeout;
             break;
         }
-        // 無音の判定に使う待ち時間。上限があるなら残りで切る。
+        // The wait used to detect silence, capped by what is left of the
+        // overall limit.
         let wait = idle.unwrap_or(Duration::from_secs(3600));
         let wait = match timeout {
             Some(limit) => wait.min(limit.saturating_sub(started.elapsed())),
@@ -235,18 +244,18 @@ pub fn stream<R: Read + Send + 'static>(
         match rx.recv_timeout(wait) {
             Ok(chunk) => {
                 bytes += chunk.len();
-                sink.write_all(&chunk).context("書き出せない")?;
-                sink.flush().context("書き出せない")?;
+                sink.write_all(&chunk).context("cannot write the capture")?;
+                sink.flush().context("cannot write the capture")?;
                 trace_lines += count_trace_lines(&chunk, &mut partial);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // **上限で切れたのを「無音」と言わない。** 待ち時間は上限の
-                // 残りで詰めてあるので、`recv_timeout` の時間切れだけでは
-                // どちらか分からない。先に上限を見る。これを見ないと、
-                // 流れている最中に打ち切ったログが「無音になった」と出て
-                // **途中で切れたものがきれいに終わったように見える**
-                // （`--idle` は既定で入っているので、`Timeout` が事実上
-                // 出なくなってもいた）。
+                // Hitting the overall limit must not be reported as silence.
+                // The wait is capped by what is left of the limit, so a
+                // `recv_timeout` expiry alone does not say which one it was.
+                // The limit is checked first. Otherwise a capture cut off
+                // mid-stream reports "went silent" and looks like a clean
+                // end (and since `--idle` is on by default, `Timeout` was in
+                // practice never reported).
                 if timeout.is_some_and(|limit| started.elapsed() >= limit) {
                     stopped = Stopped::Timeout;
                     break;
@@ -255,7 +264,7 @@ pub fn stream<R: Read + Send + 'static>(
                     stopped = Stopped::Idle;
                     break;
                 }
-                // 無音で終わらない設定。上限の判定に戻る。
+                // Silence does not end this capture. Back to the limit check.
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 stopped = Stopped::Closed;
@@ -271,12 +280,12 @@ pub fn stream<R: Read + Send + 'static>(
     })
 }
 
-/// チャンクをまたぐ行を `partial` で繋ぎながら、トレース行を数える。
+/// Counts trace lines, joining lines that span chunks through `partial`.
 fn count_trace_lines(chunk: &[u8], partial: &mut Vec<u8>) -> usize {
     let mut n = 0;
     for b in chunk {
         if *b == b'\n' {
-            // CR と NUL は落とす（`trace::normalize` と同じ規則）。
+            // CR and NUL are dropped (same rule as `trace::normalize`).
             let line: Vec<u8> = partial
                 .iter()
                 .copied()
@@ -293,31 +302,31 @@ fn count_trace_lines(chunk: &[u8], partial: &mut Vec<u8>) -> usize {
     n
 }
 
-/// 取り込む。
+/// Captures.
 ///
 /// # Errors
-/// 口が決まらない、開けない、書き出せないとき。
+/// When no port can be chosen or opened, or writing fails.
 pub fn run(opts: &Options) -> Result<bool> {
     let port = choose(&ports(), opts.port.as_deref())?;
     let session = open(&port, opts.baud)?;
     eprintln!(
-        "{} を {} baud で開いた。ボードをリセットすると出力が始まる",
+        "opened {} at {} baud; reset the board to start the output",
         session.port().display(),
         opts.baud
     );
     capture(session, opts)
 }
 
-/// 開いてある口から取り込む。
+/// Captures from an already open port.
 ///
-/// `deploy --monitor` は**リセットの前に開く**必要があるので、開く処理と
-/// 分けてある（罠 2）。
+/// `deploy --monitor` must open the port before the reset, so opening is
+/// separate from capturing (item 2 in the module docs).
 ///
 /// # Errors
-/// 書き出せないとき。
+/// When writing fails.
 pub fn capture(session: Session, opts: &Options) -> Result<bool> {
     if let Some(idle) = opts.idle {
-        eprintln!("（{} 秒無音になったら終わる）", idle.as_secs());
+        eprintln!("(stops after {} s of silence)", idle.as_secs());
     }
 
     let mut sink = Sink::new(opts.out.as_deref())?;
@@ -326,48 +335,49 @@ pub fn capture(session: Session, opts: &Options) -> Result<bool> {
     report(&stats)
 }
 
-/// 口を開く道具に任せて、その標準出力から取り込む。
+/// Lets a tool open the port and captures from that tool's stdout.
 ///
-/// **ESP32-S3 のためにある。** あのボードは書き込み・リセットとトレースが
-/// 同じ口で、リセットは DTR/RTS を当てないとできない（`monitor` は `stty` しか
-/// 当てないので自分ではリセットできない）。両方できる道具
-/// （`espflash monitor`）に口ごと任せて、出てきたものをここで数える
-/// （`docs/verification-report.md` §10）。
+/// This exists for ESP32-S3. That board flashes, resets and traces through
+/// one port, and the reset needs DTR/RTS (`monitor` only applies `stty`, so
+/// it cannot reset by itself). The whole port is handed to a tool that does
+/// both (`espflash monitor`) and its output is counted here
+/// (docs/verification-report.md §10).
 ///
 /// # Errors
-/// 道具を起動できない、書き出せないとき。
+/// When the tool cannot be started or writing fails.
 pub fn capture_cmd(cmd: &str, args: &[&str], opts: &Options) -> Result<bool> {
     if let Some(idle) = opts.idle {
-        eprintln!("（{} 秒無音になったら終わる）", idle.as_secs());
+        eprintln!("(stops after {} s of silence)", idle.as_secs());
     }
 
-    // stderr は渡す（道具の進捗や失敗の理由がそこに出る）。
+    // stderr is passed through (the tool's progress and failure reasons go
+    // there).
     let mut child = Command::new(cmd)
         .args(args)
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| {
-            format!("{cmd} を起動できない（`wasmicon doctor` で入っているか見ること）")
+            format!("cannot start {cmd} (run `wasmicon doctor` to see what is installed)")
         })?;
     let out = child
         .stdout
         .take()
-        .with_context(|| format!("{cmd} の標準出力を取れない"))?;
+        .with_context(|| format!("cannot take the stdout of {cmd}"))?;
 
     let mut sink = Sink::new(opts.out.as_deref())?;
     let stats = stream(out, &mut sink, opts.idle, opts.timeout)?;
     sink.finish()?;
 
-    // **先に「もう死んでいるか」を見る。** `espflash` が口を開けずに即
-    // 終了した場合（`Resource busy`、`--port` 違い）、`stream` は 0 バイトで
-    // `Disconnected` を見るだけなので、`report` は「トレースが 1 行も無い」
-    // として `Ok(false)` を返す。それだと**呼び出し側が「道具が失敗した」と
-    // 「走ったがトレースが無い」を区別できない**（`deploy` は `is_err()` で
-    // 「ボードがブートローダで止まっている」案内を出すので、まさにその場面で
-    // 出なくなる）。
+    // Check first whether the tool has already died. When `espflash` exits at
+    // once because it cannot open the port (`Resource busy`, wrong `--port`),
+    // `stream` sees 0 bytes and `Disconnected`, and `report` returns
+    // `Ok(false)` as "no trace line at all". The caller then cannot tell "the
+    // tool failed" from "it ran but produced no trace" (`deploy` uses
+    // `is_err()` to print the "board is parked in the bootloader" hint, which
+    // is exactly the case that would be lost).
     let failed = match child.try_wait() {
         Ok(Some(status)) => !status.success(),
-        // まだ生きている = 取り込みが終わったので止める。
+        // Still alive = the capture ended, so stop it.
         Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
@@ -376,33 +386,33 @@ pub fn capture_cmd(cmd: &str, args: &[&str], opts: &Options) -> Result<bool> {
         Err(_) => false,
     };
     if failed {
-        bail!("{cmd} が失敗した（上の出力を見ること）");
+        bail!("{cmd} failed (see the output above)");
     }
 
     report(&stats)
 }
 
-/// 取り込みの結果を出して、使える取り込みだったかを返す。
+/// Prints the capture result and returns whether the capture is usable.
 fn report(stats: &Stats) -> Result<bool> {
     eprintln!(
-        "{}: {} B / トレース {} 行",
+        "{}: {} B / {} trace lines",
         stats.stopped.reason(),
         stats.bytes,
         stats.trace_lines
     );
     if stats.trace_lines == 0 {
-        // 「何も取れていない」を黙って成功にしない（§9 で踏んだ形）。
+        // "Nothing captured" is never a silent success
+        // (docs/verification-report.md §9).
         eprintln!(
-            "  トレース行が 1 行も無い。ボーレートが違う（全部ノイズになる）、\n  \
-             口が違う、ボードをリセットしていない、trace feature を切って\n  \
-             焼いた、のどれかを疑うこと"
+            "  no trace line at all. Suspect one of: wrong baud rate (everything is noise),\n  \
+             wrong port, board not reset, or firmware flashed with the trace feature off"
         );
         return Ok(false);
     }
     Ok(true)
 }
 
-/// 標準出力と、指定があればファイルの両方に書く。
+/// Writes to stdout and, when given, to a file as well.
 struct Sink {
     file: Option<std::fs::File>,
 }
@@ -412,7 +422,8 @@ impl Sink {
         let file = match path {
             None => None,
             Some(p) => Some(
-                std::fs::File::create(p).with_context(|| format!("{} を書けない", p.display()))?,
+                std::fs::File::create(p)
+                    .with_context(|| format!("cannot write `{}`", p.display()))?,
             ),
         };
         Ok(Sink { file })
@@ -420,7 +431,7 @@ impl Sink {
 
     fn finish(&mut self) -> Result<()> {
         if let Some(f) = &mut self.file {
-            f.flush().context("書き出せない")?;
+            f.flush().context("cannot write the capture")?;
         }
         Ok(())
     }
@@ -451,48 +462,50 @@ mod tests {
     #[test]
     fn one_candidate_needs_no_choice() {
         let c = [PathBuf::from("/dev/cu.usbserial-1")];
-        assert_eq!(choose(&c, None).expect("選べる"), c[0]);
+        assert_eq!(choose(&c, None).expect("chooses"), c[0]);
     }
 
     #[test]
     fn several_candidates_are_not_guessed() {
-        // 間違った口を黙って開くと「何も出ない」になって配線を疑い始める。
+        // Opening the wrong port silently produces "nothing comes out" and
+        // sends people to check the wiring.
         let c = [
             PathBuf::from("/dev/cu.usbserial-1"),
             PathBuf::from("/dev/cu.usbmodem2"),
         ];
-        let e = choose(&c, None).expect_err("選ばない");
+        let e = choose(&c, None).expect_err("does not choose");
         let msg = format!("{e:#}");
         assert!(msg.contains("--port"), "{msg}");
-        assert!(msg.contains("usbmodem2"), "候補を並べる: {msg}");
+        assert!(msg.contains("usbmodem2"), "lists the candidates: {msg}");
     }
 
     #[test]
     fn an_explicit_port_wins() {
         let c = [PathBuf::from("/dev/cu.usbserial-1")];
         let want = PathBuf::from("/dev/cu.usbmodem9");
-        assert_eq!(choose(&c, Some(&want)).expect("選べる"), want);
+        assert_eq!(choose(&c, Some(&want)).expect("chooses"), want);
     }
 
     #[test]
     fn no_candidate_says_what_to_do() {
-        let e = choose(&[], None).expect_err("無い");
-        assert!(format!("{e:#}").contains("USB-シリアル変換"), "{e:#}");
+        let e = choose(&[], None).expect_err("none");
+        assert!(format!("{e:#}").contains("USB-serial adapter"), "{e:#}");
     }
 
     #[test]
     fn trace_lines_are_counted_across_chunks() {
-        // チャンクの切れ目が行をまたいでも数えられること。
+        // A line split across chunks is still counted.
         let mut partial = Vec::new();
         let mut n = count_trace_lines(b"wasmicon rp2350\n> a/b(1)\n< 0 ", &mut partial);
-        assert_eq!(n, 1, "バナーは数えない");
+        assert_eq!(n, 1, "the banner is not counted");
         n += count_trace_lines(b"[1]\n", &mut partial);
-        assert_eq!(n, 2, "チャンクをまたいだ行も数える");
+        assert_eq!(n, 2, "a line spanning chunks is counted");
     }
 
     #[test]
     fn noise_does_not_break_the_count() {
-        // リセットの瞬間の NUL と CR を落として判定する（§9 で踏んだ形）。
+        // NUL and CR from the moment of reset are dropped before counting
+        // (docs/verification-report.md §9).
         let mut partial = Vec::new();
         let n = count_trace_lines(b"\0\0> a/b(1)\r\n\0< 0\r\n", &mut partial);
         assert_eq!(n, 2);
@@ -500,13 +513,15 @@ mod tests {
 
     #[test]
     fn silence_ends_the_capture() {
-        // 無音で終わる（アプリが終わってファームが idle に入った形）。
+        // Silence ends it (the app finished and the firmware parked).
         let (_tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        // 何も来ないパイプの代わりに、空のまま閉じない Read を作る。
+        // A `Read` that stays empty and never closes, standing in for a pipe
+        // that sends nothing.
         struct Quiet(std::sync::mpsc::Receiver<Vec<u8>>);
         impl Read for Quiet {
             fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                // 送られてこないので永遠にブロックする（シリアルと同じ）。
+                // Nothing is ever sent, so this blocks forever (like a
+                // serial port).
                 match self.0.recv() {
                     Ok(_) | Err(_) => Ok(0),
                 }
@@ -519,7 +534,7 @@ mod tests {
             Some(Duration::from_millis(50)),
             Some(Duration::from_secs(5)),
         )
-        .expect("読める");
+        .expect("reads");
         assert!(stats.stopped == Stopped::Idle, "{}", stats.stopped.reason());
         assert_eq!(stats.bytes, 0);
     }
@@ -534,8 +549,8 @@ mod tests {
             Some(Duration::from_millis(50)),
             None,
         )
-        .expect("読める");
-        assert_eq!(out, data, "バイト列をそのまま流す");
+        .expect("reads");
+        assert_eq!(out, data, "bytes are forwarded unchanged");
         assert_eq!(stats.trace_lines, 2);
         assert_eq!(stats.bytes, data.len());
     }

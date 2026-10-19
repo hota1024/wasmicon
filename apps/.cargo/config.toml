@@ -1,29 +1,29 @@
-# ゲストのビルドフラグ（Wasmicon の契約。docs/app-workflow.md §4.4）。
+# Guest build flags: the Wasmicon contract (docs/app-workflow.md §4.4).
 #
-# **このファイルは `wasmicon new` が書き出すものと同一**で、一致は
-# `tools/wasmicon-cli/tests/flags.rs` が見る。真実は
-# `tools/wasmicon-cli/src/flags.rs` の `CARGO_CONFIG` にあるので、wasmicon の
-# リポジトリでここを手で変えるとテストが落ちる（コメント 1 文字でも落ちる。
-# それが狙い）。
+# This file is identical to what `wasmicon new` writes out, and
+# `tools/wasmicon-cli/tests/flags.rs` checks that it stays so. The source of
+# truth is `CARGO_CONFIG` in `tools/wasmicon-cli/src/flags.rs`; editing this
+# copy by hand inside the wasmicon repository fails that test (a one-character
+# change in a comment is enough, and that is the point).
 #
-# 値を変えると実機で静かに壊れる: reference-types が混ざれば
-# call_indirect のテーブル索引で弾かれ（abi-spec §6.1 の注）、
-# --initial-memory を増やすと RP2040 の 2 ページ上限を超える。
+# Changing a value breaks apps silently on hardware: with reference-types
+# enabled, call_indirect is rejected by its table index (docs/abi-spec.md §6.1),
+# and a larger --initial-memory exceeds the RP2040 two-page limit.
 #
-# cargo は実行したディレクトリから上に向かって .cargo/config.toml を探すので、
-# この設定はこのディレクトリの中で cargo を実行したときに効く。
+# cargo looks for .cargo/config.toml upward from the directory it runs in, so
+# these settings apply when cargo is run inside this directory.
 [build]
 target = "wasm32-unknown-unknown"
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-    # rustc 1.97 の wasm32 は reference-types をデフォルトで有効にする。
-    # 対応機能セット（docs/handoff.md §2-7）から外れるので明示的に切る。
-    # 他の 5 つ（bulk-memory / multivalue / mutable-globals /
-    # nontrapping-fptoint / sign-ext）は既定で有効かつ対応済み。
+    # rustc 1.97 enables reference-types on wasm32 by default. It is outside
+    # the supported feature set (docs/decisions.md D-07), so turn it off
+    # explicitly. The other five (bulk-memory / multivalue / mutable-globals /
+    # nontrapping-fptoint / sign-ext) are on by default and supported.
     "-Ctarget-feature=-reference-types",
-    # 線形メモリ 1 ページ（64 KiB）。RP2040 の 2 ページ上限に収める。
+    # One page (64 KiB) of linear memory, within the RP2040 two-page limit.
     "-Clink-arg=--initial-memory=65536",
-    # ゲストのシャドースタック。
+    # Guest shadow stack.
     "-Clink-arg=-zstack-size=8192",
 ]

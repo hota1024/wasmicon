@@ -1,77 +1,79 @@
-//! ゲストのビルドフラグの**単一の真実**（`docs/app-workflow.md` §4.4）。
+//! Source of truth for the guest build flags (docs/app-workflow.md §4.4).
 //!
-//! アプリの契約の実体は 2 つのファイル —— `.cargo/config.toml` と
-//! `asconfig.json` —— で、これが `apps/` と `wasmicon new` の雛形で
-//! **3 重化**する。食い違っても**ビルドは通る**ので、実機で
-//! 「call_indirect がテーブル索引で弾かれる」「RP2040 の 2 ページ上限を
-//! 超える」といった形で初めて出る。
+//! The app contract lives in two files, `.cargo/config.toml` and
+//! `asconfig.json`, and each exists three times: in `apps/`, in the
+//! `wasmicon new` scaffolds and here. A mismatch still builds; it shows up
+//! only on hardware ("call_indirect rejected by its table index", "over the
+//! RP2040 two-page limit").
 //!
-//! そこで**値の表ではなくファイルの中身そのもの**をここに置き、
-//! `wasmicon new` はこれを書き出すだけにした。`apps/` のファイルとの
-//! 一致は `tools/wasmicon-cli/tests/flags.rs` が**バイトで**見る
-//! （`wasmicon-gen --check` と同じ形。検査は既に CI にある `cargo test` に
-//! 乗るので、新しいジョブは要らない）。
+//! So this module holds the file contents themselves, not a table of values,
+//! and `wasmicon new` only writes them out. `tools/wasmicon-cli/tests/flags.rs`
+//! compares the copies in `apps/` byte for byte (the same shape as
+//! `wasmicon-gen --check`; the check rides on the `cargo test` job CI already
+//! has, so no new job is needed).
 //!
-//! **コメント 1 文字の差でも落ちる。** 緩めると「値は合っているがどちらが
-//! 真実か分からない」状態に戻るので、意図的にそうしてある。
+//! A one-character difference in a comment fails the test. Relaxing that would
+//! bring back "the values agree but nobody knows which copy is the truth", so
+//! it is strict on purpose.
 //!
-//! ここに入れないもの: `[profile.release]`（`opt-level = "z"` など）は
-//! サイズにしか効かず、食い違ってもアプリが**大きくなるだけ**で静かには
-//! 壊れない。§4.4 が名指しする 2 つに絞ってある。
+//! Not covered: `[profile.release]` (`opt-level = "z"` and the like) only
+//! affects size. A mismatch there makes the app bigger but does not break it
+//! silently. Only the two files docs/app-workflow.md §4.4 names are covered.
 
-/// 線形メモリの初期サイズ（バイト）。**最も厳しいボードの上限に収める**
-/// （`ports/rp2040` は 2 ページ）。`tests/flags.rs` が
-/// `profile::PROFILES` と突き合わせる。
+/// Initial size of linear memory in bytes. Must fit the tightest board
+/// (`ports/rp2040` allows 2 pages). `tests/flags.rs` cross-checks it against
+/// `profile::PROFILES`.
 pub const INITIAL_MEMORY: u32 = 65_536;
 
-/// ゲストのシャドースタック（バイト）。
+/// Guest shadow stack in bytes.
 pub const STACK_SIZE: u32 = 8_192;
 
-/// Wasm の 1 ページ。
+/// One Wasm page.
 pub const PAGE_SIZE: u32 = 65_536;
 
-/// AssemblyScript 側の初期メモリ（**ページ数**で指定する）。
+/// Initial memory on the AssemblyScript side, in pages.
 ///
-/// `INITIAL_MEMORY` とページ単位で一致していないと、**同じアプリを
-/// Rust 版と AS 版で書いたときに線形メモリの初期サイズが変わる**。
-/// §4.4 が本当に気にしているのはここ。
+/// If this does not equal `INITIAL_MEMORY` in pages, the Rust and AS versions
+/// of the same app get different initial linear memory sizes. That is what
+/// docs/app-workflow.md §4.4 is really about.
 pub const AS_INITIAL_MEMORY_PAGES: u32 = INITIAL_MEMORY / PAGE_SIZE;
 
-/// `.cargo/config.toml` の中身。`apps/.cargo/config.toml` と**バイト一致**。
-pub const CARGO_CONFIG: &str = r#"# ゲストのビルドフラグ（Wasmicon の契約。docs/app-workflow.md §4.4）。
+/// Contents of `.cargo/config.toml`. Byte-identical to `apps/.cargo/config.toml`.
+pub const CARGO_CONFIG: &str = r#"# Guest build flags: the Wasmicon contract (docs/app-workflow.md §4.4).
 #
-# **このファイルは `wasmicon new` が書き出すものと同一**で、一致は
-# `tools/wasmicon-cli/tests/flags.rs` が見る。真実は
-# `tools/wasmicon-cli/src/flags.rs` の `CARGO_CONFIG` にあるので、wasmicon の
-# リポジトリでここを手で変えるとテストが落ちる（コメント 1 文字でも落ちる。
-# それが狙い）。
+# This file is identical to what `wasmicon new` writes out, and
+# `tools/wasmicon-cli/tests/flags.rs` checks that it stays so. The source of
+# truth is `CARGO_CONFIG` in `tools/wasmicon-cli/src/flags.rs`; editing this
+# copy by hand inside the wasmicon repository fails that test (a one-character
+# change in a comment is enough, and that is the point).
 #
-# 値を変えると実機で静かに壊れる: reference-types が混ざれば
-# call_indirect のテーブル索引で弾かれ（abi-spec §6.1 の注）、
-# --initial-memory を増やすと RP2040 の 2 ページ上限を超える。
+# Changing a value breaks apps silently on hardware: with reference-types
+# enabled, call_indirect is rejected by its table index (docs/abi-spec.md §6.1),
+# and a larger --initial-memory exceeds the RP2040 two-page limit.
 #
-# cargo は実行したディレクトリから上に向かって .cargo/config.toml を探すので、
-# この設定はこのディレクトリの中で cargo を実行したときに効く。
+# cargo looks for .cargo/config.toml upward from the directory it runs in, so
+# these settings apply when cargo is run inside this directory.
 [build]
 target = "wasm32-unknown-unknown"
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-    # rustc 1.97 の wasm32 は reference-types をデフォルトで有効にする。
-    # 対応機能セット（docs/handoff.md §2-7）から外れるので明示的に切る。
-    # 他の 5 つ（bulk-memory / multivalue / mutable-globals /
-    # nontrapping-fptoint / sign-ext）は既定で有効かつ対応済み。
+    # rustc 1.97 enables reference-types on wasm32 by default. It is outside
+    # the supported feature set (docs/decisions.md D-07), so turn it off
+    # explicitly. The other five (bulk-memory / multivalue / mutable-globals /
+    # nontrapping-fptoint / sign-ext) are on by default and supported.
     "-Ctarget-feature=-reference-types",
-    # 線形メモリ 1 ページ（64 KiB）。RP2040 の 2 ページ上限に収める。
+    # One page (64 KiB) of linear memory, within the RP2040 two-page limit.
     "-Clink-arg=--initial-memory=65536",
-    # ゲストのシャドースタック。
+    # Guest shadow stack.
     "-Clink-arg=-zstack-size=8192",
 ]
 "#;
 
-/// `asconfig.json` の中身。`outFile` だけがプロジェクトごとに変わる。
+/// Contents of `asconfig.json`. Only `outFile` differs between projects.
 ///
-/// `out_file` は `asconfig.json` から見た相対パス（例: `build/blink_as.wasm`）。
+/// `out_file` is relative to `asconfig.json` (for example
+/// `build/blink_as.wasm`).
 #[must_use]
 pub fn asconfig(out_file: &str) -> String {
     ASCONFIG
@@ -79,11 +81,11 @@ pub fn asconfig(out_file: &str) -> String {
         .replace("{PAGES}", &AS_INITIAL_MEMORY_PAGES.to_string())
 }
 
-/// `asconfig` の雛形。`{OUT_FILE}` と `{PAGES}` を差し替える。
+/// Template for `asconfig`. `{OUT_FILE}` and `{PAGES}` are substituted.
 ///
-/// JSON はコメントを持てないので、「ここが真実」という案内を
-/// ファイル自身に書けない。`apps/*-as/asconfig.json` を手で変えると
-/// `tests/flags.rs` が落ちることで気付く形にしてある。
+/// JSON has no comments, so the file cannot say where its source of truth
+/// is. Editing `apps/*-as/asconfig.json` by hand fails `tests/flags.rs`,
+/// which is how the mismatch is noticed.
 const ASCONFIG: &str = r#"{
   "targets": {
     "release": {

@@ -1,14 +1,15 @@
-//! ゲストのビルドフラグが 1 箇所にしか無いことを固定する
-//! （`docs/app-workflow.md` §4.4）。
+//! Locks in that the guest build flags exist in exactly one place
+//! (docs/app-workflow.md §4.4).
 //!
-//! **`wasmicon-gen --check` と同じ形**: 真実（`flags.rs`）が書き出すものと
-//! リポジトリの実物を**バイトで**突き合わせる。コメント 1 文字でも落ちる。
+//! The same shape as `wasmicon-gen --check`: what the source of truth
+//! (`flags.rs`) writes out is compared byte for byte with the files in the
+//! repository. A one-character difference in a comment fails.
 //!
-//! これが無いと、`apps/` を直したのに `wasmicon new` の雛形が古いまま、
-//! という形で静かに壊れる（ビルドは通り、実機で初めて出る）。
+//! Without this, fixing `apps/` while the `wasmicon new` scaffold stays old
+//! breaks silently (the build passes; it shows up only on hardware).
 //!
-//! 検査は `cargo test` に乗るので CI のジョブは要らない
-//! （`.github/workflows/ci.yml` の `- run: cargo test`）。
+//! The check rides on `cargo test`, so CI needs no extra job
+//! (`- run: cargo test` in `.github/workflows/ci.yml`).
 
 use std::path::{Path, PathBuf};
 
@@ -19,12 +20,12 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
 fn read(rel: &str) -> String {
     let p = repo_root().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{} を読めない: {e}", p.display()))
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
 }
 
 #[test]
@@ -32,9 +33,9 @@ fn apps_cargo_config_is_the_canonical_one() {
     assert_eq!(
         read("apps/.cargo/config.toml"),
         flags::CARGO_CONFIG,
-        "apps/.cargo/config.toml が tools/wasmicon-cli/src/flags.rs の \
-         CARGO_CONFIG と違う。**真実は flags.rs の側**（wasmicon new が \
-         同じものを書き出す）。apps/ を直したいなら flags.rs を直すこと"
+        "apps/.cargo/config.toml differs from CARGO_CONFIG in \
+         tools/wasmicon-cli/src/flags.rs. flags.rs is the source of truth \
+         (wasmicon new writes the same bytes). To change apps/, change flags.rs"
     );
 }
 
@@ -42,8 +43,8 @@ fn apps_cargo_config_is_the_canonical_one() {
 fn every_asconfig_is_the_canonical_one() {
     let apps = repo_root().join("apps");
     let mut seen = 0;
-    for entry in std::fs::read_dir(&apps).expect("apps/ を読めない") {
-        let dir = entry.expect("apps/ の要素を読めない").path();
+    for entry in std::fs::read_dir(&apps).expect("cannot read apps/") {
+        let dir = entry.expect("cannot read an entry of apps/").path();
         let conf = dir.join("asconfig.json");
         if !conf.is_file() {
             continue;
@@ -51,79 +52,86 @@ fn every_asconfig_is_the_canonical_one() {
         let name = dir
             .file_name()
             .and_then(|s| s.to_str())
-            .expect("ディレクトリ名")
+            .expect("directory name")
             .to_string();
-        // `outFile` だけがプロジェクトごとに変わる。ディレクトリ名から導く
-        // ので、名前と中身の食い違いもここで落ちる。
+        // Only `outFile` differs between projects. It is derived from the
+        // directory name, so a name / content mismatch fails here too.
         let want = flags::asconfig(&format!("build/{}.wasm", name.replace('-', "_")));
-        let got = std::fs::read_to_string(&conf).expect("asconfig.json を読めない");
-        assert_eq!(got, want, "{}/asconfig.json が flags.rs の雛形と違う", name);
+        let got = std::fs::read_to_string(&conf).expect("cannot read asconfig.json");
+        assert_eq!(
+            got, want,
+            "{}/asconfig.json differs from the flags.rs template",
+            name
+        );
         seen += 1;
     }
-    // **0 件を黙って成功にしない**（apps/ の構成が変わって拾えなくなった
-    // のに「一致した」と言う形が最悪）。
-    assert!(seen >= 2, "asconfig.json が {seen} 件しか見つからない");
+    // Zero files is not a silent success (the worst case is "matched" after
+    // a change in apps/ layout stopped the files from being found).
+    assert!(seen >= 2, "only {seen} asconfig.json found");
 }
 
 #[test]
 fn the_two_languages_ask_for_the_same_initial_memory() {
-    // **§4.4 が本当に気にしているのはここ。** Rust 版と AS 版で初期メモリが
-    // 違うと、同じアプリのはずなのにボードの上限の当たり方が変わる。
+    // This is what docs/app-workflow.md §4.4 is really about. If the Rust
+    // and AS versions differ in initial memory, the same app meets the
+    // board limits differently.
     assert_eq!(
         flags::AS_INITIAL_MEMORY_PAGES * flags::PAGE_SIZE,
         flags::INITIAL_MEMORY,
-        "AS 側のページ数と Rust 側のバイト数が食い違っている"
+        "the AS page count and the Rust byte count disagree"
     );
-    // 文字列の中の数値が定数と一致していること（片方だけ直す事故を防ぐ）。
+    // The numbers inside the strings match the constants (so one cannot be
+    // changed without the other).
     assert!(
         flags::CARGO_CONFIG.contains(&format!("--initial-memory={}", flags::INITIAL_MEMORY)),
-        "CARGO_CONFIG の --initial-memory が INITIAL_MEMORY と違う"
+        "--initial-memory in CARGO_CONFIG differs from INITIAL_MEMORY"
     );
     assert!(
         flags::CARGO_CONFIG.contains(&format!("-zstack-size={}", flags::STACK_SIZE)),
-        "CARGO_CONFIG の -zstack-size が STACK_SIZE と違う"
+        "-zstack-size in CARGO_CONFIG differs from STACK_SIZE"
     );
     assert!(
         flags::asconfig("x.wasm").contains(&format!(
             "\"initialMemory\": {}",
             flags::AS_INITIAL_MEMORY_PAGES
         )),
-        "asconfig の initialMemory が定数と違う"
+        "initialMemory in asconfig differs from the constant"
     );
 }
 
 #[test]
 fn the_initial_memory_fits_the_tightest_board() {
-    // 一番きついボード（`ports/rp2040` は 2 ページ）に収まっていること。
-    // 上げるとそのボードで instantiate が落ちる（`docs/TODO.md` §5）。
-    // **`slot.is_some()` で絞らない。** `slot: None` は「置き場所がまだ
-    // 決まっていない」の意味（ESP32-S3 が 2026-10-04 までその状態だった）
-    // なので、新しいポートがその状態で入ると**上限の検査から静かに外れて
-    // テストは green のまま**になる。「host でない」で絞る
-    // （`tests/profiles.rs` と同じ）。
+    // Fits the tightest board (`ports/rp2040` allows 2 pages). Raising it
+    // makes instantiate fail there (docs/TODO.md §5).
+    // Do not filter on `slot.is_some()`: `slot: None` means "slot location
+    // not decided yet" (ESP32-S3 was in that state at first), so a new port
+    // in that state would silently drop out of the limit check while the
+    // test stays green. Filter on "not host" instead (as `tests/profiles.rs`
+    // does).
     let tightest = profile::PROFILES
         .iter()
-        .filter(|p| p.name != "host") // host は上限が緩い
+        .filter(|p| p.name != "host") // the host limit is permissive
         .map(|p| p.config.max_memory_pages)
         .min()
-        .expect("プロファイルが無い");
+        .expect("no profiles");
     let pages = flags::INITIAL_MEMORY / flags::PAGE_SIZE;
     assert!(
         pages <= tightest,
-        "初期 {pages} ページは一番きついボードの {tightest} ページを超える"
+        "an initial {pages} pages exceeds the tightest board's {tightest} pages"
     );
 }
 
 #[test]
 fn reference_types_stays_off() {
-    // 混ざると `call_indirect` のテーブル索引で弾かれる（abi-spec §6.1 の注）。
-    // 既定で有効になる機能なので、**明示的に切ったままである**ことを見る。
+    // With it on, `call_indirect` is rejected by its table index
+    // (docs/abi-spec.md §6.1). The feature is on by default, so check that
+    // it is still turned off explicitly.
     assert!(
         flags::CARGO_CONFIG.contains("-Ctarget-feature=-reference-types"),
-        "reference-types を切る指定が無い"
+        "reference-types is not turned off"
     );
     assert!(
         flags::asconfig("x.wasm").contains("\"reference-types\""),
-        "asconfig の disable に reference-types が無い"
+        "reference-types is not in the asconfig disable list"
     );
 }

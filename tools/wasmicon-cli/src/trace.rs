@@ -1,30 +1,31 @@
-//! `wasmicon trace diff` — 2 つのシリアル出力からトレースを取り出して
-//! 突き合わせる（`docs/handoff.md` §5 Phase 6 の (2)）。
-//! `wasmicon trace replay` — 実機のトレースから I2C の応答を抜き出して、
-//! `run --i2c-replay` が読む形にする（`verify/sht4x-replay.txt` の差し替え用）。
+//! `wasmicon trace diff`: extracts the traces from two serial captures and
+//! compares them (the two-board determinism check, docs/decisions.md D-10).
+//! `wasmicon trace replay`: extracts the I2C responses from a hardware trace
+//! in the form `run --i2c-replay` reads (to replace `verify/sht4x-replay.txt`).
 //!
-//! 正規化の規則は `verify/diff-traces.sh` と**同一**。あちらは CI が
-//! `--self-test` で回し続けるので、**両者が同じ判定を出すことを
-//! `tests/trace.rs` が突き合わせる**（`tools/check-sigs.sh` が
-//! `wit2sig.py` と突き合わせているのと同じ形）。片方だけ直すと落ちる。
+//! The normalization rules are identical to `verify/diff-traces.sh`. CI keeps
+//! running that script's `--self-test`, and `tests/trace.rs` checks that the
+//! two give the same verdict (the same shape as `tools/check-sigs.sh`
+//! cross-checking `wit2sig.py`). Fixing one side alone fails.
 //!
-//! 規則は 2 つだけ:
+//! There are only two rules:
 //!
-//! - **CR と NUL を落とす。** 実機のシリアルはリセットや電源投入の瞬間に
-//!   ライン・ノイズで NUL を吐く。落とさないと 2026-09-26 に踏んだ形
-//!   （`grep` がバイナリ判定して 1 行しか返さない）になる
-//! - **`>` か `<` で始まる行だけ残す。** バナーやゲストの `[wasm] ...` は
-//!   ボードごとに違うので捨てる。捨ててよいのは、同じ内容が `log` の
-//!   host call としてトレースに出ているため
+//! - Drop CR and NUL. A board's serial port emits NUL as line noise at reset
+//!   or power-on. Left in, `grep` treats the file as binary and returns one
+//!   line (docs/verification-report.md §8).
+//! - Keep only lines starting with `>` or `<`. Banners and the guest's
+//!   `[wasm] ...` lines differ per board, so they are dropped. That is safe
+//!   because the same content appears in the trace as the `log` host call.
 //!
-//! **ファームの名乗り（`wasmicon id …`。`docs/app-workflow.md` §3.8）は比べないが、
-//! 2 つのログで食い違えば警告する。** 一致・不一致の判定は変えない
-//! （`verify/diff-traces.sh` と同じ判定を保つ）。「同じ `.wasm` なのにトレースが違う」
-//! の原因がファームの差かどうかを、ここで先に言う。
+//! The firmware identity (`wasmicon id ...`; docs/app-workflow.md §3.8) is
+//! not compared, but a warning is printed when the two logs disagree. The
+//! match / mismatch verdict does not change (it stays the same as
+//! `verify/diff-traces.sh`). This says up front whether "same `.wasm`,
+//! different trace" might come from different firmware.
 //!
-//! **トレース行が 1 行も無ければ失敗にする。** 空同士は文字列として一致して
-//! しまうが、それは「一致した」ではなく「何も比較していない」。ここは完了条件の
-//! 判定に使うので、黙って成功を返すのが最悪の壊れ方になる。
+//! Zero trace lines is a failure. Two empty traces compare equal as strings,
+//! but that is "nothing was compared", not "identical". This verdict is used
+//! as a completion criterion, so a silent success is the worst way to break.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -36,24 +37,24 @@ pub struct Options {
 
 pub struct ReplayOptions {
     pub log: PathBuf,
-    /// 書き出し先。無ければ標準出力。
+    /// Output path. `None` = stdout.
     pub out: Option<PathBuf>,
 }
 
-/// 正規化したトレース。
+/// A normalized trace.
 ///
-/// 行は **`Vec<u8>` で持つ**。`String` に落とすと UTF-8 でないバイトが
-/// どれも `U+FFFD` に潰れて、**違うノイズが混ざった 2 本を「一致」と
-/// 言ってしまう**（シリアルがノイズを吐くことはこのコードの前提そのもので、
-/// だから NUL を落としている）。表示のときだけ `from_utf8_lossy` する。
+/// Lines are `Vec<u8>`. Converting to `String` turns every non-UTF-8 byte
+/// into `U+FFFD`, so two captures with different noise would compare as
+/// identical (noise on the serial port is the premise of this code; that is
+/// why NUL is dropped). `from_utf8_lossy` is used only for display.
 pub struct Trace {
     pub lines: Vec<Vec<u8>>,
 }
 
-/// シリアル出力からトレース行だけを取り出す。
+/// Extracts the trace lines from a serial capture.
 ///
-/// `verify/diff-traces.sh` の `normalize()` と同じ: CR と NUL を落として
-/// `>` / `<` で始まる行を残す。
+/// Same as `normalize()` in `verify/diff-traces.sh`: drop CR and NUL, keep
+/// lines starting with `>` / `<`.
 #[must_use]
 pub fn normalize(bytes: &[u8]) -> Trace {
     let cleaned: Vec<u8> = bytes
@@ -69,7 +70,8 @@ pub fn normalize(bytes: &[u8]) -> Trace {
     Trace { lines }
 }
 
-/// 最初に食い違う位置（0 始まり）。同じなら `None`。
+/// The first position (0-based) where the traces differ. `None` when
+/// identical.
 #[must_use]
 pub fn first_divergence(a: &Trace, b: &Trace) -> Option<usize> {
     for (i, (x, y)) in a.lines.iter().zip(&b.lines).enumerate() {
@@ -84,10 +86,10 @@ pub fn first_divergence(a: &Trace, b: &Trace) -> Option<usize> {
     }
 }
 
-/// 突き合わせる。一致すれば `true`。
+/// Compares two captures. `true` when the traces match.
 ///
 /// # Errors
-/// ファイルが読めないか、どちらかからトレース行が 1 行も取れないとき。
+/// When a file cannot be read, or one of them yields no trace line.
 pub fn diff(opts: &Options) -> Result<bool> {
     let a = read(&opts.a)?;
     let b = read(&opts.b)?;
@@ -96,7 +98,7 @@ pub fn diff(opts: &Options) -> Result<bool> {
     match first_divergence(&a, &b) {
         None => {
             println!(
-                "一致: {} 行（{} と {}）",
+                "match: {} lines ({} and {})",
                 a.lines.len(),
                 opts.a.display(),
                 opts.b.display()
@@ -105,14 +107,15 @@ pub fn diff(opts: &Options) -> Result<bool> {
         }
         Some(i) => {
             eprintln!(
-                "不一致: {} は {} 行、{} は {} 行",
+                "mismatch: {} has {} lines, {} has {} lines",
                 opts.a.display(),
                 a.lines.len(),
                 opts.b.display(),
                 b.lines.len()
             );
-            // トレースは追記しかされないので、最初の食い違いが原因に最も近い。
-            eprintln!("  最初の食い違い: {} 行目", i + 1);
+            // A trace is append-only, so the first divergence is closest to
+            // the cause.
+            eprintln!("  first divergence: line {}", i + 1);
             eprintln!("    {}  {}", short(&opts.a), at(&a, i));
             eprintln!("    {}  {}", short(&opts.b), at(&b, i));
             Ok(false)
@@ -120,10 +123,11 @@ pub fn diff(opts: &Options) -> Result<bool> {
     }
 }
 
-/// ログの中のファームの名乗り（最後に出たもの）。無ければ `None`。
+/// The firmware identity in a log (the last one). `None` when there is none.
 ///
-/// 1 本のログに起動が何回か入ることがある（書き込み後の自動リセットと RST など）
-/// ので、トレースに近い最後のものを取る。host の `run --trace` には無い。
+/// One log can contain several boots (the automatic reset after flashing,
+/// then RST), so the last one, closest to the trace, is taken. The host's
+/// `run --trace` has none.
 #[must_use]
 pub fn firmware_identity(bytes: &[u8]) -> Option<String> {
     let prefix = wasmicon_port::identity::PREFIX.as_bytes();
@@ -140,21 +144,24 @@ pub fn firmware_identity(bytes: &[u8]) -> Option<String> {
         .map(|l| String::from_utf8_lossy(&l).into_owned())
 }
 
-/// 2 つのログのファームの名乗りが食い違えば警告する（判定は変えない）。
+/// Warns when the two logs name different firmware (the verdict is unchanged).
 fn warn_on_firmware_mismatch(opts: &Options) -> Result<()> {
     let ida = firmware_identity(&std::fs::read(&opts.a)?);
     let idb = firmware_identity(&std::fs::read(&opts.b)?);
     if let (Some(x), Some(y)) = (&ida, &idb)
         && x != y
     {
-        eprintln!("警告: 2 つのログはファームが違う（トレースの差の原因になりうる）");
+        eprintln!(
+            "warning: the two logs come from different firmware (a possible cause of trace \
+             differences)"
+        );
         eprintln!("    {}  {x}", short(&opts.a));
         eprintln!("    {}  {y}", short(&opts.b));
     }
     Ok(())
 }
 
-/// 詳細行はファイル名だけにする（絶対パスは見出しに出ている）。
+/// Detail lines show only the file name (the full path is in the heading).
 fn short(p: &Path) -> String {
     p.file_name()
         .unwrap_or(p.as_os_str())
@@ -164,36 +171,37 @@ fn short(p: &Path) -> String {
 
 fn at(t: &Trace, i: usize) -> String {
     t.lines.get(i).map_or_else(
-        || "（ここで終わっている）".to_string(),
+        || "(ends here)".to_string(),
         |l| String::from_utf8_lossy(l).into_owned(),
     )
 }
 
-/// 読んで正規化する。トレース行が 0 行なら失敗。
+/// Reads and normalizes. Zero trace lines is an error.
 fn read(path: &Path) -> Result<Trace> {
-    let bytes = std::fs::read(path).with_context(|| format!("{} を読めない", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("cannot read `{}`", path.display()))?;
     let t = normalize(&bytes);
     if t.lines.is_empty() {
         bail!(
-            "{} からトレース行を 1 行も取り出せない。\n  \
-             abi-spec §9 の '> ' / '< ' で始まる行が必要。取り込みが途中で切れて\n  \
-             いないか、行頭にタイムスタンプが付いていないか確認すること。",
+            "no trace line found in `{}`.\n  \
+             Lines starting with '> ' / '< ' (docs/abi-spec.md §9) are required. Check that\n  \
+             the capture was not cut short and that no timestamp prefixes each line",
             path.display()
         );
     }
     Ok(t)
 }
 
-/// I2C の読み出しが受け取ったバイト列を、トレースの順に取り出す。
+/// Extracts the bytes received by each I2C read, in trace order.
 ///
-/// `i2c.read` / `i2c.write-read` の呼び出し行の次にある結果行の `data=0x…`
-/// （abi-spec §9）を拾う。host は読み出し 1 回につき replay の 1 行を消費する
-/// （`ports/host/src/hal.rs`）ので、同じ順に並べればそのまま replay になる。
-/// 失敗した読み出し（status が 0 でない）は host でも消費しないので飛ばす。
+/// Picks the `data=0x...` of the result line that follows each `i2c.read` /
+/// `i2c.write-read` call line (docs/abi-spec.md §9). The host consumes one
+/// replay line per read (`ports/host/src/hal.rs`), so the same order is the
+/// replay as is. A failed read (non-zero status) is skipped, since the host
+/// does not consume a line for it either.
 ///
 /// # Errors
-/// 32 バイトを超えて CRC に畳まれた読み出しがあるとき（元のバイト列が
-/// トレースに残っていない）。
+/// When a read longer than 32 bytes was folded into a CRC (the original
+/// bytes are not in the trace).
 pub fn i2c_reads(t: &Trace) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     let mut lines = t.lines.iter();
@@ -210,8 +218,8 @@ pub fn i2c_reads(t: &Trace) -> Result<Vec<Vec<u8>>> {
         }
         let Some(hex) = after(result, b"data=0x") else {
             bail!(
-                "読み出しの結果に data= が無い: {}\n  \
-                 data= を出す前のファームで取ったトレースではないか確認すること。",
+                "a read result has no data=: {}\n  \
+                 check whether the trace came from firmware that predates data=",
                 String::from_utf8_lossy(result)
             );
         };
@@ -222,7 +230,8 @@ pub fn i2c_reads(t: &Trace) -> Result<Vec<Vec<u8>>> {
             .collect();
         if hex.len() % 2 != 0 || after(result, b"..len=").is_some() {
             bail!(
-                "読み出しのバイト列が完全に残っていない（32 バイト超は CRC に畳まれる）: {}",
+                "the read's bytes are not fully recorded (reads over 32 bytes are folded into \
+                 a CRC): {}",
                 String::from_utf8_lossy(result)
             );
         }
@@ -230,17 +239,18 @@ pub fn i2c_reads(t: &Trace) -> Result<Vec<Vec<u8>>> {
             .chunks(2)
             .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap_or("zz"), 16))
             .collect::<Result<Vec<u8>, _>>()
-            .context("data= を 16 進として読めない")?;
+            .context("cannot parse data= as hex")?;
         out.push(bytes);
     }
     Ok(out)
 }
 
-/// `run --i2c-replay` が読む形（1 行 = 1 回の読み出し、16 進を空白区切り）。
+/// The form `run --i2c-replay` reads (one line per read, hex bytes separated
+/// by spaces).
 #[must_use]
 pub fn format_replay(reads: &[Vec<u8>], source: &str) -> String {
-    let mut s = format!("# wasmicon trace replay で {source} から取り出した I2C の応答。\n");
-    s.push_str("# 1 行 = 1 回の i2c 読み出しに返すバイト列（16 進、空白区切り）。\n");
+    let mut s = format!("# I2C responses extracted from {source} by wasmicon trace replay.\n");
+    s.push_str("# One line per i2c read: the bytes to return, in hex, separated by spaces.\n");
     for r in reads {
         let line: Vec<String> = r.iter().map(|b| format!("{b:02x}")).collect();
         s.push_str(&line.join(" "));
@@ -249,26 +259,25 @@ pub fn format_replay(reads: &[Vec<u8>], source: &str) -> String {
     s
 }
 
-/// トレースから replay を書き出す。
+/// Writes the replay extracted from a trace.
 ///
 /// # Errors
-/// ファイルが読めない・書けない、トレース行が無い、読み出しが 1 件も無いとき。
+/// When a file cannot be read or written, the log has no trace line, or it
+/// has no successful read.
 pub fn replay(opts: &ReplayOptions) -> Result<bool> {
     let t = read(&opts.log)?;
     let reads = i2c_reads(&t)?;
-    // 0 件を黙って空の replay にしない。host で走らせると「センサー無し」になり、
-    // 取り込みの失敗が別の症状に化ける。
+    // Zero reads never become an empty replay silently. Run on the host, it
+    // would mean "no sensor" and a capture failure would show up as a
+    // different symptom.
     if reads.is_empty() {
-        bail!(
-            "{} に成功した I2C の読み出しが 1 件も無い",
-            opts.log.display()
-        );
+        bail!("no successful I2C read in `{}`", opts.log.display());
     }
     let text = format_replay(&reads, &short(&opts.log));
     match &opts.out {
         Some(p) => {
-            std::fs::write(p, &text).with_context(|| format!("{} に書けない", p.display()))?;
-            eprintln!("{} 件の読み出しを {} に書いた", reads.len(), p.display());
+            std::fs::write(p, &text).with_context(|| format!("cannot write `{}`", p.display()))?;
+            eprintln!("wrote {} reads to {}", reads.len(), p.display());
         }
         None => print!("{text}"),
     }
@@ -279,7 +288,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// `needle` の直後から行末まで。
+/// Everything after `needle` up to the end of the line.
 fn after<'a>(hay: &'a [u8], needle: &[u8]) -> Option<&'a [u8]> {
     hay.windows(needle.len())
         .position(|w| w == needle)
@@ -290,7 +299,7 @@ fn after<'a>(hay: &'a [u8], needle: &[u8]) -> Option<&'a [u8]> {
 mod tests {
     use super::*;
 
-    /// 比較しやすいように表示用へ落とす（テストの中だけ）。
+    /// Converts to text for easier comparison (tests only).
     fn text(t: &Trace) -> Vec<String> {
         t.lines
             .iter()
@@ -306,17 +315,17 @@ mod tests {
 
     #[test]
     fn line_noise_is_not_folded_into_one_character() {
-        // UTF-8 でないバイトが違う 2 本を「一致」と言ってはいけない。
-        // String に落とすとどちらも U+FFFD になって一致してしまう。
+        // Two captures that differ in a non-UTF-8 byte must not match. As
+        // Strings both would become U+FFFD and compare equal.
         let a = normalize(b"> a/b(1)\xff\n< 0 [1]\n");
         let b = normalize(b"> a/b(1)\xfe\n< 0 [1]\n");
         assert_eq!(a.lines.len(), 2);
-        assert_eq!(first_divergence(&a, &b), Some(0), "1 行目で食い違う");
+        assert_eq!(first_divergence(&a, &b), Some(0), "differs on line 1");
     }
 
     #[test]
     fn drops_cr_and_nul() {
-        // 実機のシリアルは NUL を吐く（2026-09-26 に踏んだ）。
+        // A board's serial port emits NUL (docs/verification-report.md §8).
         let raw = b"wasmicon esp32s3\r\n\0\0[wasm] x\r\n\0> a/b(1)\r\n< 0 [1]\r\n";
         assert_eq!(text(&normalize(raw)), ["> a/b(1)", "< 0 [1]"]);
     }
@@ -344,8 +353,9 @@ mod tests {
               > wasmicon:hal/i2c@0.1.0/[method]bus.read(1, 68, 2)\n< 3\n\
               > wasmicon:hal/i2c@0.1.0/[method]bus.write-read(1, 68, 0x89, 2)\n< 0 [len=2 data=0xabcd]\n",
         );
-        let reads = i2c_reads(&t).expect("読めるはず");
-        // 失敗した読み出し（< 3）は host でも消費しないので飛ばす。
+        let reads = i2c_reads(&t).expect("parses");
+        // The failed read (< 3) is skipped; the host does not consume a
+        // line for it either.
         assert_eq!(
             reads,
             [vec![0x64, 0x21, 0xe0, 0x74, 0xe9, 0x70], vec![0xab, 0xcd]]
@@ -361,7 +371,7 @@ mod tests {
 
     #[test]
     fn a_trace_without_data_is_an_error() {
-        // data= を出す前のファームのトレース。黙って空にしない。
+        // A trace from firmware that predates data=. Never silently empty.
         let t = normalize(b"> wasmicon:hal/i2c@0.1.0/[method]bus.read(1, 68, 6)\n< 0 [len=6]\n");
         assert!(i2c_reads(&t).is_err());
     }
@@ -377,14 +387,14 @@ mod tests {
 
     #[test]
     fn the_last_firmware_identity_is_taken() {
-        // 書き込み後の自動リセットと RST で起動が 2 回入ったログ。
+        // A log with two boots: the automatic reset after flashing, then RST.
         let log = b"wasmicon esp32s3\r\nwasmicon id esp32s3 fw=0.1.0 git=aaaaaaa\r\n\0\
                     wasmicon esp32s3\r\nwasmicon id esp32s3 fw=0.1.0 git=bbbbbbb-dirty\r\n> a/b(1)\r\n";
         assert_eq!(
             firmware_identity(log).as_deref(),
             Some("wasmicon id esp32s3 fw=0.1.0 git=bbbbbbb-dirty")
         );
-        // host の run --trace には名乗りが無い。
+        // The host's run --trace has no identity.
         assert_eq!(firmware_identity(b"> a/b(1)\n< 0\n"), None);
     }
 }

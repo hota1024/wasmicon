@@ -1,45 +1,49 @@
 #!/bin/sh
-# 2 つのボードのシリアル出力からトレースを取り出して突き合わせる。
-# docs/handoff.md §5 Phase 6 の (2)。
+# Extracts the traces from two boards' serial captures and compares them
+# (the two-board determinism check, docs/decisions.md D-10).
 #
-# 使い方:
+# Requires: POSIX sh, tr, grep, diff
+# Usage:
 #   sh verify/diff-traces.sh pico.log esp32s3.log
 #   sh verify/diff-traces.sh --self-test
 #
-# シリアルには起動時のバナーやゲストの log 出力（`[wasm] ...`）も混ざる。
-# トレースは abi-spec §9 の `> ...` / `< ...` の行だけなので、それを抜き出す。
-# `[wasm]` の行を捨ててよいのは、同じ内容が log の host call としてトレースに
-# 出ているため（捨てないと片方のボードのバナーだけで差分が出る）。
+# A serial capture also contains the boot banner and the guest's log output
+# (`[wasm] ...`). The trace is only the `> ...` / `< ...` lines of
+# docs/abi-spec.md §9, so those are extracted. Dropping the `[wasm]` lines is
+# safe because the same content appears in the trace as the log host call
+# (kept, one board's banner alone would produce a difference).
 #
-# abi-spec §9 により time はトレースに出ず、役割名で引いた GPIO 番号は
-# `role:led` に正規化済みなので、ここでの追加の正規化は要らない。
+# By docs/abi-spec.md §9, time never appears in the trace and GPIO numbers
+# looked up by role are already normalized to `role:led`, so no further
+# normalization is needed here.
 #
-# **トレース行が 1 行も取れなければ失敗にする。** 空同士は文字列としては
-# 一致してしまうが、それは「一致した」ではなく「何も比較していない」。
-# ここは完了条件の判定に使うので、黙って成功を返すのが最悪の壊れ方になる。
-# 実際に起きうる: 取り込みが run の前で切れていた、渡すファイルを間違えた、
-# 端末ソフトが行頭にタイムスタンプやタグを付けていた。
+# Zero trace lines is a failure. Two empty traces compare equal as strings,
+# but that is "nothing was compared", not "identical". This verdict is used
+# as a completion criterion, so a silent success is the worst way to break.
+# It does happen: the capture was cut off before run, the wrong file was
+# passed, or the terminal program prefixed each line with a timestamp or tag.
 set -eu
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# CR と NUL を落として `>` か `<` で始まる行だけ残す。
+# Drops CR and NUL and keeps only lines starting with `>` or `<`.
 #
-# **NUL を落とし、`grep -a` を付けるのが要る。** 実機のシリアルはリセットや
-# 電源投入の瞬間にライン・ノイズで NUL を吐く。混ざったまま `grep` に渡すと
-# ファイルをバイナリと判断して `Binary file matches` の 1 行だけを返すので、
-# 実際は 14,352 行あるのに「1 行」と報告して不一致になる（2026-09-26 に踏んだ）。
-# **`LC_ALL=C` が要る。** ロケールが UTF-8 のままだと、macOS の `tr` は
-# UTF-8 として不正なバイトで `Illegal byte sequence` を出してそこで止まる。
-# 実機のシリアルはノイズでそういうバイトを吐くので、止まると以降の行が
-# 丸ごと落ちる（GNU の tr は止まらないので、手元だけ通って CI で結果が
-# 変わる形になる）。バイト列として扱えば両方で同じになる。
+# Dropping NUL and passing `grep -a` are both needed. A board's serial port
+# emits NUL as line noise at reset or power-on. Left in, `grep` treats the
+# file as binary and returns only `Binary file matches`, so a 14,352-line
+# trace is reported as "1 line" and the comparison fails
+# (docs/verification-report.md §8).
+# `LC_ALL=C` is needed too. With a UTF-8 locale, macOS `tr` stops at a byte
+# that is invalid UTF-8 with `Illegal byte sequence`. Serial noise produces
+# such bytes, and stopping drops every line after it (GNU tr does not stop,
+# so the result would pass locally and change in CI). Treating the data as
+# bytes gives the same result on both.
 normalize() {
     LC_ALL=C tr -d '\r\000' < "$1" | LC_ALL=C grep -a -E '^[<>]' || true
 }
 
-# 正規化して行数を数える。0 行なら失敗。
+# Normalizes and counts the lines. Zero lines is a failure.
 prepare() {
     src=$1
     dst=$2
@@ -47,9 +51,9 @@ prepare() {
     normalize "$src" > "$dst"
     n=$(wc -l < "$dst" | tr -d ' ')
     if [ "$n" -eq 0 ]; then
-        echo "$label ($src) からトレース行を 1 行も取り出せない。" >&2
-        echo "  abi-spec §9 の '> ' / '< ' で始まる行が必要。取り込みが途中で" >&2
-        echo "  切れていないか、行頭にタイムスタンプが付いていないか確認すること。" >&2
+        echo "$label ($src): no trace line found." >&2
+        echo "  Lines starting with '> ' / '< ' (docs/abi-spec.md §9) are required. Check" >&2
+        echo "  that the capture was not cut short and that no timestamp prefixes each line." >&2
         exit 1
     fi
     echo "$n"
@@ -64,7 +68,8 @@ wasmicon rp2040
 > wasmicon:hal/gpio@0.1.0/[static]pin.open(role:led, 3)
 < 0 [1]
 SAMPLE
-    # 同じトレースだがバナーとログ行が違う（ボードが違えば当然そうなる）。
+    # The same trace with a different banner and log line (as it is with a
+    # different board).
     printf 'wasmicon esp32s3\r\n[wasm] blink start\r\n' > "$work/b.log"
     printf '> wasmicon:hal/log@0.1.0/log(2, "blink start")\r\n<\r\n' >> "$work/b.log"
     printf '> wasmicon:hal/gpio@0.1.0/[static]pin.open(role:led, 3)\r\n< 0 [1]\r\n' >> "$work/b.log"
@@ -72,40 +77,41 @@ SAMPLE
     normalize "$work/a.log" > "$work/a.trace"
     normalize "$work/b.log" > "$work/b.trace"
     if ! diff -u "$work/a.trace" "$work/b.trace" > /dev/null; then
-        echo "self-test 失敗: バナーと CR の違いを吸収できていない" >&2
+        echo "self-test failed: banner and CR differences are not absorbed" >&2
         exit 1
     fi
 
-    # 中身が違えば検出できること。
+    # A real difference is detected.
     sed 's/role:led/role:lcd-cs/' "$work/a.log" > "$work/c.log"
     normalize "$work/c.log" > "$work/c.trace"
     if diff -u "$work/a.trace" "$work/c.trace" > /dev/null; then
-        echo "self-test 失敗: 実際の差分を検出できていない" >&2
+        echo "self-test failed: a real difference is not detected" >&2
         exit 1
     fi
 
-    # トレース行が無いファイル同士を「一致」と言わないこと。
+    # Two files without trace lines are not reported as a match.
     printf 'wasmicon rp2040\r\n[wasm] blink start\r\n' > "$work/empty1.log"
     printf 'wasmicon esp32s3\r\n[wasm] blink start\r\n' > "$work/empty2.log"
     if sh "$0" "$work/empty1.log" "$work/empty2.log" > /dev/null 2>&1; then
-        echo "self-test 失敗: 空トレース同士を一致と報告している" >&2
+        echo "self-test failed: two empty traces are reported as a match" >&2
         exit 1
     fi
 
-    # NUL が混ざっても全行取れること（2026-09-26 に踏んだ形。上の `normalize` の
-    # コメント参照）。heredoc には NUL を置けないので printf で組む。
+    # Every line survives NUL mixed in (docs/verification-report.md §8; see
+    # the comment on `normalize` above). A heredoc cannot hold NUL, so printf
+    # builds the file.
     #
-    # **このケースが守っているのは `tr` の `\000` だけ。** それを落とすと NUL が
-    # grep に渡ってバイナリ判定になり、ここが落ちる。一方 `grep -a` だけを
-    # 落としても通る（NUL は `tr` で消えているので grep はバイナリと見ない）。
-    # `-a` は NUL 以外のノイズでもバイナリ判定する grep 実装への保険なので、
-    # ここでは検出できないが外さないこと。
+    # This case protects only the `\000` in `tr`. Dropping it passes NUL to
+    # grep, which then treats the file as binary, and this fails. Dropping
+    # `grep -a` alone still passes (tr has removed the NUL, so grep does not
+    # see binary data). `-a` is insurance against grep implementations that
+    # treat other noise as binary; it cannot be detected here, but keep it.
     printf 'wasmicon esp32s3\r\n\000\000[wasm] blink start\r\n' > "$work/nul.log"
     printf '> wasmicon:hal/log@0.1.0/log(2, "blink start")\r\n<\r\n' >> "$work/nul.log"
     printf '\000> wasmicon:hal/gpio@0.1.0/[static]pin.open(role:led, 3)\r\n< 0 [1]\r\n' >> "$work/nul.log"
     normalize "$work/nul.log" > "$work/nul.trace"
     if ! diff -u "$work/a.trace" "$work/nul.trace" > /dev/null; then
-        echo "self-test 失敗: NUL で行を落としている（normalize の tr -d に \\000 が要る）" >&2
+        echo "self-test failed: NUL drops lines (normalize needs \\000 in tr -d)" >&2
         exit 1
     fi
 
@@ -118,33 +124,35 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 if [ $# -ne 2 ]; then
-    echo "使い方: sh verify/diff-traces.sh <a.log> <b.log>" >&2
-    echo "        sh verify/diff-traces.sh --self-test" >&2
+    echo "Usage: sh verify/diff-traces.sh <a.log> <b.log>" >&2
+    echo "       sh verify/diff-traces.sh --self-test" >&2
     exit 2
 fi
 
-# 正規化した結果は作業ディレクトリに置く。入力の隣に書くと、読み取り専用の
-# 取り込み先や process substitution で書けずに落ち、肝心の差分が出ない。
-na=$(prepare "$1" "$work/a.trace" "1 つ目")
-nb=$(prepare "$2" "$work/b.trace" "2 つ目")
+# The normalized traces go to the work directory. Written next to the input,
+# a read-only capture location or a process substitution fails the write and
+# the diff that matters never appears.
+na=$(prepare "$1" "$work/a.trace" "first")
+nb=$(prepare "$2" "$work/b.trace" "second")
 
 if diff -q "$work/a.trace" "$work/b.trace" > /dev/null; then
-    echo "一致: $na 行（$1 と $2）"
+    echo "match: $na lines ($1 and $2)"
     exit 0
 fi
 
-# 不一致は「これから原因を追う」場面なので、証拠を消してはいけない。
-# 作業ディレクトリは trap で消えるため、残す先を別に作って写す。
+# A mismatch is where the investigation starts, so the evidence is kept. The
+# work directory goes away with the trap, so a separate directory is made
+# and the files are copied there.
 out=$(mktemp -d -t wasmicon-trace-diff)
 cp "$work/a.trace" "$out/a.trace"
 cp "$work/b.trace" "$out/b.trace"
 diff -u "$out/a.trace" "$out/b.trace" > "$out/diff.txt" || true
 nd=$(wc -l < "$out/diff.txt" | tr -d ' ')
 
-echo "不一致: $1 は $na 行、$2 は $nb 行" >&2
+echo "mismatch: $1 has $na lines, $2 has $nb lines" >&2
 head -40 "$out/diff.txt"
 if [ "$nd" -gt 40 ]; then
-    echo "  （差分 $nd 行のうち先頭 40 行）" >&2
+    echo "  (first 40 of $nd diff lines)" >&2
 fi
-echo "  正規化済みトレースと差分の全文: $out" >&2
+echo "  normalized traces and the full diff: $out" >&2
 exit 1

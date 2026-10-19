@@ -1,9 +1,9 @@
-//! `wasmicon` — アプリ作者が触る唯一の面（`docs/app-workflow.md` §4）。
+//! `wasmicon`: the one tool app authors touch (docs/app-workflow.md §4).
 //!
-//! 0 段は `new` / `check` / `run` / `monitor` / `trace diff` / `doctor` が
-//! 入り、1 段の `pack` / `deploy` も通っている。`size` は
-//! `tools/measure-size.sh` のままにしてある（残作業は `docs/TODO.md` §5）。
-//! 引数のパースは `wasmicon-gen` と同じ手書き + `USAGE` 定数。
+//! Stage 0 (`new` / `check` / `run` / `monitor` / `trace diff` / `doctor`) and
+//! stage 1 (`pack` / `deploy`) are in; the stages are docs/app-workflow.md §5.
+//! `size` stays `tools/measure-size.sh` (remaining work: docs/TODO.md §5).
+//! Arguments are parsed by hand with a `USAGE` constant, as in `wasmicon-gen`.
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
@@ -14,69 +14,70 @@ use wasmicon_cli::{
 };
 
 const USAGE: &str = "\
-wasmicon — Wasmicon のアプリを検査・実行・配備する
+wasmicon - check, run and deploy Wasmicon apps
 
-使い方:
-    wasmicon <コマンド> [オプション]
+Usage:
+    wasmicon <command> [options]
 
-コマンド:
-    new <dir>                アプリの雛形を出す
-    check <app.wasm>         そのボードで走るかを検査する
-    run <app.wasm>           host ポート（mock HAL）で走らせる
-    pack <app.wasm>          スロット画像にする（ファームが読む形）
-    deploy <app.wasm>        検査してボードのスロットに焼く
-    monitor                  シリアルを開いてトレースを取り込む
-    trace diff <a> <b>       2 つのシリアル出力のトレースを突き合わせる
-    trace replay <log>       実機のトレースから I2C の応答を取り出す
-    doctor                   道具が揃っているかを見る
+Commands:
+    new <dir>                write an app scaffold
+    check <app.wasm>         check that the app runs on a board
+    run <app.wasm>           run on the host port (mock HAL)
+    pack <app.wasm>          build the slot image the firmware reads
+    deploy <app.wasm>        check, then flash to the board's app slot
+    monitor                  open the serial port and capture the trace
+    trace diff <a> <b>       compare the traces in two serial captures
+    trace replay <log>       extract the I2C responses from a hardware trace
+    doctor                   report which tools are installed
 
-new のオプション:
-    --lang <rust|as>         言語（既定: rust）
-    --board <name>           wasmicon.toml の [defaults] board に書く
-    --hal <dir>              バインディングの置き場所（既定: 上に向かって探す）
+Options for new:
+    --lang <rust|as>         language (default: rust)
+    --board <name>           written to [defaults] board in wasmicon.toml
+    --hal <dir>              where the bindings are (default: search upward)
 
-check のオプション:
-    --board <name>           検査するボード
+Options for check:
+    --board <name>           board to check against
                              rp2040 / rp2350 / esp32s3 / esp32c5 / host
-                             既定: wasmicon.toml の [defaults] board、
-                             無ければ全ボード
+                             default: [defaults] board in wasmicon.toml,
+                             otherwise every board
 
-pack のオプション:
-    -o <file>                出力先（既定: <入力>.bin）
-    --board <name>           スロットに収まるかを検査し、焼くコマンドを出す
+Options for pack:
+    -o <file>                output path (default: <input>.bin)
+    --board <name>           check that the image fits the slot and print the flash command
 
-deploy のオプション:
-    --board <name>           送り先（既定: wasmicon.toml の [defaults] board）
-    --no-run                 焼くだけでリセットしない
-    --monitor                焼いてリセットし、そのままトレースを取り込む
-    -o <file>                --monitor のときの取り込み先
-    --port <dev>             シリアルの口（既定: /dev/cu.usb* から選ぶ）
+Options for deploy:
+    --board <name>           target board (default: [defaults] board in wasmicon.toml)
+    --no-run                 flash only; do not reset
+    --monitor                flash, reset and capture the trace
+    -o <file>                where --monitor writes the capture
+    --port <dev>             serial port (default: pick from /dev/cu.usb*)
 
-monitor のオプション:
-    --port <dev>             シリアルの口（既定: /dev/cu.usb* から選ぶ）
-    --baud <n>               ボーレート（既定: 115200）
-    -o <file>                標準出力とは別にファイルにも書く
-    --idle <秒>              無音がこれだけ続いたら終わる（既定: 3。0 で無効）
-    --timeout <秒>           全体の上限（既定: 無し）
+Options for monitor:
+    --port <dev>             serial port (default: pick from /dev/cu.usb*)
+    --baud <n>               baud rate (default: 115200)
+    -o <file>                also write to this file besides stdout
+    --idle <secs>            stop after this much silence (default: 3; 0 disables)
+    --timeout <secs>         overall limit (default: none)
 
-trace replay のオプション:
-    -o <file>                書き出し先（既定: 標準出力）。run --i2c-replay が読む形
+Options for trace replay:
+    -o <file>                output path (default: stdout), in the form run --i2c-replay reads
 
-run のオプション:
-    --trace                  全 host call を abi-spec §9 の形式で出す
-    --i2c-replay <file>      記録済みの I2C 応答（host にセンサーは無い）
+Options for run:
+    --trace                  print every host call in the docs/abi-spec.md §9 format
+    --i2c-replay <file>      recorded I2C responses (the host has no sensor)
 
-共通:
-    -h, --help               このヘルプ
-    -V, --version            版を出す
+Common:
+    -h, --help               this help
+    -V, --version            print the version
 
-`wasmicon.toml` があれば読む（カレントから上に探す）。
-`[requirements] pin-roles` と `[board.<name>.roles]` を突き合わせ、deploy は
-配線表をアプリと一緒にデバイスの設定スロットに書く（ファームは既定の表を持たない）。
+`wasmicon.toml` is read when present (searched upward from the current directory).
+`[requirements] pin-roles` is cross-checked against `[board.<name>.roles]`, and
+deploy writes the wiring table to the device's config slot together with the app
+(the firmware has no default table).
 
-検査の中身は実ランタイムの decode / validate と、wit/ から生成した import 表。
-host は全ボードより緩いので、`--board` でボードを指定したものだけが
-「実機で走る」の根拠になる（docs/app-workflow.md §4.3）。
+The check uses the real runtime's decode / validate and the import table generated
+from wit/. The host is more permissive than every board, so only a check with
+`--board <name>` shows that the app runs on hardware (docs/app-workflow.md §4.3).
 ";
 
 fn main() -> ExitCode {
@@ -90,7 +91,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// 判定が通れば `Ok(true)`。使い方の誤りは `Err`。
+/// `Ok(true)` when the command passes. A usage error is `Err`.
 fn dispatch() -> Result<bool> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
@@ -119,9 +120,9 @@ fn dispatch() -> Result<bool> {
         },
         "doctor" => doctor::run(),
         other if other.starts_with('-') => {
-            bail!("未知のオプション: {other}\n\n{USAGE}")
+            bail!("unknown option `{other}`\n\n{USAGE}")
         }
-        other => bail!("未知のコマンド: {other}\n\n{USAGE}"),
+        other => bail!("unknown command `{other}`\n\n{USAGE}"),
     }
 }
 
@@ -135,22 +136,22 @@ fn parse_new(args: impl Iterator<Item = String>) -> Result<new_cmd::Options> {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--lang" => {
-                lang = new_cmd::Lang::parse(&args.next().context("--lang に値が無い")?)?;
+                lang = new_cmd::Lang::parse(&args.next().context("--lang needs a value")?)?;
             }
-            "--board" => board = Some(args.next().context("--board に値が無い")?),
-            "--hal" => hal = Some(PathBuf::from(args.next().context("--hal に値が無い")?)),
+            "--board" => board = Some(args.next().context("--board needs a value")?),
+            "--hal" => hal = Some(PathBuf::from(args.next().context("--hal needs a value")?)),
             "-h" | "--help" => help(),
-            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
             other => {
                 if dir.is_some() {
-                    bail!("作れるのは 1 つだけ: {other}");
+                    bail!("only one directory can be created: `{other}`");
                 }
                 dir = Some(PathBuf::from(other));
             }
         }
     }
 
-    let dir = dir.context("作る場所を渡すこと\n\n".to_string() + USAGE)?;
+    let dir = dir.context("pass the directory to create\n\n".to_string() + USAGE)?;
     Ok(new_cmd::Options {
         dir,
         lang,
@@ -166,22 +167,23 @@ fn parse_check(args: impl Iterator<Item = String>) -> Result<check::Options> {
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--board" => board = Some(args.next().context("--board に値が無い")?),
+            "--board" => board = Some(args.next().context("--board needs a value")?),
             "-h" | "--help" => help(),
-            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
             other => {
                 if path.is_some() {
-                    bail!("検査できるのは 1 つだけ: {other}");
+                    bail!("only one .wasm can be checked: `{other}`");
                 }
                 path = Some(PathBuf::from(other));
             }
         }
     }
 
-    let path = path.context("検査する .wasm を渡すこと\n\n".to_string() + USAGE)?;
-    // `wasmicon.toml` はカレントから上に探す（cargo と同じ）。無くてもよい。
+    let path = path.context("pass the .wasm to check\n\n".to_string() + USAGE)?;
+    // `wasmicon.toml` is searched upward from the current directory (like
+    // cargo). It is optional.
     let manifest = find_manifest()?;
-    // `--board` が無ければ toml の既定を使う。
+    // Without `--board`, use the default from the manifest.
     let board = board.or_else(|| manifest.as_ref().and_then(|m| m.default_board.clone()));
     Ok(check::Options {
         path,
@@ -190,9 +192,10 @@ fn parse_check(args: impl Iterator<Item = String>) -> Result<check::Options> {
     })
 }
 
-/// カレントから上に向かって `wasmicon.toml` を探す（§4.7）。
+/// Searches upward from the current directory for `wasmicon.toml`
+/// (docs/app-workflow.md §4.7).
 fn find_manifest() -> Result<Option<manifest::Manifest>> {
-    let cwd = std::env::current_dir().context("カレントディレクトリが取れない")?;
+    let cwd = std::env::current_dir().context("cannot determine the current directory")?;
     manifest::find(&cwd)
 }
 
@@ -206,29 +209,30 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         match a.as_str() {
             "--trace" => trace_on = true,
             "--i2c-replay" => {
-                let v = args.next().context("--i2c-replay に値が無い")?;
+                let v = args.next().context("--i2c-replay needs a value")?;
                 i2c_replay = Some(PathBuf::from(v));
             }
             "-h" | "--help" => help(),
-            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
             other => {
                 if path.is_some() {
-                    bail!("走らせられるのは 1 つだけ: {other}");
+                    bail!("only one .wasm can be run: `{other}`");
                 }
                 path = Some(PathBuf::from(other));
             }
         }
     }
 
-    let path = path.context("走らせる .wasm を渡すこと\n\n".to_string() + USAGE)?;
-    // `--i2c-replay` が無ければ toml の既定（toml のある場所基準で解決済み）。
+    let path = path.context("pass the .wasm to run\n\n".to_string() + USAGE)?;
+    // Without `--i2c-replay`, use the manifest default (already resolved
+    // relative to the manifest's directory).
     //
-    // **読めない toml を黙って無視しない。** `deny_unknown_fields` なので
-    // `i2c_replay` のような綴り違いで `load` が失敗する。そこを捨てると
-    // **replay 無しで走って記録済みの 14,352 行と静かに食い違う** ——
-    // `manifest.rs` の冒頭が「設定したのに効いていないことに気付けない」と
-    // 書いている、まさにその形になる（`check` / `deploy` は `?` で上げて
-    // いるのに、ここだけ落としていた）。
+    // An unreadable manifest is never ignored. The manifest is
+    // `deny_unknown_fields`, so a misspelling such as `i2c_replay` makes
+    // `load` fail. Dropping that error would run without a replay and
+    // silently diverge from the recorded trace, which is exactly the "I set
+    // it but it has no effect" failure `manifest.rs` warns about (`check` and
+    // `deploy` propagate the error with `?`; this path once dropped it).
     let i2c_replay = match i2c_replay {
         Some(p) => Some(p),
         None => find_manifest()?.and_then(|m| m.default_i2c_replay),
@@ -251,23 +255,23 @@ fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--board" => board = Some(args.next().context("--board に値が無い")?),
+            "--board" => board = Some(args.next().context("--board needs a value")?),
             "--no-run" => no_run = true,
             "--monitor" => monitor = true,
-            "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
-            "--port" => port = Some(PathBuf::from(args.next().context("--port に値が無い")?)),
+            "-o" => out = Some(PathBuf::from(args.next().context("-o needs a value")?)),
+            "--port" => port = Some(PathBuf::from(args.next().context("--port needs a value")?)),
             "-h" | "--help" => help(),
-            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
             other => {
                 if path.is_some() {
-                    bail!("送れるのは 1 つだけ: {other}");
+                    bail!("only one .wasm can be deployed: `{other}`");
                 }
                 path = Some(PathBuf::from(other));
             }
         }
     }
 
-    let path = path.context("送る .wasm を渡すこと\n\n".to_string() + USAGE)?;
+    let path = path.context("pass the .wasm to deploy\n\n".to_string() + USAGE)?;
     Ok(deploy::Options {
         path,
         board,
@@ -287,22 +291,22 @@ fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
-            "--board" => board = Some(args.next().context("--board に値が無い")?),
+            "-o" => out = Some(PathBuf::from(args.next().context("-o needs a value")?)),
+            "--board" => board = Some(args.next().context("--board needs a value")?),
             "-h" | "--help" => help(),
-            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
             other => {
                 if path.is_some() {
-                    bail!("包めるのは 1 つだけ: {other}");
+                    bail!("only one .wasm can be packed: `{other}`");
                 }
                 path = Some(PathBuf::from(other));
             }
         }
     }
 
-    let path = path.context("包む .wasm を渡すこと\n\n".to_string() + USAGE)?;
-    // `--board` が無ければ toml の既定を使う（§4.7）。読めない toml は
-    // 上げる（`parse_run` と同じ理由）。
+    let path = path.context("pass the .wasm to pack\n\n".to_string() + USAGE)?;
+    // Without `--board`, use the manifest default (docs/app-workflow.md §4.7).
+    // An unreadable manifest is an error, for the reason given in `parse_run`.
     let board = match board {
         Some(b) => Some(b),
         None => find_manifest()?.and_then(|m| m.default_board),
@@ -320,31 +324,31 @@ fn parse_monitor(args: impl Iterator<Item = String>) -> Result<monitor::Options>
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--port" => port = Some(PathBuf::from(args.next().context("--port に値が無い")?)),
-            "-o" => out = Some(PathBuf::from(args.next().context("-o に値が無い")?)),
+            "--port" => port = Some(PathBuf::from(args.next().context("--port needs a value")?)),
+            "-o" => out = Some(PathBuf::from(args.next().context("-o needs a value")?)),
             "--baud" => {
-                let v = args.next().context("--baud に値が無い")?;
+                let v = args.next().context("--baud needs a value")?;
                 baud = v
                     .parse()
-                    .with_context(|| format!("--baud が数でない: {v}"))?;
+                    .with_context(|| format!("--baud is not a number: `{v}`"))?;
             }
             "--idle" => {
-                let v = args.next().context("--idle に値が無い")?;
+                let v = args.next().context("--idle needs a value")?;
                 let secs: u64 = v
                     .parse()
-                    .with_context(|| format!("--idle が数でない: {v}"))?;
-                // 0 は「無音では終わらない」（Ctrl-C で止める）。
+                    .with_context(|| format!("--idle is not a number: `{v}`"))?;
+                // 0 means "never stop on silence" (stop with Ctrl-C).
                 idle = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
             "--timeout" => {
-                let v = args.next().context("--timeout に値が無い")?;
+                let v = args.next().context("--timeout needs a value")?;
                 let secs: u64 = v
                     .parse()
-                    .with_context(|| format!("--timeout が数でない: {v}"))?;
+                    .with_context(|| format!("--timeout is not a number: `{v}`"))?;
                 timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
             "-h" | "--help" => help(),
-            other => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other => bail!("unknown option `{other}`\n\n{USAGE}"),
         }
     }
 
@@ -363,14 +367,16 @@ enum TraceCmd {
 }
 
 fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
-    let sub = args.next().context("trace の後に diff か replay が要る")?;
-    // サブコマンドの判定より先に help を見る（`trace --help` が
-    // 「diff だけ」で弾かれていた）。
+    let sub = args
+        .next()
+        .context("trace needs a subcommand: diff or replay")?;
+    // Look for help before checking the subcommand (`trace --help` used to be
+    // rejected as "not diff").
     if sub == "-h" || sub == "--help" {
         help();
     }
     if sub != "diff" && sub != "replay" {
-        bail!("trace のサブコマンドは diff と replay だけ: {sub}");
+        bail!("unknown trace subcommand `{sub}` (diff or replay)");
     }
     let mut files: Vec<PathBuf> = Vec::new();
     let mut out: Option<PathBuf> = None;
@@ -378,20 +384,15 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
         match a.as_str() {
             "-h" | "--help" => help(),
             "-o" if sub == "replay" => {
-                out = Some(PathBuf::from(
-                    args.next().context("-o の後にファイルが要る")?,
-                ));
+                out = Some(PathBuf::from(args.next().context("-o needs a file")?));
             }
-            other if other.starts_with('-') => bail!("未知のオプション: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
             other => files.push(PathBuf::from(other)),
         }
     }
     if sub == "replay" {
         let [log] = files.as_slice() else {
-            bail!(
-                "取り出すログを 1 つ渡すこと（渡されたのは {} 個）",
-                files.len()
-            );
+            bail!("pass exactly one log to extract from (got {})", files.len());
         };
         return Ok(TraceCmd::Replay(trace::ReplayOptions {
             log: log.clone(),
@@ -399,10 +400,7 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
         }));
     }
     let [a, b] = files.as_slice() else {
-        bail!(
-            "突き合わせるログを 2 つ渡すこと（渡されたのは {} 個）",
-            files.len()
-        );
+        bail!("pass exactly two logs to compare (got {})", files.len());
     };
     Ok(TraceCmd::Diff(trace::Options {
         a: a.clone(),

@@ -1,43 +1,45 @@
-//! `wasmicon run` — host ポートで実行する（`docs/app-workflow.md` §4.2）。
+//! `wasmicon run`: runs an app on the host port (docs/app-workflow.md §4.2).
 //!
-//! 中身は `wasmicon-host` の `run_wasm_opts` を呼ぶだけ。**crate は残して
-//! lib として使う**（`verify/differential` も依存している）。
+//! It only calls `run_wasm_opts` of `wasmicon-host`. The crate stays and is
+//! used as a library (`verify/differential` depends on it too).
 //!
-//! **host は全ボードより緩い**（`Config::DEFAULT` = 65536 ページ）。ここで
-//! 通っても実機の validate で落ちるアプリは書けるので、実機の判定は
-//! `wasmicon check --board <board>` が出す（§4.3）。
+//! The host is more permissive than every board (`Config::DEFAULT` = 65536
+//! pages). An app can pass here and fail validate on hardware, so the
+//! hardware verdict comes from `wasmicon check --board <board>`
+//! (docs/app-workflow.md §4.3).
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 pub struct Options {
     pub path: PathBuf,
-    /// 全 host call を abi-spec §9 の形式で標準出力に出す。
+    /// Print every host call to stdout in the docs/abi-spec.md §9 format.
     pub trace: bool,
-    /// 記録済みの I2C 応答。host には実物のセンサーが無いので、
-    /// 読み出しに返すものをファイルから与える（`verify/sht4x-replay.txt`）。
+    /// Recorded I2C responses. The host has no real sensor, so what reads
+    /// return comes from a file (`verify/sht4x-replay.txt`).
     pub i2c_replay: Option<PathBuf>,
 }
 
-/// 実行する。トラップせずに終われば `true`。
+/// Runs the app. `true` when it finishes without a trap.
 ///
 /// # Errors
-/// ファイルが読めないとき。ゲストのトラップは `Ok(false)` として扱う
-/// （使い方の誤りではないので）。
+/// When a file cannot be read. A guest trap is `Ok(false)` (it is not a
+/// usage error).
 pub fn run(opts: &Options) -> Result<bool> {
-    let wasm =
-        std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
+    let wasm = std::fs::read(&opts.path)
+        .with_context(|| format!("cannot read `{}`", opts.path.display()))?;
 
-    // `--i2c-replay` が無ければ環境変数を見る。`ports/host` のバイナリが
-    // これを読むので（docs/verification-report.md §6 の取り込み手順）、
-    // CLI が無視すると**黙って「センサー無し」に落ちて**トレースが
-    // 記録済みの行と食い違う。
+    // Without `--i2c-replay`, the environment variable is consulted. The
+    // `ports/host` binary reads it (the capture procedure in
+    // docs/verification-report.md §6), so if the CLI ignored it, the run
+    // would silently fall back to "no sensor" and the trace would diverge
+    // from the recorded lines.
     let from_env = std::env::var("WASMICON_I2C_REPLAY").ok().map(PathBuf::from);
     let replay_path = opts.i2c_replay.clone().or(from_env);
     let i2c_replay = match &replay_path {
         None => Vec::new(),
         Some(p) => wasmicon_host::load_i2c_replay(p)
-            .with_context(|| format!("{} を読めない", p.display()))?,
+            .with_context(|| format!("cannot read `{}`", p.display()))?,
     };
 
     let host_opts = wasmicon_host::Options {
@@ -46,8 +48,9 @@ pub fn run(opts: &Options) -> Result<bool> {
         spi_unsupported: false,
     };
 
-    // **失敗してもトレースを受け取る口を使う。** トラップしたときこそ
-    // トレースが欲しい（どの host call で分岐したかはそこにしか無い）。
+    // The entry point that returns the trace even on failure. A trap is
+    // exactly when the trace is wanted (which host call diverged is only
+    // there).
     let (out, result) = wasmicon_host::run_wasm_capture(&wasm, host_opts);
     if opts.trace {
         print!("{}", out.trace);
@@ -55,11 +58,11 @@ pub fn run(opts: &Options) -> Result<bool> {
     match result {
         Ok(()) => Ok(true),
         Err(e) => {
-            // docs/handoff.md §3 #4: トラップしたらログを出して停止する。
+            // docs/decisions.md A-04: after a trap, log the reason and halt.
             eprintln!("wasmicon: {} [{}]", e.reason(), e.kind().name());
             if opts.trace {
                 let n = out.trace.lines().count();
-                eprintln!("  ここまでのトレース {n} 行は標準出力に出した");
+                eprintln!("  the {n} trace lines up to this point went to stdout");
             }
             Ok(false)
         }

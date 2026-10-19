@@ -1,7 +1,7 @@
-//! `wasmicon` CLI の中身（`docs/app-workflow.md` §4）。
+//! Implementation of the `wasmicon` CLI (docs/app-workflow.md §4).
 //!
-//! 判定を `main` から分けて lib に置いてあるのは、テストから呼べるようにする
-//! ため（`wasmicon-gen` と同じ構成）。
+//! The decisions live in this library rather than in `main` so that tests can
+//! call them (the same layout as `wasmicon-gen`).
 
 pub mod check;
 pub mod deploy;

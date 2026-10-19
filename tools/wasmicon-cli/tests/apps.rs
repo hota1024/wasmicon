@@ -1,10 +1,11 @@
-//! この repo の `apps/` が自分の `wasmicon.toml` を持っていることを見る
-//! （ドッグフード。`docs/app-workflow.md` §4.7）。
+//! Checks that every app in this repo's `apps/` has its own `wasmicon.toml`
+//! (dogfooding; docs/app-workflow.md §4.7).
 //!
-//! **ファームは役割の既定の表を持たない**（§3.9）ので、役割を引くアプリは
-//! 配線表が無いと実機で `unsupported` になる。アプリを足したのに toml を
-//! 置き忘れた、宣言と配線表が食い違った、をここで止める。
-//! **0 件を黙って成功にしない**（`tests/flags.rs` と同じ理屈）。
+//! The firmware has no default role table (docs/app-workflow.md §3.9), so an
+//! app that looks up roles gets `unsupported` on hardware without a wiring
+//! table. This stops "added an app but forgot the manifest" and "declaration
+//! and wiring table disagree". Zero apps is not a silent success (same
+//! reasoning as `tests/flags.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -15,15 +16,15 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
-/// `apps/` の直下で、Rust（`Cargo.toml`）か AssemblyScript（`asconfig.json`）か
-/// C（`src/main.c`）のアプリになっているディレクトリ。
+/// Directories directly under `apps/` that are a Rust (`Cargo.toml`),
+/// AssemblyScript (`asconfig.json`) or C (`src/main.c`) app.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&apps)
-        .expect("apps/ を読めない")
+        .expect("cannot read apps/")
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.join("Cargo.toml").is_file()
@@ -38,23 +39,23 @@ fn app_dirs() -> Vec<PathBuf> {
 #[test]
 fn every_app_has_a_manifest_whose_roles_are_wired_on_both_boards() {
     let dirs = app_dirs();
-    assert!(dirs.len() >= 5, "apps/ のアプリが見つからない: {dirs:?}");
+    assert!(dirs.len() >= 5, "no apps found in apps/: {dirs:?}");
     for dir in dirs {
         let path = dir.join(manifest::FILE_NAME);
-        assert!(path.is_file(), "{} が無い", path.display());
+        assert!(path.is_file(), "{} is missing", path.display());
         let m = manifest::load(&path).unwrap_or_else(|e| panic!("{e:#}"));
-        // 評価ボード（docs/handoff.md §0）では宣言した役割が全部配られる。
+        // On the evaluation boards (README.md) every declared role is wired.
         for board in [&profile::RP2350, &profile::ESP32S3] {
             let provided = check::provided_roles(board, Some(&m));
             for role in &m.pin_roles {
                 assert!(
                     provided.contains(role),
-                    "{}: {role} が [board.{}.roles] に無い",
+                    "{}: {role} is not in [board.{}.roles]",
                     path.display(),
                     board.name
                 );
             }
-            // 設定スロットに書ける表になっている。
+            // The table can be written to the config slot.
             let map = m.role_map(board).unwrap_or_else(|e| panic!("{e:#}"));
             assert_eq!(map.len(), m.pin_roles.len(), "{}", path.display());
         }

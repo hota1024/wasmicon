@@ -1,41 +1,46 @@
-//! `wasmicon.toml` — プロジェクトに 1 つ置く設定（`docs/app-workflow.md` §4.7）。
+//! `wasmicon.toml`: the one configuration file per project (docs/app-workflow.md §4.7).
 //!
-//! 書くのは「アプリの性質」と「配線」。**配線表（`[board.<name>.roles]`）は
-//! `deploy` が設定スロットに書き、ファームはその表だけで `pin-by-role` に
-//! 答える**（§3.9。ファームは既定の表を持たない）。
+//! It holds what the app needs and how each board is wired. `deploy` writes
+//! the wiring table (`[board.<name>.roles]`) to the config slot, and the
+//! firmware answers `pin-by-role` from that table alone (it has no default
+//! table; docs/app-workflow.md §3.9).
 //!
 //! ```toml
 //! version = 1
 //!
 //! [requirements]
-//! # このアプリが `board.pin-by-role` で引く役割名。番号は書かない
+//! # Role names this app looks up through `board.pin-by-role`. No numbers here
 //! pin-roles = ["lcd-cs", "lcd-dc", "lcd-rst"]
 //!
 //! [defaults]
 //! board = "rp2350"
 //! i2c-replay = "fixtures/sht4x.txt"
 //!
-//! [board.rp2350.roles]   # 机の上の配線。deploy が設定スロットに書く
+//! [board.rp2350.roles]   # the wiring on the desk; deploy writes it to the config slot
 //! lcd-cs = 17
 //! lcd-dc = 20
 //! lcd-rst = 21
 //! ```
 //!
-//! 決めたこと（§4.7「スキーマの規則」）:
+//! Schema rules (docs/app-workflow.md §4.7):
 //!
-//! - **導出できるものは書かない。** アプリ名と言語は `Cargo.toml` /
-//!   `asconfig.json` から取る（二重に持つと必ず drift する）
-//! - **1 アプリに 1 つ。** workspace でもアプリごとに置く
-//! - **必須のみ。** `led` が無くても動く degradation は v0.1 では表現しない
-//! - **役割名は自由。** ファームに語彙は無い。英小文字で始まる 16 文字までの
-//!   `a-z` / `0-9` / `-`（`wasmicon_port::roles::valid_name`）
-//! - **「この役割は無い」は `"none"`**（キーを省略したのと同じで、配らない）
-//! - **パスは `wasmicon.toml` のあるディレクトリ基準。** CLI の cwd 基準に
-//!   すると、どこから呼んだかで壊れる
-//! - **未知のキーはエラー。** 黙って無視すると「設定したのに効いていない」に
-//!   気付けない
-//! - **`version` が CLI の対応より新しければエラー**、古ければ受ける
-//! - **toml は任意。** `build` / `check` / `run` は無くても動く
+//! - Nothing derivable is written. The app name and language come from
+//!   `Cargo.toml` / `asconfig.json` (a second copy always drifts).
+//! - One file per app, even inside a workspace.
+//! - Requirements only. "Works without `led`" degradation is not expressed
+//!   in v0.1.
+//! - Role names are free-form; the firmware has no vocabulary. Up to 16
+//!   characters of `a-z` / `0-9` / `-`, starting with a lowercase letter
+//!   (`wasmicon_port::roles::valid_name`).
+//! - "This board has no such role" is `"none"` (same as omitting the key:
+//!   nothing is handed out).
+//! - Paths are relative to the directory of `wasmicon.toml`. Relative to the
+//!   CLI's cwd they would break depending on where the CLI is run from.
+//! - Unknown keys are errors. Ignoring them silently hides "I set it but it
+//!   has no effect".
+//! - A `version` newer than the CLI supports is an error; an older one is
+//!   accepted.
+//! - The file is optional. `build` / `check` / `run` work without it.
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -45,10 +50,10 @@ use std::path::{Path, PathBuf};
 use wasmicon_port::profile::{self, Profile};
 use wasmicon_port::roles::{self, Limits, RoleMap};
 
-/// この CLI が読める `version`。
+/// The `version` this CLI can read.
 pub const SUPPORTED_VERSION: u32 = 1;
 
-/// ファイル名。`cargo` と同じく上に向かって探す。
+/// File name. Searched upward, like `cargo` does.
 pub const FILE_NAME: &str = "wasmicon.toml";
 
 #[derive(Deserialize)]
@@ -59,7 +64,7 @@ struct Raw {
     requirements: RawRequirements,
     #[serde(default)]
     defaults: RawDefaults,
-    /// `[board.<name>.roles]`。
+    /// `[board.<name>.roles]`.
     #[serde(default)]
     board: BTreeMap<String, RawBoard>,
 }
@@ -67,7 +72,7 @@ struct Raw {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawRequirements {
-    /// このアプリが `pin-by-role` で引く役割名。
+    /// Role names this app looks up through `pin-by-role`.
     #[serde(default)]
     pin_roles: Vec<String>,
 }
@@ -82,35 +87,38 @@ struct RawDefaults {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawBoard {
-    /// 役割名 → GPIO 番号、または `"none"`。
+    /// Role name -> GPIO number, or `"none"`.
     #[serde(default)]
     roles: BTreeMap<String, toml::Value>,
 }
 
-/// 読み込んだ `wasmicon.toml`。
+/// A loaded `wasmicon.toml`.
 #[derive(Debug)]
 pub struct Manifest {
-    /// 読んだファイルの場所。相対パスの基準。
+    /// Directory of the file. Relative paths resolve against it.
     pub dir: PathBuf,
-    /// このアプリが引く役割名（**宣言**。配線表にあることを check / deploy が見る）。
+    /// Role names this app looks up (a declaration; check / deploy verify
+    /// they are in the wiring table).
     pub pin_roles: Vec<String>,
-    /// `--board` が無いときに使うボード。
+    /// Board used when `--board` is absent.
     pub default_board: Option<String>,
-    /// `--i2c-replay` が無いときに使うファイル（`dir` 基準で解決済み）。
+    /// File used when `--i2c-replay` is absent (already resolved against
+    /// `dir`).
     pub default_i2c_replay: Option<PathBuf>,
-    /// ボードごとの配線表（`deploy` が設定スロットに書く。§3.9）。
-    /// 読んだ時点でボードの制約（範囲・予約ピン・バスのピン・重複）を検査済み。
+    /// Per-board wiring tables (`deploy` writes them to the config slot;
+    /// docs/app-workflow.md §3.9). Checked against the board's constraints
+    /// (range, reserved pins, bus pins, duplicates) at load time.
     pub board_roles: BTreeMap<String, BTreeMap<String, Option<u32>>>,
 }
 
 impl Manifest {
-    /// そのボードの配線表を、設定スロットに書く形にする。
+    /// The board's wiring table in the form written to the config slot.
     ///
-    /// 表が無ければ空の表（役割を 1 つも配らない）。
+    /// An empty table (no roles handed out) when the board has none.
     ///
     /// # Errors
-    /// 表がボードの制約に合わないとき（`load` で検査済みなので、実際には
-    /// プロファイルを差し替えたときだけ起きる）。
+    /// When the table violates the board's constraints (already checked by
+    /// `load`, so in practice only after a profile change).
     pub fn role_map(&self, board: &'static Profile) -> Result<RoleMap> {
         match self.board_roles.get(board.name) {
             Some(table) => build_map(table, board),
@@ -119,7 +127,8 @@ impl Manifest {
     }
 }
 
-/// `[board.<name>.roles]` の 1 枚を `RoleMap` にする。`"none"` は配らない。
+/// Turns one `[board.<name>.roles]` table into a `RoleMap`. `"none"` entries
+/// are not handed out.
 fn build_map(table: &BTreeMap<String, Option<u32>>, board: &'static Profile) -> Result<RoleMap> {
     let limits = Limits::of(board);
     let mut map = RoleMap::EMPTY;
@@ -137,11 +146,11 @@ fn build_map(table: &BTreeMap<String, Option<u32>>, board: &'static Profile) -> 
     Ok(map)
 }
 
-/// `dir` から上に向かって `wasmicon.toml` を探す。
+/// Searches upward from `dir` for `wasmicon.toml`.
 ///
 /// # Errors
-/// 見つかったファイルが読めない、または内容が不正なとき。
-/// **見つからないのはエラーではない**（toml は任意）。
+/// When the file found cannot be read or is invalid. Not finding one is not
+/// an error (the file is optional).
 pub fn find(from: &Path) -> Result<Option<Manifest>> {
     let mut dir = Some(from);
     while let Some(d) = dir {
@@ -154,20 +163,25 @@ pub fn find(from: &Path) -> Result<Option<Manifest>> {
     Ok(None)
 }
 
-/// 1 ファイル読む。
+/// Loads one file.
 ///
 /// # Errors
-/// 読めない、TOML として壊れている、未知のキーがある、`version` が新しい、
-/// 役割名の書式が違う、配線表がボードの制約に合わないとき。
+/// When the file cannot be read, is not valid TOML, has unknown keys, has a
+/// newer `version`, has a malformed role name, or has a wiring table that
+/// violates the board's constraints.
 pub fn load(path: &Path) -> Result<Manifest> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("{} を読めない", path.display()))?;
-    let raw: Raw = toml::from_str(&text)
-        .with_context(|| format!("{} を読めない（未知のキーや型違い）", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read `{}`", path.display()))?;
+    let raw: Raw = toml::from_str(&text).with_context(|| {
+        format!(
+            "cannot read `{}` (unknown key or wrong type)",
+            path.display()
+        )
+    })?;
 
     if raw.version > SUPPORTED_VERSION {
         bail!(
-            "{} の version = {} はこの wasmicon より新しい（読めるのは {} まで）",
+            "`{}` has version = {}, newer than this wasmicon reads (up to {})",
             path.display(),
             raw.version,
             SUPPORTED_VERSION
@@ -179,31 +193,37 @@ pub fn load(path: &Path) -> Result<Manifest> {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
-    // 役割名は語彙と突き合わせない（ファームに語彙は無い）。書式だけ見る。
-    // **タイポは「宣言（pin-roles）と配線表の食い違い」として check / deploy が
-    // 止める**（デバイスに繋がなくてよい）。
+    // Role names are not matched against a vocabulary (the firmware has
+    // none); only the format is checked. A typo surfaces as "declaration
+    // (pin-roles) and wiring table disagree", which check / deploy stop
+    // without a device attached.
     let mut pin_roles = Vec::new();
     for name in &raw.requirements.pin_roles {
         valid_role(name)
-            .with_context(|| format!("{}: [requirements] pin-roles が不正", path.display()))?;
+            .with_context(|| format!("`{}`: invalid [requirements] pin-roles", path.display()))?;
         pin_roles.push(name.clone());
     }
 
     let mut board_roles = BTreeMap::new();
     for (board, b) in raw.board {
         let Some(p) = profile::by_name(&board) else {
-            bail!("{}: [board.{board}] というボードは無い", path.display());
+            bail!(
+                "`{}`: [board.{board}] names an unknown board",
+                path.display()
+            );
         };
         let mut map = BTreeMap::new();
         for (role, value) in b.roles {
             valid_role(&role)
-                .with_context(|| format!("{}: [board.{board}.roles] が不正", path.display()))?;
+                .with_context(|| format!("`{}`: invalid [board.{board}.roles]", path.display()))?;
             let pin = role_number(&value, &role, board.as_str())?;
             map.insert(role, pin);
         }
-        // ボードの制約（範囲・予約ピン・バスのピン・重複）はここで見る。
-        // ファームも起動時に同じ検査をするが、焼く前に止める方が早い。
-        build_map(&map, p).with_context(|| format!("{}: 配線表が不正", path.display()))?;
+        // The board's constraints (range, reserved pins, bus pins,
+        // duplicates) are checked here. The firmware repeats the check at
+        // boot, but stopping before flashing is faster.
+        build_map(&map, p)
+            .with_context(|| format!("`{}`: invalid wiring table", path.display()))?;
         board_roles.insert(board, map);
     }
 
@@ -216,28 +236,29 @@ pub fn load(path: &Path) -> Result<Manifest> {
     })
 }
 
-/// 役割名の書式（`wasmicon_port::roles::valid_name`）。
+/// Role name format (`wasmicon_port::roles::valid_name`).
 fn valid_role(name: &str) -> Result<()> {
     if roles::valid_name(name.as_bytes()) {
         Ok(())
     } else {
         bail!(
-            "{name:?} は役割名に使えない（英小文字で始まる {} 文字までの a-z / 0-9 / -）",
+            "`{name}` is not a valid role name (a lowercase letter first, then up to {} of \
+             a-z / 0-9 / -)",
             roles::MAX_NAME
         )
     }
 }
 
-/// 番号、または `"none"`（このボードにこの役割は無い）。
+/// A GPIO number, or `"none"` (this board has no such role).
 fn role_number(value: &toml::Value, role: &str, board: &str) -> Result<Option<u32>> {
     match value {
-        toml::Value::Integer(n) => u32::try_from(*n)
-            .map(Some)
-            .map_err(|_| anyhow::anyhow!("[board.{board}.roles] {role} = {n} は GPIO 番号でない")),
+        toml::Value::Integer(n) => u32::try_from(*n).map(Some).map_err(|_| {
+            anyhow::anyhow!("[board.{board}.roles] {role} = {n} is not a GPIO number")
+        }),
         toml::Value::String(s) if s == "none" => Ok(None),
-        other => bail!(
-            "[board.{board}.roles] {role} には GPIO 番号か \"none\" を書く（{other} ではない）"
-        ),
+        other => {
+            bail!("[board.{board}.roles] {role} must be a GPIO number or \"none\" (got {other})")
+        }
     }
 }
 
@@ -245,18 +266,19 @@ fn role_number(value: &toml::Value, role: &str, board: &str) -> Result<Option<u3
 mod tests {
     use super::*;
 
-    /// `wasmicon.toml` を書いて読む。
+    /// Writes a `wasmicon.toml` and loads it.
     ///
-    /// **テストごとにディレクトリを分ける。** 同じプロセス内で並列に走るので、
-    /// 1 つのディレクトリを共有すると互いのファイルを書き合う。プロセス ID も
-    /// 入れる（固定名だと worktree を並べたとき別プロセスとも衝突する）。
+    /// One directory per test. Tests run in parallel in one process, so a
+    /// shared directory would have them overwrite each other's files. The
+    /// process ID is included too (a fixed name collides with another
+    /// process when several worktrees run tests side by side).
     fn parse(name: &str, text: &str) -> Result<Manifest> {
         let dir = std::env::temp_dir()
             .join(format!("wasmicon-manifest-{}", std::process::id()))
             .join(name);
-        std::fs::create_dir_all(&dir).expect("作れない");
+        std::fs::create_dir_all(&dir).expect("cannot create the directory");
         let p = dir.join(FILE_NAME);
-        std::fs::write(&p, text).expect("書けない");
+        std::fs::write(&p, text).expect("cannot write");
         load(&p)
     }
 
@@ -270,15 +292,15 @@ version = 1
 pin-roles = ["lcd-cs", "lcd-dc"]
 "#,
         )
-        .expect("読める");
+        .expect("loads");
         assert_eq!(m.pin_roles, ["lcd-cs", "lcd-dc"]);
         assert!(m.default_board.is_none());
     }
 
     #[test]
     fn a_malformed_role_name_is_rejected_offline() {
-        // 語彙は無いが、書式は見る（本文の `=` や改行、トレースの `role:` と
-        // 衝突させない）。
+        // There is no vocabulary, but the format is checked (so a name cannot
+        // collide with `=` or a newline in the body, or `role:` in traces).
         let e = parse(
             "bad-role",
             r#"
@@ -287,13 +309,13 @@ version = 1
 pin-roles = ["LCD_CS"]
 "#,
         )
-        .expect_err("弾く");
+        .expect_err("rejected");
         assert!(format!("{e:#}").contains("LCD_CS"), "{e:#}");
     }
 
     #[test]
     fn any_well_formed_role_name_is_accepted() {
-        // ファームに語彙は無いので、`status-led` のような名前も書ける。
+        // The firmware has no vocabulary, so a name like `status-led` works.
         let m = parse(
             "free-role",
             r#"
@@ -304,21 +326,21 @@ pin-roles = ["status-led"]
 status-led = 2
 "#,
         )
-        .expect("読める");
-        let map = m.role_map(&profile::ESP32S3).expect("作れる");
+        .expect("loads");
+        let map = m.role_map(&profile::ESP32S3).expect("builds");
         assert_eq!(map.get(b"status-led"), Some(2));
     }
 
     #[test]
     fn the_wiring_is_checked_against_the_board_offline() {
-        // トレースの UART（GP0）、I2C のピン（GP4）、同じ番号の二重割り当て、
-        // 存在しないボード。どれも焼く前に止まる。
+        // The trace UART (GP0), an I2C pin (GP4), the same number assigned
+        // twice, a board that does not exist. All stop before flashing.
         for (name, text, needle) in [
             ("reserved", "[board.rp2350.roles]\nx = 0\n", "reserved"),
             ("bus", "[board.rp2350.roles]\nx = 4\n", "spi / i2c"),
             ("dup", "[board.rp2350.roles]\na = 15\nb = 15\n", "share"),
             ("range", "[board.rp2350.roles]\nx = 30\n", "out of range"),
-            ("board", "[board.nope.roles]\nx = 2\n", "ボードは無い"),
+            ("board", "[board.nope.roles]\nx = 2\n", "unknown board"),
         ] {
             let e = parse(name, &format!("version = 1\n{text}")).expect_err(name);
             assert!(format!("{e:#}").contains(needle), "{name}: {e:#}");
@@ -327,7 +349,7 @@ status-led = 2
 
     #[test]
     fn unknown_keys_are_rejected() {
-        // 黙って無視すると「設定したのに効いていない」に気付けない。
+        // Ignoring them silently hides "I set it but it has no effect".
         let e = parse(
             "unknown-key",
             r#"
@@ -336,14 +358,14 @@ version = 1
 pin_roles = ["led"]
 "#,
         )
-        .expect_err("キーは kebab-case だけ");
-        assert!(format!("{e:#}").contains("読めない"), "{e:#}");
+        .expect_err("keys are kebab-case only");
+        assert!(format!("{e:#}").contains("cannot read"), "{e:#}");
     }
 
     #[test]
     fn a_newer_version_is_rejected() {
-        let e = parse("version", "version = 2\n").expect_err("読めない版");
-        assert!(format!("{e:#}").contains("新しい"), "{e:#}");
+        let e = parse("version", "version = 2\n").expect_err("unreadable version");
+        assert!(format!("{e:#}").contains("newer"), "{e:#}");
     }
 
     #[test]
@@ -357,9 +379,9 @@ board = "rp2350"
 i2c-replay = "fixtures/sht4x.txt"
 "#,
         )
-        .expect("読める");
+        .expect("loads");
         assert_eq!(m.default_board.as_deref(), Some("rp2350"));
-        let p = m.default_i2c_replay.expect("ある");
+        let p = m.default_i2c_replay.expect("present");
         assert!(p.is_absolute() || p.starts_with(&m.dir), "{p:?}");
         assert!(p.ends_with("fixtures/sht4x.txt"));
     }
@@ -375,7 +397,7 @@ lcd-cs = 22
 lcd-rst = "none"
 "#,
         )
-        .expect("読める");
+        .expect("loads");
         let b = &m.board_roles["rp2350"];
         assert_eq!(b["lcd-cs"], Some(22));
         assert_eq!(b["lcd-rst"], None);
@@ -391,7 +413,7 @@ version = 1
 lcd-cs = "GP22"
 "#,
         )
-        .expect_err("弾く");
+        .expect_err("rejected");
         assert!(format!("{e:#}").contains("none"), "{e:#}");
     }
 }

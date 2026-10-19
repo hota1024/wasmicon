@@ -1,7 +1,8 @@
-//! `wasmicon deploy` の**焼く前の判定**を固定する。
+//! Locks in the pre-flash verdict of `wasmicon deploy`.
 //!
-//! フラッシャの呼び出しは実機が要るので、`prepare`（検査と画像の用意）だけを
-//! 見る。**走らないものを焼かない**ことがこの段の肝で、それはここで決まる。
+//! Calling the flasher needs hardware, so only `prepare` (check and image
+//! preparation) is covered. "Never flash what does not run" is the point of
+//! this stage, and it is decided here.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,17 +13,17 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("リポジトリルートが見つからない")
+        .expect("repository root not found")
 }
 
 fn tmp(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("deploy-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("作業ディレクトリを作れない");
+    std::fs::create_dir_all(&dir).expect("cannot create the work directory");
     dir
 }
 
-/// guest workspace でアプリをビルドして `.wasm` を返す。
+/// Builds an app in the guest workspace and returns the `.wasm`.
 fn build(pkg: &str) -> Vec<u8> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
@@ -35,30 +36,30 @@ fn build(pkg: &str) -> Vec<u8> {
         .env_remove("RUSTUP_TOOLCHAIN")
         .args(["build", "--release", "-p", pkg])
         .status()
-        .expect("cargo を起動できない");
-    assert!(status.success(), "{pkg} のビルドに失敗した");
+        .expect("cannot start cargo");
+    assert!(status.success(), "building {pkg} failed");
     let wasm = root
         .join("apps/target/wasm32-unknown-unknown/release")
         .join(format!("{}.wasm", pkg.replace('-', "_")));
-    std::fs::read(&wasm).unwrap_or_else(|e| panic!("{} を読めない: {e}", wasm.display()))
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
 }
 
-/// 通ることを確かめて計画を返す。
+/// Asserts that `prepare` passes and returns the plan.
 ///
-/// `Plan` は `Debug` を実装しない（`Profile` / `Slot` がポート側で
-/// 持っていない）ので、`expect` は使えない。
+/// `Plan` does not implement `Debug` (`Profile` / `Slot` on the port side do
+/// not), so `expect` cannot be used.
 fn prepared(o: &deploy::Options) -> deploy::Plan {
     match deploy::prepare(o) {
         Ok(p) => p,
-        Err(e) => panic!("通ると思ったが落ちた: {e:#}"),
+        Err(e) => panic!("expected to pass but failed: {e:#}"),
     }
 }
 
-/// 落ちることを確かめて理由を返す。
+/// Asserts that `prepare` fails and returns the reason.
 fn refused(o: &deploy::Options, what: &str) -> String {
     match deploy::prepare(o) {
         Err(e) => format!("{e:#}"),
-        Ok(_) => panic!("{what} を期待したが通ってしまった"),
+        Ok(_) => panic!("expected {what}, but it passed"),
     }
 }
 
@@ -78,65 +79,66 @@ fn opts(path: PathBuf, board: Option<&str>) -> deploy::Options {
 fn a_runnable_app_gets_an_image_and_an_address() {
     let dir = tmp("ok");
     let app = dir.join("blink.wasm");
-    std::fs::write(&app, build("blink-rs")).expect("書けない");
+    std::fs::write(&app, build("blink-rs")).expect("cannot write");
 
     let plan = prepared(&opts(app, Some("rp2350")));
     assert_eq!(plan.board.name, "rp2350");
-    // picotool に渡すのは**アドレス**（オフセットではない）。
+    // picotool takes an address, not an offset.
     assert_eq!(plan.addr, 0x1010_0000);
     assert_eq!(plan.image_len, plan.wasm_len + 16);
-    assert!(plan.image.is_file(), "画像をアプリの隣に書く");
+    assert!(plan.image.is_file(), "the image is written next to the app");
     assert!(
         plan.image.extension().is_some_and(|e| e == "bin"),
-        "picotool は拡張子で種別を判定するので .bin（§9）"
+        "picotool decides the file type by extension, so .bin \
+         (docs/verification-report.md §9)"
     );
 }
 
 #[test]
 fn an_app_that_cannot_run_on_the_board_is_not_flashed() {
-    // **これがこの段の肝。** sensor-display は I2C と SPI を使うので
-    // rp2040 では動かない（ポートが unsupported を返す）。焼いてしまうと
-    // 実機で落ちるまで分からない。
+    // The point of this stage. sensor-display uses I2C and SPI, so it does
+    // not run on rp2040 (the port returns unsupported). Flashed anyway, it
+    // would fail only on hardware.
     let dir = tmp("check-fails");
     let app = dir.join("sensor.wasm");
-    std::fs::write(&app, build("sensor-display-rs")).expect("書けない");
+    std::fs::write(&app, build("sensor-display-rs")).expect("cannot write");
 
-    let msg = refused(&opts(app.clone(), Some("rp2040")), "焼かない");
-    assert!(msg.contains("check が落ちた"), "{msg}");
+    let msg = refused(&opts(app.clone(), Some("rp2040")), "a refusal to flash");
+    assert!(msg.contains("check failed"), "{msg}");
     assert!(msg.contains("rp2040"), "{msg}");
     assert!(
         !dir.join("sensor.bin").exists(),
-        "画像も書かない（焼く前に止まる）"
+        "no image either (it stops before flashing)"
     );
 
-    // 同じアプリは rp2350 では通る。
+    // The same app passes on rp2350.
     prepared(&opts(app, Some("rp2350")));
 }
 
 #[test]
 fn a_board_without_a_slot_is_refused() {
-    // host にフラッシュは無い。3 ポートはスロットを持っている。
+    // The host has no flash. The three ports have slots.
     let dir = tmp("no-slot");
     let app = dir.join("blink.wasm");
-    std::fs::write(&app, build("blink-rs")).expect("書けない");
+    std::fs::write(&app, build("blink-rs")).expect("cannot write");
 
-    let msg = refused(&opts(app, Some("host")), "置き場所が無い");
-    assert!(msg.contains("決まっていない"), "{msg}");
+    let msg = refused(&opts(app, Some("host")), "no slot location");
+    assert!(msg.contains("not decided"), "{msg}");
 }
 
 #[test]
 fn the_board_must_be_named_somewhere() {
-    // どこに書くか決まらないので、推測しない。
+    // With no way to know where to write, nothing is guessed.
     let dir = tmp("no-board");
     let app = dir.join("blink.wasm");
-    std::fs::write(&app, build("blink-rs")).expect("書けない");
+    std::fs::write(&app, build("blink-rs")).expect("cannot write");
 
-    let msg = refused(&opts(app, None), "ボードが決まらない");
+    let msg = refused(&opts(app, None), "no target board");
     assert!(msg.contains("--board"), "{msg}");
     assert!(msg.contains("wasmicon.toml"), "{msg}");
 }
 
-/// `Mode` を見るための最小の `Options`。パスは使わない。
+/// The smallest `Options` for looking at `Mode`. The path is not used.
 fn mode_opts(no_run: bool, monitor: bool) -> deploy::Options {
     deploy::Options {
         path: PathBuf::from("x.wasm"),
@@ -153,15 +155,16 @@ fn mode_opts(no_run: bool, monitor: bool) -> deploy::Options {
 fn no_run_keeps_an_espflash_board_halted() {
     use wasmicon_port::profile::Flasher;
 
-    // **これが肝。** `espflash write-bin` は既定で `--after hard-reset` まで
-    // やるので、抑えないと `--no-run` なのに**焼いた直後に走る**。それで
-    // 「書いた。リセットすると走る」と出すと嘘になる。プローブを当てる前や、
-    // モータに繋いだボードでは走らせたくない。
+    // The point: `espflash write-bin` does `--after hard-reset` by default,
+    // so without suppression the app runs right after flashing despite
+    // `--no-run`, and "written; runs on the next reset" would be a lie.
+    // Nobody wants that before attaching a probe or on a board wired to a
+    // motor.
     let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Espflash);
-    assert!(m.keep_halted, "--no-run なのにリセットしてしまう");
+    assert!(m.keep_halted, "resets despite --no-run");
     assert!(!m.hand_off);
 
-    // picotool はリセットを別に呼ぶので、抑える必要が無い。
+    // picotool resets in a separate call, so nothing needs suppressing.
     let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Picotool);
     assert!(!m.keep_halted);
 }
@@ -170,16 +173,18 @@ fn no_run_keeps_an_espflash_board_halted() {
 fn monitor_hands_the_port_over_only_when_it_is_shared() {
     use wasmicon_port::profile::Flasher;
 
-    // 同じ口のボードは、書き込みで走らせずリセットを espflash に任せる。
+    // A board with a shared port is not run by the flash step; the reset is
+    // left to espflash.
     let m = deploy::Mode::of(&mode_opts(false, true), Flasher::Espflash);
     assert!(m.hand_off && m.keep_halted && m.shared_port);
 
-    // 口が別なら自分で開いてから自分でリセットする。
+    // With separate ports, open the port ourselves and reset ourselves.
     let m = deploy::Mode::of(&mode_opts(false, true), Flasher::Picotool);
     assert!(!m.hand_off && !m.keep_halted && !m.shared_port);
 
-    // `--no-run` が入ったら取り込みはしない（走らせないので何も出ない）。
+    // With `--no-run` there is no capture (nothing runs, so nothing comes
+    // out).
     let m = deploy::Mode::of(&mode_opts(true, true), Flasher::Espflash);
-    assert!(!m.hand_off, "走らせないのに取り込もうとしている");
+    assert!(!m.hand_off, "tries to capture although nothing runs");
     assert!(m.keep_halted);
 }

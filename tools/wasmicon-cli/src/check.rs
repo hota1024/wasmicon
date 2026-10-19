@@ -1,26 +1,28 @@
-//! `wasmicon check` — アプリがそのボードで走るかを**実ランタイムで**検査する。
+//! `wasmicon check`: checks with the real runtime whether an app runs on a board.
 //!
-//! 見るもの（`docs/app-workflow.md` §4.3）:
+//! What it looks at (docs/app-workflow.md §4.3):
 //!
-//! - import の**名前とシグネチャの完全一致**（abi-spec §6.4 / §7）。表は
-//!   `runtime` の生成物（= `wit/` 由来）
-//! - `run` と `memory` の export（abi-spec §3.3 / §6.2）
-//! - **そのボードの `Config` での validate**（`max_memory_pages` など）
-//! - **アプリが import するインターフェースがそのポートで実装済みか。**
-//!   `ports/rp2040` は SPI / I2C が `unsupported` を返すので、これが無いと
-//!   静的検査は通って実機で初めて落ちる
+//! - Every import matches the table by name and signature
+//!   (docs/abi-spec.md §6.4, §7). The table is the generated file in
+//!   `runtime`, derived from `wit/`.
+//! - The `run` and `memory` exports (docs/abi-spec.md §3.3, §6.2).
+//! - `validate` with that board's `Config` (`max_memory_pages` and so on).
+//! - Whether every interface the app imports is implemented by that port.
+//!   `ports/rp2040` returns `unsupported` for SPI / I2C, so without this the
+//!   static check passes and the app fails only on hardware.
+//! - Whether every role the app declares (`[requirements] pin-roles` in
+//!   `wasmicon.toml`) is in that board's wiring table. On hardware the table
+//!   is `[board.<name>.roles]` (which `deploy` writes to the config slot); on
+//!   the host it is the mock's table. The firmware has no default table, so a
+//!   role missing from the table is `unsupported` on hardware
+//!   (docs/app-workflow.md §3.9).
 //!
-//! - **アプリが宣言した役割（`wasmicon.toml` の `[requirements] pin-roles`）が、
-//!   そのボードの配線表にあるか。** 配線表は実機なら `[board.<name>.roles]`
-//!   （`deploy` が設定スロットに書く）、host なら mock の表。ファームは既定の
-//!   表を持たないので、表に無い役割は実機で `unsupported` になる（§3.9）
+//! What it cannot do: enumerate role names. The argument of `pin-by-role` is
+//! a `string` passed at run time, so it cannot be read reliably from the
+//! `.wasm`. An app that declares no roles has none cross-checked.
 //!
-//! **できないこと: 役割名の列挙。** `pin-by-role` の引数は実行時に渡る
-//! `string` なので、`.wasm` から確実には取れない。宣言が無いアプリの役割は
-//! 照合しない。
-//!
-//! 判定（`facts` / `judge`）と印字を分けてあるのは、判定だけをテストから
-//! 呼べるようにするため。
+//! The verdict (`facts` / `judge`) is separate from the printing so that tests
+//! can call the verdict alone.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -33,38 +35,39 @@ use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
 use wasmicon_port::Hal;
 use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
 
-/// 事実を取り出すだけの decode に使う作業領域（ボードに依存しない）。
+/// Arena for the decode that only extracts facts (board-independent).
 ///
-/// **最も緩いプロファイル（host）に合わせる。** ここだけ小さいと、
-/// `wasmicon run` や `check --board host` では読める `.wasm` が
-/// 「decode できない」で**モジュールの節もボードの判定も出ないまま**
-/// 終わる。ボードごとの検査はそのボードの実寸を使う（`Profile::arena`）。
+/// Sized like the most permissive profile (host). If it were smaller, a
+/// `.wasm` that `wasmicon run` and `check --board host` can read would stop
+/// here with "cannot decode", before the module section and the per-board
+/// verdicts are printed. The per-board check uses that board's real size
+/// (`Profile::arena`).
 const FACTS_ARENA: usize = profile::HOST.arena;
 
-/// `world app` の外で唯一許す import。**綴りの正は `ports/common`**
-/// （リンクを決めているのはあちらの `Resolver`。食い違うと、check が
-/// リンクするものを「表に無い」と言う）。
+/// The one import allowed outside `world app`. The spelling is owned by
+/// `ports/common` (its `Resolver` decides what links; if the two disagreed,
+/// check would call something that links "not in the table").
 use wasmicon_port::AS_ABORT;
 
-/// import 1 件の判定。
+/// Verdict on one import.
 #[derive(PartialEq, Eq)]
 pub enum ImportState {
-    /// 名前もシグネチャも一致した。
+    /// Name and signature both match.
     Ok,
-    /// 表に無い（リンクエラーになる）。
+    /// Not in the table (link error).
     Unknown,
-    /// 名前はあるがシグネチャが違う（リンクエラーになる）。
+    /// The name exists but the signature differs (link error).
     SigMismatch { want: &'static str },
-    /// AssemblyScript の `env.abort`。
+    /// AssemblyScript's `env.abort`.
     AsAbort,
-    /// 関数でない import（abi-spec §6.2: import memory は不可）。
+    /// Not a function import (docs/abi-spec.md §6.2: no memory import).
     NotAFunc,
-    /// 型インデックスが型セクションの外を指している（壊れた `.wasm`）。
+    /// The type index points outside the type section (corrupt `.wasm`).
     BadTypeIndex { idx: u32 },
 }
 
 impl ImportState {
-    /// リンクを壊すか。
+    /// Whether this import breaks linking.
     #[must_use]
     pub fn is_failure(&self) -> bool {
         !matches!(self, ImportState::Ok | ImportState::AsAbort)
@@ -77,12 +80,13 @@ pub struct ImportCheck {
     pub state: ImportState,
 }
 
-/// ボードに依存しない事実。arena を畳んだあとも使えるよう所有権を持つ。
+/// Board-independent facts. Owned, so they outlive the arena.
 pub struct Facts {
     pub imports: Vec<ImportCheck>,
-    /// インターフェースごとの import 数。`wasmicon:hal/<iface>@0.1.0` の `<iface>`。
+    /// Import count per interface, keyed by the `<iface>` of
+    /// `wasmicon:hal/<iface>@0.1.0`.
     pub per_iface: BTreeMap<String, usize>,
-    /// `run` の export。`None` = 無い、`Some(Err(..))` = 型が違う。
+    /// The `run` export. `None` = missing, `Some(Err(..))` = wrong type.
     pub run_export: Option<std::result::Result<(), String>>,
     pub has_memory_export: bool,
     pub mem_pages: Option<u32>,
@@ -90,35 +94,39 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// リンクを壊す import の数。
+    /// Number of imports that break linking.
     #[must_use]
     pub fn import_failures(&self) -> usize {
         self.imports.iter().filter(|i| i.state.is_failure()).count()
     }
 
-    /// **ボードに依存しない**失敗の数（import / export / メモリ定義）。
+    /// Number of board-independent failures (imports, exports, memory
+    /// definition).
     ///
-    /// 独立した欠陥を 1 件に畳まない。畳むと「1 件」を直して再実行した人が
-    /// 既に分かっていた 2 つ目を知らされることになる。
+    /// Independent defects are not folded into one. Folding them means the
+    /// person who fixes "the one" and reruns is only then told about the
+    /// second, which was already known.
     #[must_use]
     pub fn failures(&self) -> usize {
         self.import_failures()
             + usize::from(!matches!(self.run_export, Some(Ok(()))))
             + usize::from(!self.has_memory_export)
-            // abi-spec §6.2: memory を 1 つ定義して export する。
+            // docs/abi-spec.md §6.2: define and export exactly one memory.
             + usize::from(self.mem_pages.is_none())
     }
 }
 
-/// どの段で落ちたか。**`validate` と `instantiate` を混ぜない。**
+/// The stage that failed. `validate` and `instantiate` are kept apart.
 ///
-/// arena 不足は instantiate で出るが、「validate が落ちた」と言うと
-/// `max_memory_pages` を縮める方へ誘導してしまう（正しくは arena を増やす）。
+/// Running out of arena happens in instantiate; reporting it as "validate
+/// failed" steers people toward shrinking `max_memory_pages`, when the fix is
+/// a larger arena.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Decode,
     Validate,
-    /// `Exec` の確保と instantiate（線形メモリは arena の残りから取る）。
+    /// Allocating `Exec` and instantiating (linear memory takes the rest of
+    /// the arena).
     Instantiate,
 }
 
@@ -133,21 +141,24 @@ impl Stage {
     }
 }
 
-/// 1 ボード分の判定。
+/// Verdict for one board.
 pub struct Verdict {
     pub board: &'static str,
-    /// `Ok(そのボードの上限)` か、落ちた理由。
+    /// `Ok(the board's page limit)` or the reason it failed.
     pub validate: std::result::Result<u32, String>,
-    /// 落ちた段（通ったときは `Instantiate` = 最後まで行った）。
+    /// The stage that failed (`Instantiate` when everything passed, meaning
+    /// it went all the way).
     pub stage: Stage,
-    /// 使っているのにそのポートで未実装のインターフェース。
+    /// Interfaces the app uses that this port does not implement.
     pub unimplemented: Vec<String>,
-    /// `wasmicon.toml` が宣言した役割のうち、このボードの配線表に無いもの。
+    /// Roles declared in `wasmicon.toml` that are missing from this board's
+    /// wiring table.
     pub missing_declared_roles: Vec<String>,
 }
 
 impl Verdict {
-    /// 行のラベル。落ちた段を出す（`instantiate` を `validate` と呼ばない）。
+    /// Row label. Names the stage that failed (never calls `instantiate`
+    /// `validate`).
     #[must_use]
     pub fn stage_label(&self) -> String {
         if self.validate.is_err() {
@@ -157,11 +168,12 @@ impl Verdict {
         }
     }
 
-    /// **このボードに固有の**失敗の数。
+    /// Number of failures specific to this board.
     ///
-    /// import や export の不備はボードに依存しないので、ここには入れない
-    /// （モジュールの節で 1 回だけ数える。`Facts::failures`）。全ボードに
-    /// 同じ数を足すと、どれがボード固有の問題なのか読めなくなる。
+    /// Import and export defects are board-independent, so they are not
+    /// counted here (the module section counts them once; `Facts::failures`).
+    /// Adding the same count to every board would hide which problems are
+    /// board-specific.
     #[must_use]
     pub fn fails(&self) -> usize {
         usize::from(self.validate.is_err())
@@ -177,20 +189,21 @@ impl Verdict {
 
 pub struct Options {
     pub path: PathBuf,
-    /// `--board`。`None` なら全ボードを見る（同一バイナリが本題なので既定）。
+    /// `--board`. `None` checks every board (the default, since one binary
+    /// for all boards is the point).
     pub board: Option<String>,
-    /// `wasmicon.toml`（§4.7）。`[requirements] pin-roles` と
-    /// `[board.<name>.roles]` を突き合わせる。
+    /// `wasmicon.toml` (docs/app-workflow.md §4.7). `[requirements] pin-roles`
+    /// is cross-checked against `[board.<name>.roles]`.
     pub manifest: Option<Manifest>,
 }
 
-/// 検査して結果を出す。全ボードが通れば `true`。
+/// Checks and prints the result. `true` when every board passes.
 pub fn run(opts: &Options) -> Result<bool> {
-    let wasm =
-        std::fs::read(&opts.path).with_context(|| format!("{} を読めない", opts.path.display()))?;
+    let wasm = std::fs::read(&opts.path)
+        .with_context(|| format!("cannot read `{}`", opts.path.display()))?;
 
-    // 解決は `pack::resolve_board` に 1 つだけ置く（文面と候補の一覧を
-    // 2 箇所に持つと、片方だけ直して食い違う）。
+    // Board names are resolved in `pack::resolve_board` only (two copies of
+    // the message and the candidate list would be fixed on one side only).
     let boards: Vec<&'static Profile> = match &opts.board {
         Some(name) => vec![pack::resolve_board(name)?],
         None => profile::PROFILES.to_vec(),
@@ -215,10 +228,10 @@ pub fn run(opts: &Options) -> Result<bool> {
     Ok(all_ok)
 }
 
-/// decode して、ボードに依存しない事実を取り出す。
+/// Decodes and extracts the board-independent facts.
 ///
 /// # Errors
-/// decode が失敗したとき（壊れた `.wasm`、対応外の機能セットなど）。
+/// When decoding fails (corrupt `.wasm`, unsupported feature set, ...).
 pub fn facts(wasm: &[u8]) -> Result<Facts> {
     let mut buf = vec![0u8; FACTS_ARENA];
     let mut arena = Arena::new(&mut buf);
@@ -229,9 +242,9 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
     for imp in m.imports {
         let state = match imp.desc {
             ImportDesc::Func(ty) => match m.types.get(ty as usize) {
-                // decode は import の型インデックスを検査しない（壊れた
-                // `.wasm` を診断するのがこのコマンドの仕事なので、
-                // ここで panic してはいけない）。
+                // decode does not check import type indices. Diagnosing a
+                // corrupt `.wasm` is this command's job, so it must not
+                // panic here.
                 None => ImportState::BadTypeIndex { idx: ty },
                 Some(ft) => match generated::resolve(imp.module, imp.name) {
                     Some(d) if ft.sig_matches(d.sig) => ImportState::Ok,
@@ -254,9 +267,10 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
         });
     }
 
-    // abi-spec §3.3 は `run: func()`。**引数や戻り値が付いていると
-    // 実行時に `wrong arity` で落ちる**ので、ここで型まで見る
-    // （export の有無だけ見ていると、間違ったシグネチャが素通りする）。
+    // docs/abi-spec.md §3.3 says `run: func()`. A `run` with parameters or
+    // results fails at run time with `wrong arity`, so the type is checked
+    // here too (checking only that the export exists lets a wrong signature
+    // through).
     let run_export = m
         .exports
         .iter()
@@ -280,11 +294,11 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
     })
 }
 
-/// 1 ボード分を判定する。
+/// Judges one board.
 ///
-/// `declared` は `wasmicon.toml` の `[requirements] pin-roles`、`provided` は
-/// そのボードが配る役割（`provided_roles`）。宣言した役割が配られなければ
-/// 失敗として数える。
+/// `declared` is `[requirements] pin-roles` from `wasmicon.toml`; `provided`
+/// is the roles that board hands out (`provided_roles`). A declared role that
+/// is not provided counts as a failure.
 #[must_use]
 pub fn judge(
     wasm: &[u8],
@@ -321,35 +335,35 @@ pub fn judge(
     }
 }
 
-/// そのボードの実寸で decode → validate → `Exec` → instantiate まで通す。
+/// Runs decode -> validate -> `Exec` -> instantiate with the board's real
+/// arena sizes.
 ///
-/// **`validate` だけでは足りない。** 線形メモリは arena の残り全部を取るので
-/// （`Arena::alloc_rest`）、`max_memory_pages` に収まっていても
-/// 「decode / validate / `Exec` が先に取った残りに `min_pages * 64 KiB` が
-/// 入らない」ことがある。実機はそこで `instantiate` が落ちる。
-/// ここでボードの `arena` / `scratch` の実寸を使うのは、その余裕まで
-/// 再現するため（`ports/rp2040` は 160 KiB しかなく、2 ページで
-/// 20 KiB ほどしか余らない）。
+/// `validate` alone is not enough. Linear memory takes the rest of the arena
+/// (`Arena::alloc_rest`), so even within `max_memory_pages` the
+/// `min_pages * 64 KiB` may not fit in what decode / validate / `Exec` left.
+/// On hardware that is where `instantiate` fails. The board's real `arena`
+/// and `scratch` sizes are used here to reproduce that headroom
+/// (`ports/rp2040` has only 160 KiB, leaving about 20 KiB with 2 pages).
 ///
-/// リンクは `Hal` が解決する（import 名とシグネチャの完全一致。abi-spec §6.4）。
-/// ボードは host の mock を使う。`instantiate` はゲストを実行しないので、
-/// どのボード実装でも結果は変わらない。
+/// Linking is done by `Hal` (exact match of import names and signatures,
+/// docs/abi-spec.md §6.4). The board is the host mock; `instantiate` does not
+/// run the guest, so the result is the same with any board implementation.
 ///
 /// # Errors
-/// decode / validate / `Exec` / instantiate のいずれかが失敗したとき。
-/// 文字列は `reason() [kind]` の形。
+/// When decode, validate, `Exec` or instantiate fails. The string has the
+/// form `reason() [kind]`.
 pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (Stage, String)> {
     let mut buf = vec![0u8; p.arena];
     let mut scratch_buf = vec![0u8; p.scratch];
     let mut arena = Arena::new(&mut buf);
     let mut scratch = Arena::new(&mut scratch_buf);
 
-    // **アプリを RAM に写すボードは、その分だけ arena が減る**（ESP32-S3 は
-    // XIP に任意オフセットを期待できないので `esp-storage` で写す）。
-    // ポートは decode の前に取るので、同じ順番で再現する。これを入れないと
-    // **アプリの大きさの分だけ余裕を多く見積もる**ことになり、
-    // 「`check` は通るのに実機の instantiate で落ちる」—— この関数が
-    // 防ぐためにある形 —— をそのまま作ってしまう。
+    // A board that copies the app into RAM has that much less arena (ESP32-S3
+    // cannot rely on XIP at an arbitrary offset, so it copies through
+    // `esp-storage`). The port allocates it before decode, so the same order
+    // is reproduced here. Without this the headroom is overestimated by the
+    // app's size, producing exactly the "`check` passes but instantiate fails
+    // on hardware" that this function exists to prevent.
     if p.slot.is_some_and(|sl| sl.read == SlotRead::Copy) {
         arena
             .alloc_bytes(wasm.len())
@@ -359,51 +373,56 @@ pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (St
     let m = decode::decode(wasm, &mut arena).map_err(|e| (Stage::Decode, reason(e)))?;
     let v = validate::validate(&m, &p.config, &mut arena, &mut scratch)
         .map_err(|e| (Stage::Validate, reason(e)))?;
-    // Exec は線形メモリ（arena の残り全部）より先に確保する。ポートと同じ順番。
+    // Exec is allocated before linear memory (which takes the rest of the
+    // arena), in the same order as the port.
     let _exec = Exec::new(&p.config, &mut arena).map_err(|e| (Stage::Instantiate, reason(e)))?;
     let mut hal = Hal::new(wasmicon_host::hal::HostBoard::new(), false)
         .with_roles(wasmicon_host::hal::host_roles());
-    // 線形メモリはここで arena の残りから取られる。足りなければ実機と同じ
-    // ように落ちる（それがこの関数の目的）。
+    // Linear memory is taken from the rest of the arena here. If it does not
+    // fit, this fails the same way hardware does (which is the point).
     let _inst = instantiate(m, v, &p.config, &mut arena, &mut hal)
         .map_err(|e| (Stage::Instantiate, reason(e)))?;
     Ok(())
 }
 
-/// `run` の型が `func()` かを見る（abi-spec §3.3）。
+/// Checks that `run` has type `func()` (docs/abi-spec.md §3.3).
 ///
-/// 戻すのは人が読める形の型。`Ok(())` なら `() -> ()`。
+/// The error is a human-readable description of the type. `Ok(())` means
+/// `() -> ()`.
 fn run_signature(
     m: &wasmicon_core::Module<'_, '_>,
     func_idx: u32,
 ) -> std::result::Result<(), String> {
-    // import 由来の関数は func index の手前に並ぶ（abi-spec §6.4）。
+    // Imported functions come first in the function index space
+    // (docs/abi-spec.md §6.4).
     let imported = m
         .imports
         .iter()
         .filter(|i| matches!(i.desc, ImportDesc::Func(_)))
         .count();
     let Some(local) = (func_idx as usize).checked_sub(imported) else {
-        return Err("import された関数を run として export している".to_string());
+        return Err("an imported function is exported as run".to_string());
     };
     let Some(&ty) = m.funcs.get(local) else {
-        return Err(format!("関数 {func_idx} が無い（壊れた .wasm）"));
+        return Err(format!(
+            "function {func_idx} does not exist (corrupt .wasm)"
+        ));
     };
     let Some(ft) = m.types.get(ty as usize) else {
-        return Err(format!("型 {ty} が無い（壊れた .wasm）"));
+        return Err(format!("type {ty} does not exist (corrupt .wasm)"));
     };
     if ft.sig_matches(":") {
         Ok(())
     } else {
         Err(format!(
-            "引数 {} 個 / 戻り値 {} 個",
+            "{} params / {} results",
             ft.params().count(),
             ft.results().count()
         ))
     }
 }
 
-/// `wasmicon:hal/<iface>@0.1.0` から `<iface>` を取る（abi-spec §3.1）。
+/// Extracts `<iface>` from `wasmicon:hal/<iface>@0.1.0` (docs/abi-spec.md §3.1).
 fn iface_of(module: &str) -> Option<&str> {
     module
         .strip_prefix("wasmicon:hal/")?
@@ -412,11 +431,12 @@ fn iface_of(module: &str) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-/// そのボードが配る役割名。
+/// The role names a board hands out.
 ///
-/// host は mock の表（`profile::HOST.roles`）。実機ボードは既定の表を持たない
-/// ので、`wasmicon.toml` の `[board.<name>.roles]` で番号を与えたものだけ
-/// （`deploy` がそれを設定スロットに書く。§3.9）。
+/// The host uses the mock's table (`profile::HOST.roles`). Hardware boards
+/// have no default table, so only the roles given a number in
+/// `[board.<name>.roles]` of `wasmicon.toml` count (`deploy` writes them to
+/// the config slot; docs/app-workflow.md §3.9).
 #[must_use]
 pub fn provided_roles(p: &Profile, manifest: Option<&Manifest>) -> Vec<String> {
     if !p.roles.is_empty() {
@@ -441,25 +461,30 @@ fn implemented(i: &Interfaces, iface: &str) -> Option<bool> {
         "time" => Some(i.time),
         "log" => Some(i.log),
         "board" => Some(i.board),
-        // types は関数を持たないので import に現れない（abi-spec §7）。
+        // types has no functions, so it never appears as an import
+        // (docs/abi-spec.md §7).
         _ => None,
     }
 }
 
-/// `wasmicon_core::Error` は `Debug` を実装しない（コアで `core::fmt` を
-/// 使わないため）。表示は `reason()` と `kind().name()` で組む。
+/// `wasmicon_core::Error` does not implement `Debug` (the core avoids
+/// `core::fmt`). The text is built from `reason()` and `kind().name()`.
 fn reason(e: wasmicon_core::Error) -> String {
     format!("{} [{}]", e.reason(), e.kind().name())
 }
 
-// ---- 印字 ----
+// ---- printing ----
 
 fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[String]>) {
     let name = path.file_name().unwrap_or(path.as_os_str());
     println!("{}  {} B", name.to_string_lossy(), thousands(wasm.len()));
     println!();
 
-    row("abi", "wasmicon:hal@0.1.0", "import 名で強制される");
+    row(
+        "abi",
+        "wasmicon:hal@0.1.0",
+        "enforced through the import names",
+    );
 
     let bad = f.import_failures();
     if bad == 0 {
@@ -472,22 +497,18 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[String]>
         if f.imports.iter().any(|i| i.state == ImportState::AsAbort) {
             note.push_str(" + env.abort");
         }
-        row(
-            "imports",
-            &format!("{} 件すべて一致", f.imports.len()),
-            &note,
-        );
+        row("imports", &format!("all {} match", f.imports.len()), &note);
     } else {
-        row("imports", &format!("{bad} 件が一致しない"), "");
+        row("imports", &format!("{bad} do not match"), "");
         for i in &f.imports {
             let what = match &i.state {
-                ImportState::Unknown => "表に無い（リンクエラー）".to_string(),
+                ImportState::Unknown => "not in the table (link error)".to_string(),
                 ImportState::SigMismatch { want } => {
-                    format!("シグネチャが違う（{want} を期待）")
+                    format!("signature differs (expected {want})")
                 }
-                ImportState::NotAFunc => "関数でない（abi-spec §6.2）".to_string(),
+                ImportState::NotAFunc => "not a function (docs/abi-spec.md §6.2)".to_string(),
                 ImportState::BadTypeIndex { idx } => {
-                    format!("型 {idx} が型セクションの外を指している（壊れた .wasm）")
+                    format!("type {idx} is outside the type section (corrupt .wasm)")
                 }
                 ImportState::Ok | ImportState::AsAbort => continue,
             };
@@ -498,43 +519,45 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[String]>
     let run_note = match &f.run_export {
         Some(Ok(())) => None,
         Some(Err(sig)) => Some(format!(
-            "run の型が違う（{sig}。abi-spec §3.3 は run: func()）"
+            "run has the wrong type ({sig}; docs/abi-spec.md §3.3 wants run: func())"
         )),
-        None => Some("run の export が無い（abi-spec §3.3）".to_string()),
+        None => Some("missing export `run` (docs/abi-spec.md §3.3)".to_string()),
     };
-    let mem_note = (!f.has_memory_export).then_some("memory の export が無い（abi-spec §6.2）");
+    let mem_note =
+        (!f.has_memory_export).then_some("missing export `memory` (docs/abi-spec.md §6.2)");
     match (run_note, mem_note) {
-        (None, None) => row("exports", "run, memory", "あり"),
+        (None, None) => row("exports", "run, memory", "present"),
         (Some(r), None) => row("exports", "memory", &r),
         (None, Some(m)) => row("exports", "run", m),
         (Some(r), Some(m)) => {
-            row("exports", "なし", &r);
+            row("exports", "none", &r);
             row("", "", m);
         }
     }
 
     match f.mem_pages {
-        Some(p) => row("memory", &format!("初期 {p} ページ"), ""),
-        None => row("memory", "定義なし", "abi-spec §6.2 は 1 つ要求する"),
+        Some(p) => row("memory", &format!("initial {p} pages"), ""),
+        None => row("memory", "none", "docs/abi-spec.md §6.2 requires one"),
     }
     match f.table_elems {
-        Some(n) => row("table", &format!("{n} 要素"), ""),
-        None => row("table", "なし", ""),
+        Some(n) => row("table", &format!("{n} elements"), ""),
+        None => row("table", "none", ""),
     }
 
     match declared {
-        Some(roles) => row("roles", &roles.join(", "), "wasmicon.toml の宣言"),
+        Some(roles) => row("roles", &roles.join(", "), "declared in wasmicon.toml"),
         None => row(
             "roles",
-            "宣言が無い",
-            "役割を引くなら wasmicon.toml の pin-roles に書く",
+            "none declared",
+            "declare the roles the app looks up in pin-roles of wasmicon.toml",
         ),
     }
 
-    // ここまでがボードに依存しない判定。ボードごとの節に混ぜると、
-    // 同じ失敗が全ボードに重複して出て、どれがボード固有か読めなくなる。
+    // Everything above is board-independent. Mixing it into the per-board
+    // sections would repeat the same failure for every board and hide which
+    // ones are board-specific.
     if f.failures() > 0 {
-        println!("→ 全ボード共通で落ちる（{} 件）", f.failures());
+        println!("-> fails on every board ({} failures)", f.failures());
     }
 }
 
@@ -542,27 +565,27 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[String]
     println!("[{}]", v.board);
 
     match (&v.validate, f.mem_pages) {
-        // メモリ定義が無いモジュールは「0 ページが収まる」ではない
-        // （ランタイムは通すが abi-spec §6.2 が 1 つ要求している）。
-        // **件数はモジュールの節で数えている**ので、ここでは印を付けない。
+        // A module without a memory definition is not "0 pages fit" (the
+        // runtime accepts it, but docs/abi-spec.md §6.2 requires one). It is
+        // counted in the module section, so no mark here.
         (Ok(_), None) => row(
             "validate",
-            "メモリ定義が無いので判定しない",
-            "（上に出した）",
+            "skipped: no memory definition",
+            "(reported above)",
         ),
         (Ok(limit), Some(pages)) => row(
             &v.stage_label(),
-            &format!("初期 {pages} ページ ≤ {limit}"),
+            &format!("initial {pages} pages <= {limit}"),
             "ok",
         ),
-        (Err(e), _) => row(&v.stage_label(), e, "← 落ちる"),
+        (Err(e), _) => row(&v.stage_label(), e, "<- fails"),
     }
 
     for iface in &v.unimplemented {
         row(
             iface,
-            "このポートは未実装（実機では unsupported）",
-            "← 落ちる",
+            "not implemented by this port (unsupported)",
+            "<- fails",
         );
     }
 
@@ -571,14 +594,14 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[String]
             row(
                 "roles",
                 &declared.join(", "),
-                &format!("{} の配線表にある", p.name),
+                &format!("in the {} wiring table", p.name),
             );
         } else {
             row(
                 "roles",
                 &declared.join(", "),
                 &format!(
-                    "{} の配線表に無い: {}  ← 落ちる（[board.{}.roles] に書く）",
+                    "not in the {} wiring table: {}  <- fails (add to [board.{}.roles])",
                     p.name,
                     v.missing_declared_roles.join(", "),
                     p.name
@@ -588,14 +611,16 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[String]
     }
 
     match (v.fails(), f.failures()) {
-        (0, 0) => println!("→ 通る"),
-        (0, n) => println!("→ 落ちる（全ボード共通の {n} 件。上に出した）"),
-        (m, 0) => println!("→ 落ちる（このボードで {m} 件）"),
-        (m, n) => println!("→ 落ちる（このボードで {m} 件 + 全ボード共通の {n} 件）"),
+        (0, 0) => println!("-> pass"),
+        (0, n) => println!("-> fail ({n} common to every board; reported above)"),
+        (m, 0) => println!("-> fail ({m} on this board)"),
+        (m, n) => println!("-> fail ({m} on this board + {n} common to every board)"),
     }
 }
 
-/// 列を揃える。`{:<n}` は文字数で数えるので、日本語が入ると崩れる。
+/// Aligns the columns. `{:<n}` counts characters, not terminal columns;
+/// `display_width` keeps the alignment correct if a wide character ever
+/// appears in a cell.
 fn row(label: &str, value: &str, note: &str) {
     if note.is_empty() {
         println!("{}{value}", pad(label, 9));
@@ -604,9 +629,9 @@ fn row(label: &str, value: &str, note: &str) {
     }
 }
 
-/// 幅 `w` まで空白で埋める。**必ず 1 桁は空ける**（`w` ちょうどの値が
-/// 注記とくっついて読めなくなるのを防ぐ。validate のエラー文はちょうど
-/// 44 桁になることがある）。
+/// Pads with spaces to width `w`, always leaving at least one space (a value
+/// of exactly `w` columns would otherwise run into the note; validate's error
+/// text can be exactly 44 columns).
 fn pad(s: &str, w: usize) -> String {
     let mut out = String::from(s);
     for _ in display_width(s)..w.max(display_width(s) + 1) {
@@ -615,7 +640,7 @@ fn pad(s: &str, w: usize) -> String {
     out
 }
 
-/// 端末での表示幅。CJK は 2 桁として数える。
+/// Display width in a terminal. Wide (CJK) characters count as two columns.
 fn display_width(s: &str) -> usize {
     s.chars()
         .map(|c| if is_wide(c) { 2 } else { 1 })
@@ -657,7 +682,8 @@ mod tests {
     fn iface_names_come_from_the_module_name() {
         assert_eq!(iface_of("wasmicon:hal/gpio@0.1.0"), Some("gpio"));
         assert_eq!(iface_of("wasmicon:hal/i2c@0.1.0"), Some("i2c"));
-        // abi-spec §3.1 はバージョン必須・完全一致なので、他の形は拾わない。
+        // docs/abi-spec.md §3.1 requires the version and an exact match, so
+        // other shapes are not picked up.
         assert_eq!(iface_of("env"), None);
         assert_eq!(iface_of("wasmicon:hal/"), None);
     }
@@ -668,18 +694,18 @@ mod tests {
         assert_eq!(implemented(&i, "i2c"), Some(false));
         assert_eq!(implemented(&i, "spi"), Some(false));
         assert_eq!(implemented(&i, "gpio"), Some(true));
-        // types は関数を持たないので import に現れない。
+        // types has no functions, so it never appears as an import.
         assert_eq!(implemented(&i, "types"), None);
     }
 
     #[test]
-    fn columns_count_japanese_as_two() {
+    fn columns_count_wide_chars_as_two() {
         assert_eq!(display_width("ok"), 2);
-        assert_eq!(display_width("通る"), 4);
-        // "1 " が 2 桁 + "ページ" が 3 文字 x 2 桁。
-        assert_eq!(display_width("1 ページ"), 2 + 6);
+        assert_eq!(display_width("通る"), 4); // i18n:allow-cjk
+        // "1 " is 2 columns + 3 wide characters x 2 columns.
+        assert_eq!(display_width("1 ページ"), 2 + 6); // i18n:allow-cjk
         assert_eq!(pad("ok", 4), "ok  ");
-        assert_eq!(pad("通る", 6), "通る  ");
+        assert_eq!(pad("通る", 6), "通る  "); // i18n:allow-cjk
     }
 
     #[test]

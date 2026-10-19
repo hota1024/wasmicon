@@ -1,6 +1,6 @@
 [package]
 name = "wasmicon-cli"
-description = "アプリ作者が触る CLI。検査・実行・配備（docs/app-workflow.md §4）"
+description = "The wasmicon CLI app authors use: check, run and deploy apps (docs/app-workflow.md §4)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,16 +13,16 @@ name = "wasmicon"
 path = "src/main.rs"
 
 [dependencies]
-# 検査は実ランタイムで行う（docs/app-workflow.md §4.3）。
-# wasm-tools のような外部の検証器では、import 表との完全一致も
-# ボードごとの Config も見られない。
+# The check runs the real runtime (docs/app-workflow.md §4.3). An external
+# validator such as wasm-tools sees neither the exact import table nor the
+# per-board Config.
 wasmicon-core.workspace = true
 wasmicon-port.workspace = true
-# run は host ポートを lib として呼ぶ（crate は残す。§4.2）。
+# run calls the host port as a library (the crate stays; docs/app-workflow.md §4.2).
 wasmicon-host = { path = "../../ports/host" }
 anyhow = "1.0.104"
-# wasmicon.toml を読む（docs/app-workflow.md §4.7）。未知のキーをエラーに
-# したいので serde の derive を使う（黙って無視すると「設定したのに
-# 効いていない」に気付けない）。
+# Reads wasmicon.toml (docs/app-workflow.md §4.7). serde derive is used so that
+# unknown keys are errors: ignoring them silently hides "I set it but it has
+# no effect".
 toml = "1.1.6"
 serde = { version = "1.0.229", features = ["derive"] }
