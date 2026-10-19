@@ -1,26 +1,26 @@
-//! Raspberry Pi Pico 2 / Pico 2 W のボード実装。
+//! Board implementation for the Raspberry Pi Pico 2 / Pico 2 W.
 //!
-//! GPIO は番号で動的に触る必要があるので、型付きピンではなく SIO / IO_BANK0 /
-//! PADS_BANK0 のレジスタを直接叩く。HAL の共通部分は `wasmicon-port` にある。
+//! GPIOs are addressed by number at run time, so instead of typed pins this
+//! drives the SIO / IO_BANK0 / PADS_BANK0 registers directly. The shared part
+//! of the HAL lives in `wasmicon-port`.
 //!
-//! RP2040 版 (`ports/rp2040`) とほぼ同じだが、RP2350 では次が違う:
+//! Nearly the same as the RP2040 port (`ports/rp2040`), with these differences:
 //!
-//! - パッドに **アイソレーションラッチ (`ISO`) があり、リセット値が 1**。
-//!   これを落とさないとパッドは切り離されたままで、GPIO は静かに死ぬ。
-//!   PADS_BANK0 への `write()` はリセット値から始まるので、書くたびに
-//!   明示的に `iso().clear_bit()` する必要がある
-//! - FUNCSEL が型付きの enum なので `funcsel().sio()` で書ける（`unsafe` 不要）
-//! - タイマは `TIMER0`（RP2350 には TIMER0 / TIMER1 の 2 つある）
+//! - The pads have an isolation latch (`ISO`) whose reset value is 1. Until it
+//!   is cleared the pad stays disconnected and the GPIO is silently dead. A
+//!   `write()` to PADS_BANK0 starts from the reset value, so every write must
+//!   clear `iso()` explicitly.
+//! - FUNCSEL is a typed enum, so `funcsel().sio()` needs no `unsafe`.
+//! - The timer is `TIMER0` (the RP2350 has TIMER0 and TIMER1).
 //!
-//! SPI は SPI0（PL022）をレジスタ直叩きで使う。`rp235x-hal` の `Spi` は
-//! 型付きピンを要求するが、ボードは `Peripherals::steal()` で動くので
-//! 所有権を渡せない。GPIO と同じ書き方に揃えてある。
-//! GPIO と SPI は Pico 2 W 実機で確認済み（docs/verification-report.md §6）。
+//! SPI uses SPI0 (PL022) through its registers. The `Spi` of `rp235x-hal`
+//! wants typed pins, but the board works through `Peripherals::steal()` and
+//! cannot hand over ownership, so SPI is written the same way as GPIO.
 //!
-//! I2C は I2C0（DW_apb_i2c）を同じくレジスタ直叩きで使う。初期化と転送の
-//! 手順は `rp235x-hal` の `i2c/controller.rs` に合わせてあるが、**`assert!` を
-//! 使わずエラーコードを返す**（パニックハンドラは理由を出せない。
-//! docs/TODO.md §1.4）。**実機では未検証**（docs/TODO.md §1.2）。
+//! I2C uses I2C0 (DW_apb_i2c) the same way. Setup and transfers follow
+//! `i2c/controller.rs` in `rp235x-hal`, but return error codes instead of
+//! `assert!`-ing, because the panic handler cannot print a reason
+//! (docs/TODO.md §1.4).
 
 use rp235x_hal::pac;
 use wasmicon_core::generated::ErrorCode;
@@ -30,98 +30,102 @@ use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_port::{Board, BoardResult};
 
-/// RP2350A（Pico 2 / Pico 2 W の QFN-60）の GPIO は GP0..GP29。
-/// QFN-80 の RP2350B は GP0..GP47 だが、対象ボードには載っていない。
+/// The RP2350A (QFN-60, on the Pico 2 / Pico 2 W) has GP0..GP29.
+/// The QFN-80 RP2350B has GP0..GP47, but no target board carries it.
 const NUM_GPIO: u32 = 30;
 
-// 配線表の検査（CLI とファーム。`wasmicon_port::roles`）はプロファイルの
-// `gpio_count` / `reserved` を使う。ここの値と食い違うと、検査を通った表で
-// `pin.open` が落ちるので、コンパイル時に突き合わせる。役割の表そのものは
-// ファームに無い（`docs/app-workflow.md` §3.9）。
+// The wiring-table check (CLI and firmware, `wasmicon_port::roles`) uses the
+// profile's `gpio_count` / `reserved`. If they disagreed with the values here,
+// `pin.open` would fail on a table that passed the check, so they are
+// cross-checked at compile time. The firmware holds no role table of its own
+// (docs/app-workflow.md §3.9).
 const _: () = assert!(NUM_GPIO == wasmicon_port::profile::RP2350.gpio_count);
 const _: () = assert!(wasmicon_port::profile::same_pins(
     RESERVED,
     wasmicon_port::profile::RP2350.reserved
 ));
 
-/// ゲストに開放しない GPIO。
+/// GPIOs not released to the guest.
 ///
-/// GP0/GP1 はトレース用の UART0。開けられるとトレースが途切れる。
-/// GP23/24/25/29 は Pico 2 W では CYW43439（無線とオンボード LED）に、
-/// Pico 2 では SMPS の PS / VBUS 検出 / オンボード LED / VSYS 監視に
-/// 繋がっている。どちらでも同じ物が動くよう、両方まとめて閉じておく。
+/// GP0/GP1 are UART0, which carries the trace; opening them would cut it off.
+/// GP23/24/25/29 connect to the CYW43439 (radio and on-board LED) on the
+/// Pico 2 W, and to the SMPS PS pin / VBUS sense / on-board LED / VSYS
+/// monitor on the Pico 2. Both sets are closed so that the same build runs on
+/// either board.
 const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 
-/// SPI0 に割り当てるピン（abi-spec §8）。RP2350 ではこの 3 本の FUNCSEL=1 が
-/// SPI0 に繋がる。CS はここに含めない。ゲストが `lcd-cs` の GPIO を直接振る
-/// （`wit/spi.wit` の設計）。
+/// Pins assigned to SPI0 (docs/abi-spec.md §8). On the RP2350, FUNCSEL=1 on
+/// these three connects them to SPI0. CS is not included: the guest toggles
+/// the `lcd-cs` GPIO itself (the design of `wit/spi.wit`).
 ///
-/// `RESERVED` には入れていない。入れると GPIO の開放可否が host の mock や
-/// 他のポートと食い違い、トレースの突き合わせ（handoff §5 Phase 6）が
-/// ボードごとに別物になるため。SPI を開いたまま同じ番号を `gpio` で開けば
-/// FUNCSEL が SIO に戻って SPI は黙って止まるが、それはゲスト側の誤りとする。
+/// They are not in `RESERVED`. Reserving them would make GPIO availability
+/// differ from the host mock and the other ports, so trace comparison would
+/// differ per board. If the guest opens one of these numbers through `gpio`
+/// while SPI is open, FUNCSEL falls back to SIO and SPI silently stops; that
+/// counts as a guest bug.
 const SPI0_SCK: usize = 18;
 const SPI0_MOSI: usize = 19;
 const SPI0_MISO: usize = 16;
 
-/// I2C0 に割り当てるピン（abi-spec §8）。FUNCSEL=3 が I2C0 に繋がる。
+/// Pins assigned to I2C0 (docs/abi-spec.md §8). FUNCSEL=3 connects them to I2C0.
 ///
-/// `SPI0_*` と同じ理由で `RESERVED` には入れていない。
+/// Not in `RESERVED`, for the same reason as `SPI0_*`.
 const I2C0_SDA: usize = 4;
 const I2C0_SCL: usize = 5;
 
-/// I2C の 1 バイトあたりの待ち上限。
+/// Upper bound on the wait for one I2C byte.
 ///
-/// **仕様ではなく診断のための値**。クロックが止まる・相手が SCL を握り
-/// 続けるといった状況で無言で固まらないようにするだけのもの。100 kHz で
-/// 1 バイト（9 ビット）は 90 µs なので 25 ms は 250 倍以上の余裕があり、
-/// 正常系で踏むことはない。踏んだら `timeout` を返す。
+/// A diagnostic value, not part of the spec. It only keeps the firmware from
+/// hanging silently when the clock stops or the peer holds SCL. At 100 kHz
+/// one byte (9 bits) takes 90 us, so 25 ms is more than 250 times that and is
+/// never reached in normal operation. When it is, the result is `timeout`.
 ///
-/// 反復回数ではなく TIMER0 の実時間で計るのは、回数だと `opt-level` で
-/// 意味が変わるため。`ports/esp32s3` は `esp-hal` が同じ役割の
-/// `Error::Timeout` を返すので、**2 つのポートはここで揃っている**。
+/// It is measured in TIMER0 time rather than loop iterations, because an
+/// iteration count would change meaning with `opt-level`. `ports/esp32s3`
+/// gets the equivalent `Error::Timeout` from `esp-hal`, so the two ports
+/// agree here.
 const I2C_TIMEOUT_US: u64 = 25_000;
 
-/// トレースとログを出す先。
+/// Where traces and logs go.
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
 }
 
-/// Pico 2 のボード。
+/// The Pico 2 board.
 pub struct Pico2Board<S: Serial> {
     serial: S,
-    /// `clk_peri` の周波数。**SPI** の分周器を決めるのに要る。
-    /// 起動時に決まった実際の値を受け取る（150 MHz を決め打ちにしない）。
+    /// Frequency of `clk_peri`, which sets the SPI divider. The actual value
+    /// decided at boot is passed in rather than assuming 150 MHz.
     peri_clock_hz: u32,
-    /// `clk_sys` の周波数。**I2C** の SCL カウンタを決めるのに要る。
+    /// Frequency of `clk_sys`, which sets the I2C SCL counters.
     ///
-    /// **SPI と出どころが違う。** PL022 は `clk_peri` で動くが、
-    /// DW_apb_i2c は `clk_sys` で動く（`rp235x-hal` の `new_controller` が
-    /// 取る引数も `system_clock`、pico-sdk の `i2c_set_baudrate` も
-    /// `clock_get_hz(clk_sys)`）。既定の `init_clocks_and_plls` では
-    /// どちらも 150 MHz で一致するので取り違えても動いてしまうが、
-    /// `clk_peri` を別に振った瞬間に SCL が要求値から外れる。
+    /// A different clock from SPI's: the PL022 runs from `clk_peri`, the
+    /// DW_apb_i2c from `clk_sys` (`new_controller` in `rp235x-hal` takes
+    /// `system_clock`, and `i2c_set_baudrate` in the pico-sdk uses
+    /// `clock_get_hz(clk_sys)`). With the default `init_clocks_and_plls` both
+    /// are 150 MHz, so mixing them up still works, until `clk_peri` is changed
+    /// and SCL drifts from the requested rate.
     sys_clock_hz: u32,
-    /// オープンドレインとして開いているピン。
+    /// Pins open as open-drain outputs.
     ///
-    /// RP2350 のパッドにもオープンドレイン制御は無い（`OD` は出力ディセーブル）
-    /// ので、出力イネーブルで擬似する: low は OE=1 かつ OUT=0、high は OE=0 で
-    /// ハイインピーダンス。
+    /// RP2350 pads have no open-drain control either (`OD` is output
+    /// disable), so it is emulated with output enable: low is OE=1 and OUT=0,
+    /// high is OE=0 (high impedance).
     open_drain: u32,
 }
 
 impl<S: Serial> Pico2Board<S> {
     /// # Safety
-    /// SIO / IO_BANK0 / PADS_BANK0 / TIMER0 / SPI0 / I2C0、および RESETS の
-    /// SPI0 / I2C0 ビットをこのボードが排他的に使うこと。SPI0 に割り当てた
-    /// GPIO (`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO`) と I2C0 に割り当てた
-    /// GPIO (`I2C0_SDA` / `I2C0_SCL`) も同様。呼び出し側は同じペリフェラルと
-    /// 同じピンを他で触らない責任を負う。
+    /// This board must have exclusive use of SIO / IO_BANK0 / PADS_BANK0 /
+    /// TIMER0 / SPI0 / I2C0, of the SPI0 / I2C0 bits of RESETS, and of the
+    /// GPIOs assigned to SPI0 (`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO`) and
+    /// I2C0 (`I2C0_SDA` / `I2C0_SCL`). The caller must not touch those
+    /// peripherals or pins anywhere else.
     ///
-    /// `peri_clock_hz` には `clocks.peripheral_clock.freq()`（SPI 用）、
-    /// `sys_clock_hz` には `clocks.system_clock.freq()`（I2C 用）を渡す。
-    /// **2 つは別のクロックなので取り違えないこと**（既定では値が一致する
-    /// ため、間違えても動いてしまう）。
+    /// `peri_clock_hz` is `clocks.peripheral_clock.freq()` (for SPI) and
+    /// `sys_clock_hz` is `clocks.system_clock.freq()` (for I2C). They are
+    /// different clocks; do not swap them (with the defaults the values
+    /// match, so a swap would still appear to work).
     #[must_use]
     pub unsafe fn new(serial: S, peri_clock_hz: u32, sys_clock_hz: u32) -> Self {
         Pico2Board {
@@ -132,34 +136,36 @@ impl<S: Serial> Pico2Board<S> {
         }
     }
 
-    /// シリアルへの参照。失敗の理由を出すのに使う。
+    /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
     }
 
     fn sio() -> pac::SIO {
-        // SAFETY: Pico2Board::new の契約により、SIO はこのボードだけが触る。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches SIO.
         unsafe { pac::Peripherals::steal().SIO }
     }
 
     fn timer() -> pac::TIMER0 {
-        // SAFETY: 同上。TIMER0 は読み出しのみ。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches
+        // TIMER0, and it is only read.
         unsafe { pac::Peripherals::steal().TIMER0 }
     }
 
     fn spi0() -> pac::SPI0 {
-        // SAFETY: 同上。SPI0 はこのボードだけが触る。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches SPI0.
         unsafe { pac::Peripherals::steal().SPI0 }
     }
 
     fn i2c0() -> pac::I2C0 {
-        // SAFETY: 同上。I2C0 はこのボードだけが触る。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches I2C0.
         unsafe { pac::Peripherals::steal().I2C0 }
     }
 
-    /// 現在のマイクロ秒。TIMER0 は 1 MHz なのでそのまま使える。
+    /// Current time in microseconds. TIMER0 runs at 1 MHz, so the count is
+    /// used as is.
     ///
-    /// TIMELR を読むと TIMEHR がラッチされるので、順序を守る。
+    /// Reading TIMELR latches TIMEHR, so the order matters.
     fn micros() -> u64 {
         let t = Self::timer();
         let lo = t.timelr().read().bits();
@@ -167,16 +173,16 @@ impl<S: Serial> Pico2Board<S> {
         (u64::from(hi) << 32) | u64::from(lo)
     }
 
-    /// STOP_DET が立つのを待って落とす。待てなくても諦めてフラグを落とす。
+    /// Waits for STOP_DET and clears it. If the wait times out, the flag is
+    /// cleared anyway.
     ///
-    /// 戻り値を持たないのは、ここで待てなかったことを理由にするより、
-    /// 呼び出し側が持っている本当の理由（NACK など）を返すほうが
-    /// 診断に役立つため。
+    /// It returns nothing: the real reason the caller holds (a NACK, say) is
+    /// more useful for diagnosis than a failure to wait here.
     ///
-    /// **落とし忘れると次の転送が壊れる。** `IC_RAW_INTR_STAT` は
-    /// `IC_CLR_*` を読むまでクリアされず（`IC_ENABLE` の上げ下げでも
-    /// 消えない）、残っていると次の `i2c_wait_stop` が自分の STOP を
-    /// 待たずに即座に返る。
+    /// Leaving the flag set breaks the next transfer. `IC_RAW_INTR_STAT` is
+    /// not cleared until `IC_CLR_*` is read (toggling `IC_ENABLE` does not
+    /// clear it either), and a stale flag makes the next `i2c_wait_stop`
+    /// return at once instead of waiting for its own STOP.
     fn i2c_drain_stop(i2c: &pac::I2C0) {
         let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
         while i2c.ic_raw_intr_stat().read().stop_det().is_inactive() {
@@ -188,19 +194,20 @@ impl<S: Serial> Pico2Board<S> {
         let _ = i2c.ic_clr_stop_det().read();
     }
 
-    /// 進行中の転送を畳む。
+    /// Tears down the transfer in progress.
     ///
-    /// `IC_ENABLE.ABORT` を立てるとコントローラが STOP を出して TX FIFO を
-    /// 捨てる（`rp235x-hal` の `abort` と同じ）。
+    /// Setting `IC_ENABLE.ABORT` makes the controller issue a STOP and flush
+    /// the TX FIFO (the same as `abort` in `rp235x-hal`).
     ///
-    /// **タイムアウトしたときは必ず通すこと。** 出さずに返ると転送が進行中の
-    /// まま残り、次の `i2c_set_target` の `IC_EN` 待ちも抜けられなくなって、
-    /// 以降すべての I2C 呼び出しが 25 ms 待って `timeout` を返し続ける。
-    /// NACK の経路はハードウェアが STOP を自動で出すのでこれは要らない。
+    /// Always run this after a timeout. Returning without it leaves the
+    /// transfer in progress, the next `i2c_set_target` never gets past its
+    /// `IC_EN` wait, and every later I2C call waits 25 ms and returns
+    /// `timeout`. The NACK path does not need it: the hardware issues the
+    /// STOP itself.
     fn i2c_abort(i2c: &pac::I2C0) {
         i2c.ic_enable().modify(|_, w| w.abort().set_bit());
-        // ABORT はコントローラが自分で落とす。待てなくても先へ進む
-        // （呼び出し側は `timeout` を返すので理由は変わらない）。
+        // The controller clears ABORT itself. Go on even if that never
+        // happens (the caller returns `timeout` either way).
         let deadline = Self::micros().saturating_add(I2C_TIMEOUT_US);
         while i2c.ic_enable().read().abort().bit_is_set() {
             if Self::micros() > deadline {
@@ -208,32 +215,34 @@ impl<S: Serial> Pico2Board<S> {
             }
             core::hint::spin_loop();
         }
-        // アボートで立つフラグを全部落としておく。
+        // Clear every flag the abort raised.
         let _ = i2c.ic_clr_tx_abrt().read();
         let _ = i2c.ic_tx_abrt_source().read();
         Self::i2c_drain_stop(i2c);
     }
 
-    /// `IC_TX_ABRT_SOURCE` を読み、立っていれば握ってエラーに変える。
+    /// Reads `IC_TX_ABRT_SOURCE` and, if any bit is set, clears it and turns
+    /// it into an error.
     ///
-    /// **このレジスタは `IC_CLR_TX_ABRT` を読むまでクリアされない**
-    /// （`IC_CLR_TX_ABRT` 自体は常に 0 を読む）。クリアを忘れると TX FIFO が
-    /// 再武装されず、次の転送が通らない。
+    /// The register is not cleared until `IC_CLR_TX_ABRT` is read
+    /// (`IC_CLR_TX_ABRT` itself always reads 0). Forgetting the clear leaves
+    /// the TX FIFO disarmed and the next transfer fails.
     ///
-    /// アボートのときハードウェアが STOP を自動で出すので STOP を送る必要は
-    /// 無いが、**その STOP のフラグはここで待って落とす**。
-    /// `rp235x-hal` の `write_internal` が
-    /// `if abort_reason.is_err() || do_stop { … clr_stop_det }` と
-    /// 書いているのと同じ理由で、前半を落とすと次の転送が壊れる。
+    /// On an abort the hardware issues the STOP itself, so none is sent here,
+    /// but its flag is waited for and cleared here. `write_internal` in
+    /// `rp235x-hal` does the same with
+    /// `if abort_reason.is_err() || do_stop { ... clr_stop_det }`; dropping
+    /// the first half breaks the next transfer.
     fn i2c_take_abort(i2c: &pac::I2C0) -> BoardResult<()> {
         let src = i2c.ic_tx_abrt_source().read();
         if src.bits() == 0 {
             return Ok(());
         }
-        // 読んでクリアする。
+        // Reading clears it.
         let _ = i2c.ic_clr_tx_abrt().read();
-        // アドレス / データが NACK されたのか、それ以外（調停負けなど）か。
-        // host の mock は相手が居ないとき `nack` を返すので、そこに揃える。
+        // Was the address or the data NACKed, or was it something else (lost
+        // arbitration, say)? The host mock returns `nack` when no peer
+        // answers, so match that.
         let nacked = src.abrt_7b_addr_noack().bit_is_set()
             || src.abrt_10addr1_noack().bit_is_set()
             || src.abrt_10addr2_noack().bit_is_set()
@@ -247,17 +256,18 @@ impl<S: Serial> Pico2Board<S> {
         })
     }
 
-    /// `cond` が成立するまで待つ。上限は `I2C_TIMEOUT_US`。
+    /// Waits until `cond` holds, for at most `I2C_TIMEOUT_US`.
     ///
-    /// **待ちはすべてこれを通す。** 同じ形のループを書き写すと、
-    /// アボートの検査や STOP の後片付けが箇所ごとに食い違う
-    /// （実際に一度やらかした: アボート経路で STOP_DET を落とし忘れていた）。
+    /// Every wait goes through this. Copies of the same loop drift apart in
+    /// how they check for aborts and clean up the STOP; that happened once,
+    /// when the abort path forgot to clear STOP_DET.
     ///
-    /// `check_abort` が true のとき、待っている間に `IC_TX_ABRT_SOURCE` を
-    /// 見て、立っていればその理由で抜ける（送受信の途中で使う）。
-    /// STOP 待ちでは false にする（アボートで出た STOP もそこで待つため）。
+    /// With `check_abort` set, `IC_TX_ABRT_SOURCE` is checked while waiting
+    /// and the wait ends with that reason (used in the middle of a transfer).
+    /// STOP waits pass false, because the STOP an abort issues is waited for
+    /// there as well.
     ///
-    /// タイムアウトしたら `i2c_abort` で転送を畳んでから返る。
+    /// On timeout the transfer is torn down with `i2c_abort` before returning.
     fn i2c_wait(
         i2c: &pac::I2C0,
         check_abort: bool,
@@ -277,7 +287,7 @@ impl<S: Serial> Pico2Board<S> {
         Ok(())
     }
 
-    /// STOP が出るまで待ってフラグを落とす。
+    /// Waits for the STOP and clears the flag.
     fn i2c_wait_stop(i2c: &pac::I2C0) -> BoardResult<()> {
         Self::i2c_wait(i2c, false, |i2c| {
             i2c.ic_raw_intr_stat().read().stop_det().is_active()
@@ -286,23 +296,23 @@ impl<S: Serial> Pico2Board<S> {
         Ok(())
     }
 
-    /// 転送相手のアドレスを設定する。
+    /// Sets the target address.
     ///
-    /// `IC_TAR` は ENABLE=1 のままでは変えられないので一度落とす。
-    /// **`IC_ENABLE_STATUS.IC_EN` が落ちきるのを待つ**（`rp235x-hal` は
-    /// 待っていないが、待たないと `open` → `close` → `open` を跨いだときに
-    /// 書き込みが無視されうる）。
+    /// `IC_TAR` cannot be changed while ENABLE=1, so the controller is
+    /// disabled first, and `IC_ENABLE_STATUS.IC_EN` is waited on until it is
+    /// really clear (`rp235x-hal` does not wait; without the wait the write
+    /// can be ignored across `open` -> `close` -> `open`).
     ///
-    /// ここでは `i2c_wait` を使わない（= タイムアウトしても `i2c_abort` を
-    /// 出さない）。**この時点では何も転送中でないはず**で、NACK なら
-    /// ハードウェアが STOP を出して idle に戻っており、タイムアウトなら
-    /// 前の呼び出しが既に畳んでいる。それでも `IC_EN` が落ちないのは
-    /// **バス自体が握られている**ということなので、畳んで隠さずに
-    /// `timeout` を返して知らせる。
+    /// This does not use `i2c_wait`, so a timeout here does not `i2c_abort`.
+    /// Nothing should be in flight at this point: after a NACK the hardware
+    /// issued a STOP and returned to idle, and after a timeout the previous
+    /// call already tore the transfer down. If `IC_EN` still does not clear,
+    /// the bus itself is held, so report `timeout` rather than hide it
+    /// behind an abort.
     fn i2c_set_target(i2c: &pac::I2C0, address: u16) -> BoardResult<()> {
-        // 7 bit アドレスのみ（`wit/i2c.wit`）。`ports/esp32s3` も `esp-hal` が
-        // 範囲外を `AddressInvalid` で弾くので、2 つのポートは揃っている
-        // （host の mock は検査しない。docs/TODO.md §2.1）。
+        // 7-bit addresses only (`wit/i2c.wit`). `ports/esp32s3` matches:
+        // `esp-hal` rejects out-of-range addresses with `AddressInvalid`. The
+        // host mock does not check (docs/TODO.md §2.1).
         if address > 0x7f {
             return Err(ErrorCode::InvalidArgument);
         }
@@ -316,30 +326,32 @@ impl<S: Serial> Pico2Board<S> {
         }
         i2c.ic_con()
             .modify(|_, w| w.ic_10bitaddr_master().addr_7bits());
-        // SAFETY: 上で 0x7f 以下に絞っているので IC_TAR（10 bit）に収まる。
+        // SAFETY: address is at most 0x7f (checked above), so it fits the
+        // 10-bit IC_TAR field.
         i2c.ic_tar().write(|w| unsafe { w.ic_tar().bits(address) });
         i2c.ic_enable().write(|w| w.enable().enabled());
         Ok(())
     }
 
-    /// `data` を送る。`stop` が false なら STOP を出さない
-    /// （`write-read` の前半で使う。次の read が Repeated START になる）。
+    /// Sends `data`. With `stop` false no STOP is issued (the first half of
+    /// `write-read`; the following read becomes a Repeated START).
     ///
-    /// **`data` は空でないこと**（呼び出し側が `invalid-argument` で弾く）。
-    /// 空だと `data.len() - 1` が溢れる。
+    /// `data` must not be empty (the caller rejects that with
+    /// `invalid-argument`); `data.len() - 1` would underflow.
     fn i2c_send(i2c: &pac::I2C0, data: &[u8], stop: bool) -> BoardResult<()> {
         let last = data.len() - 1;
         for (i, &b) in data.iter().enumerate() {
-            // FIFO が空かないのは相手が止まっているとき。アボートが
-            // 立っていればそれを理由として返す。
+            // The FIFO only stays full when the peer has stalled. If an abort
+            // is pending, return that as the reason.
             Self::i2c_wait(i2c, true, |i2c| i2c.ic_status().read().tfnf().bit_is_set())?;
             i2c.ic_data_cmd().write(|w| {
                 w.stop().bit(stop && i == last);
-                // SAFETY: DAT は 8 bit。
+                // SAFETY: b is a u8, so it fits the 8-bit DAT field.
                 unsafe { w.dat().bits(b) }
             });
         }
-        // シフトレジスタから出きるまで待ってからアボートを見る。
+        // Wait until the shift register has drained before checking for an
+        // abort.
         Self::i2c_wait(i2c, false, |i2c| {
             i2c.ic_raw_intr_stat().read().tx_empty().is_active()
         })?;
@@ -350,11 +362,11 @@ impl<S: Serial> Pico2Board<S> {
         Ok(())
     }
 
-    /// `buf` を埋めるまで読む。読み出しは**1 バイトにつき READ コマンドを
-    /// 1 つ `IC_DATA_CMD` に積む**必要がある（積まないとクロックが出ない）。
+    /// Reads until `buf` is full. Each byte needs one READ command pushed to
+    /// `IC_DATA_CMD`; without it no clock is generated.
     ///
-    /// **`buf` は空でないこと**（呼び出し側が `invalid-argument` で弾く）。
-    /// 空だと `n - 1` が溢れる。
+    /// `buf` must not be empty (the caller rejects that with
+    /// `invalid-argument`); `n - 1` would underflow.
     fn i2c_recv(i2c: &pac::I2C0, buf: &mut [u8]) -> BoardResult<usize> {
         let n = buf.len();
         let last = n - 1;
@@ -371,12 +383,14 @@ impl<S: Serial> Pico2Board<S> {
         Ok(n)
     }
 
-    /// 送信が完全に終わるまで待ち、受信 FIFO を空にする。
+    /// Waits until transmission has fully finished and empties the receive
+    /// FIFO.
     ///
-    /// **`spi.write` / `spi.transfer` から戻る前に必ず通すこと。** ゲストは
-    /// 戻った直後に DC や CS を動かす。最後のバイトがまだシフトレジスタに
-    /// 残っている状態でそれをやると、ILI9341 はコマンドとデータを取り違える
-    /// （レジスタの設定は正しいのに画面が壊れる、という形で出る）。
+    /// Always run this before returning from `spi.write` / `spi.transfer`.
+    /// The guest moves DC or CS right after the call returns; if the last
+    /// byte is still in the shift register at that point, the ILI9341 mixes
+    /// up command and data (the registers look right but the picture is
+    /// corrupt).
     fn spi_drain(spi: &pac::SPI0) {
         while spi.sspsr().read().bsy().bit_is_set() {
             core::hint::spin_loop();
@@ -384,36 +398,37 @@ impl<S: Serial> Pico2Board<S> {
         while spi.sspsr().read().rne().bit_is_set() {
             let _ = spi.sspdr().read().bits();
         }
-        // 読み捨てている間に立った受信オーバーランを落とす
-        // （SSPICR は 1 を書いてクリアするレジスタ）。
+        // Clear the receive overrun raised while discarding (SSPICR is
+        // write-1-to-clear).
         spi.sspicr().write(|w| w.roric().clear_bit_by_one());
     }
 }
 
-/// PL022 の分周器 `(cpsdvsr, scr)` を決める。出力は
-/// `clk_peri / (cpsdvsr × (1 + scr))`。`cpsdvsr` は 2..=254 の偶数、
-/// `scr` は 0..=255。
+/// Picks the PL022 divisors `(cpsdvsr, scr)`. The output rate is
+/// `clk_peri / (cpsdvsr * (1 + scr))`; `cpsdvsr` is even in 2..=254 and
+/// `scr` is 0..=255.
 ///
-/// **要求値を超えない範囲で最も速い組み合わせ**を選ぶ。`wit/spi.wit` は
-/// 「最も近い値に丸める」としているが、切り上げるとディスプレイの上限を
-/// 越えうるので切り下げる方に倒している（例: `clk_peri` 150 MHz で
-/// 24 MHz を頼むと 18.75 MHz になる）。rp2040 ポートに SPI を足すときも
-/// 同じ規則にすること。
+/// Picks the fastest combination that does not exceed the request.
+/// `wit/spi.wit` says "round to the nearest", but rounding up could exceed a
+/// display's limit, so this rounds down (24 MHz requested from a 150 MHz
+/// `clk_peri` gives 18.75 MHz, say). Use the same rule when adding SPI to the
+/// rp2040 port.
 ///
-/// `cpsdvsr` を小さいほうから試し、`scr`（総分周 1..=256）で要求値以下に
-/// 収まった最初の組を採る。総分周が 512 以下（`cpsdvsr` = 2 で表せる範囲）なら
-/// 総分周は必ず偶数なので、これで「要求値以下で最大」になる。それより遅い
-/// 要求では `cpsdvsr` の倍数の刻みしか試さないため、1 段遅い組を採ることが
-/// ある（総分周 517 が要るとき 4×130 = 520 を採る。14×37 = 518 のほうが近い）。
-/// ディスプレイの上限を越えない方向の誤差なので、そのままにしてある。
-/// rp235x-hal の `set_baudrate` は先に
-/// `cpsdvsr` を当て推量で決めるので、その境目（150 MHz で 100 kHz を
-/// 頼むなど）では要求値を上回ることがある。ここでは総当たりにしてある。
+/// `cpsdvsr` is tried from the smallest up, and the first `scr` (total
+/// divider 1..=256) at or below the request wins. Up to a total divider of
+/// 512 (what `cpsdvsr` = 2 can express) the total divider is always even, so
+/// this is the largest rate at or below the request. For slower requests only
+/// multiples of `cpsdvsr` are tried, so the result can be one step slow (a
+/// required total divider of 517 gives 4 x 130 = 520, although 14 x 37 = 518
+/// is closer). The error is toward not exceeding the display's limit, so it
+/// is left alone. `set_baudrate` in rp235x-hal guesses `cpsdvsr` first and
+/// can exceed the request at the boundaries (100 kHz from 150 MHz, say); this
+/// is exhaustive instead.
 ///
-/// 出せる範囲の外は端に丸める。上は `clk_peri / 2`、下は
-/// `clk_peri / (254 × 256)`。
+/// Requests outside the reachable range clamp to the ends: `clk_peri / 2` at
+/// the top, `clk_peri / (254 * 256)` at the bottom.
 fn spi_divisors(clk_hz: u32, want_hz: u32) -> (u8, u8) {
-    // 分母に来るので 0 は弾く（呼び出し側でも検査している）。
+    // want_hz is a divisor below, so 0 is rejected (the caller checks too).
     let want = u64::from(want_hz.max(1));
     let clk = u64::from(clk_hz);
 
@@ -428,23 +443,27 @@ fn spi_divisors(clk_hz: u32, want_hz: u32) -> (u8, u8) {
         }
         cpsdvsr += 2;
     }
-    // 要求が下限より低い。最も遅い組み合わせに張り付ける。
+    // The request is below the minimum; clamp to the slowest combination.
     (254, 255)
 }
 
-/// DW_apb_i2c の SCL カウンタを決める。`(hcnt, lcnt, spklen, sda_tx_hold)`。
+/// Picks the DW_apb_i2c SCL counters `(hcnt, lcnt, spklen, sda_tx_hold)`.
 ///
-/// 計算は `rp235x-hal` の `i2c/controller.rs`（さらに元は pico-sdk の
-/// `hardware_i2c`）と同じ。**違うのは `assert!` ではなく `None` を返す点**
-/// で、呼び出し側が `unsupported` に変える。パニックハンドラは理由を
-/// 出せないので、範囲外はエラーで返さないと診断できない（TODO §1.4）。
+/// The arithmetic is that of `i2c/controller.rs` in `rp235x-hal` (itself
+/// from `hardware_i2c` in the pico-sdk), except that out-of-range input
+/// returns `None`, which the caller turns into `unsupported`, instead of
+/// `assert!`-ing (the panic handler cannot print a reason; docs/TODO.md §1.4).
 ///
-/// 周期を 60% low / 40% high に割る。I2C はクロックを引き延ばされても
-/// 構わないので、SPI の `spi_divisors` のような「要求値を超えない」丸めは
-/// していない（`wit/i2c.wit` は `speed` の enum しか受け取らないので、
-/// そもそも任意の周波数は来ない）。
+/// The period is split 60% low / 40% high. There is no "do not exceed"
+/// rounding as in `spi_divisors`: I2C tolerates clock stretching, and
+/// `wit/i2c.wit` only offers the `speed` enum. The actual SCL is a few
+/// percent below `clk / (hcnt + lcnt)`, because the controller adds the
+/// spike-filter length and fixed cycles to each phase; the pico-sdk and
+/// `rp235x-hal` ignore this too ("There are some subtleties to I2C timing
+/// which we are completely ignoring here"), so measure with a scope if the
+/// exact rate matters.
 ///
-/// `clk_sys` 150 MHz のときの 3 速度:
+/// With `clk_sys` at 150 MHz:
 ///
 /// | speed | hcnt | lcnt | spklen | sda_hold |
 /// |---|---|---|---|---|
@@ -452,24 +471,16 @@ fn spi_divisors(clk_hz: u32, want_hz: u32) -> (u8, u8) {
 /// | `fast` | 150 | 225 | 14 | 46 |
 /// | `fast-plus` | 60 | 90 | 5 | 19 |
 ///
-/// `hcnt + lcnt` が要求周期にちょうど一致するよう選んでいる（150 MHz では
-/// 3 速度とも割り切れる）。**ただし実際の SCL はこれより数 % 低い。**
-/// DW_apb_i2c は SCL の high / low にスパイクフィルタ長と固定サイクルぶんの
-/// オーバーヘッドを足すため。pico-sdk も `rp235x-hal` もこれを無視している
-/// （pico-sdk のコメント: "There are some subtleties to I2C timing which we
-/// are completely ignoring here"）ので実装は合わせてあるが、
-/// **実効周波数を知りたければオシロで測ること**。
-///
-/// `None` を返すのは、1 MHz 超・0、`hcnt` / `lcnt` が 8..=0xffff の外
-/// （`clk_sys` が 2 MHz 程度まで落ちると起きる）、`fast-plus` で
-/// `clk_sys` が 32 MHz 未満、`sda_hold` が `lcnt - 2` を超える場合。
+/// Returns `None` for 0 or above 1 MHz, for `hcnt` / `lcnt` outside
+/// 8..=0xffff (happens once `clk_sys` drops to about 2 MHz), for `fast-plus`
+/// with `clk_sys` below 32 MHz, and for `sda_hold` above `lcnt - 2`.
 fn i2c_timing(clk_hz: u32, freq_hz: u32) -> Option<(u16, u16, u8, u16)> {
     if freq_hz == 0 || freq_hz > 1_000_000 {
         return None;
     }
     let clk = u64::from(clk_hz);
     let freq = u64::from(freq_hz);
-    // 四捨五入してから 3:2 に割る。
+    // Round to nearest, then split 3:2.
     let period = (clk + freq / 2) / freq;
     let lcnt = period * 3 / 5;
     let hcnt = period - lcnt;
@@ -477,23 +488,23 @@ fn i2c_timing(clk_hz: u32, freq_hz: u32) -> Option<(u16, u16, u8, u16)> {
         return None;
     }
 
-    // I2C の仕様が要求する SDA のホールド時間（standard / fast は 300 ns、
-    // fast-plus は 120 ns）をクロック数に直す。切り捨てを避けて +1 する。
+    // The SDA hold time the I2C spec requires (300 ns for standard / fast,
+    // 120 ns for fast-plus) in clock cycles; the +1 avoids rounding down.
     let sda_hold = if freq < 1_000_000 {
         (clk * 3) / 10_000_000 + 1
     } else {
-        // fast-plus は clk_in > 32 MHz でないと必要なホールド時間が作れない。
+        // fast-plus cannot produce the required hold time unless clk_in > 32 MHz.
         if clk < 32_000_000 {
             return None;
         }
         (clk * 3) / 25_000_000 + 1
     };
-    // lcnt >= 8 は上で確かめてあるので引き算は溢れない。
+    // lcnt >= 8 was checked above, so the subtraction cannot underflow.
     if sda_hold > lcnt - 2 {
         return None;
     }
 
-    // スパイクフィルタの長さ。
+    // Spike filter length.
     let spklen = if lcnt < 16 { 1 } else { lcnt / 16 };
     if spklen > 0xff {
         return None;
@@ -516,12 +527,13 @@ impl<S: Serial> Board for Pico2Board<S> {
             return Err(ErrorCode::InvalidArgument);
         }
         let n = index as usize;
-        // SAFETY: Pico2Board::new の契約により、これらのペリフェラルは排他。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches
+        // SIO / IO_BANK0 / PADS_BANK0.
         let p = unsafe { pac::Peripherals::steal() };
 
-        // パッドの設定。入力バッファとプル、出力ディセーブル、そして
-        // アイソレーションの解除。`write()` はリセット値（ISO=1, PDE=1）から
-        // 始まるので、どのフィールドも書き残さない。
+        // Pad setup: input buffer, pulls, output disable, and isolation off.
+        // `write()` starts from the reset value (ISO=1, PDE=1), so every
+        // field is written.
         p.PADS_BANK0.gpio(n).write(|w| {
             w.ie().set_bit();
             w.od().clear_bit();
@@ -539,28 +551,36 @@ impl<S: Serial> Board for Pico2Board<S> {
                     w.pde().clear_bit();
                 }
             }
-            // 最後にパッドを繋ぐ。落とし忘れると GPIO は無反応のままになる。
+            // Connect the pad last. Left set, the GPIO stays unresponsive.
             w.iso().clear_bit();
             w
         });
 
-        // ソフトウェア制御にする。
+        // Hand the pin to software control.
         p.IO_BANK0.gpio(n).gpio_ctrl().write(|w| w.funcsel().sio());
 
         let mask = 1u32 << index;
         match mode {
             PinMode::OutputOpenDrain => {
-                // ハイインピーダンスから始める（外部プルアップに任せる）。
+                // Start in high impedance; the external pull-up holds the line.
                 self.open_drain |= mask;
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 32-bit GPIO_OUT_CLR field.
                 p.SIO.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 32-bit GPIO_OE_CLR field.
                 p.SIO.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
             }
             PinMode::Output => {
                 self.open_drain &= !mask;
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 32-bit GPIO_OE_SET field.
                 p.SIO.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
             }
             _ => {
                 self.open_drain &= !mask;
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 32-bit GPIO_OE_CLR field.
                 p.SIO.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
             }
         }
@@ -574,22 +594,32 @@ impl<S: Serial> Board for Pico2Board<S> {
         let sio = Self::sio();
         let mask = 1u32 << index;
         if self.open_drain & mask != 0 {
-            // オープンドレイン: low は駆動、high はハイインピーダンス。
+            // Open drain: low is driven, high is high impedance.
             match level {
                 Level::Low => {
+                    // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                    // 32-bit GPIO_OUT_CLR field.
                     sio.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
+                    // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                    // 32-bit GPIO_OE_SET field.
                     sio.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
                 }
+                // SAFETY: index < NUM_GPIO (30), so mask is one bit of the
+                // 32-bit GPIO_OE_CLR field.
                 Level::High => sio.gpio_oe_clr().write(|w| unsafe { w.bits(mask) }),
             }
             return Ok(());
         }
-        // 出力に設定されていなければ書けない。
+        // A pin that is not configured as an output cannot be written.
         if sio.gpio_oe().read().bits() & mask == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
         match level {
+            // SAFETY: index < NUM_GPIO (30), so mask is one bit of the 32-bit
+            // GPIO_OUT_SET field.
             Level::High => sio.gpio_out_set().write(|w| unsafe { w.bits(mask) }),
+            // SAFETY: index < NUM_GPIO (30), so mask is one bit of the 32-bit
+            // GPIO_OUT_CLR field.
             Level::Low => sio.gpio_out_clr().write(|w| unsafe { w.bits(mask) }),
         }
         Ok(())
@@ -601,9 +631,10 @@ impl<S: Serial> Board for Pico2Board<S> {
         }
         let sio = Self::sio();
         let mask = 1u32 << index;
-        // 出力モードなら出力値、入力モードなら入力値（WIT の read の定義）。
+        // Output mode reads the output value, input mode the input value (the
+        // definition of read in the WIT).
         let bits = if self.open_drain & mask != 0 {
-            // オープンドレインは線の実際の状態を読む。
+            // Open drain reads the actual state of the line.
             sio.gpio_in().read().bits()
         } else if sio.gpio_oe().read().bits() & mask != 0 {
             sio.gpio_out().read().bits()
@@ -621,17 +652,17 @@ impl<S: Serial> Board for Pico2Board<S> {
         if index >= NUM_GPIO {
             return;
         }
-        // abi-spec §5.2: 入力・プル無しに戻す。
+        // docs/abi-spec.md §5.2: back to input with no pulls.
         self.open_drain &= !(1u32 << index);
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C。index 0 = I2C0 (SDA=GP4, SCL=GP5) ---
+    // --- I2C. index 0 = I2C0 (SDA=GP4, SCL=GP5) ---
 
     fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
-        // i2c1 もヘッダに出ているが、v0.1 で割り当てているのは i2c0 だけ
-        // （abi-spec §8）。Hal 側で index < MAX_I2C は検査済み。
-        // SPI と同じ判定にしてある（docs/TODO.md §2.1）。
+        // i2c1 is on the header too, but v0.1 only assigns i2c0
+        // (docs/abi-spec.md §8). The Hal has already checked index < MAX_I2C.
+        // Same test as for SPI (docs/TODO.md §2.1).
         if index != 0 {
             return Err(ErrorCode::Unsupported);
         }
@@ -644,11 +675,12 @@ impl<S: Serial> Board for Pico2Board<S> {
             return Err(ErrorCode::Unsupported);
         };
 
-        // SAFETY: Pico2Board::new の契約により、これらのペリフェラルは排他。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches
+        // RESETS (its I2C0 bit), I2C0, IO_BANK0 and PADS_BANK0.
         let p = unsafe { pac::Peripherals::steal() };
 
-        // 一度リセットを掛け直す。SPI0 と違い落としてから上げるのは、
-        // open → close → open で前の設定が残らないようにするため。
+        // Pulse the reset. Unlike SPI0 it is asserted and then released, so
+        // that open -> close -> open does not keep the previous setup.
         p.RESETS.reset().modify(|_, w| w.i2c0().set_bit());
         p.RESETS.reset().modify(|_, w| w.i2c0().clear_bit());
         while p.RESETS.reset_done().read().i2c0().bit_is_clear() {
@@ -656,12 +688,12 @@ impl<S: Serial> Board for Pico2Board<S> {
         }
 
         let i2c = p.I2C0;
-        // 設定は ENABLE=0 のうちに行う。
+        // Configure while ENABLE=0.
         i2c.ic_enable().write(|w| w.enable().disabled());
 
-        // マスターとして動かす。`ic_restart_en` は `write-read` の
-        // Repeated START に要る。`rx_fifo_full_hld_ctrl` を立てると
-        // 受信 FIFO が満杯のときにクロックを握ってくれるので取りこぼさない。
+        // Run as a master. `ic_restart_en` is needed for the Repeated START
+        // of `write-read`. `rx_fifo_full_hld_ctrl` makes the controller hold
+        // the clock while the receive FIFO is full, so nothing is lost.
         i2c.ic_con().modify(|_, w| {
             w.speed().fast();
             w.master_mode().enabled();
@@ -672,7 +704,10 @@ impl<S: Serial> Board for Pico2Board<S> {
             w
         });
 
-        // SAFETY: i2c_timing が範囲内に収めた値。
+        // SAFETY: i2c_timing bounded hcnt and lcnt to 8..=0xffff (16-bit
+        // fields), spklen to at most 0xff (8-bit field) and sda_hold to at
+        // most lcnt - 2 (16-bit field); the TX / RX thresholds are 0, which
+        // fits their 8-bit fields.
         unsafe {
             i2c.ic_fs_scl_hcnt()
                 .write(|w| w.ic_fs_scl_hcnt().bits(hcnt));
@@ -681,23 +716,24 @@ impl<S: Serial> Board for Pico2Board<S> {
             i2c.ic_fs_spklen().write(|w| w.ic_fs_spklen().bits(spklen));
             i2c.ic_sda_hold()
                 .modify(|_, w| w.ic_sda_tx_hold().bits(sda_hold));
-            // 閾値は使わない（転送は IC_STATUS を見る同期ループ）。0 にしておく。
+            // The thresholds are unused (transfers are synchronous loops on
+            // IC_STATUS), so they are left at 0.
             i2c.ic_tx_tl().write(|w| w.tx_tl().bits(0));
             i2c.ic_rx_tl().write(|w| w.rx_tl().bits(0));
         }
 
-        // SDA / SCL をパッドに出す。GPIO / SPI と同じく `write()` は
-        // リセット値（ISO=1, PDE=1）から始まるので ISO を落とす。
+        // Route SDA / SCL to the pads. As for GPIO / SPI, `write()` starts
+        // from the reset value (ISO=1, PDE=1), so ISO is cleared.
         //
-        // **内部プルアップを有効にする。** I2C は両線をプルアップで
-        // high に保つバスで、RP2350 の内部プルは 50..80 kΩ と弱い。
-        // `ports/esp32s3` では `esp-hal` の `connect_pin` が SDA/SCL に
-        // 必ず `Pull::Up` を掛けるので（esp-hal 1.2.1 の
-        // `i2c/master/low_level/mod.rs`）、**2 つのポートで同じバス条件に
-        // なるよう揃えている**。pico-sdk の i2c の例も同じことをする。
-        // ただしこれは弱い補助にすぎず、**外部 10 kΩ のプルアップが要る**
-        // （短い配線の 100 kHz なら内部だけでも動くことがあるが、
-        // `fast` / `fast-plus` では足りない）。
+        // The internal pull-ups are enabled. I2C is a bus whose lines are held
+        // high by pull-ups, and the RP2350's internal pulls are weak
+        // (50..80 kOhm). On `ports/esp32s3` the `connect_pin` of `esp-hal`
+        // always applies `Pull::Up` to SDA/SCL (`i2c/master/low_level/mod.rs`
+        // in esp-hal 1.2.1), so this keeps the bus conditions the same on
+        // both ports; the pico-sdk i2c example does the same. It is only a
+        // weak aid: an external 10 kOhm pull-up is required (100 kHz over
+        // short wires may work on the internal pulls alone, `fast` /
+        // `fast-plus` do not).
         for n in [I2C0_SDA, I2C0_SCL] {
             p.PADS_BANK0.gpio(n).write(|w| {
                 w.ie().set_bit();
@@ -718,7 +754,7 @@ impl<S: Serial> Board for Pico2Board<S> {
         if index != 0 {
             return Err(ErrorCode::Unsupported);
         }
-        // 長さ 0 は Hal 側で invalid-argument にしている（abi-spec §8）。
+        // Length 0 is invalid-argument on the Hal side (docs/abi-spec.md §8).
         if data.is_empty() {
             return Err(ErrorCode::InvalidArgument);
         }
@@ -754,8 +790,8 @@ impl<S: Serial> Board for Pico2Board<S> {
         }
         let i2c = Self::i2c0();
         Self::i2c_set_target(&i2c, address)?;
-        // 前半は STOP を出さない。次の read コマンドが Repeated START になる
-        // （`ic_restart_en` を立ててある）。
+        // No STOP after the first half; the next read command becomes a
+        // Repeated START (`ic_restart_en` is set).
         Self::i2c_send(&i2c, data, false)?;
         Self::i2c_recv(&i2c, buf)
     }
@@ -766,42 +802,43 @@ impl<S: Serial> Board for Pico2Board<S> {
         }
         let i2c = Self::i2c0();
         i2c.ic_enable().write(|w| w.enable().disabled());
-        // gpio_release / spi_close と同じく入力・プル無しに戻す
-        // （FUNCSEL も SIO に戻るので、開いたままのバスが線を握らない）。
+        // Back to input with no pulls, as in gpio_release / spi_close (FUNCSEL
+        // returns to SIO as well, so a bus left open does not hold the lines).
         for n in [I2C0_SDA, I2C0_SCL] {
             let _ = self.gpio_configure(n as u32, PinMode::Input);
         }
     }
 
-    // --- SPI。index 0 = SPI0 (SCK=GP18, MOSI=GP19, MISO=GP16) ---
+    // --- SPI. index 0 = SPI0 (SCK=GP18, MOSI=GP19, MISO=GP16) ---
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
-        // spi1 もヘッダに出ているが、v0.1 で割り当てているのは spi0 だけ
-        // （abi-spec §8）。Hal 側で index < MAX_SPI は検査済み。
+        // spi1 is on the header too, but v0.1 only assigns spi0
+        // (docs/abi-spec.md §8). The Hal has already checked index < MAX_SPI.
         if index != 0 {
             return Err(ErrorCode::Unsupported);
         }
         if frequency_hz == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
-        // SAFETY: Pico2Board::new の契約により、これらのペリフェラルは排他。
+        // SAFETY: by the contract of Pico2Board::new, only this board touches
+        // RESETS (its SPI0 bit), SPI0, IO_BANK0 and PADS_BANK0.
         let p = unsafe { pac::Peripherals::steal() };
 
-        // SPI0 はリセットが掛かったまま起動する。解除して完了を待つ。
-        // GPIO と違いここでしか解除していないので、忘れるとレジスタへの
-        // 書き込みが素通りする。
+        // SPI0 comes out of boot held in reset. Release it and wait for the
+        // release to complete. Unlike GPIO this is the only place that does
+        // so; without it, register writes are silently dropped.
         p.RESETS.reset().modify(|_, w| w.spi0().clear_bit());
         while p.RESETS.reset_done().read().spi0().bit_is_clear() {
             core::hint::spin_loop();
         }
 
-        // SCK / MOSI / MISO をパッドに出す。GPIO と同じく `write()` は
-        // リセット値（ISO=1, PDE=1）から始まるので、ISO を落とし忘れると
-        // パッドが切り離されたままになる。
+        // Route SCK / MOSI / MISO to the pads. As for GPIO, `write()` starts
+        // from the reset value (ISO=1, PDE=1); if ISO is not cleared, the pad
+        // stays disconnected.
         for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
             p.PADS_BANK0.gpio(n).write(|w| {
-                // 出力側でも入力バッファは有効にしておく（PL022 は MISO を
-                // 読むだけだが、rp235x-hal も 3 本まとめて立てている）。
+                // The input buffer stays on for the outputs too (the PL022
+                // only reads MISO, but rp235x-hal sets it on all three).
                 w.ie().set_bit();
                 w.od().clear_bit();
                 w.pue().clear_bit();
@@ -821,26 +858,29 @@ impl<S: Serial> Board for Pico2Board<S> {
         };
 
         let spi = p.SPI0;
-        // 設定の前に必ず落とす（SSE=1 のまま CR0 を触ると挙動が未定義）。
+        // Always disable before configuring (touching CR0 with SSE=1 is
+        // undefined behavior of the PL022).
         spi.sspcr1().write(|w| w);
-        // SAFETY: cpsdvsr / scr は spi_divisors が範囲内に収めている。
         spi.sspcpsr()
+            // SAFETY: cpsdvsr is a u8 in 2..=254 from spi_divisors, so it fits
+            // the 8-bit CPSDVSR field.
             .write(|w| unsafe { w.cpsdvsr().bits(cpsdvsr) });
         spi.sspcr0().write(|w| {
-            // SAFETY: 7 は DSS（4 bit）の範囲内。8 bit フレームを表す。
+            // SAFETY: 7 fits the 4-bit DSS field and selects 8-bit frames.
             unsafe { w.dss().bits(7) };
             w.frf().motorola();
             w.spo().bit(spo);
             w.sph().bit(sph);
-            // SAFETY: scr は u8 なので SCR（8 bit）に収まる。
+            // SAFETY: scr is a u8, so it fits the 8-bit SCR field.
             unsafe { w.scr().bits(scr) };
             w
         });
-        // マスターとして有効にする。ビット順は MSB first 固定（PL022 の
-        // Motorola フォーマットはこれしかない。wit/spi.wit の前提と一致）。
+        // Enable as a master. The bit order is fixed at MSB first (the
+        // Motorola format of the PL022 has no other; matches the premise of
+        // wit/spi.wit).
         spi.sspcr1().write(|w| w.ms().clear_bit().sse().set_bit());
 
-        // 前の設定で残った受信があれば捨てる。
+        // Discard anything received under the previous setup.
         Self::spi_drain(&spi);
         Ok(())
     }
@@ -854,10 +894,12 @@ impl<S: Serial> Board for Pico2Board<S> {
             while spi.sspsr().read().tnf().bit_is_clear() {
                 core::hint::spin_loop();
             }
-            // SAFETY: 8 bit フレームなので DATA（16 bit）に収まる。
             spi.sspdr()
+                // SAFETY: frames are 8 bits, so u16::from(b) fits the 16-bit
+                // DATA field.
                 .write(|w| unsafe { w.data().bits(u16::from(b)) });
-            // 受信は捨てるが、FIFO（8 段）を溢れさせないよう都度抜く。
+            // The received bytes are discarded, but drained as they come so
+            // the 8-deep FIFO never overruns.
             while spi.sspsr().read().rne().bit_is_set() {
                 let _ = spi.sspdr().read().bits();
             }
@@ -872,15 +914,16 @@ impl<S: Serial> Board for Pico2Board<S> {
         }
         let spi = Self::spi0();
         let n = data.len().min(buf.len());
-        // 全二重なので 1 バイト送って 1 バイト受ける、を繰り返す。FIFO に
-        // 詰めてから読むほうが速いが、受信の取りこぼしを考えなくて済む
-        // この形にしてある（v0.1 の転送は最大 128 バイト）。
+        // Full duplex: send one byte, receive one byte, repeat. Filling the
+        // FIFO first would be faster, but this form never has to worry about
+        // dropped receive bytes (v0.1 transfers are at most 128 bytes).
         for i in 0..n {
             while spi.sspsr().read().tnf().bit_is_clear() {
                 core::hint::spin_loop();
             }
-            // SAFETY: 8 bit フレームなので DATA（16 bit）に収まる。
             spi.sspdr()
+                // SAFETY: frames are 8 bits, so u16::from(data[i]) fits the
+                // 16-bit DATA field.
                 .write(|w| unsafe { w.data().bits(u16::from(data[i])) });
             while spi.sspsr().read().rne().bit_is_clear() {
                 core::hint::spin_loop();
@@ -898,13 +941,14 @@ impl<S: Serial> Board for Pico2Board<S> {
         let spi = Self::spi0();
         Self::spi_drain(&spi);
         spi.sspcr1().write(|w| w.sse().clear_bit());
-        // gpio_release と同じく入力・プル無しに戻す（FUNCSEL も SIO に戻る）。
+        // Back to input with no pulls, as in gpio_release (FUNCSEL returns to
+        // SIO as well).
         for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
             let _ = self.gpio_configure(n as u32, PinMode::Input);
         }
     }
 
-    // --- 時間。TIMER0 は 1 MHz なのでそのままマイクロ秒。 ---
+    // --- Time. TIMER0 runs at 1 MHz, so the count is microseconds. ---
 
     fn now_us(&mut self) -> u64 {
         Self::micros()
@@ -922,7 +966,7 @@ impl<S: Serial> Board for Pico2Board<S> {
         }
     }
 
-    // --- 出力 ---
+    // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
         self.serial.write(b"[wasm] ");

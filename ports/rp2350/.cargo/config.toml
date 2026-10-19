@@ -1,7 +1,7 @@
-# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
-# ビルドは `cd ports/rp2350 && cargo build --release`。
+# cargo reads .cargo/config.toml relative to the current directory, so the
+# target lives here and the port is built from ports/rp2350.
 [build]
-# RP2350 の Cortex-M33。hard-float ABI（f32 は FPU で回る）。
+# Cortex-M33 of the RP2350 with the hard-float ABI (f32 runs on the FPU).
 target = "thumbv8m.main-none-eabihf"
 
 [target.thumbv8m.main-none-eabihf]
