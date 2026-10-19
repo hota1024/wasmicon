@@ -1,7 +1,6 @@
 [toolchain]
-# ESP32-C5 は RISC-V（RV32IMAC）なので upstream の Rust でそのまま組める
-# （ESP32-S3 の Xtensa と違って espup は要らない）。版はルートと揃える
-# （上げるときは 5 つの rust-toolchain.toml を揃える）。
+# Pinned so that all five rust-toolchain.toml files agree; see README.md "Toolchain".
+# Upstream Rust builds the RISC-V ESP32-C5; no espup (docs/decisions.md P-10).
 channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 targets = ["riscv32imac-unknown-none-elf"]

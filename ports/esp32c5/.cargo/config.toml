@@ -1,8 +1,8 @@
-# cargo はカレントディレクトリ基準で .cargo/config.toml を探す。
-# ビルドは `cd ports/esp32c5 && cargo build --release`。
+# cargo reads .cargo/config.toml relative to the current directory, so the
+# target lives here and the port is built from ports/esp32c5.
 #
-# ESP32-C5 の HP コアは RV32IMAC（FPU 無し）。upstream Rust に core の
-# プリビルドがあるので ESP32-S3 のような build-std は要らない。
+# The HP core of the ESP32-C5 is RV32IMAC (no FPU). Upstream Rust ships a
+# prebuilt core for it, so no build-std as for the ESP32-S3.
 [build]
 target = "riscv32imac-unknown-none-elf"
 

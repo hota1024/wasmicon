@@ -1,19 +1,19 @@
-//! Wasmicon の ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT) ポート。
+//! Wasmicon port for the ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT).
 //!
-//! `ports/esp32s3` と同じ流れにしてある: ゲストの `.wasm` はアプリスロット
-//! （フラッシュ）から `esp-storage` で読み、arena に写してランタイムに渡す。
-//! ファームにアプリは入っていない（`docs/app-workflow.md` §3.3）。スロットが
-//! 空なら理由を出して待つ（`wasmicon_port::idle`）。
-//! トレースは UART0 (GPIO11=TX, GPIO12=RX) 115200 8N1 に出す。WIFI6-KIT では
-//! UART0 が「UART」と書かれた側の Type-C（CH343）に繋がっている。
+//! Same flow as `ports/esp32s3`: the guest `.wasm` is read from the app slot
+//! in flash with `esp-storage`, copied into the arena and handed to the
+//! runtime. The firmware embeds no app (docs/app-workflow.md §3.3). If the
+//! slot is empty, print the reason and park (`wasmicon_port::idle`; pins are
+//! not driven).
+//! Traces go to UART0 (GPIO11=TX, GPIO12=RX) at 115200 8N1. On the WIFI6-KIT
+//! UART0 is wired to the Type-C port labeled "UART" (CH343).
 //!
-//! **実機では未検証**（docs/TODO.md §1）。
-//!
-//! ビルドは upstream の Rust でよい（RISC-V。espup は要らない）:
-//! `cargo build --release`
+//! Port in progress: boot and blink are verified on hardware, SPI and I2C
+//! are not yet (docs/TODO.md §1.3.1).
 
 #![no_std]
 #![no_main]
+#![warn(clippy::undocumented_unsafe_blocks)]
 
 mod board;
 
@@ -30,60 +30,65 @@ use wasmicon_port::{idle, slot, Hal};
 
 use board::{EspBoard, Serial};
 
-// ESP-IDF の 2 段目ブートローダが読む app descriptor をフラッシュの先頭付近に置く。
-// 中身はバージョンとビルド日時で、ランタイムからは使わない。espflash 4.5 以降は
-// これが無い ELF を受け付けない（RP2350 の `IMAGE_DEF` に当たるもの）。
+// Places the app descriptor that the ESP-IDF second-stage bootloader reads
+// near the start of flash. It holds the version and build time; the runtime
+// does not use it. espflash 4.5 and later refuse an ELF without one (the
+// counterpart of `IMAGE_DEF` on the RP2350).
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// 設定スロット（配線表。`docs/app-workflow.md` §3.9）。アプリスロットの直後。
+/// Config slot (wiring table, docs/app-workflow.md §3.9), right after the app slot.
 const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32C5.role_slot {
     Some(s) => s,
-    None => panic!("ESP32-C5 のプロファイルに設定スロットが無い"),
+    None => panic!("the ESP32-C5 profile has no config slot"),
 };
 
-/// 配線表で割り当ててよい GPIO の制約。
+/// Limits on the GPIOs the wiring table may assign.
 const LIMITS: Limits<'static> = Limits::of(&wasmicon_port::profile::ESP32C5);
 
-/// アプリスロット（`ports/common` の `profile::ESP32C5`）。
+/// App slot (`profile::ESP32C5` in `ports/common`).
 const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32C5.slot {
     Some(s) => s,
-    None => panic!("ESP32-C5 のプロファイルにスロットが無い"),
+    None => panic!("the ESP32-C5 profile has no app slot"),
 };
 
-/// ランタイムの arena。残りが線形メモリになる（`Arena::alloc_rest`）。
-/// ESP32-C5 の HP SRAM は 384 KB（PSRAM は使わない）。線形メモリ 4 ページ
-/// （256 KB）が収まる大きさにしてある（docs/handoff.md §5 Phase 4）。
+/// Runtime arena; whatever is left becomes linear memory (`Arena::alloc_rest`).
+/// The ESP32-C5 has 384 KB of HP SRAM (PSRAM is not used), so the size fits
+/// four pages of linear memory (256 KB).
 static mut ARENA: [u8; wasmicon_port::profile::ESP32C5.arena] =
     [0; wasmicon_port::profile::ESP32C5.arena];
 
-/// 検証中だけ使う作業領域。`MCU_CONFIG` の上限に合わせてある。
+/// Scratch space used only during validation. Sized for the `MCU_CONFIG` limits.
 ///
-/// **ブートローダから取り戻した RAM（`dram2`、64 KiB）に置く。** esp-hal の
-/// リンカスクリプトで主 RAM は 314 KiB しかなく、arena と同じ所に置くと
-/// ネイティブスタックが削れる（`profile::ESP32C5.arena` のコメント）。
-/// この領域は初期化されないので、使う前に `main` が 0 で埋める。
+/// Placed in the RAM reclaimed from the bootloader (`dram2`, 64 KiB). The
+/// esp-hal linker script leaves only 314 KiB of main RAM, and putting this
+/// next to the arena would eat into the native stack (see the comment on
+/// `profile::ESP32C5.arena`). The region is not initialized, so `main` fills
+/// it with zeros before use.
 #[esp_hal::ram(reclaimed)]
 static mut SCRATCH: MaybeUninit<[u8; wasmicon_port::profile::ESP32C5.scratch]> =
     MaybeUninit::uninit();
 
-/// マイコン向けの上限。**正は `ports/common` の `profile::ESP32C5.config`**
-/// （CLI が同じ表を読む。docs/app-workflow.md §4.3）。
-/// ホストの既定値のままだと scratch が足りない。
+/// Limits for the microcontroller. The source of truth is
+/// `profile::ESP32C5.config` in `ports/common`; the CLI reads the same table
+/// (docs/app-workflow.md §4.3). With the host defaults the scratch space would
+/// be too small.
 const MCU_CONFIG: Config = wasmicon_port::profile::ESP32C5.config;
 
-/// UART0 への出力。
+/// Output to UART0.
 struct SerialPort<'a>(Uart<'a, esp_hal::Blocking>);
 
 impl Serial for SerialPort<'_> {
-    /// **全部書き切る。** `Uart::write` は送信 FIFO（128 バイト）に入る分だけ書いて
-    /// 書けたバイト数を返すので、戻り値を捨てると 128 バイトを超える行の後ろが
-    /// 黙って落ちる（2026-10-09 に名乗りの行で踏んだ。トレース行は最大 160 バイト）。
+    /// Writes everything. `Uart::write` only queues what fits in the 128-byte
+    /// TX FIFO and returns the count, so discarding the count silently drops
+    /// the tail of any line longer than 128 bytes (the identity line did that
+    /// once; trace lines are up to 160 bytes).
     fn write(&mut self, bytes: &[u8]) {
         let mut rest = bytes;
         while !rest.is_empty() {
             match self.0.write(rest) {
                 Ok(n) if n > 0 => rest = &rest[n..],
-                // 書けない（エラーか 0）なら諦める。シリアルの失敗を出す先は無い。
+                // An error or 0 bytes: give up. There is nowhere to report a
+                // serial failure.
                 _ => break,
             }
         }
@@ -93,9 +98,9 @@ impl Serial for SerialPort<'_> {
 
 #[esp_hal::main]
 fn main() -> ! {
-    // CPU は esp-hal が出せる最大にする（ESP32-S3 と揃える。2026-10-09 の
-    // オーナー決定の趣旨）。`time` はトレースに出ないので、クロックを変えても
-    // 記録済みのトレースとの一致は保たれる。
+    // The CPU runs at the fastest clock esp-hal offers, to match the ESP32-S3.
+    // `time` is not traced, so the clock does not affect the match with
+    // recorded traces.
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     let uart = Uart::new(p.UART0, UartConfig::default())
@@ -104,8 +109,9 @@ fn main() -> ! {
         .with_rx(p.GPIO12);
     let mut serial = SerialPort(uart);
     serial.write(b"wasmicon esp32c5\r\n");
-    // 自分が何者かを 1 行で名乗る（docs/app-workflow.md §3.8）。版・git・ABI・
-    // 構成をトレースの取り込みに残し、どのビルドで取ったかを後から追えるようにする。
+    // Identify this firmware in one line (docs/app-workflow.md §3.8): version,
+    // git, ABI and configuration, so a captured trace records which build
+    // produced it.
     {
         let mut line = [0u8; 192];
         let mut out = Buf::new(&mut line);
@@ -122,26 +128,32 @@ fn main() -> ! {
         serial.write(b"\r\n");
     }
 
-    // SAFETY: EspBoard がこれ以降 GPIO / IO_MUX / SPI2 / I2C0 と、SPI2 と I2C0 に
-    // 割り当てたピンを排他的に使う。UART は GPIO11/12 を占有するが、役割名に
-    // 割り当てられる GPIO とも（予約ピン）、SPI2 のピン (GPIO24/23/5 と
-    // RGB LED の GPIO27) とも I2C0 のピン (GPIO8/9) とも重ねていない。
+    // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
+    // / I2C0 and of the pins assigned to SPI2 and I2C0. The UART holds
+    // GPIO11/12, which are reserved and overlap neither a role-assignable GPIO
+    // nor the SPI2 pins (GPIO24/23/5 and GPIO27 for the RGB LED) nor the I2C0
+    // pins (GPIO8/9).
     let board = unsafe { EspBoard::new(serial) };
 
-    // 設定スロットとアプリスロットの両方を読むので、ここで 1 回だけ作る。
+    // Both the config slot and the app slot are read from it, so it is
+    // created once here.
     let mut storage = FlashStorage::new(p.FLASH);
 
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
-    // 役割は設定スロットの表だけで決まる。ファームは既定の表を持たない
-    // （空・壊れていれば役割は 1 つも配らない。docs/app-workflow.md §3.9）。
+    // Roles come only from the table in the config slot. The firmware has no
+    // default table: an empty or corrupt slot hands out no roles at all
+    // (docs/app-workflow.md §3.9).
     let map = pick_roles(&mut storage, hal.board_mut().serial());
     let mut hal = hal.with_roles(map);
 
-    // SAFETY: 単一のタスクからしか触らないので、可変静的への参照はここでしか作らない。
+    // SAFETY: only one task ever touches ARENA, so this is the only place
+    // that creates a reference to it, and it runs once.
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
-    // SAFETY: 同上。`SCRATCH` は初期化されない領域なので、ここで 0 で埋めてから
-    // 初期化済みの配列として参照する（`[u8; N]` はどのビット列でも妥当だが、
-    // 中身を決めておく）。
+    // SAFETY: only one task ever touches SCRATCH, so this is the only place
+    // that creates a reference to it, and it runs once. SCRATCH lies in
+    // uninitialized RAM, so it is zero-filled here before it is treated as an
+    // initialized array (any bit pattern is a valid `[u8; N]`, but the
+    // contents are made definite).
     let scratch_buf = unsafe {
         let p = core::ptr::addr_of_mut!(SCRATCH);
         (*p).write([0; wasmicon_port::profile::ESP32C5.scratch]);
@@ -150,18 +162,18 @@ fn main() -> ! {
 
     let outcome = run(&mut hal, &mut storage, arena_buf, scratch_buf);
 
-    // ファームにアプリは入っていない（docs/app-workflow.md §3.3）。
-    // スロットが空・壊れているなら、理由は pick_guest が出している。
+    // The firmware embeds no app (docs/app-workflow.md §3.3). If the slot is
+    // empty or corrupt, pick_guest has already printed the reason.
     if let Ok(false) = outcome {
         idle::park(hal.board_mut());
     }
 
-    // **理由を先に出す。** 下の release_all は無制限に待ちうる
-    // （`spi_close` の `BSY` 待ちなど。docs/TODO.md §2.1）ので、掃除を
-    // 先に回すとペリフェラルが固まったときに理由が出ないまま無言で止まる
-    // ——  docs/handoff.md §3 #4「ログを出して停止する」が守れない。
-    // abi-spec §6.6 は drop → ログの順で書いてあるが、順序を入れ替えても
-    // 観測できるのは「理由が出る」ことだけ増える（docs/TODO.md §2 に記録）。
+    // Print the reason first. release_all below may wait without bound (the
+    // `BSY` wait in `spi_close`, say; docs/TODO.md §2.1), so cleaning up first
+    // would leave a hung peripheral with no reason printed, which breaks "log
+    // and halt" (docs/decisions.md A-04). docs/abi-spec.md §6.6 lists drop
+    // before log, but swapping the order only adds the reason to what can be
+    // observed (recorded in docs/TODO.md §2).
     if let Err(e) = outcome {
         let s = hal.board_mut().serial();
         s.write(b"wasmicon: ");
@@ -171,23 +183,24 @@ fn main() -> ! {
         s.write(b"]\r\n");
     }
 
-    // abi-spec §5.2 / §6.6: `run` から戻ったら（トラップでも）残っている
-    // ハンドルを全部 drop する。ゲストの Drop は走らないので、ここだけが
-    // 片付ける。トレース行は出さない（`Hal::release_all` のコメント）。
+    // docs/abi-spec.md §5.2, §6.6: once `run` returns (trap included), drop
+    // every handle still open. Guest destructors never run, so this is the
+    // only cleanup. No trace line is written (see `Hal::release_all`).
     hal.release_all();
     loop {
         core::hint::spin_loop();
     }
 }
 
-/// スロットから走らせるアプリを選ぶ。
+/// Picks the app to run from the slot.
 ///
-/// 走らせるものが無ければ `None`（ファームにアプリは入っていない。
-/// `docs/app-workflow.md` §3.3）。ESP32-S3 と同じく、任意オフセットが XIP に
-/// マップされている前提を置けないので、Pico 系（`slot::read_xip`）と違って
-/// **RAM に写す**。写すのは**ヘッダが持つ長さの分だけ** —— スロットは
-/// 64 KiB だがアプリは数 KB で、DRAM はほぼ使い切っている
-/// （`docs/TODO.md` §1.4）。arena から取るので静的な領域を増やさない。
+/// Returns `None` when there is nothing to run; the firmware embeds no app
+/// (docs/app-workflow.md §3.3). As on the ESP32-S3, an arbitrary flash
+/// offset cannot be assumed to be mapped into XIP, so unlike the Pico ports
+/// (`slot::read_xip`) the app is copied to RAM. Only the length in the header
+/// is copied: the slot is 64 KiB but an app is a few KB, and DRAM is nearly
+/// full (docs/TODO.md §1.4). The copy comes from the arena, so no static
+/// region grows.
 fn pick_guest<'a>(
     storage: &mut FlashStorage<'_>,
     arena: &mut Arena<'a>,
@@ -217,17 +230,18 @@ fn pick_guest<'a>(
         return None;
     }
 
-    // **arena を取る前に CRC を確かめる。** `Arena` は bump で、返す手段が
-    // 無い（`runtime/src/arena.rs` に reset は無い）。今は壊れていれば
-    // idle に入るだけなので実害は無いが、スーパーバイザのループ
-    // （`docs/TODO.md` §5）で同じ arena から次のアプリを走らせるようになると、
-    // **壊れたスロットの分だけ arena が減ったまま**になり、`wasmicon check` が
-    // 見積もる余裕と実機がずれる。だから一度フラッシュから流して CRC だけ見る。
+    // Check the CRC before taking arena space. `Arena` is a bump allocator
+    // with no way to give memory back (`runtime/src/arena.rs` has no reset).
+    // Today a corrupt slot only leads to park, so nothing is lost, but once
+    // the supervisor loop (docs/TODO.md §5) runs the next app from the same
+    // arena, a corrupt slot would shrink the arena for good, and the headroom
+    // `wasmicon check` estimates would no longer match the board. So the app
+    // is streamed from flash once just to compute the CRC.
     //
-    // 読みは小さなバッファで分割する。`esp-storage` の `read` は**呼ぶたびに
-    // 4 KiB のセクタバッファをスタックに作る**（あちらの実装）ので、
-    // ここを大きくしてもスタックの山は変わらない。順に呼ぶので山は 1 つ分
-    // （`docs/TODO.md` §1.4 に記録した）。
+    // The read is split into small chunks. The `read` of `esp-storage`
+    // allocates a 4 KiB sector buffer on the stack on every call, so a bigger
+    // chunk here would not lower the stack peak; the calls are sequential, so
+    // there is one peak (docs/TODO.md §1.4).
     let mut chunk = [0u8; 512];
     let mut crc = wasmicon_port::CRC32_INIT;
     let mut left = header.len;
@@ -251,8 +265,8 @@ fn pick_guest<'a>(
         return None;
     }
 
-    // CRC が合ったので、ここで初めて arena を取る。失敗する枝はもう
-    // 「arena が足りない」だけ。
+    // The CRC matched, so take arena space only now. The only failure left
+    // is "arena too small".
     let Ok(buf) = arena.alloc_bytes(header.len) else {
         serial.write(b"wasmicon: arena too small for the slot app, idle\r\n");
         return None;
@@ -264,9 +278,9 @@ fn pick_guest<'a>(
         serial.write(b"wasmicon: slot read failed, idle\r\n");
         return None;
     }
-    // **写したものをもう一度検査する。** 上で確かめたのは流し読みした
-    // バイト列で、decode に渡すのはこの `buf`。2 度目の読みが壊れていたら
-    // ここで捕まえる（arena は既に取ってあるが、走らせはしない）。
+    // Check the copy again. The CRC above covered the streamed bytes; `buf`
+    // is what decode gets. A corrupt second read is caught here (the arena
+    // space is already taken, but the app does not run).
     if let Err(e) = slot::verify(buf, &header) {
         out.str("wasmicon: ");
         out.str(e.reason());
@@ -285,9 +299,11 @@ fn pick_guest<'a>(
     Some(buf)
 }
 
-/// 設定スロットから配線表を読む。読めた表（または読めない理由）をシリアルに出す。
+/// Reads the wiring table from the config slot and prints the table, or the
+/// reason it cannot be read, to the serial port.
 ///
-/// 本文は `roles::MAX_BODY`（256 バイト）までなので、スタックに読む。
+/// The body is at most `roles::MAX_BODY` (256 bytes), so it is read onto the
+/// stack.
 fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> RoleMap {
     let result = read_roles(storage);
     let mut line = [0u8; 192];
@@ -301,7 +317,7 @@ fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) 
 fn read_roles(storage: &mut FlashStorage<'_>) -> Result<RoleMap, roles::RolesError> {
     let mut head = [0u8; roles::HEADER_LEN];
     if storage.read(ROLE_SLOT.offset, &mut head).is_err() {
-        // 読めないのは空と同じ扱いにする（役割を配らない側に倒す）。
+        // Unreadable counts as empty: fail toward handing out no roles.
         return Err(roles::RolesError::Empty);
     }
     let header = roles::parse_header(&head)?;
@@ -316,9 +332,10 @@ fn read_roles(storage: &mut FlashStorage<'_>) -> Result<RoleMap, roles::RolesErr
     roles::parse_checked(body, &header, &LIMITS)
 }
 
-/// スロットの読み出しから `run` の呼び出しまで。
+/// From reading the slot to the `run` call.
 ///
-/// 走らせるアプリが無ければ `Ok(false)`、走らせて戻ったら `Ok(true)`。
+/// `Ok(false)` when there is no app to run, `Ok(true)` once the app has run
+/// and returned.
 fn run(
     hal: &mut Hal<EspBoard<SerialPort<'static>>>,
     storage: &mut FlashStorage<'_>,
@@ -333,7 +350,7 @@ fn run(
     };
     let m = decode::decode(guest, &mut arena)?;
     let v = validate::validate(&m, &MCU_CONFIG, &mut arena, &mut scratch)?;
-    // Exec は線形メモリ（arena の残り全部）より先に確保する。
+    // Exec is allocated before linear memory, which takes the rest of the arena.
     let mut exec = Exec::new(&MCU_CONFIG, &mut arena)?;
     let mut inst = instantiate(m, v, &MCU_CONFIG, &mut arena, hal)?;
 
@@ -342,18 +359,17 @@ fn run(
     }
     let entry = inst
         .export_func("run")
-        .ok_or(wasmicon_core::Error::Unlinkable("export run が無い"))?;
+        .ok_or(wasmicon_core::Error::Unlinkable("missing export `run`"))?;
     invoke(&mut inst, &mut exec, hal, entry, &[], &mut [])?;
     Ok(true)
 }
 
-/// docs/handoff.md §3 #4 は「ログを出して停止、再起動しない」だが、**理由は出せない**。
-///
-/// シリアルはボードが持っていて panic handler からは届かないため、今は
-/// 停止するだけ。理由を出すには、シリアルのハンドルを panic handler から
-/// 触れる場所（critical-section 付きのグローバル）に置く必要がある。
-/// ランタイム由来の失敗は `main` が捕まえて UART に出すので、ここに来るのは
-/// ポート自身のバグに限られる。
+/// Halts without printing. docs/decisions.md A-04 asks for "log and halt, no
+/// restart", but the serial port belongs to the board and the panic handler
+/// cannot reach it. Printing the reason would need the serial handle in a
+/// place the handler can reach (a global behind a critical section). Runtime
+/// failures are caught by `main` and printed to the UART, so a panic here is
+/// always a bug in the port itself.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {

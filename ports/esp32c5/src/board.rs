@@ -1,21 +1,24 @@
-//! ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT) のボード実装。
+//! Board implementation for the ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT).
 //!
-//! `ports/esp32s3` の `board.rs` と同じ作りにしてある（GPIO はレジスタ直叩き、
-//! SPI / I2C は `esp-hal` のドライバ）。理由と、`ports/rp2350` と揃えた点は
-//! あちらの doc コメントにある。C5 で違うのは次の点だけ:
+//! Built like `board.rs` of `ports/esp32s3` (GPIO through the registers, SPI
+//! / I2C through the `esp-hal` drivers); the reasons, and what is aligned
+//! with `ports/rp2350`, are in that file's module docs. The C5 differs only
+//! in these points:
 //!
-//! - **GPIO は 0..=28 の 29 本で、レジスタは 1 組**（S3 の `enable1` / `out1` /
-//!   `in1` のような 32 番以降の組は無い）
-//! - IO_MUX の欄と既定値（`MCU_SEL` = 1 が GPIO 機能、`FUN_DRV` = 2）と、
-//!   GPIO マトリクスの「GPIO 出力」信号（256）は S3 と同じ値
-//!   （`esp-metadata-generated` 0.5.1 の `gpio.gpio_function` と
-//!   `OutputSignal::GPIO`、esp32c5 PAC 0.3 のリセット値 0x1800）
-//! - ピンの割り当て（abi-spec §8）: I2C0 は SDA=GPIO8 / SCL=GPIO9、SPI2 は
-//!   SCK=GPIO24 / MOSI=GPIO23 / MISO=GPIO5。**`spi.bus` index 1 は基板の
-//!   RGB LED（WS2812B、GPIO27）向けで、SPI2 の MOSI だけを GPIO27 に出す**。**GPIO6 は基板上で電池電圧の
-//!   分圧に 0Ω で繋がっている**ので使わない（2026-10-12、回路図で確認）
+//! - 29 GPIOs, 0..=28, in a single register bank (no `enable1` / `out1` /
+//!   `in1` set for GPIO 32 and up as on the S3).
+//! - The IO_MUX fields and defaults (`MCU_SEL` = 1 is the GPIO function,
+//!   `FUN_DRV` = 2) and the "GPIO output" signal of the GPIO matrix (256) have
+//!   the same values as on the S3 (`gpio.gpio_function` and
+//!   `OutputSignal::GPIO` in `esp-metadata-generated` 0.5.1; reset value
+//!   0x1800 in the esp32c5 PAC 0.3).
+//! - Pin assignment (docs/abi-spec.md §8): I2C0 is SDA=GPIO8 / SCL=GPIO9, SPI2
+//!   is SCK=GPIO24 / MOSI=GPIO23 / MISO=GPIO5. `spi.bus` index 1 serves the
+//!   on-board RGB LED (WS2812B, GPIO27) by routing only the SPI2 MOSI to
+//!   GPIO27. GPIO6 is tied through 0 Ohm to the battery voltage divider on the
+//!   board (per the schematic), so it is not used.
 //!
-//! **実機では未検証**（docs/TODO.md §1）。
+//! Port in progress; hardware status in docs/TODO.md §1.3.1.
 
 use esp_hal::gpio::AnyPin;
 use esp_hal::i2c::master::{Config as HalI2cConfig, Error as HalI2cError, I2c, SoftwareTimeout};
@@ -31,39 +34,41 @@ use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::{Board, BoardResult};
 
-/// ESP32-C5 の GPIO は 0..=28。
+/// The ESP32-C5 has GPIO 0..=28.
 const NUM_GPIO: u32 = 29;
 
-/// IO_MUX の MCU_SEL に入れる「GPIO 機能」。ESP32-C5 でも 1
-/// （`esp-metadata-generated` の `gpio.gpio_function`）。
+/// The "GPIO function" value for MCU_SEL in the IO_MUX. 1 on the ESP32-C5 as
+/// well (`gpio.gpio_function` in `esp-metadata-generated`).
 const MCU_SEL_GPIO: u8 = 1;
 
-/// IO_MUX の FUN_DRV。2 = 20 mA で、ESP32-C5 のパッドのリセット値と同じ
-/// （PAC のリセット値 0x1800 の bit 10..11）。
+/// FUN_DRV in the IO_MUX. 2 = 20 mA, the reset value of the ESP32-C5 pads
+/// (bits 10..11 of the PAC reset value 0x1800).
 const FUN_DRV_DEFAULT: u8 = 2;
 
-/// GPIO マトリクスの「GPIO 出力」信号（`GPIO_FUNCn_OUT_SEL`）。
+/// The "GPIO output" signal of the GPIO matrix (`GPIO_FUNCn_OUT_SEL`).
 ///
-/// **ESP32-C5 では 256**（`esp-metadata-generated` 0.5.1 の
-/// `OutputSignal::GPIO`）。チップごとに違う値なので決め打ちで写してはいけない
-/// （S3 で 128 を書いて実機でピンが一切動かなかった。`ports/esp32s3` の
-/// 同じ定数のコメント）。
+/// 256 on the ESP32-C5 (`OutputSignal::GPIO` in `esp-metadata-generated`
+/// 0.5.1). The value differs per chip, so never copy it blindly: writing 128
+/// on the S3 left every pin dead on hardware (see the comment on the same
+/// constant in `ports/esp32s3`).
 const SIG_GPIO_OUT: u16 = 256;
 
-/// ゲストに開放しない GPIO。
+/// GPIOs not released to the guest.
 ///
-/// - 11, 12: トレース用の UART0（WIFI6-KIT では CH343 に直結）
-/// - 13, 14: ネイティブ USB（WIFI6-KIT では Type-C に直結）
-/// - 15..=22: SPI フラッシュと PSRAM。XIP 実行中に触るとファームウェアごと落ちる
+/// - 11, 12: UART0, which carries the trace (wired to the CH343 on the WIFI6-KIT)
+/// - 13, 14: native USB (wired to the Type-C port on the WIFI6-KIT)
+/// - 15..=22: SPI flash and PSRAM; touching them while executing from XIP
+///   crashes the firmware
 const fn reserved(index: u32) -> bool {
     matches!(index, 11..=22)
 }
 
-// 配線表の検査（CLI とファーム。`wasmicon_port::roles`）はプロファイルの
-// `gpio_count` / `reserved` を使う。ここの `NUM_GPIO` / `reserved` と食い違うと、
-// 検査を通った表で `pin.open` が落ちるので、コンパイル時に突き合わせる。
-// `reserved` は範囲で判定しているので、全番号を 1 つずつ比べる。役割の表
-// そのものはファームに無い（`docs/app-workflow.md` §3.9）。
+// The wiring-table check (CLI and firmware, `wasmicon_port::roles`) uses the
+// profile's `gpio_count` / `reserved`. If they disagreed with `NUM_GPIO` /
+// `reserved` here, `pin.open` would fail on a table that passed the check, so
+// they are cross-checked at compile time. `reserved` is a range test, so
+// every number is compared one by one. The firmware holds no role table of
+// its own (docs/app-workflow.md §3.9).
 const _: () = {
     let p = &wasmicon_port::profile::ESP32C5;
     assert!(NUM_GPIO == p.gpio_count);
@@ -79,60 +84,60 @@ const _: () = {
         }
         assert!(
             listed == reserved(n),
-            "profile::ESP32C5.reserved と board.rs の reserved が食い違う"
+            "profile::ESP32C5.reserved disagrees with reserved() in board.rs"
         );
         n += 1;
     }
 };
 
-/// SPI2（FSPI）に割り当てるピン（abi-spec §8）。CS はここに含めない。
-/// ゲストが `lcd-cs` の GPIO を直接振る（`wit/spi.wit` の設計）。
+/// Pins assigned to SPI2 (FSPI) (docs/abi-spec.md §8). CS is not included:
+/// the guest toggles the `lcd-cs` GPIO itself (the design of `wit/spi.wit`).
 ///
-/// `reserved` には入れていない。入れると GPIO の開放可否が host の mock や
-/// 他のポートと食い違い、トレースの突き合わせ（handoff §5 Phase 6）が
-/// ボードごとに別物になるため。SPI を開いたまま同じ番号を `gpio` で開けば
-/// GPIO マトリクスの配線が上書きされて SPI は黙って止まるが、それは
-/// ゲスト側の誤りとする（`ports/rp2350` と同じ扱い）。
+/// They are not in `reserved`. Reserving them would make GPIO availability
+/// differ from the host mock and the other ports, so trace comparison would
+/// differ per board. If the guest opens one of these numbers through `gpio`
+/// while SPI is open, the GPIO matrix routing is overwritten and SPI silently
+/// stops; that counts as a guest bug (the same as on `ports/rp2350`).
 const SPI2_SCK: u8 = 24;
 const SPI2_MOSI: u8 = 23;
 const SPI2_MISO: u8 = 5;
 
-/// `spi.bus` index 1 の MOSI。基板の RGB LED（WS2812B）の DIN に 0Ω で
-/// 繋がっている（WIFI6-KIT の回路図の R3）。
+/// MOSI of `spi.bus` index 1. Tied through 0 Ohm to the DIN of the on-board
+/// RGB LED (WS2812B; R3 on the WIFI6-KIT schematic).
 ///
-/// SPI2 を **MOSI だけ**でこのピンに出す（SCK / MISO は出さない）。ゲストは
-/// WS2812 の 1 ビットを SPI の数ビットに展開して送る（`apps/rgb-led-rs`）。
-/// GPIO マトリクスでどのピンにも出せるので、配線は要らない。index 0 と同じ
-/// SPI2 を使うので、**同時には開けない**（後から開いた方が `busy`）。
+/// SPI2 drives this pin with MOSI only (no SCK / MISO). The guest expands
+/// each WS2812 bit into several SPI bits (`apps/rgb-led-rs`). The GPIO matrix
+/// can route to any pin, so no wiring is needed. It shares SPI2 with index 0,
+/// so the two cannot be open at the same time (the second open gets `busy`).
 const SPI2_LED_MOSI: u8 = 27;
 
-/// I2C0 に割り当てるピン（abi-spec §8）。`SPI2_*` と同じ理由で
-/// `reserved` には入れていない。
+/// Pins assigned to I2C0 (docs/abi-spec.md §8). Not in `reserved`, for the
+/// same reason as `SPI2_*`.
 const I2C0_SDA: u8 = 8;
 const I2C0_SCL: u8 = 9;
 
-/// トレースとログを出す先。
+/// Where traces and logs go.
 pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
 }
 
-/// ESP32-C5-WIFI6-KIT のボード。
+/// The ESP32-C5-WIFI6-KIT board.
 pub struct EspBoard<S: Serial> {
     serial: S,
-    /// 開いている SPI2 のドライバと、それを開いた `index`（0 = 汎用、
-    /// 1 = RGB LED）。`spi_close` で落とすと `Drop` がピンの配線と
-    /// ペリフェラルのクロックを戻す。
+    /// The open SPI2 driver and the `index` it was opened with (0 = general
+    /// purpose, 1 = RGB LED). Dropping it in `spi_close` restores the pin
+    /// routing and the peripheral clock.
     spi: Option<(u32, Spi<'static, Blocking>)>,
-    /// 開いている I2C0 のドライバ。`spi` と同じく `Drop` 任せで、
-    /// GPIO8/9 を自前で戻すことはしない。
+    /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; GPIO8/9
+    /// are not reset by hand.
     i2c: Option<I2c<'static, Blocking>>,
 }
 
 impl<S: Serial> EspBoard<S> {
     /// # Safety
-    /// GPIO / IO_MUX / SPI2 / I2C0、および SPI2 と I2C0 に割り当てた GPIO
-    /// (`SPI2_SCK` / `SPI2_MOSI` / `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` /
-    /// `I2C0_SCL`) をこのボードが排他的に使うこと。
+    /// This board must have exclusive use of GPIO / IO_MUX / SPI2 / I2C0 and
+    /// of the GPIOs assigned to SPI2 and I2C0 (`SPI2_SCK` / `SPI2_MOSI` /
+    /// `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` / `I2C0_SCL`).
     #[must_use]
     pub unsafe fn new(serial: S) -> Self {
         EspBoard {
@@ -142,13 +147,13 @@ impl<S: Serial> EspBoard<S> {
         }
     }
 
-    /// シリアルへの参照。失敗の理由を出すのに使う。
+    /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
     }
 
-    /// `index` で開いている SPI2 のドライバ。開いていなければ（もう一方の
-    /// index が握っていても）`invalid-handle`。
+    /// The SPI2 driver open under `index`. `invalid-handle` if it is not open
+    /// (also when the other index holds it).
     fn open_spi(&mut self, index: u32) -> BoardResult<&mut Spi<'static, Blocking>> {
         match self.spi.as_mut() {
             Some((open, spi)) if *open == index => Ok(spi),
@@ -157,11 +162,11 @@ impl<S: Serial> EspBoard<S> {
     }
 }
 
-/// 7 bit アドレスを `esp-hal` の型に直す。
+/// Converts a 7-bit address to the `esp-hal` type.
 ///
-/// `wit/i2c.wit` は 7 bit アドレスしか定めていない。範囲外は
-/// `invalid-argument`。**`ports/rp2350` も同じ判定**（host の mock だけは
-/// 検査しない。docs/TODO.md §2.1）。
+/// `wit/i2c.wit` defines 7-bit addresses only; anything else is
+/// `invalid-argument`. `ports/rp2350` makes the same check; only the host
+/// mock does not (docs/TODO.md §2.1).
 fn i2c_addr(address: u16) -> BoardResult<u8> {
     if address > 0x7f {
         return Err(ErrorCode::InvalidArgument);
@@ -169,30 +174,31 @@ fn i2c_addr(address: u16) -> BoardResult<u8> {
     Ok(address as u8)
 }
 
-/// `esp-hal` の I2C エラーを ABI のエラーコードに直す（abi-spec §7）。
+/// Maps an `esp-hal` I2C error to an ABI error code (docs/abi-spec.md §7).
 ///
-/// `ports/rp2350` は `IC_TX_ABRT_SOURCE` を見て同じ振り分けをする:
-/// アドレス / データの NACK は `nack`、調停負けなどは `io`。
-/// host の mock も相手が居ないときは `nack` を返す。
+/// `ports/rp2350` makes the same split from `IC_TX_ABRT_SOURCE`: an address
+/// or data NACK is `nack`, lost arbitration and the like are `io`. The host
+/// mock also returns `nack` when no peer answers.
 fn i2c_error(e: HalI2cError) -> ErrorCode {
     match e {
-        // 相手が応答しない。実機で最初に出るのはこれ。
+        // No peer answered. The first error to expect on hardware.
         HalI2cError::AcknowledgeCheckFailed(_) => ErrorCode::Nack,
         HalI2cError::Timeout => ErrorCode::Timeout,
-        // 長さ 0 と範囲外アドレスは Hal 側 / 呼び出し側で弾いているが、
-        // ドライバが先に気付いたらこちらに来る。
+        // Zero length and out-of-range addresses are rejected by the Hal and
+        // the caller, but the driver may notice first.
         HalI2cError::ZeroLengthInvalid | HalI2cError::AddressInvalid(_) => {
             ErrorCode::InvalidArgument
         }
-        // FIFO より長い転送。Hal 側が SCRATCH (128) で切っているので
-        // v0.1 では来ないが、来たら「このプラットフォームでは無理」。
+        // A transfer longer than the FIFO. The Hal caps transfers at SCRATCH
+        // (128), so this cannot happen in v0.1; if it does, it is "not
+        // possible on this platform".
         HalI2cError::FifoExceeded => ErrorCode::Unsupported,
-        // 調停負け・コマンド列の不整合などバス側の失敗。
+        // Bus-side failures: lost arbitration, inconsistent command sequence.
         _ => ErrorCode::Io,
     }
 }
 
-/// GPIO 番号のビット。C5 は 29 本なのでレジスタは 1 組で足りる。
+/// The bit of a GPIO number. The C5 has 29 GPIOs, so one register bank is enough.
 const fn mask(index: u32) -> u32 {
     1u32 << index
 }
@@ -211,21 +217,23 @@ impl<S: Serial> Board for EspBoard<S> {
             return Err(ErrorCode::InvalidArgument);
         }
         let n = index as usize;
-        // SAFETY: EspBoard::new の契約により GPIO / IO_MUX はこのボードだけが触る。
+        // SAFETY: by the contract of EspBoard::new, only this board touches
+        // GPIO / IO_MUX.
         let (gpio, io_mux) = unsafe { (GPIO::steal(), IO_MUX::steal()) };
         let g = gpio.register_block();
         let m = io_mux.register_block();
 
-        // IO_MUX: GPIO 機能にして、入力バッファとプルを設定する。
+        // IO_MUX: select the GPIO function and set the input buffer and pulls.
         //
-        // `write()` なので、指定しない欄はリセット値に戻る。プルを開き直しで
-        // 確実に落とすためにこうしているが、**ドライブ強度はリセット値に
-        // 任せず明示する**（SVD のリセット値に依存させない）。2 = 20 mA で、
-        // これは ESP32-C5 のパッドの既定でもある。
+        // `write()` resets every field not named. That is deliberate, so that
+        // a reopen reliably drops the pulls, but the drive strength is set
+        // explicitly rather than left to the reset value (no dependence on
+        // the SVD's reset value). 2 = 20 mA, which is also the pad default on
+        // the ESP32-C5.
         m.gpio(n).write(|w| {
-            // SAFETY: MCU_SEL_GPIO (1) は MCU_SEL（3 bit）、FUN_DRV_DEFAULT (2) は
-            // FUN_DRV（2 bit）の範囲内。
+            // SAFETY: MCU_SEL_GPIO (1) fits the 3-bit MCU_SEL field.
             unsafe { w.mcu_sel().bits(MCU_SEL_GPIO) };
+            // SAFETY: FUN_DRV_DEFAULT (2) fits the 2-bit FUN_DRV field.
             unsafe { w.fun_drv().bits(FUN_DRV_DEFAULT) };
             w.fun_ie()
                 .bit(!matches!(mode, PinMode::Output | PinMode::OutputOpenDrain));
@@ -234,20 +242,25 @@ impl<S: Serial> Board for EspBoard<S> {
             w
         });
 
-        // GPIO マトリクス: 出力は GPIO_OUT 信号に繋ぐ。
+        // GPIO matrix: route the output to the GPIO_OUT signal.
         g.func_out_sel_cfg(n)
+            // SAFETY: SIG_GPIO_OUT (256) fits the 9-bit OUT_SEL field.
             .write(|w| unsafe { w.out_sel().bits(SIG_GPIO_OUT) });
 
-        // オープンドレインは PIN_PAD_DRIVER で切り替える。
+        // Open drain is switched with PIN_PAD_DRIVER.
         g.pin(n)
             .modify(|_, w| w.pad_driver().bit(matches!(mode, PinMode::OutputOpenDrain)));
 
         let mask = mask(index);
         match mode {
             PinMode::Output | PinMode::OutputOpenDrain => {
+                // SAFETY: index < NUM_GPIO (29), so mask is one bit of the
+                // 32-bit ENABLE_W1TS field.
                 g.enable_w1ts().write(|w| unsafe { w.bits(mask) });
             }
             _ => {
+                // SAFETY: index < NUM_GPIO (29), so mask is one bit of the
+                // 32-bit ENABLE_W1TC field.
                 g.enable_w1tc().write(|w| unsafe { w.bits(mask) });
             }
         }
@@ -258,7 +271,7 @@ impl<S: Serial> Board for EspBoard<S> {
         if index >= NUM_GPIO {
             return Err(ErrorCode::InvalidArgument);
         }
-        // SAFETY: 同上。
+        // SAFETY: by the contract of EspBoard::new, only this board touches GPIO.
         let gpio = unsafe { GPIO::steal() };
         let g = gpio.register_block();
         let mask = mask(index);
@@ -266,7 +279,11 @@ impl<S: Serial> Board for EspBoard<S> {
             return Err(ErrorCode::InvalidArgument);
         }
         match level {
+            // SAFETY: index < NUM_GPIO (29), so mask is one bit of the 32-bit
+            // OUT_W1TS field.
             Level::High => g.out_w1ts().write(|w| unsafe { w.bits(mask) }),
+            // SAFETY: index < NUM_GPIO (29), so mask is one bit of the 32-bit
+            // OUT_W1TC field.
             Level::Low => g.out_w1tc().write(|w| unsafe { w.bits(mask) }),
         };
         Ok(())
@@ -276,7 +293,7 @@ impl<S: Serial> Board for EspBoard<S> {
         if index >= NUM_GPIO {
             return Err(ErrorCode::InvalidArgument);
         }
-        // SAFETY: 同上。
+        // SAFETY: by the contract of EspBoard::new, only this board touches GPIO.
         let gpio = unsafe { GPIO::steal() };
         let g = gpio.register_block();
         let mask = mask(index);
@@ -285,7 +302,8 @@ impl<S: Serial> Board for EspBoard<S> {
             g.out().read().bits(),
             g.in_().read().bits(),
         );
-        // 出力モードなら出力値、入力モードなら入力値（WIT の read の定義）。
+        // Output mode reads the output value, input mode the input value (the
+        // definition of read in the WIT).
         let bits = if enable & mask != 0 { out } else { input };
         Ok(if bits & mask != 0 {
             Level::High
@@ -295,28 +313,32 @@ impl<S: Serial> Board for EspBoard<S> {
     }
 
     fn gpio_release(&mut self, index: u32) {
-        // abi-spec §5.2: 入力・プル無しに戻す。
+        // docs/abi-spec.md §5.2: back to input with no pulls.
         //
-        // **これで LCD の `RESET` が浮く。** 2026-09-26 に実機で確認: デモが
-        // 描き終わってハンドルが解放されると、`lcd-rst` が入力に戻って線が
-        // 浮き、モジュール側にプルアップが無いためパネルがリセットして画面が
-        // 白に戻る。**ポート固有ではない**（§5.2 の帰結で、`ports/rp2350` でも
-        // 同じ条件が揃えば起きる）。線のアイドルレベルは外部回路が決めるべき
-        // もので、`RESET` に 10 kΩ 程度のプルアップを入れれば解決する
-        // （docs/verification-report.md §7、apps/lcd-demo-rs/README.md）。
+        // This lets the LCD `RESET` float. Seen on the ESP32-S3: once the demo
+        // has finished drawing and the handles are released, `lcd-rst` goes
+        // back to input, the line floats, and with no pull-up on the module
+        // the panel resets and the screen turns white. It is not specific to
+        // one port (a consequence of docs/abi-spec.md §5.2; `ports/rp2350`
+        // does the same under the same conditions). The idle level of the
+        // line is the external circuit's job: a pull-up of about 10 kOhm on
+        // `RESET` fixes it (docs/verification-report.md §7,
+        // apps/lcd-demo-rs/README.md).
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C。index 0 = I2C0 (SDA=GPIO8, SCL=GPIO9) ---
+    // --- I2C. index 0 = I2C0 (SDA=GPIO8, SCL=GPIO9) ---
 
     fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
-        // I2C1 もあるが、v0.1 で割り当てているのは I2C0 だけ（abi-spec §8）。
-        // Hal 側で index < MAX_I2C は検査済み。SPI と同じ判定にしてある。
+        // There is an I2C1 too, but v0.1 only assigns I2C0
+        // (docs/abi-spec.md §8). The Hal has already checked index < MAX_I2C.
+        // Same test as for SPI.
         if index != 0 {
             return Err(ErrorCode::Unsupported);
         }
-        // Hal 側が二重 open を Busy で弾くので普通はここに残っていないが、
-        // 残っていたら先に落とす（`steal` したペリフェラルを二重に持たない）。
+        // The Hal rejects a double open with Busy, so normally nothing is
+        // left here; if something is, drop it first (never hold two drivers
+        // for a stolen peripheral).
         self.i2c = None;
 
         let hz = match speed {
@@ -324,17 +346,16 @@ impl<S: Serial> Board for EspBoard<S> {
             Speed::Fast => 400_000,
             Speed::FastPlus => 1_000_000,
         };
-        // **タイムアウトは明示的に設定する。** `Config::default()` は
-        // `software_timeout: SoftwareTimeout::None`（esp-hal 1.2.1 の
-        // `i2c/master/mod.rs`）で、ソフトウェアの上限が無い。FSM の
-        // ハードウェアタイムアウト（既定 2^23 バス周期 ≒ 0.2 秒）だけが
-        // 残るので、SCL が low に張り付いたまま進まない場合に `ports/rp2350`
-        // より桁違いに遅くなる。`PerByte` にして rp2350 の
-        // `I2C_TIMEOUT_US`（1 バイト 25 ms）と同じ予算に揃える。
+        // The timeout is set explicitly. `Config::default()` has
+        // `software_timeout: SoftwareTimeout::None` (`i2c/master/mod.rs` in
+        // esp-hal 1.2.1), so there is no software bound. Only the FSM's
+        // hardware timeout (2^23 bus cycles by default, about 0.2 s) would
+        // remain, so a bus with SCL stuck low would take orders of magnitude
+        // longer to fail than on `ports/rp2350`. `PerByte` gives the same
+        // budget as `I2C_TIMEOUT_US` on the rp2350 (25 ms per byte).
         //
-        // **片方を変えるならもう片方も変える**:
-        // `ports/rp2350/src/board.rs` の `I2C_TIMEOUT_US`
-        // （この値を選んだ理由はあちらの doc コメントにある）。
+        // Change both or neither: `I2C_TIMEOUT_US` in
+        // `ports/rp2350/src/board.rs` (its doc comment explains the value).
         const I2C_TIMEOUT_MS: u64 = 25;
         let config = HalI2cConfig::default()
             .with_frequency(Rate::from_hz(hz))
@@ -342,9 +363,9 @@ impl<S: Serial> Board for EspBoard<S> {
                 I2C_TIMEOUT_MS,
             )));
 
-        // SAFETY: EspBoard::new の契約により、I2C0 と I2C0_* のピンはこの
-        // ボードだけが触る。self.i2c を先に None にしてあるので、同じものを
-        // 指すドライバが同時に 2 つ存在することはない。
+        // SAFETY: by the contract of EspBoard::new, only this board touches
+        // I2C0 and the I2C0_* pins. self.i2c was set to None above, so no two
+        // drivers refer to the same peripheral at once.
         let (i2c0, sda, scl) = unsafe {
             (
                 I2C0::steal(),
@@ -352,8 +373,9 @@ impl<S: Serial> Board for EspBoard<S> {
                 AnyPin::steal(I2C0_SCL),
             )
         };
-        // `with_sda` / `with_scl` がオープンドレイン + 内部プルアップを掛ける。
-        // 外部 10 kΩ が別途要ることはモジュールのコメントに書いてある。
+        // `with_sda` / `with_scl` apply open drain and the internal pull-up.
+        // The module docs of `ports/esp32s3` say why an external 10 kOhm is
+        // still needed.
         let i2c = I2c::new(i2c0, config)
             .map_err(|_| ErrorCode::Unsupported)?
             .with_sda(sda)
@@ -366,11 +388,11 @@ impl<S: Serial> Board for EspBoard<S> {
         if index != 0 {
             return Err(ErrorCode::Unsupported);
         }
-        // 長さ 0 は Hal 側で invalid-argument にしているが、ここでも弾く。
-        // `esp-hal` の `transaction_impl` は**空の read を転送から除いて
-        // しまう**ので（`.filter(|op| op.is_write() || !op.is_empty())`）、
-        // 任せると長さ 0 の read が `Ok(0)` になって `ports/rp2350` と
-        // 食い違う。3 つのメソッドで同じ判定にしておく。
+        // Length 0 is invalid-argument on the Hal side, but it is rejected
+        // here as well. `transaction_impl` in `esp-hal` drops empty reads
+        // from the transfer (`.filter(|op| op.is_write() || !op.is_empty())`),
+        // so left to the driver a zero-length read would return `Ok(0)` and
+        // disagree with `ports/rp2350`. All three methods make the same test.
         if data.is_empty() {
             return Err(ErrorCode::InvalidArgument);
         }
@@ -409,12 +431,12 @@ impl<S: Serial> Board for EspBoard<S> {
         let addr = i2c_addr(address)?;
         let n = buf.len();
         let bus = self.i2c.as_mut().ok_or(ErrorCode::InvalidHandle)?;
-        // write → Repeated START → read を 1 トランザクションで出す。
+        // write -> Repeated START -> read as one transaction.
         //
-        // **SHT4x はこれで読めない。** 計測コマンドを書いたあと STOP を出して
-        // 変換時間だけ待つ必要があるので、ゲストは `write` / `sleep-ms` /
-        // `read` に分けている（apps/README.md §1）。v0.1 で `write-read` を
-        // 使う相手は無い（ILI9341 の ID 読みは SPI 側）。
+        // The SHT4x cannot be read this way: after the measurement command
+        // it needs a STOP and the conversion time, so the guest splits it
+        // into `write` / `sleep-ms` / `read` (apps/README.md §1). Nothing in
+        // v0.1 uses `write-read` (the ILI9341 ID read is on the SPI side).
         bus.write_read(addr, data, buf).map_err(i2c_error)?;
         Ok(n)
     }
@@ -423,33 +445,34 @@ impl<S: Serial> Board for EspBoard<S> {
         if index != 0 {
             return;
         }
-        // `Drop` がピンの配線とペリフェラルのクロックを戻す。
-        // `spi_close` と同じく GPIO8/9 を自前で触ることはしない。
+        // `Drop` restores the pin routing and the peripheral clock. As in
+        // `spi_close`, GPIO8/9 are not touched by hand.
         self.i2c = None;
     }
 
-    // --- SPI。どちらも SPI2 を使うので同時には開けない ---
-    //   index 0 = 汎用 (SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5)
-    //   index 1 = 基板の RGB LED (MOSI=GPIO27 だけ)
+    // --- SPI. Both indexes use SPI2, so they cannot be open at the same time ---
+    //   index 0 = general purpose (SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5)
+    //   index 1 = on-board RGB LED (MOSI=GPIO27 only)
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
-        // 汎用の SPI は SPI2 しか無い（SPI0/1 はフラッシュ）。Hal 側で
-        // index < MAX_SPI は検査済み。
+        // SPI2 is the only general-purpose SPI (SPI0/1 serve the flash). The
+        // Hal has already checked index < MAX_SPI.
         if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
         if frequency_hz == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
-        // もう一方の index が SPI2 を握っていれば `busy`。同じ index の
-        // 二重 open は Hal 側が `busy` で弾くので、ここに残っているのは
-        // 他方の index だけ。
+        // `busy` if the other index holds SPI2. The Hal rejects a double open
+        // of the same index with `busy`, so whatever is left here belongs to
+        // the other index.
         if let Some((open, _)) = self.spi {
             if open != index {
                 return Err(ErrorCode::Busy);
             }
         }
-        // 残っていたら先に落とす（`steal` したペリフェラルを二重に持たない）。
+        // Drop a leftover first (never hold two drivers for a stolen
+        // peripheral).
         self.spi = None;
 
         let config = HalSpiConfig::default()
@@ -461,14 +484,17 @@ impl<S: Serial> Board for EspBoard<S> {
                 SpiMode::Mode3 => HalSpiMode::_3,
             });
 
-        // SAFETY: EspBoard::new の契約により、SPI2 と SPI2_* のピンはこのボード
-        // だけが触る。self.spi を先に None にしてあるので、同じものを指す
-        // ドライバは同時に 2 つ存在しない。
+        // SAFETY: by the contract of EspBoard::new, only this board touches
+        // SPI2. self.spi was set to None above, so no two drivers refer to
+        // the same peripheral at once.
         let spi2 = unsafe { SPI2::steal() };
-        // 失敗するのは要求周波数が出せる範囲の外のときだけ。
+        // The only failure is a requested frequency outside the reachable
+        // range.
         let spi = Spi::new(spi2, config).map_err(|_| ErrorCode::Unsupported)?;
         let spi = if index == 0 {
-            // SAFETY: 同上。
+            // SAFETY: by the contract of EspBoard::new, only this board
+            // touches the SPI2_SCK / SPI2_MOSI / SPI2_MISO pins, and no driver
+            // holds them while self.spi is None.
             let (sck, mosi, miso) = unsafe {
                 (
                     AnyPin::steal(SPI2_SCK),
@@ -478,7 +504,9 @@ impl<S: Serial> Board for EspBoard<S> {
             };
             spi.with_sck(sck).with_mosi(mosi).with_miso(miso)
         } else {
-            // SAFETY: 同上。
+            // SAFETY: by the contract of EspBoard::new, only this board
+            // touches the SPI2_LED_MOSI pin, and no driver holds it while
+            // self.spi is None.
             let mosi = unsafe { AnyPin::steal(SPI2_LED_MOSI) };
             spi.with_mosi(mosi)
         };
@@ -491,8 +519,8 @@ impl<S: Serial> Board for EspBoard<S> {
             return Err(ErrorCode::Unsupported);
         }
         let spi = self.open_spi(index)?;
-        // 64 バイト（FIFO）ごとに区切られるが、CS はゲストが握ったままなので
-        // ILI9341 から見れば 1 回の転送のまま。区切りごとに flush が入る。
+        // Split every 64 bytes (the FIFO), but the guest keeps CS held, so to
+        // the ILI9341 it is still one transfer. A flush follows each chunk.
         spi.write(data).map_err(|_| ErrorCode::Io)
     }
 
@@ -502,7 +530,8 @@ impl<S: Serial> Board for EspBoard<S> {
         }
         let spi = self.open_spi(index)?;
         let n = data.len().min(buf.len());
-        // ドライバの全二重転送はその場置き換えなので、送る側を写してから渡す。
+        // The driver's full-duplex transfer works in place, so the outgoing
+        // bytes are copied in first.
         buf[..n].copy_from_slice(&data[..n]);
         spi.transfer(&mut buf[..n]).map_err(|_| ErrorCode::Io)?;
         Ok(n)
@@ -512,10 +541,11 @@ impl<S: Serial> Board for EspBoard<S> {
         if !matches!(self.spi, Some((open, _)) if open == index) {
             return;
         }
-        // Drop がピンの配線とペリフェラルのクロックを戻す。
+        // Drop restores the pin routing and the peripheral clock.
         self.spi = None;
-        // gpio_release と同じく入力・プル無しに戻す。ドライバの Drop は
-        // GPIO マトリクスの信号を外すだけで、パッドの向きやプルは触らない。
+        // Back to input with no pulls, as in gpio_release. The driver's Drop
+        // only disconnects the GPIO matrix signals; it does not touch the pad
+        // direction or pulls.
         let pins: &[u8] = if index == 0 {
             &[SPI2_SCK, SPI2_MOSI, SPI2_MISO]
         } else {
@@ -526,7 +556,7 @@ impl<S: Serial> Board for EspBoard<S> {
         }
     }
 
-    // --- 時間 ---
+    // --- Time ---
 
     fn now_us(&mut self) -> u64 {
         esp_hal::time::Instant::now()
@@ -545,7 +575,7 @@ impl<S: Serial> Board for EspBoard<S> {
         }
     }
 
-    // --- 出力 ---
+    // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
         self.serial.write(b"[wasm] ");
