@@ -1,8 +1,8 @@
 # App development workflow design (loader and the `wasmicon` CLI)
 
 This document is the **design**. **Remaining work and open questions are owned by
-docs/TODO.md §5** and are not written here (scattered copies always go stale;
-`AGENTS.md`). The body refers to them by number, as in §5-1.
+docs/TODO.md §5** and are not written here (see AGENTS.md: scattered copies always go
+stale). The body refers to them by number, as in §5-1.
 
 Note: RP2040 (Pico WH) is build-only since 2026-10; the evaluated boards are ESP32-S3 and RP2350 (Pico 2 W).
 
@@ -78,9 +78,9 @@ signatures); nothing board-specific is in it (pin numbers come from
 boot
  |- print the banner (e.g. "wasmicon rp2350") on UART0
  |- read the slot
- |   |- valid -> decode -> validate -> Exec -> instantiate -> start -> run -> cleanup -> idle
- |   `- empty / corrupt -> print the reason and idle (§3.3)
- `- idle: wait for a frame on the control channel (§3.6)
+ |   |- valid -> decode -> validate -> Exec -> instantiate -> start -> run -> cleanup -> park
+ |   `- empty / corrupt -> print the reason and park (§3.3)
+ `- park: wait for a frame on the control channel (§3.6)
         the port layer blinks the LED to show it is alive (does not go through Wasm)
 ```
 
@@ -90,8 +90,8 @@ Today `main` stays stopped after `run`
 the host process exits). That follows docs/decisions.md A-04, "log and halt, no
 restart", and **this policy does not change** (the final decision is held by open
 question #3 in docs/abi-spec.md §10 and remains in docs/TODO.md §2).
-Keeping "halt" to mean "**never re-run the same app on its own**", we add a state
-that "accepts a new app". docs/abi-spec.md §6.6 leaves behavior after a trap to the
+"Halt" keeps its meaning (**never re-run the same app on its own**); the loader adds
+one state, "accept a new app". docs/abi-spec.md §6.6 leaves behavior after a trap to the
 port, so **this is not an ABI change** (to be settled under §5-1).
 
 Rebuilt on every cycle:
@@ -100,7 +100,7 @@ Rebuilt on every cycle:
 - **The `Hal`.** `Hal::new(board, trace_on)` takes ownership of the board
   (`ports/common/src/lib.rs:114`), so either `into_board()` or a `reset()` of the
   handle tables is needed
-- **The role table `roles` / `nroles`.** It remembers the numbers handed out by
+- **The wiring table `roles` / `nroles`.** It remembers the numbers handed out by
   `pin-by-role` and is used for the docs/abi-spec.md §9 normalization (number ->
   `role:led`). **If it carries over, a number handed out by the previous app is
   printed as `role:` and the trace can change**
@@ -108,9 +108,9 @@ Rebuilt on every cycle:
 The app bytes live **outside the arena**. `decode` returns `Module<'m, 'a>`, which
 **borrows the wasm bytes `'m` and the arena `'a` separately**
 (`runtime/src/decode.rs:40`, `runtime/src/module.rs:92`). The current design of
-passing an XIP slice straight in (docs/design-notes.md §4) rides on this.
+passing an XIP slice straight in (docs/design-notes.md §4) depends on this.
 
-### 3.2 A hole closed first: the docs/abi-spec.md §5.2 handle cleanup (implemented 2026-10-04)
+### 3.2 Prerequisite fix: the docs/abi-spec.md §5.2 handle cleanup (implemented 2026-10-04)
 
 docs/abi-spec.md §5.2 says "**when `run` returns, the host drops every remaining
 handle**", but **no port implemented it**. Neither `run_wasm_opts` in
@@ -119,8 +119,8 @@ unnoticed because the `Drop` impls in the Rust bindings
 (`bindings/rust/src/hal.rs:90` / `:176` / `:236`) released handles on the guest side.
 
 Harmless for a single-shot firmware (it runs and stops). **With a loader, the next
-app hits `busy`.** If the guest traps, handles are left behind, so it will hit it for
-sure.
+app hits `busy`.** If the guest traps, handles are left behind, so the next app is certain to
+hit it.
 
 `Hal::release_all()` was added to `ports/common` and is **called in all four places
 (host and the three ports) once `run` has returned**. It also runs when `run` left by
@@ -164,7 +164,7 @@ Two places, and **both are needed**.
 | SRAM | 264 KB (`ARENA` 160 KB) | 520 KB (`ARENA` 320 KB) | 512 KB (`ARENA` 300 KB; almost no DRAM left. docs/TODO.md §1.4) |
 | How the RAM slot is taken | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` |
 | Flash write | `rom_data` (same family as RP2350) | `rom_data::connect_internal_flash` / `flash_exit_xip` / `flash_range_erase` / `flash_range_program` / `flash_flush_cache` (rp235x-hal 0.4.0) | `FlashStorage` from `esp-storage` 0.10 (`SECTOR_SIZE` = 4096) |
-| Running from flash | **Implemented 2026-10-04** (the XIP slice is passed as is; no RAM copy) | **Implemented 2026-10-04**, the XIP slice passed as is (64 KiB from `0x10100000`; neither verified on hardware yet) | **Copied to RAM.** No assumption that an arbitrary offset is XIP-mapped (MMU / DROM) |
+| Running from flash | **Implemented 2026-10-04** (the XIP slice is passed as is; no RAM copy) | **Implemented 2026-10-04**, the XIP slice passed as is (64 KiB from `0x10100000`; verified on hardware on 2026-10-04, docs/verification-report.md §9; RP2040 never flashed) | **Copied to RAM.** No assumption that an arbitrary offset is XIP-mapped (MMU / DROM) |
 
 - Apps are currently 775 B to 5.3 KB (`blink_rs` 775 B / `lcd_demo_rs` 4.0 KB /
   `sensor_display_as` 5.3 KB), so even a 64 KiB slot is under 1/5 of `ARENA` on
@@ -176,16 +176,14 @@ Two places, and **both are needed**.
 
 > **Done on 2026-10-07.** The `include_bytes!` and the `guest-lcd-demo` feature were
 > dropped from the three ports, and the CI rp2040 / rp2350 jobs no longer build `apps`
-> first. An empty slot prints `wasmicon: slot empty, idle`, enters
-> `idle::heartbeat` in `ports/common`, and blinks the pin with the `led` role at 1 Hz
-> (talking to `Board` directly; no trace).
+> first. An empty slot prints `wasmicon: slot empty, idle` and enters
+> `idle::park` in `ports/common`, which drives no pins (§3.9).
 
 **The built-in `include_bytes!` app is removed.** On an empty slot the firmware
-prints the reason on the UART and idles; the liveness sign is **the port layer
-blinking the LED directly** (it talks to `Board`, so Wasm is not involved; the same
-layer as `ports/esp32s3/src/probe.rs`).
+prints the reason on the UART and parks; **no pin is driven** (the LED heartbeat this
+design first proposed was removed on 2026-10-07, §3.9).
 
-The reason is not only to make "no app in the firmware" hold without exception.
+The reason is not only consistency ("no app in the firmware", without exception).
 **The current `include_bytes!` makes the firmware build depend on the `apps/`
 build** - that is why the CI rp2040 / rp2350 jobs build `apps` first - and
 **the firmware cannot be produced as a standalone release deliverable** (a head-on
@@ -195,9 +193,9 @@ conflict with the distribution in §4.5).
   first would leave the firmware running nothing
 - **Fix CI at the same time**: the port jobs no longer need the `apps` pre-build, and
   the `cargo clippy --features guest-lcd-demo` line disappears (the feature itself is gone)
-- **What is lost**: the foothold of confirming on hardware, right after flashing, that
+- **What is lost**: the quick way to confirm on hardware, right after flashing, that
   "the runtime gets from decode through run". The host tests and the first `deploy`
-  replace it. The LED heartbeat only shows "the firmware is alive", not that the
+  replace it. The banner only shows "the firmware is alive", not that the
   runtime works
 - **The recorded traces stay valid.** `deploy` `lcd_demo_rs.wasm` (`fc470947...`) to
   the slot and run it: **the bytes are identical, so the host call sequence is
@@ -238,7 +236,7 @@ writer and once for the reader**). On the CLI side `wasmicon pack` builds the im
 - The CRC distinguishes "transfer accident" from "app bug". One fewer "stops silently"
   case from docs/TODO.md §1.4
 - **Empty (erased `0xff` / unused `0x00`) is not a failure.** The firmware sees it and
-  idles (§3.1). It is distinguished from a magic mismatch (something else was
+  parks (§3.1). It is distinguished from a magic mismatch (something else was
   written) - the log means something different
 - The **whole** slot region may be passed in (the header carries the length, so the
   rest is ignored). The intended use is reading an entire 4 KiB sector and passing it in
@@ -477,12 +475,12 @@ They cost a few bytes and cannot be added later. How version numbers are assigne
 
 ---
 
-### 3.9 The role map as device-side configuration
+### 3.9 The wiring table as device-side configuration
 
 > **The owner settled this on 2026-10-07 and the stage 1 minimum was implemented**
 > (docs/TODO.md §5-9). Decided: **role names are not firmware vocabulary** (the fixed
 > `ROLE_NAMES` vocabulary is gone) / **the firmware has no default table** /
-> **idling on an empty slot drives no pins** (the LED blink was removed).
+> **parking on an empty slot drives no pins** (the LED blink was removed).
 
 Originally the role -> GPIO mapping lived **inside the firmware**
 (`profile::<board>.roles`). **Changing the wiring meant reflashing the firmware**,
@@ -594,7 +592,7 @@ firmware keeps the determinism criterion (docs/decisions.md D-10) intact.
 
 **One trap, though.** docs/abi-spec.md §9 also says the host can **only judge from
 the numeric argument**: if a guest hardcodes a pin number that happens to match a
-role assignment, that too is replaced by `role:`. So **changing the role map changes
+role assignment, that too is replaced by `role:`. So **changing the wiring table changes
 the trace of an app that hardcodes pins** (a line that was `role:lcd-cs` becomes a
 raw number). §9 already excludes such apps from determinism verification, but the
 symptom reads as "I changed the configuration and the trace changed", so the CLI
@@ -607,7 +605,7 @@ should be able to explain it.
 - `info` declares the **effective values** (default + override) and whether an
   override is in place
 - the identity that `monitor` stamps at the head of the log **includes the CRC-32 of
-  the effective map**
+  the effective wiring table**
 
 Without that, "same `.wasm`, different trace", which §3.8 set out to solve, just gets
 one more candidate cause.
@@ -635,7 +633,7 @@ espflash / probe-rs) are **invoked, never reimplemented**.
 ### 4.2 Commands
 
 **How far each is implemented is owned by docs/TODO.md §5** (not written here;
-`AGENTS.md`: remaining work is not written anywhere else). "Replaces" names the
+see AGENTS.md: remaining work lives in docs/TODO.md only). "Replaces" names the
 existing thing that does the job today.
 
 | Command | What it does | Replaces |
@@ -1031,12 +1029,12 @@ lcd-dc = 14
 lcd-rst = 15
 ```
 
-#### What is the source of truth for what
+#### Sources of truth
 
 | Information | Source of truth | Role of the toml |
 |---|---|---|
-| Required role names (`requirements.pin-roles`) | **The toml.** A property of the app | The truth itself |
-| Role -> GPIO | **The toml** (`deploy` writes it to the config slot; §3.9) | The truth itself. The device only reads it |
+| Required role names (`requirements.pin-roles`) | **The toml.** A property of the app | The source itself |
+| Role -> GPIO | **The toml** (`deploy` writes it to the config slot; §3.9) | The source itself. The device only reads it |
 | ABI-conformant build flags | **`.cargo/config.toml` / `asconfig.json`** | **Not allowed here** (below) |
 
 #### Cross-checking `requirements.pin-roles` against the wiring table
@@ -1046,8 +1044,7 @@ enumerated reliably from the `.wasm`. With a declaration the enumeration is sett
 so **before sending** we can say "this board's wiring table has no `lcd-rst`, so this
 app will not work".
 
-**It has its own section because there is one more undeclared item of the same
-kind.** The `index` of `i2c.bus.open` / `spi.bus.open` is also a run-time integer
+**A second item of the same kind is also undeclared.** The `index` of `i2c.bus.open` / `spi.bus.open` is also a run-time integer
 argument that cannot be enumerated statically from the `.wasm` (send an app that
 opens index 1 to a board with one bus and you get `unsupported` on hardware). v0.1
 does not write it, but when needed it is just `i2c-buses = [0]` under
@@ -1067,7 +1064,7 @@ table".
 | Rule | Content |
 |---|---|
 | **Do not write what can be derived** | The app name and language come from `package.name` in `Cargo.toml` / the presence of `asconfig.json`. The toml only overrides. Same reason as §4.4: two copies always drift |
-| **One per app** | Even in a workspace, **one per app**. Dogfooding this repo's `apps/` means five. Matches the one that `wasmicon new` writes |
+| **One per app** | Even in a workspace, **one per app**. This repository's `apps/` has nine. Matches the one that `wasmicon new` writes |
 | **Required only** | `pin-roles` lists only what the app "cannot run without". Degradation such as "works without `led`" is not expressed in v0.1 (`optional-pin-roles` waits for a real case) |
 | **"This role does not exist" is `"none"`** | `lcd-rst = "none"`. Same as omitting the key: not handed out (the firmware has no default table). Harder to misread than `false` or `0` |
 | **Paths are relative to the toml's directory** | `i2c-replay = "fixtures/sht4x.txt"`. Relative to the CLI's cwd, it would break depending on where you call from |
@@ -1107,14 +1104,14 @@ app.bin -> rp2350 slot (+0x100000)  4565 B (wasm 4549 B, crc32 c1cbe3c1)
   wiring: lcd-cs=17 lcd-dc=20 lcd-rst=21
 ```
 
-**Rewriting the role map changes which pins are actually driven**, which can be
+**Rewriting the wiring table changes which pins are actually driven**, which can be
 physically dangerous depending on what is connected; that concern remains. Current
 handling:
 
 - the table comes **from the app's own `wasmicon.toml`** (nobody else's configuration gets mixed in)
 - `deploy` **shows the table on one line before writing**
 - reserved pins, bus pins and duplicates are rejected by both the CLI and the firmware
-- a corrupt table fails toward **driving no pins at all**
+- a corrupt table fails safe: **no pins are driven**
 
 Showing a diff against the table currently on the device and asking for confirmation
 (the earlier "cross-check") needs a way to read the table back from the device
@@ -1187,7 +1184,7 @@ after.
 
 ## 7. Open questions
 
-**Collected in docs/TODO.md §5.** Decisions needed: settling the return to idle after
+**Collected in docs/TODO.md §5.** Decisions needed: settling the return to the parked state after
 a trap, the ESP32-S3 RAM budget (lower `max_memory_pages` or PSRAM), the HTTP
 direction, Pico W Wi-Fi (the embassy move), the board variant (flash size and whether
 PSRAM is present), and how firmware versions are assigned.

@@ -1,7 +1,7 @@
 // Blink (AssemblyScript). Produces the same host-call sequence as blink-rs.
 //
 // The LED pin number comes from board.pin-by-role, so the same .wasm runs
-// on both ESP32-S3 and RP2040 (docs/abi-spec.md §8).
+// on every evaluation board (docs/abi-spec.md §8).
 
 // asc cannot resolve the scoped npm package (@wasmicon/hal) as ~lib, so the
 // bindings are imported by relative path. The layout in README.md is the

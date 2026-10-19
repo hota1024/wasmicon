@@ -1,5 +1,5 @@
 #!/bin/sh
-# Checks the section citations that comments and strings make to the docs.
+# Checks that the section citations in comments and strings name their document and resolve.
 #
 #   1. Every `§` outside docs/ and *.md is part of a citation that names its
 #      document: `docs/abi-spec.md §4.1`, `docs/TODO.md §5-2`,

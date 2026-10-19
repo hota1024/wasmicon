@@ -180,7 +180,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         // This must not stay silent. A version requirement cannot be
         // resolved yet, so a plain `cargo build` stops with "not found".
         println!();
-        println!("note: no bindings found, so the dependency is written with a version.");
+        println!("note: no bindings found, so the dependency is written with a version");
         println!("  They are not published to crates.io / npm yet, so run again with");
         println!("  `--hal <wasmicon's bindings directory>`");
         println!("  (`--hal bindings` from inside the repository)");
@@ -190,7 +190,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         // files. The same values just apply twice, which is harmless, but
         // say so to avoid surprise.
         println!();
-        println!("note: created inside an existing cargo workspace.");
+        println!("note: created inside an existing cargo workspace");
         println!("  rustflags are concatenated, so the same values apply twice (harmless)");
     }
 

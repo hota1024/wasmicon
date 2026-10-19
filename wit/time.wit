@@ -2,7 +2,7 @@ package wasmicon:hal@0.1.0;
 
 /// Monotonic time and blocking delays.
 interface time {
-    /// Monotonic microseconds since boot. The u64 does not wrap in practice.
+    /// Returns the monotonic time in microseconds since boot. The u64 does not wrap in practice.
     now-us: func() -> u64;
 
     /// Blocks for `ms` milliseconds.

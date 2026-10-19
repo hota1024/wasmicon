@@ -8,8 +8,7 @@
 //! Traces go to UART0 (GPIO11=TX, GPIO12=RX) at 115200 8N1. On the WIFI6-KIT
 //! UART0 is wired to the Type-C port labeled "UART" (CH343).
 //!
-//! Port in progress: boot and blink are verified on hardware, SPI and I2C
-//! are not yet (docs/TODO.md §1.3.1).
+//! Port in progress; status in docs/TODO.md §1.3.1.
 
 #![no_std]
 #![no_main]

@@ -280,7 +280,7 @@ void wasmicon_spi_bus_drop(uint32_t self);
  */
 
 /**
- * Monotonic microseconds since boot. The u64 does not wrap in practice.
+ * Returns the monotonic time in microseconds since boot. The u64 does not wrap in practice.
  */
 WASMICON_IMPORT("wasmicon:hal/time@0.1.0", "now-us")
 uint64_t wasmicon_time_now_us(void);
@@ -314,7 +314,7 @@ typedef enum wasmicon_log_level {
 #define WASMICON_LOG_LEVEL_COUNT 4u
 
 /**
- * `message` is UTF-8. The host appends the newline.
+ * Writes `message` (UTF-8) to the log. The host appends the newline.
  */
 WASMICON_IMPORT("wasmicon:hal/log@0.1.0", "log")
 void wasmicon_log_log(uint32_t level, const char *message_ptr, uint32_t message_len);

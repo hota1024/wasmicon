@@ -232,7 +232,7 @@ export declare function spi_bus_drop(self: u32): void;
  */
 
 /**
- * Monotonic microseconds since boot. The u64 does not wrap in practice.
+ * Returns the monotonic time in microseconds since boot. The u64 does not wrap in practice.
  */
 @external("wasmicon:hal/time@0.1.0", "now-us")
 export declare function time_now_us(): u64;
@@ -263,7 +263,7 @@ export enum LogLevel {
 }
 
 /**
- * `message` is UTF-8. The host appends the newline.
+ * Writes `message` (UTF-8) to the log. The host appends the newline.
  */
 @external("wasmicon:hal/log@0.1.0", "log")
 export declare function log_log(level: u32, messagePtr: usize, messageLen: u32): void;

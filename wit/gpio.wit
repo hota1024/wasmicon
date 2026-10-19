@@ -23,7 +23,7 @@ interface gpio {
     }
 
     /// A single GPIO pin.
-    /// `index` is the platform-specific GPIO number (ESP32-S3: GPIOn, RP2040: GPn).
+    /// `index` is the platform-specific GPIO number (ESP32-S3: GPIOn, RP2350: GPn).
     resource pin {
         /// Opens the pin in the given mode. Fails with `busy` if it is already open.
         open: static func(index: u32, mode: pin-mode) -> result<pin, error-code>;

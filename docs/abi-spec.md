@@ -12,7 +12,7 @@ Terms: "guest" = the Wasm module; "host" = the Wasmicon runtime and its port lay
 
 ## 1. Design principles
 
-1. **WIT is the source of truth.** Three hand-written copies are never kept in sync by hand; the generated files are derived from the WIT.
+1. **WIT is the source of truth.** The three bindings are never maintained as hand-written copies; they are generated from the WIT.
 2. **Stay within a subset of the Canonical ABI.** Use the same lowering as the Component Model's Canonical ABI wherever possible, so that a bridge to components stays open. Deviations are stated explicitly in §4.
 3. **Require no allocator on the guest side.** No `cabi_realloc`. The host never allocates guest memory. Variable-length data is always written into a buffer the caller (the guest) provides.
 4. **Coarse-grained host calls.** The interpreter's overhead is paid per call, so bulk-transfer APIs are the default.
@@ -132,7 +132,7 @@ Example: `now-us: func() -> u64` -> `(func (result i64))`
 The function **always returns a single `i32`**, which is the status code.
 
 - `0` = success (`Ok`)
-- `n > 0` = error; `n - 1` is the discriminant of `error-code` (for example `timeout`, the fourth case in declaration order, is `4`)
+- `n > 0` = error; `n - 1` is the discriminant of `error-code` (for example `timeout` has discriminant 3, so its status is `4`)
 
 When `T` is present (that is, not `result<_, ...>`), `T` is handed to the guest through **an out-pointer appended at the end of the argument list**.
 
@@ -197,7 +197,7 @@ MVP + `sign-extension` + `nontrapping-float-to-int` + `bulk-memory` (`memory.cop
 
 Not supported: SIMD, threads/atomics, exception-handling, tail-call, GC, the reference-types extension instructions (`ref.null`, `ref.func`, `table.get/set/grow/size/fill/copy/init`), multi-memory, memory64.
 
-> Note: recent Rust enables `reference-types` and `multivalue` by default on `wasm32-unknown-unknown`. With `reference-types` enabled, the table index of `call_indirect` is encoded as LEB128 (with a single table the value is 0, so the byte sequence is unchanged). The runtime reads the `call_indirect` table index as LEB128 and rejects anything other than 0. On the Rust side, use `-C target-feature=-reference-types`, or `-C target-cpu=mvp` plus the required features added individually with `+` (**the actual flags are locked in by `tools/wasmicon-cli/src/flags.rs`**; docs/app-workflow.md §4.4).
+> Note: recent Rust enables `reference-types` and `multivalue` by default on `wasm32-unknown-unknown`. With `reference-types` enabled, the table index of `call_indirect` is encoded as LEB128 (with a single table the value is 0, so the byte sequence is unchanged). The runtime reads the `call_indirect` table index as LEB128 and rejects anything other than 0. On the Rust side, use `-C target-feature=-reference-types`, or `-C target-cpu=mvp` plus the required features added individually with `+` (**the actual flags are defined in `tools/wasmicon-cli/src/flags.rs`, the source of truth**; docs/app-workflow.md §4.4).
 
 ### 6.2 Memory
 
@@ -316,12 +316,12 @@ How `index` is interpreted, and which pins carry SDA/SCL/SCK/MOSI/MISO, is decid
 The Pico 2 / Pico 2 W header has the same pinout as the Pico / Pico WH, so the GP numbers are kept the same.
 
 The ESP32-C5 assignment was taken from the schematic of the Waveshare ESP32-C5-WIFI6-KIT (ESP32-C5-WROOM-1) (2026-10-12).
-**GPIO6 is tied through 0 ohm to the battery-voltage divider on the board**, so it is not used. GPIO27 is the RGB LED
+**GPIO6 is tied through 0 Ω to the battery-voltage divider on the board**, so it is not used. GPIO27 is the RGB LED
 (WS2812), GPIO28 is the BOOT button, and GPIO2/3/7/25/26 are strapping pins, so they were avoided.
 GPIO11/12 are the trace UART0 (CH343), 13/14 are native USB, and 15..=22 are flash /
 PSRAM; none of these are exposed to the guest.
 
-On the ESP32-C5, `spi.bus` index 1 is for the on-board RGB LED (WS2812B, wired directly to GPIO27 through 0 ohm)
+On the ESP32-C5, `spi.bus` index 1 is for the on-board RGB LED (WS2812B, wired directly to GPIO27 through 0 Ω)
 (2026-10-12). Only the MOSI of SPI2 is routed to GPIO27, so no wiring is needed. The guest expands each WS2812
 bit into several SPI bits and calls `write` (`apps/rgb-led-rs`). It is the same SPI2 as index 0, so
 **the two cannot be open at the same time** (the second `open` gets `busy`). On the other boards it is
@@ -357,7 +357,7 @@ The wiring used by the evaluation setup (SHT40 + ILI9341) is in `apps/*/wasmicon
 No board has an on-board LED on a plain GPIO, so an external LED is used
 (the Pico 2 W's LED is on the CYW43439 side; the ESP32-S3 DevKitC-1's is a WS2812).
 
-**Because GPIO numbers differ per board**, achieving "the same binary, the same result" for the target app needs a mechanism that keeps the guest from hard-coding pin numbers. v0.1 takes one of the following (open question, see §10):
+**Because GPIO numbers differ per board**, achieving "the same binary, the same result" for the target app needs a mechanism that keeps the guest from hard-coding pin numbers. v0.1 adopted (b) below (§10 item 1, docs/decisions.md A-02); both alternatives are kept as the record:
 
 - (a) The guest is built separately per board (switched with `cfg` / constants)
 - (b) Add a `wasmicon:hal/board` interface and delegate a "role name -> GPIO number" lookup to the host, such as `pin-by-role: func(role: string) -> result<u32, error-code>`
@@ -389,7 +389,7 @@ When the port layer is built with `WASMICON_TRACE` enabled, it writes every host
   `index` argument of `gpio.pin.open` in the form `role:led`. The return value of `pin-by-role` itself is written the same way.
   The host **can only judge by the numeric value** of the argument, so a guest that hard-codes a pin number
   which happens to equal that board's role assignment also gets the role name substituted.
-  Hard-coded pin numbers break cross-board identity in the first place, so a guest that is subject to
+  Hard-coded pin numbers already break cross-board identity, so a guest that is subject to
   determinism verification (docs/decisions.md D-10) must always use `pin-by-role`.
 
 "The same result" is defined as: diff this trace from the two boards, and every host call and result except `time` matches.

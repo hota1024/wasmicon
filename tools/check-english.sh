@@ -20,7 +20,7 @@ hits=$(git grep -I -n -P "$pattern" -- "${@:-.}" ':!*.lock' ':!package-lock.json
 if [ -n "$hits" ]; then
     printf '%s\n' "$hits" >&2
     count=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
-    echo "check-english: $count lines contain non-English text" >&2
+    echo "check-english: $count lines contain CJK text" >&2
     exit 1
 fi
 echo "check-english: OK"

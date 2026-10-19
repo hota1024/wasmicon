@@ -14,35 +14,35 @@ The deliverable of docs/handoff.md §5 Phase 6. It separates **what has been ver
 
 | Item | Status |
 |---|---|
-| Runtime Wasm spec compliance (spec testsuite) | **Reached** |
-| Interpreter correctness (differential against wasmtime) | **Reached** |
-| Rust and AS versions produce the same host call sequence | **Reached** (on host, success and failure paths) |
-| GPIO / SPI / ILI9341 drawing works on RP2350 hardware | **Reached** (2026-09-26, `lcd-demo-rs`. §6) |
-| Host call trace matches on ESP32-S3 hardware | **Reached** (2026-09-26, 14,352 lines identical. §7) |
-| ILI9341 shows an image on ESP32-S3 hardware | **Reached** (2026-09-26. §7) |
-| The same binary produces the same trace on 2 boards | **Reached** (2026-09-26, RP2350 and ESP32-S3. §6 / §7) |
-| I2C (SHT40) reads on RP2350 / ESP32-S3 hardware | **Reached** (2026-10-05, sensor-display-rs. §11) |
-| With the values the board read, drawing the values (including f32) matches host | **Reached** (2026-10-07, ESP32-S3 / Pico 2 W x Rust / AS, all 4. §12) |
-| Display works in all 4 combinations (Rust/AS x 2 boards) | **Reached** (2026-10-07, ESP32-S3 and Pico 2 W. §12) |
+| Runtime Wasm spec compliance (spec testsuite) | **Achieved** |
+| Interpreter correctness (differential against wasmtime) | **Achieved** |
+| Rust and AS versions produce the same host call sequence | **Achieved** (on host, success and failure paths) |
+| GPIO / SPI / ILI9341 drawing works on RP2350 hardware | **Achieved** (2026-09-26, `lcd-demo-rs`. §6) |
+| Host call trace matches on ESP32-S3 hardware | **Achieved** (2026-09-26, 14,352 lines identical. §7) |
+| ILI9341 shows an image on ESP32-S3 hardware | **Achieved** (2026-09-26. §7) |
+| The same binary produces the same trace on 2 boards | **Achieved** (2026-09-26, RP2350 and ESP32-S3. §6 / §7) |
+| I2C (SHT40) reads on RP2350 / ESP32-S3 hardware | **Achieved** (2026-10-05, sensor-display-rs. §11) |
+| With the values the board read, drawing the values (including f32) matches host | **Achieved** (2026-10-07, ESP32-S3 / Pico 2 W x Rust / AS, all 4. §12) |
+| Display works in all 4 combinations (Rust/AS x 2 boards) | **Achieved** (2026-10-07, ESP32-S3 and Pico 2 W. §12) |
 
-**The original goal is reached (owner judgment, 2026-10-07).** sensor-display runs on both boards; the traces
-match across the 2 boards up to the sensor read, and after the read each board matches host in full (§11 / §12).
+**The original goal is reached (owner decision, 2026-10-07).** sensor-display runs on both boards; the traces
+match across the two boards up to the sensor read, and after the read each board matches host in full (§11 / §12).
 
 **The evaluation board changed on 2026-10-07** (owner decision). The second board went from Pico WH (RP2040) to
 **Pico 2 W (RP2350)**; RP2040 is no longer evaluated. The RP2040 statements below stay as the record of the time.
 
-**Phase 6's "the same binary produces the same trace on 2 boards" is met.**
-**The 4-way display (Phase 5) was also met on 2026-10-07.** I2C read the SHT40 on 2 boards on
-2026-10-05 (§11), and all 4 combinations of Rust / AS x 2 boards matched in full the trace of the host fed with
-the response the board read (§12). What remains is the Phase 4 blink, and how to treat the fact that
-sensor-display's full identity cannot be seen directly across 2 boards -> docs/TODO.md §1.3.
+**Phase 6's "the same binary produces the same trace on two boards" is met.**
+**The four-way display (Phase 5) was also met on 2026-10-07.** I2C read the SHT40 on two boards on
+2026-10-05 (§11), and all four combinations of Rust / AS x 2 boards matched in full the trace of the host fed with
+the response the board read (§12). What remains is the Phase 4 blink, and how to treat the sensor-display
+trace, which cannot be compared directly across the two boards -> docs/TODO.md §1.3.
 
 On 2026-09-26 SPI2 was implemented in `ports/esp32s3`, and the **same `lcd_demo_rs.wasm`** as on RP2350
 (SHA-256 `fc470947...`) ran on hardware. **The host call trace was identical, 14,352 lines**, the same count
 and content as the RP2350 measurement. **An image appeared on the screen too.** So **Phase 6's "the same
-binary produces the same host call sequence on 2 boards" is reached on hardware** (§6 / §7).
+binary produces the same host call sequence on two boards" is reached on hardware** (§6 / §7).
 
-Along the way the ESP32-S3 port had 1 real bug (the value of `GPIO_FUNCn_OUT_SEL`). It was **the kind of
+Along the way the ESP32-S3 port had one real bug (the value of `GPIO_FUNCn_OUT_SEL`). It was **the kind of
 failure that an identical trace cannot detect**, so §7 keeps the whole story.
 
 ---
@@ -64,7 +64,7 @@ which has an f32-only FPU, is not confirmed.
 
 ## 2. Interpreter correctness (differential against wasmtime)
 
-For all 4 guests in `apps/`, **the same `.wasm` was run on our interpreter and on wasmtime 45, and the traces
+For all four guests in `apps/`, **the same `.wasm` was run on our interpreter and on wasmtime 45, and the traces
 are identical** (`verify/differential/tests/agree.rs`).
 
 The key is that **the HAL is shared**. `wasmicon-port`'s `Hal` implements `wasmicon_core::Resolver`, but its
@@ -90,7 +90,7 @@ By docs/abi-spec.md §9, `time` does not appear in the trace, so **full identity
 docs/handoff.md §2-10 (now docs/decisions.md D-10): "every host call and result except `time` matches"**.
 The `spi.write` trace is the CRC-32 of the data, so a match means "the pixels being sent are identical".
 
-The failure paths are checked too because the SPI of `ports/rp2040` and the I2C of all 3 ports still return
+The failure paths are checked too because the SPI of `ports/rp2040` and the I2C of all three ports still return
 `unsupported` (SPI is implemented on both rp2350 and esp32s3). Aligning only the success path would make the
 comparison meaningless the moment it is taken to hardware.
 
@@ -98,13 +98,13 @@ comparison meaningless the moment it is taken to hardware.
 
 ### 4.1 Running on hardware
 
-**RP2350 (§6) and ESP32-S3 (§7) have been observed. RP2040 builds but has never been flashed.**
+**RP2350 (§6) and ESP32-S3 (§7) are verified on hardware. RP2040 builds but has never been flashed.**
 
 - RP2040 GPIO is written through registers directly (SIO / IO_BANK0 / PADS_BANK0); it type-checks but nothing
   has been observed. "blink does not light" should be expected as the first thing to happen on hardware
 - The I2C / SPI of `ports/rp2040` return `unsupported` (not evaluated. 2026-10-07). The I2C of
   `ports/rp2350` / `ports/esp32s3` **read the SHT40 on hardware on 2026-10-05** (§11). sensor-display-rs was
-  confirmed up to the display on both boards. **The AS version has not run on hardware yet**
+  confirmed up to the display on both boards. **The AS version has not run on hardware yet** [Stale as of 2026-10-19: the AS version ran on both boards on 2026-10-07; see §12.]
 - SPI2 and GPIO of `ports/esp32s3` worked on hardware (§7). But **a host call match only says that "the guest
   passed the right bytes to the HAL".** Whether the register writes reach the pads does not show in the trace.
   The bug in §7 hit exactly that
@@ -113,15 +113,15 @@ comparison meaningless the moment it is taken to hardware.
   (SDA=GP4 / SCL=GP5) and ESP32-S3 (SDA=GPIO8 / SCL=GPIO9) (§11).
   **`led` and RP2040 are still unconfirmed by the owner**
 
-### 4.2 Floating-point agreement between boards
+### 4.2 Floating-point match between boards
 
 The temperature bar computation, the only place sensor-display uses f32, **has been confirmed to match on one
-platform only, the host**. RP2040 uses `compiler_builtins` soft-float, and ESP32-S3 and RP2350 have an f32-only
+platform only, the host**. [Stale as of 2026-10-19: it matched on both boards with the responses each board read; see §12.] RP2040 uses `compiler_builtins` soft-float, and ESP32-S3 and RP2350 have an f32-only
 hardware FPU (denormal handling depends on configuration), so this is the real measurement target of Phase 6.
 
 RP2350 is built with the hard-float ABI (`thumbv8m.main-none-eabihf`). The DCP that speeds up f64 is not used
 (enabling `dcp-fast-f64` of `rp235x-hal` replaces `__aeabi_dadd` / `__aeabi_dmul`, and the results have not
-been checked for agreement).
+been checked for a match).
 
 ### 4.3 Recorded I2C responses
 
@@ -134,7 +134,7 @@ Until then it was synthetic data giving T=23.44°C / RH=51.08%.
 
 [Stale as of 2026-10-19: CI has six jobs on ubuntu-24.04 and the toolchain is pinned to 1.99.0; see `.github/workflows/ci.yml`.]
 
-**First run on 2026-09-10, all 4 jobs green** (`v2` branch, ubuntu-latest).
+**First run on 2026-09-10, all four jobs green** (`v2` branch, ubuntu-latest).
 
 The first attempt failed in the `root` job's clippy. CI's stable was 1.98.0 while the local one was 1.97.1, and
 `map_or_identity`, new in 1.98, fired. Fixed; green on the second run.
@@ -143,13 +143,13 @@ The first attempt failed in the `root` job's clippy. CI's stable was 1.98.0 whil
   zero diff of generated files / check-sigs / diff-traces self-test
 - `guest`: fmt / clippy / wasm32 build of the apps workspace
 - `rp2040`: thumbv6m build
-- `differential`: the 4 differential tests against wasmtime
+- `differential`: the four differential tests against wasmtime
 
 On 2026-09-22 the `rp2350` job (thumbv8m.main-none-eabihf build) was added. fmt / clippy / build all pass
 locally, but **it has not yet been seen running in CI**.
 
-**Agreement with wasmtime was also confirmed on x86_64 Linux** (local is AArch64 macOS). This is supporting
-evidence that the interpreter's agreement does not depend on the host architecture, but agreement across the
+**The match with wasmtime was also confirmed on x86_64 Linux** (local is AArch64 macOS). This is supporting
+evidence that the interpreter's match does not depend on the host architecture, but the match across the
 RP2040 / Xtensa soft-float is still unverified (§4.2).
 
 `rust-toolchain.toml` floats on `channel = "stable"`. A new clippy lint or a change in rustfmt output can make
@@ -160,7 +160,7 @@ CI fail suddenly (which is exactly what happened here). **Whether to pin it is o
 ## 5. Procedure for verifying on hardware
 
 1. Implement I2C / SPI in `ports/rp2040` / `ports/rp2350` / `ports/esp32s3`
-   (**SPI is done on both rp2350 and esp32s3. I2C and rp2040 remain**)
+   (**SPI is done on both rp2350 and esp32s3. I2C and rp2040 remain**) [Stale as of 2026-10-19: I2C is done on both boards; see §11.]
 2. Check the wiring in docs/abi-spec.md §8 and align the role-name table with the hardware
 3. Flash
    - RP2040: `picotool load` the ELF, or make a UF2 with `elf2uf2-rs` and use BOOTSEL
@@ -180,7 +180,7 @@ CI fail suddenly (which is exactly what happened here). **Whether to pin it is o
      `role:led`, so no further processing is needed
 6. Record the SHT4x responses from hardware and replace `verify/sht4x-replay.txt`
 
-### 5.1 Measuring 2-board agreement with the LCD alone (the path that does not wait for I2C)
+### 5.1 Measuring the two-board match with the LCD alone (the path that does not wait for I2C)
 
 `lcd-demo-rs` uses only SPI and GPIO. SPI is implemented on both rp2350 and esp32s3, so **Phase 6's "same
 binary, same trace" can be measured on the LCD side first, without waiting for I2C**. Build the guest once and
@@ -212,7 +212,7 @@ sh verify/diff-traces.sh pico.log esp32s3.log
 ```
 
 `lcd-demo-rs` does not use f32, so **a match here moves the floating point of §4.2 forward by nothing**. It
-only says that the SPI bytes (the CRC-32 of `spi.write`) and the GPIO order are the same on the 2 boards.
+only says that the SPI bytes (the CRC-32 of `spi.write`) and the GPIO order are the same on the two boards.
 
 ---
 
@@ -221,7 +221,7 @@ only says that the SPI bytes (the CRC-32 of `spi.write`) and the GPIO order are 
 ## 6. RP2350 hardware measurement (2026-09-26)
 
 The record of the first run of `ports/rp2350` on hardware. **Not the Phase 6 completion criterion itself**
-(that one is defined on 2 boards; docs/handoff.md §5). Of Phase 5's "the display works", only the display side,
+(that one is defined on two boards; docs/handoff.md §5). Of Phase 5's "the display works", only the display side,
 isolated without waiting for the SHT31.
 (At the time of this measurement decision 9 was SHT31/SHT30. The sensor was changed to SHT4x on 2026-09-29,
 **after this record**. The body of the record is kept as it was.)
@@ -277,7 +277,7 @@ This settled on hardware the 2 RP2350-specific concerns:
   That is about sensor-display's temperature bar, which needs I2C
 - **How the gray ramp looks is unconfirmed.** Of the RGB565 bit positions, only "the left end is red", that
   is, R and B are not swapped, has been seen
-- **Agreement between the 2 boards (Phase 6) is not reached.** The comparison partner was the host's mock
+- **The match between the two boards (Phase 6) is not reached.** The comparison partner was the host's mock
   HAL, not a second board
 - **The `led` role (external LED) is unverified.** `lcd-demo-rs` does not touch the LED
 - **Nothing is said about ESP32-S3** (measured separately in §7)
@@ -313,10 +313,10 @@ sh verify/diff-traces.sh esp32s3.log host.log
 **The same 14,352 lines as the RP2350 measurement (§6)**, all the same including the 3,272 `spi.write` CRC-32
 values. Not a single failure status, and it reached `[wasm] lcd-demo done`.
 
-With this, **"the same binary produces the same host call sequence on 2 boards" is confirmed on hardware**
-(each board is identical to the same host reference, so the 2 boards agree with each other).
+With this, **"the same binary produces the same host call sequence on two boards" is confirmed on hardware**
+(each board is identical to the same host reference, so the two boards match each other).
 
-`spi.bus.open(0, 16000000, 0)` and all 3 `pin.open` calls succeed too.
+`spi.bus.open(0, 16000000, 0)` and all three `pin.open` calls succeed too.
 So **the GPIO / SPI2 register operations return success**.
 
 ### Reached: an image on the screen
@@ -476,7 +476,7 @@ output** (trying it returns `ff ff ff ff`). Left as a comment in `probe.rs`.
 
 ---
 
-## 8. Direct cross-check of the 2 boards (2026-09-26)
+## 8. Direct cross-check of the two boards (2026-09-26)
 
 §6 and §7 compared each board against the host reference. **This is the board-to-board cross-check that step
 5 of §5 describes.**
@@ -499,7 +499,7 @@ sh verify/diff-traces.sh pico.log esp32s3.log
 | Result | **14,352 lines identical** (including the 3,272 `spi.write` CRC-32 values) |
 
 All 3 cross-checks match (Pico <-> host, ESP32-S3 <-> host, Pico <-> ESP32-S3). **docs/handoff.md §5 Phase 6
-(2), "run the same binary on 2 boards; the trace except `time` and the SPI pixel CRCs are identical", is
+(2), "run the same binary on two boards; the trace except `time` and the SPI pixel CRCs are identical", is
 reached.**
 
 That the same `.wasm` is in both ELFs was confirmed before flashing by searching for the guest's bytes inside
@@ -516,7 +516,7 @@ The board's serial emits a NUL from line noise at the moment of reset or power-o
 
 Fixed by dropping NUL in `normalize()` and adding `grep -a`. **This script decides the completion criterion,
 so this kind of breakage leads straight to a misdiagnosis** (this time it was a false negative, but it was
-about to be read as "the 2 boards do not match" and the hardware was about to be suspected).
+about to be read as "the two boards do not match" and the hardware was about to be suspected).
 
 **What this match does not say:**
 
@@ -524,7 +524,7 @@ about to be read as "the 2 boards do not match" and the hardware was about to be
 - **That the displays are the same does not follow from this match.** What matches is the host call
   sequence; whether it reaches the pads is separate (the `out_sel` bug of §7 is exactly that example). The
   displays were checked by eye on both boards (§6 / §7)
-- **The behavior after drawing finished differed between the 2 boards.** Without a pull-up the ESP32-S3 went
+- **The behavior after drawing finished differed between the two boards.** Without a pull-up the ESP32-S3 went
   back to white and the Pico 2 W kept the image (§7 "Cause 3"). The traces are identical, so this is one more
   example that **a host call match does not guarantee that the display is kept**
 
@@ -751,7 +751,7 @@ Matches the CRC `pack` reported. And then:
 | host (`wasmicon run`) vs ESP32-S3 (slot) | **14,352 lines match** |
 | Pico 2 W (slot, §9) vs ESP32-S3 (slot) | **14,352 lines match** |
 
-The latter is the key: **2 boards that read flash differently** -- the RP2350 passes the XIP slice straight to
+The latter is the key: **two boards that read flash differently** -- the RP2350 passes the XIP slice straight to
 `decode`, while the ESP32-S3 reads the header through `esp-storage`, allocates exactly that length from the
 arena and copies the body -- produced **the identical host call sequence** from the same `.wasm`. The slot
 path does not break the determinism criterion of docs/handoff.md §5 Phase 6.
@@ -772,7 +772,7 @@ bootloader, so there is no physical action like BOOTSEL).
 ### The failure branches were also triggered on hardware (the same 3 points as §9)
 
 Writing directly to the slot (`espflash write-bin --after no-reset` -> `espflash
-monitor`), all 3 entry points were exercised. **This procedure needs no button**, so the BOOTSEL replugging
+monitor`), all three entry points were exercised. **This procedure needs no button**, so the BOOTSEL replugging
 that the Pico needed disappears:
 
 | Slot content | Serial output |
@@ -839,7 +839,7 @@ The I2C of `ports/esp32s3` / `ports/rp2350` (implemented 2026-10-04) ran on hard
 
 At first, only the ESP32-S3 was checked with the guest from before the screen change (4,549 B), to confirm
 that I2C works and that the trace up to the read matches host. The numbers below are from the guest after
-the screen change, run on 2 boards.
+the screen change, run on two boards.
 
 ### Results
 
@@ -860,10 +860,10 @@ temperature and humidity appeared on the screen:
 | Pico 2 W and ESP32-S3 | 4,182 / 4,182 | line 3,757 |
 | host (`verify/sht4x-replay.txt`) and Pico 2 W | 4,182 / 4,182 | line 3,757 |
 
-Line 3,757 is **the first `spi.write` that draws a number after the sensor read**. The 2 boards read at
+Line 3,757 is **the first `spi.write` that draws a number after the sensor read**. The two boards read at
 different times, and host uses synthetic data, so the values differ and everything from there on diverges, as
 expected. **The 3,756 lines up to the sensor read (including all of the frame drawing) are identical across
-all 3.**
+all three.**
 
 ### What this measurement does not say
 
@@ -929,9 +929,9 @@ The Rust version's response went into `verify/sht4x-replay.txt` (replacing the s
 
 ### What this measurement does not say
 
-- **A direct comparison of the 2 boards on the same input.** There is no way to inject a response into the
+- **A direct comparison of the two boards on the same input.** There is no way to inject a response into the
   hardware, so each board reads a different value. What can be said is "each board = host (for the input that
-  board read)", and the 2 boards' inputs were different values all 4 times
+  board read)", and the two boards' inputs were different values all four times
 - **Denormals and out-of-range clamping.** Only 1 point around 25 to 26 °C. The edge values are checked for
   Rust / AS agreement in the host test (`sensor_display_agrees_across_temperatures`), but not on the hardware
   FPU
@@ -975,7 +975,7 @@ Sometimes it boots automatically after flashing, so **only use captures that are
 
 ## 13. Firmware without the built-in app (2026-10-07, ESP32-S3)
 
-The `include_bytes!` and the `guest-lcd-demo` feature were removed from all 3 ports
+The `include_bytes!` and the `guest-lcd-demo` feature were removed from all three ports
 (docs/app-workflow.md §3.3). 2 points were checked on the ESP32-S3 hardware.
 
 | Slot | Output | Result |

@@ -4,8 +4,8 @@
 //! channel (stage 2) exists, `picotool` is called, so the Pico still needs
 //! BOOTSEL. Stage 2 removes that.
 //!
-//! `check` runs before anything is sent. Writing an app that does not run on
-//! that board into the slot is only noticed when it fails on hardware
+//! `check` runs before anything is sent. If an app that does not run on that
+//! board were written to the slot, the failure would show only on hardware
 //! (docs/app-workflow.md §4.3). If `check` fails, nothing is flashed.
 //!
 //! The verdict and the image preparation (`prepare`) are separate from the

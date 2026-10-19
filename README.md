@@ -1,7 +1,7 @@
 # Wasmicon
 
 A WebAssembly runtime for microcontrollers. Evaluation boards: ESP32-S3 and RP2350 (Pico 2 W).
-ESP32-C5 is a port in progress (boots and blinks on hardware; status in `docs/TODO.md` §1.3.1).
+ESP32-C5 is a port in progress (boots and blinks on hardware; status in docs/TODO.md §1.3.1).
 RP2040 has a port but is build-only; it was dropped from evaluation on 2026-10-07.
 
 - **Runtime**: a from-scratch Core Wasm interpreter. `no_std`, zero dependency crates, no `alloc`
@@ -17,11 +17,11 @@ RP2040 has a port but is build-only; it was dropped from evaluation on 2026-10-0
 The software side of all six phases is complete. The checks CI runs are in
 `.github/workflows/ci.yml`.
 
-**It ran on a Raspberry Pi Pico 2 W** (2026-09-26). `apps/lcd-demo-rs` ran on the board, its
+**The runtime ran on a Raspberry Pi Pico 2 W** (2026-09-26). `apps/lcd-demo-rs` ran on the board, its
 host-call trace was identical to the host port's (14,352 lines), and a picture appeared on the
 ILI9341 ([`docs/verification-report.md`](docs/verification-report.md) §6).
 
-**It ran on an ESP32-S3 too** (2026-09-26). `ports/esp32s3` got an SPI2 implementation, and
+**It also ran on an ESP32-S3** (2026-09-26). `ports/esp32s3` got an SPI2 implementation, and
 **the same `lcd_demo_rs.wasm` that was flashed to the Pico 2** (`fc470947...`) produced a trace
 identical to the host port's and a picture on the ILI9341
 ([`docs/verification-report.md`](docs/verification-report.md) §7).
@@ -29,13 +29,13 @@ identical to the host port's and a picture on the ILI9341
 **sensor-display also ran on both boards** (2026-10-05 / 07). It read the SHT40 over I2C, all
 four combinations (Rust and AS versions on both boards) showed the display, and each board's
 trace was identical to a host run fed the responses that board had read
-(`docs/verification-report.md` §11, §12). **The owner declared the original goal achieved on
+(docs/verification-report.md §11, §12). **The owner declared the original goal achieved on
 this basis** (2026-10-07). Remaining work: [`docs/TODO.md`](docs/TODO.md).
 
 | Verification | Status |
 |---|---|
-| **Replace the app without reflashing the firmware** (app slot) | **Achieved on RP2350 and ESP32-S3 hardware (2026-10-04)**. On both boards the trace of the app run from the slot was identical to the host's (line count: `docs/verification-report.md` §6). RP2040 is not evaluated |
-| **Traces via the slot match on two boards that read flash differently** | **Achieved (2026-10-04)**. The Pico 2 W passes the XIP slice straight to decode; the ESP32-S3 reads the header through `esp-storage` and copies the body into the arena. The same `.wasm` gives identical traces on both (line count: `docs/verification-report.md` §6) |
+| **Replace the app without reflashing the firmware** (app slot) | **Achieved on RP2350 and ESP32-S3 hardware (2026-10-04)**. On both boards the trace of the app run from the slot was identical to the host's (line count: docs/verification-report.md §6). RP2040 is not evaluated |
+| **Traces via the slot match on two boards that read flash differently** | **Achieved (2026-10-04)**. The Pico 2 W passes the XIP slice straight to decode; the ESP32-S3 reads the header through `esp-storage` and copies the body into the arena. The same `.wasm` gives identical traces on both (line count: docs/verification-report.md §6) |
 | Wasm spec conformance (spec testsuite core: 74 files / 22507 commands) | Achieved |
 | Interpreter correctness (differential test against wasmtime, 4 guests) | Achieved |
 | The Rust and AS versions emit the same host-call sequence (success and failure paths) | Achieved |
@@ -128,7 +128,7 @@ sh verify/diff-traces.sh pico.log esp32s3.log
 Five `rust-toolchain.toml` files (root, `apps`, `ports/rp2040`, `ports/rp2350`,
 `ports/esp32c5`) pin the same stable version, 1.99.0 (pinned 2026-10-08), so that they do
 not drift from each other or from CI; bump them together. `ports/esp32s3` uses the espup
-fork (`channel = "esp"`) because upstream Rust has no Xtensa target (`docs/decisions.md` P-10).
+fork (`channel = "esp"`) because upstream Rust has no Xtensa target (docs/decisions.md P-10).
 
 ### Flash an app to the slot
 
@@ -198,8 +198,8 @@ sh tools/measure-size.sh                                   # core code size
 | [`apps/lcd-demo-rs/README.md`](apps/lcd-demo-rs/README.md) | Pico 2 (W) + ILI9341 demo: wiring, flashing, pitfalls |
 
 Development continues on `main`. The `v2` branch was merged into `main` and deleted. The old
-implementation (wasm decoder / llvm experiments, the 2024 prototype) is not gone either: it is
-in `main`'s history as the second parent of merge commit `8c26071` (`git log 8c26071^2`).
+implementation (wasm decoder / llvm experiments, the 2024 prototype) is still reachable: it is
+the second parent of merge commit `8c26071` in `main`'s history (`git log 8c26071^2`).
 
 ## Contributing
 

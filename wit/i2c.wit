@@ -14,7 +14,7 @@ interface i2c {
     }
 
     /// An I2C bus.
-    /// `index` is the platform-specific bus number (ESP32-S3: I2C0/1, RP2040: i2c0/1).
+    /// `index` is the platform-specific bus number (ESP32-S3: I2C0/1, RP2350: i2c0/1).
     /// The SDA/SCL pin assignment comes from the host-side board configuration
     /// (docs/abi-spec.md §8).
     resource bus {

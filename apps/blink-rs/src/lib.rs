@@ -1,7 +1,7 @@
 //! Blink: the smallest Wasmicon guest.
 //!
 //! The LED pin number comes from `board.pin-by-role`, so the same `.wasm`
-//! runs on both ESP32-S3 and RP2040 (docs/abi-spec.md §8,
+//! runs on every evaluation board (docs/abi-spec.md §8,
 //! docs/app-workflow.md §3.9).
 
 #![no_std]

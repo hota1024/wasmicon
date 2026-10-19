@@ -184,7 +184,7 @@ $w deploy "$app" --board esp32s3 --monitor -o esp32s3.log
 serial devices are visible, pass `--port` (the name depends on the bridge
 chip; see "Wiring" above).
 
-Sometimes the reset over USB does not take and the app does not run (hit on
+Sometimes the reset over USB does not happen and the app does not run (hit on
 2026-10-07; docs/verification-report.md §12 "Where the ESP32-S3 got stuck").
 Then flash through the `USB-OTG` side, capture the trace on the `USB-UART`
 side, and start the board with its EN (`RST`) button.
@@ -251,7 +251,7 @@ This setup is verified on both a Pico 2 W and an ESP32-S3 DevKitC-1
 this order:
 
 1. Nothing on the UART: wiring (TX/RX direction, GND), 115200 8N1, and
-   whether the flash took. The banner `wasmicon rp2350` comes first
+   whether flashing succeeded. The banner `wasmicon rp2350` comes first
 2. `role not found`: the wiring table is not in the config slot. Look at the
    `wasmicon: roles ...` line of the banner. If it says
    `roles empty, no roles`, run `deploy` again from the directory that has

@@ -58,7 +58,7 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
         `ports/host/tests/apps.rs` (the value the host test expects in the trace;
         without it the test fails with the misleading message that the measurement
         command differs)
-- [x] **Role names** (owner decision 2026-10-07: the defaults are final). `led` / `lcd-cs` / `lcd-dc` / `lcd-rst`. Changing them means three places (the comment in `wit/board.wit`, the table in docs/abi-spec.md §8, `profile` in `ports/common`). **Changing only a number is one place, `profile`**; adding to the vocabulary (names) also means `ROLE_NAMES` (`assert_role_names` rejects a mismatch at compile time)
+- [x] **Role names** (owner decision 2026-10-07: the defaults are final). `led` / `lcd-cs` / `lcd-dc` / `lcd-rst`. Changing them means three places (the comment in `wit/board.wit`, the table in docs/abi-spec.md §8, `profile` in `ports/common`). **Changing only a number is one place, `profile`**; adding to the vocabulary (names) also means `ROLE_NAMES` (`assert_role_names` rejects a mismatch at compile time) [Superseded: names are free-form and wiring lives in wasmicon.toml, §5-9]
 - [x] **An external LED serves as `led`** (closed 2026-10-07. **`led` is no longer a firmware role**. Role names have no fixed vocabulary; the wiring goes in the app's `wasmicon.toml` (§5-9). The blink apps' `apps/blink-*/wasmicon.toml` assign `led` to GP15 / GPIO2. Actually lighting an external LED stays in the Phase 4 blink item). No board has an onboard LED on a plain GPIO (Pico W/WH and Pico 2 W drive it through the CYW43439, the DevKitC-1 has a WS2812). Only the Pico 2 (no radio) has GP25 as a plain LED, but it is kept external to match the Pico 2 W
 - [x] **RP2350 board variant** -> fixed as **Pico 2 W** (RP2350A, GP0..GP29). `NUM_GPIO` stays 30
 - [x] **Treat RP2350 as Arm only?** (owner decision 2026-10-07: Arm (Cortex-M33) only. The RISC-V Hazard3 cores are out of scope). `ports/rp2350` targets Cortex-M33 (`thumbv8m.main-none-eabihf`) only. Whether RISC-V (Hazard3) produces the same trace is not part of the v0.1 verification
@@ -83,7 +83,7 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
       `timeout` is returned (otherwise the bus stays held).
       **The SCL counters are derived from `clk_sys`** (the PL022 SPI runs on `clk_peri`,
       but DW_apb_i2c runs on `clk_sys`. Both default to 150 MHz, so mixing them up still
-      works by accident). **Not yet verified on hardware** (-> §1.3)
+      works by accident). ~~Not yet verified on hardware~~ -> verified on hardware on 2026-10-05 (docs/verification-report.md §11)
 - [x] **SPI for `ports/esp32s3`**. SPI2 (FSPI) uses the `esp-hal` `spi::master`
       driver (unlike GPIO, not direct register access). The points matched to rp2350
       are in the module comment of `ports/esp32s3/src/board.rs`.
@@ -92,7 +92,7 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
 - [x] **I2C for `ports/esp32s3`**. I2C0 uses the `esp-hal` `i2c::master` driver
       (2026-10-04; like SPI, not direct register access). Error mapping matches rp2350
       (NACK -> `nack`, arbitration loss -> `io`, `esp-hal`'s `Error::Timeout` ->
-      `timeout`). **Not yet verified on hardware** (-> §1.3)
+      `timeout`). ~~Not yet verified on hardware~~ -> verified on hardware on 2026-10-05 (docs/verification-report.md §11)
 
 ### 1.3 Verification (Phase 4 / 5 / 6 completion criteria)
 
@@ -102,7 +102,7 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
 - [ ] **`blink-rs` / `blink-as` run on both boards (ESP32-S3 and Pico 2 W) and the serial trace matches the host version (Phase 4)**.
   GPIO itself works on both boards through `lcd-demo-rs` / `sensor-display`, but blink has
   not been flashed yet. It needs the external LED for the `led` role (§1.1). **This is the only
-  Phase 4 item left**. The owner judged the original goal reached on 2026-10-07, so **it does
+  Phase 4 item left**. The owner declared the original goal reached on 2026-10-07, so **it does
   not count toward the goal** (optional extra verification)
 - [x] **`lcd-demo-rs` displays on the ESP32-S3** (reached 2026-09-26.
       docs/verification-report.md §7). The trace is identical to the host over 14,352
@@ -122,14 +122,14 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     both boards", add an I2C replay mode to the ports and feed both boards the same response
   - Procedure: docs/verification-report.md §5
   - Comparison: `sh verify/diff-traces.sh a.log b.log`
-- [ ] **Floating-point agreement between boards**. sensor-display is the only app using f32, in the temperature bar computation. ESP32-S3 and RP2350 have an f32-only hardware FPU (denormal handling depends on configuration). This is the real measurement target of Phase 6 (RP2040 soft-float is no longer evaluated)
+- [ ] **Floating-point match between boards**. sensor-display is the only app using f32, in the temperature bar computation. ESP32-S3 and RP2350 have an f32-only hardware FPU (denormal handling depends on configuration). This is the real measurement target of Phase 6 (RP2040 soft-float is no longer evaluated)
   - RP2350 is built with the hard-float ABI (`thumbv8m.main-none-eabihf`). `cortex-m-rt` enables the FPU, FPSCR stays at its default (round to nearest, flush-to-zero off), so it should be IEEE compliant. Confirm on hardware
   - **One data point on RP2350 on 2026-10-07** (docs/verification-report.md §12).
     Feeding the response read by the Pico 2 W to the host gave a trace identical to the
     board, including the temperature bar (Rust and AS versions). **The ESP32-S3 gave the
     same result the same day** (all four combinations). **There is still no way to feed
     the same input to both boards**, so the claim is limited to "each board == host"
-  - The RP2350 DCP (the f64 coprocessor) is not used. Enabling `dcp-fast-f64` in `rp235x-hal` would replace `__aeabi_dadd` / `__aeabi_dmul`. Faster, but result agreement is unverified, so it stays out until Phase 6 passes
+  - The RP2350 DCP (the f64 coprocessor) is not used. Enabling `dcp-fast-f64` in `rp235x-hal` would replace `__aeabi_dadd` / `__aeabi_dmul`. Faster, but whether the results match is unverified, so it stays out until Phase 6 passes
 - [x] **Read the SHT40 on hardware** (reached 2026-10-05. docs/verification-report.md §11).
   sensor-display-rs ran on ESP32-S3 and Pico 2 W; both read on the first try and displayed.
   **The 3,756 lines up to the sensor read are identical across host and both boards**.
@@ -188,7 +188,7 @@ hardware and committed separately.
 
 ### 1.4 What to suspect first on hardware
 
-**RP2350 and ESP32-S3 have been observed** (both on 2026-09-26). `lcd-demo-rs` ran on the
+**RP2350 and ESP32-S3 are verified on hardware** (both on 2026-09-26). `lcd-demo-rs` ran on the
 Pico 2 W and the ESP32-S3 DevKitC-1, the host call trace is identical to the host port
 (14,352 lines on both, including 3,272 `spi.write` CRC-32 values), and a picture appeared
 (docs/verification-report.md §6, §7). Of the concerns below, **those about GPIO / SPI
@@ -581,7 +581,7 @@ change.**
       docs/abi-spec.md §5.2 says "when `run` returns, the host drops every remaining handle", but
       **neither host nor rp2040 / rp2350 / esp32s3 did it**. It went unnoticed because the
       `Drop` impls in the Rust bindings (`bindings/rust/src/hal.rs`) release handles on the
-      guest side. With a loader, **the next app hits `busy`** (for sure when the previous
+      guest side. With a loader, **the next app hits `busy`** (always when the previous
       app trapped)
       - `Hal::release_all()` was added and is called **in four places, host and the three
         ports**, once `run` has returned (also when it left by a trap)
@@ -726,7 +726,7 @@ change.**
         (`espflash write-bin <offset>` / `picotool load -o <offset>`)
 - [ ] **The supervisor loop** (docs/app-workflow.md §3.1).
       **The three ports now read the slot** (2026-10-04. RP2350 and ESP32-S3 verified on
-      hardware, RP2040 code only). What remains is the return to idle and the per-cycle
+      hardware, RP2040 code only). What remains is the return to the parked state and the per-cycle
       rebuild (arena / `Hal` / **the role table**; carrying it over can change the trace.
       `release_all.rs` locks in the current state)
       - **RP2040 and RP2350 read it in place** (XIP is memory-mapped, so no copy to RAM). The
@@ -769,13 +769,13 @@ change.**
       - **Remaining**: `Truncated` (an image that lies only about the length) was not
         tried. The `Overlap` check exists only on the `read_xip` side, so **the ESP32-S3
         has none** (it reads through `esp-storage`). Whether it is right that preventing
-        overlap falls to `espflash` is undecided
+        overlap falls to `espflash` is an open question
 - [x] **Remove the built-in app** (done 2026-10-07. Verified on ESP32-S3 hardware that "the
       slot app runs" and "an empty slot gives `slot empty, idle`".
       docs/verification-report.md §13. The LED blink is unconfirmed for lack of an external
       LED).
       An empty slot prints `wasmicon: slot empty, idle`, enters `idle::heartbeat` in
-      `ports/common`, and blinks the `led` role at 1 Hz
+      `ports/common`, and blinks the `led` role at 1 Hz [Later replaced by `idle::park`, which drives no pins; see §5-9]
       (stage 1. **Only once the three ports can read the slot** - removing it first would
       leave the firmware running nothing. **RP2350 and ESP32-S3 are verified on
       hardware**. RP2040 was dropped from evaluation (2026-10-07), so **the precondition is

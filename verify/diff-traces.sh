@@ -11,7 +11,7 @@
 # (`[wasm] ...`). The trace is only the `> ...` / `< ...` lines of
 # docs/abi-spec.md §9, so those are extracted. Dropping the `[wasm]` lines is
 # safe because the same content appears in the trace as the log host call
-# (kept, one board's banner alone would produce a difference).
+# (if they were kept, a difference in one board's banner alone would be a mismatch).
 #
 # By docs/abi-spec.md §9, time never appears in the trace and GPIO numbers
 # looked up by role are already normalized to `role:led`, so no further
@@ -51,9 +51,9 @@ prepare() {
     normalize "$src" > "$dst"
     n=$(wc -l < "$dst" | tr -d ' ')
     if [ "$n" -eq 0 ]; then
-        echo "$label ($src): no trace line found." >&2
-        echo "  Lines starting with '> ' / '< ' (docs/abi-spec.md §9) are required. Check" >&2
-        echo "  that the capture was not cut short and that no timestamp prefixes each line." >&2
+        echo "$label ($src): no trace line found" >&2
+        echo "  lines starting with '> ' / '< ' (docs/abi-spec.md §9) are required; check" >&2
+        echo "  that the capture was not cut short and that no timestamp prefixes each line" >&2
         exit 1
     fi
     echo "$n"

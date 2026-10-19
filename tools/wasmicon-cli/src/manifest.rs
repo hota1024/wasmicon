@@ -40,7 +40,7 @@
 //!   has no effect".
 //! - A `version` newer than the CLI supports is an error; an older one is
 //!   accepted.
-//! - The file is optional. `build` / `check` / `run` work without it.
+//! - The file is optional. `check` / `run` work without it.
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -97,8 +97,8 @@ struct RawBoard {
 pub struct Manifest {
     /// Directory of the file. Relative paths resolve against it.
     pub dir: PathBuf,
-    /// Role names this app looks up (a declaration; check / deploy verify
-    /// they are in the wiring table).
+    /// Role names this app looks up (a declaration; check / deploy cross-check
+    /// them against the wiring table).
     pub pin_roles: Vec<String>,
     /// Board used when `--board` is absent.
     pub default_board: Option<String>,

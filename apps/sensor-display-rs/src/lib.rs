@@ -4,7 +4,7 @@
 //! same host-call sequence and the same pixels as `sensor-display-as`.
 //!
 //! Pin numbers are not hard-coded; they come from `board.pin-by-role`, so the
-//! same `.wasm` runs on both ESP32-S3 and RP2040 (docs/abi-spec.md §8).
+//! same `.wasm` runs on every evaluation board (docs/abi-spec.md §8).
 
 #![no_std]
 

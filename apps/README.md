@@ -80,7 +80,7 @@ bar_px = i32(b)
 ```
 
 This checks that f32 division, addition and multiplication and the
-truncation to `i32` agree on both boards.
+truncation to `i32` match on both boards.
 
 The clamp is done in f32, so the conversion always sees an in-range value.
 Rust's `as` lowers to `i32.trunc_sat_f32_s` and AssemblyScript's `<i32>` may

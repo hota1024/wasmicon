@@ -5,16 +5,16 @@ interpreter (`runtime/`), a HAL defined in WIT (`wit/`), generated bindings for
 Rust / AssemblyScript / C (`bindings/`), board ports (`ports/`), sample apps
 (`apps/`) and the `wasmicon` CLI (`tools/`). Evaluation boards: ESP32-S3 and
 RP2350 (Pico 2 W). ESP32-C5 is a port in progress (boots and blinks on hardware;
-status in `docs/TODO.md` §1.3.1). RP2040 builds but is not evaluated.
+status in docs/TODO.md §1.3.1). RP2040 builds but is not evaluated.
 
 ## Read first
 
-1. `README.md` – what exists, layout, build and flash instructions
-2. `docs/TODO.md` – remaining work and open owner questions. The only place for them.
-3. `docs/abi-spec.md` – normative WIT -> Core Wasm lowering rules
-4. `wit/` – the HAL. Source of truth; every `generated.*` file is generator output
-5. `docs/decisions.md` – frozen decisions (D-NN), adopted defaults (A-NN), pitfalls (P-NN)
-6. `docs/style-guide.md` – language, comment, citation and commit conventions
+1. `README.md` - what exists, layout, build and flash instructions
+2. `docs/TODO.md` - remaining work and open owner questions. The only place for them.
+3. `docs/abi-spec.md` - normative WIT -> Core Wasm lowering rules
+4. `wit/` - the HAL. Source of truth; every `generated.*` file is generator output
+5. `docs/decisions.md` - frozen decisions (D-NN), adopted defaults (A-NN), pitfalls (P-NN)
+6. `docs/style-guide.md` - language, comment, citation and commit conventions
 
 Area rules live in nested `AGENTS.md` files: `runtime/`, `wit/`, `ports/`, `apps/`,
 `tools/`, `bindings/`.
@@ -24,11 +24,11 @@ Area rules live in nested `AGENTS.md` files: `runtime/`, `wit/`, `ports/`, `apps
 Stop and write up the reason instead of implementing, if a change would:
 
 - change the ABI: import module or field names, signatures, error code =
-  discriminant + 1, handle 0 = invalid (`docs/abi-spec.md` §3–§5)
-- use WIT syntax outside the subset in `docs/abi-spec.md` §2
-- overturn a frozen decision (`docs/decisions.md` D-01...D-12)
+  discriminant + 1, handle 0 = invalid (docs/abi-spec.md §3, §4, §5)
+- use WIT syntax outside the subset in docs/abi-spec.md §2
+- overturn a frozen decision (docs/decisions.md D-01...D-12)
 - add a dependency crate or `alloc` to `runtime/`
-- change the trace format (`docs/abi-spec.md` §9) or a guest log string that a
+- change the trace format (docs/abi-spec.md §9) or a guest log string that a
   trace-equality test compares
 
 If you proceed on an adopted default while an owner question is open, say so in

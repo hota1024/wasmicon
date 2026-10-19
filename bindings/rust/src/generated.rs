@@ -292,7 +292,7 @@ pub mod spi {
 pub mod time {
     #[link(wasm_import_module = "wasmicon:hal/time@0.1.0")]
     unsafe extern "C" {
-        /// Monotonic microseconds since boot. The u64 does not wrap in practice.
+        /// Returns the monotonic time in microseconds since boot. The u64 does not wrap in practice.
         #[link_name = "now-us"]
         pub fn now_us() -> u64;
 
@@ -310,7 +310,7 @@ pub mod time {
 pub mod log {
     #[link(wasm_import_module = "wasmicon:hal/log@0.1.0")]
     unsafe extern "C" {
-        /// `message` is UTF-8. The host appends the newline.
+        /// Writes `message` (UTF-8) to the log. The host appends the newline.
         #[link_name = "log"]
         pub fn log(level: u32, message_ptr: *const u8, message_len: u32);
     }

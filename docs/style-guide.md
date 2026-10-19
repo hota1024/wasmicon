@@ -111,7 +111,7 @@ proceed on an adopted default while an owner question is open, say so in the bod
 | normative | the document whose rules win (`docs/abi-spec.md`) | canonical, authoritative |
 | generated files | output of `wasmicon-gen` | artifacts |
 | role, role name | the wiring key an app looks up (`pin-by-role`) | alias, label |
-| wiring, wiring table | role → GPIO mapping in `wasmicon.toml` | pinout (except for board diagrams) |
+| wiring, wiring table | role -> GPIO mapping in `wasmicon.toml` | pinout (except for board diagrams) |
 | flash (verb) | write firmware or an app to the device | burn, program |
 | slot, app slot, config slot | regions in flash the loader reads | partition |
 | check | what `wasmicon check` does | inspect, verify |

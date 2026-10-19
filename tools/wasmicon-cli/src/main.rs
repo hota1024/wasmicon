@@ -1,7 +1,7 @@
 //! `wasmicon`: the one tool app authors touch (docs/app-workflow.md §4).
 //!
 //! Stage 0 (`new` / `check` / `run` / `monitor` / `trace diff` / `doctor`) and
-//! stage 1 (`pack` / `deploy`) are in; the stages are docs/app-workflow.md §5.
+//! stage 1 (`pack` / `deploy`) of docs/app-workflow.md §5 are implemented.
 //! `size` stays `tools/measure-size.sh` (remaining work: docs/TODO.md §5).
 //! Arguments are parsed by hand with a `USAGE` constant, as in `wasmicon-gen`.
 
