@@ -1106,3 +1106,44 @@ On the Pico 2 W between 2026-10-09 and 11, every write to the SHT40 came back `n
 **A caution on reading the diagnostic**: "low with pull-down" means "the line is not connected" only when an
 external pull-up **is present**. If the module has no pull-up, a connected line reads the same (on this day,
 that assumption was dropped once and the reading was misinterpreted).
+
+## 18. The C bindings on the ESP32-S3 and the Pico 2 W (2026-10-20)
+
+`apps/blink-c` is the C version of blink (`bindings/c`). Until now it had run only on the host
+(`ports/host/tests/apps.rs`). The same `.wasm` was flashed to both evaluation boards and the traces were
+compared with `wasmicon trace diff`.
+
+- Guest: `blink_c.wasm`, 788 B, SHA-256 `fdbfd9fb...`, slot crc32 `6b2467d7`. Built with
+  `sh bindings/c/build.sh` and wasi-sdk 33 (clang 22.1.0)
+- Firmware: both boards reflashed from `e8443c6` (`trace=on`)
+- Wiring: `deploy` from `apps/blink-c` wrote `led=2` (ESP32-S3) and `led=15` (Pico 2 W)
+
+| Board | Capture | Result |
+|---|---|---|
+| ESP32-S3 DevKitC-1 | `deploy --monitor` through the `USB-UART` port (CH343). Flash, reset and capture in one command; no `RST` press was needed this time | **identical in full, 20 lines**, against host and against blink-rs on host |
+| Pico 2 W | `deploy --monitor` from BOOTSEL, trace on UART0 through a CP2102N | **identical in full, 20 lines**, against host and against the ESP32-S3 |
+
+Every host call succeeded (`pin-by-role` -> `role:led`, `pin.open`, 3 x `write` / `toggle`,
+`[resource-drop]pin`).
+
+### What this measurement does not say
+
+- blink uses only `board`, `gpio`, `log` and `time`. I2C and SPI from C have run only on the host mock
+- blink switches the LED at 1 ms, too fast to see. The LED itself was checked on the Pico 2 W with a
+  throwaway variant (500 ms, 10 blinks; 747 B, crc32 `09419121`): it blinked, and its 48-line trace was
+  identical in full to the host
+- The CI build uses clang 18 from apt, so its `.wasm` bytes differ from the ones flashed here
+
+### Things hit while capturing
+
+- **`deploy` from the repository root flashed an empty wiring table** without a warning. `wasmicon.toml` is
+  searched from the current directory, not from the `.wasm`. The board printed `wasmicon: roles none` and
+  `pin-by-role("led")` returned `unsupported` (7). Running from `apps/blink-c` fixed it. Tracked in
+  `docs/TODO.md §5`
+- **The Pico 2 W UART gave 0 bytes** for three captures, then a single NUL at power-on. The firmware was not
+  the cause (its code differs from the last verified build only in comments and strings, and the LED
+  blinked). The cause was the wiring between GP0 and the CP2102N's RX; after it was redone, the trace came
+  through
+- `wasmicon monitor --idle 5` opened before `deploy` closed during the flash wait and missed the run. On the
+  Pico, `deploy --monitor` from BOOTSEL avoids this
+

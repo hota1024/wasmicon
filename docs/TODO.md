@@ -895,6 +895,18 @@ change.**
       does not match~~ -> **there is no default table, so it boots handing out no roles**
       and prints the reason in the banner (2026-10-07). The CRC-32 of the effective map
       goes into the identity together with `info` (docs/app-workflow.md §3.8)
+- [ ] **`deploy` flashes without a wiring table when it finds no `wasmicon.toml`**
+      (found 2026-10-20, docs/verification-report.md §18). `wasmicon.toml` is searched upward
+      from the current directory, not from the `.wasm`. Run from the repository root,
+      `deploy apps/blink-c/build/blink_c.wasm` found no manifest, flashed an empty role
+      table and printed no warning. The board then booted with `roles none` and
+      `pin-by-role("led")` returned `unsupported`. The README example (deploy
+      `lcd_demo_rs.wasm` from the root) takes the same path. Options:
+      - also search upward from the `.wasm` location (finds `apps/blink-c/wasmicon.toml`;
+        a Rust app's `.wasm` sits under `apps/target/`, so that one still needs the
+        current directory)
+      - stop `deploy` when no manifest is found, unless a flag such as `--no-roles` says
+        an empty table is intended
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
       over USB, trace over UART0**
@@ -912,8 +924,10 @@ change.**
         in `tools/wasmicon-cli/src/flags.rs` yet; adding `new --lang c` means moving it to
         flags.rs and cross-checking the scaffold byte for byte
         (docs/app-workflow.md §4.4)
-      - The C version has not run on hardware (ESP32-S3 / Pico 2 W). There is no C version
-        of sensor-display
+      - **`blink-c` runs on both evaluation boards** (2026-10-20). The same `blink_c.wasm`
+        gave a 20-line trace on the ESP32-S3 and the Pico 2 W that is identical in full to
+        the host and to blink-rs (docs/verification-report.md §18). There is no C version
+        of sensor-display, so I2C / SPI from C have run only on the host mock
       - CI builds it with the clang + lld (18.x) from apt on ubuntu-24.04. Locally it was
         checked with wasi-sdk 33 (clang 22). The output bytes change with the version, but
         the checks are only the trace and the feature set
