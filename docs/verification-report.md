@@ -1147,3 +1147,26 @@ Every host call succeeded (`pin-by-role` -> `role:led`, `pin.open`, 3 x `write` 
 - `wasmicon monitor --idle 5` opened before `deploy` closed during the flash wait and missed the run. On the
   Pico, `deploy --monitor` from BOOTSEL avoids this
 
+
+## 19. The on-board RGB LED on the ESP32-C5 and the ESP32-S3 (2026-10-20)
+
+`apps/rgb-led-rs` drives the on-board WS2812B through `spi.bus` index 1, which the esp32c5 and esp32s3
+ports map to SPI2 with only MOSI routed to the LED's data pin (GPIO27 on the C5, GPIO48 on the S3;
+docs/abi-spec.md §8). Each WS2812 bit is sent as 3 SPI bits at about 2.4 MHz. The app shows red, green,
+blue and white for 0.5 s each, five rainbow turns, then turns the LED off.
+
+| Board | Firmware | Guest | Result |
+|---|---|---|---|
+| ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT, rev v1.0) | built from `cfb7f75`, `trace=on` | 1236 B, slot crc32 `dd0d207a` | LED lit as intended (owner, by eye); **identical in full to host, 978 lines** |
+| ESP32-S3 (Freenove ESP32-S3-WROOM, rev v0.2) | built from `57f68fe` plus the GPIO48 bus, `trace=on` | 1247 B, slot crc32 `52991a6d` | LED lit as intended (owner, by eye); **identical in full to host, 978 lines** |
+
+The two guests differ only in one log string (the error text for a missing bus), which is not on the
+path that ran. Both runs were flashed with `espflash flash --after no-reset` and `wasmicon deploy
+--no-run`, then started with the board's reset button while a raw serial reader captured UART0.
+
+### What this measurement does not say
+
+- The SPI waveform was not measured with a scope. Only the visible colors and the host-call trace were
+  checked; the trace cannot show whether the LED latched the right color
+- The S3 run used a Freenove ESP32-S3-WROOM board, not the DevKitC-1 named elsewhere in this report.
+  Both carry the WS2812 on GPIO48

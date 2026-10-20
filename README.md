@@ -72,7 +72,7 @@ apps/                 Guests (separate workspace). Rust and AS versions of blink
                       lcd-demo-rs is a demo that uses only the ILI9341 (no sensor needed)
                       life-rs keeps drawing Conway's Life on the ILI9341 (with an FPS readout)
                       bench-rs measures interpreter and host-call speed (same .wasm on host and hardware)
-                      rgb-led-rs drives the on-board RGB LED of the ESP32-C5-WIFI6-KIT (esp32c5 only)
+                      rgb-led-rs drives the on-board RGB LED (esp32c5 GPIO27, esp32s3 GPIO48)
 verify/               Verification tools: differential test against wasmtime, trace diff
 docs/                 Spec, design, verification report, remaining work
 ```

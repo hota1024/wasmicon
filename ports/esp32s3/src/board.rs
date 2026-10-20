@@ -20,7 +20,9 @@
 //!   last byte has shifted out, like the `BSY` wait on the PL022; otherwise
 //!   DC / CS would move while the last byte is still shifting and the ILI9341
 //!   would mix up command and data.
-//! - Failures: `index != 0` is `unsupported`, `frequency-hz == 0` is
+//! - `spi.bus` index 1 routes only the SPI2 MOSI to GPIO48, the on-board RGB
+//!   LED (docs/abi-spec.md §8). It shares SPI2 with index 0.
+//! - Failures: an unassigned bus index is `unsupported`, `frequency-hz == 0` is
 //!   `invalid-argument`, an I2C address outside 7 bits is `invalid-argument`.
 //!   Two known differences remain (docs/TODO.md §2.1): an SPI request below
 //!   APB/1024 = 78.125 kHz is `unsupported` here while the RP2350 clamps to
@@ -119,6 +121,15 @@ const SPI2_SCK: u8 = 12;
 const SPI2_MOSI: u8 = 11;
 const SPI2_MISO: u8 = 13;
 
+/// MOSI of `spi.bus` index 1. GPIO48 drives the DIN of the on-board RGB LED
+/// (WS2812) on the Freenove ESP32-S3-WROOM board and on the DevKitC-1.
+///
+/// SPI2 drives this pin with MOSI only (no SCK / MISO). The guest expands
+/// each WS2812 bit into several SPI bits (`apps/rgb-led-rs`). The GPIO matrix
+/// can route to any pin, so no wiring is needed. It shares SPI2 with index 0,
+/// so the two cannot be open at the same time (the second open gets `busy`).
+const SPI2_LED_MOSI: u8 = 48;
+
 /// Pins assigned to I2C0 (docs/abi-spec.md §8). Not in `reserved`, for the
 /// same reason as `SPI2_*`.
 const I2C0_SDA: u8 = 8;
@@ -132,9 +143,10 @@ pub trait Serial {
 /// The DevKitC-1 board.
 pub struct EspBoard<S: Serial> {
     serial: S,
-    /// The open SPI2 driver. Dropping it in `spi_close` restores the pin
+    /// The open SPI2 driver and the `index` that opened it (0 = general
+    /// purpose, 1 = RGB LED). Dropping it in `spi_close` restores the pin
     /// routing and the peripheral clock.
-    spi: Option<Spi<'static, Blocking>>,
+    spi: Option<(u32, Spi<'static, Blocking>)>,
     /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; GPIO8/9
     /// are not reset by hand.
     i2c: Option<I2c<'static, Blocking>>,
@@ -144,7 +156,7 @@ impl<S: Serial> EspBoard<S> {
     /// # Safety
     /// This board must have exclusive use of GPIO / IO_MUX / SPI2 / I2C0 and
     /// of the GPIOs assigned to SPI2 and I2C0 (`SPI2_SCK` / `SPI2_MOSI` /
-    /// `SPI2_MISO` / `I2C0_SDA` / `I2C0_SCL`).
+    /// `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` / `I2C0_SCL`).
     #[must_use]
     pub unsafe fn new(serial: S) -> Self {
         EspBoard {
@@ -157,6 +169,15 @@ impl<S: Serial> EspBoard<S> {
     /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
+    }
+
+    /// The SPI2 driver open under `index`. `invalid-handle` if it is not open
+    /// (also when the other index holds it).
+    fn open_spi(&mut self, index: u32) -> BoardResult<&mut Spi<'static, Blocking>> {
+        match self.spi.as_mut() {
+            Some((open, spi)) if *open == index => Ok(spi),
+            _ => Err(ErrorCode::InvalidHandle),
+        }
     }
 }
 
@@ -482,20 +503,29 @@ impl<S: Serial> Board for EspBoard<S> {
         self.i2c = None;
     }
 
-    // --- SPI. index 0 = SPI2 (SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13) ---
+    // --- SPI. Both indexes use SPI2, so they cannot be open at the same time ---
+    //   index 0 = general purpose (SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13)
+    //   index 1 = on-board RGB LED (MOSI=GPIO48 only)
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
         // There is an SPI3 too, but v0.1 only assigns SPI2
         // (docs/abi-spec.md §8). The Hal has already checked index < MAX_SPI.
-        if index != 0 {
+        if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
         if frequency_hz == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
-        // The Hal rejects a double open with Busy, so normally nothing is
-        // left here; if something is, drop it first (never hold two drivers
-        // for a stolen peripheral).
+        // `busy` if the other index holds SPI2. The Hal rejects a double open
+        // of the same index with `busy`, so whatever is left here belongs to
+        // the other index.
+        if let Some((open, _)) = self.spi {
+            if open != index {
+                return Err(ErrorCode::Busy);
+            }
+        }
+        // Drop a leftover first (never hold two drivers for a stolen
+        // peripheral).
         self.spi = None;
 
         let config = HalSpiConfig::default()
@@ -508,42 +538,50 @@ impl<S: Serial> Board for EspBoard<S> {
             });
 
         // SAFETY: by the contract of EspBoard::new, only this board touches
-        // SPI2 and the SPI2_* pins. self.spi was set to None above, so no two
-        // drivers refer to the same peripheral at once.
-        let (spi2, sck, mosi, miso) = unsafe {
-            (
-                SPI2::steal(),
-                AnyPin::steal(SPI2_SCK),
-                AnyPin::steal(SPI2_MOSI),
-                AnyPin::steal(SPI2_MISO),
-            )
-        };
+        // SPI2. self.spi was set to None above, so no two drivers refer to
+        // the same peripheral at once.
+        let spi2 = unsafe { SPI2::steal() };
         // The only failure is a requested frequency outside the reachable
         // range (APB at the top, APB/1024 at the bottom).
-        let spi = Spi::new(spi2, config)
-            .map_err(|_| ErrorCode::Unsupported)?
-            .with_sck(sck)
-            .with_mosi(mosi)
-            .with_miso(miso);
-        self.spi = Some(spi);
+        let spi = Spi::new(spi2, config).map_err(|_| ErrorCode::Unsupported)?;
+        let spi = if index == 0 {
+            // SAFETY: by the contract of EspBoard::new, only this board
+            // touches the SPI2_SCK / SPI2_MOSI / SPI2_MISO pins, and no driver
+            // holds them while self.spi is None.
+            let (sck, mosi, miso) = unsafe {
+                (
+                    AnyPin::steal(SPI2_SCK),
+                    AnyPin::steal(SPI2_MOSI),
+                    AnyPin::steal(SPI2_MISO),
+                )
+            };
+            spi.with_sck(sck).with_mosi(mosi).with_miso(miso)
+        } else {
+            // SAFETY: by the contract of EspBoard::new, only this board
+            // touches the SPI2_LED_MOSI pin, and no driver holds it while
+            // self.spi is None.
+            let mosi = unsafe { AnyPin::steal(SPI2_LED_MOSI) };
+            spi.with_mosi(mosi)
+        };
+        self.spi = Some((index, spi));
         Ok(())
     }
 
     fn spi_write(&mut self, index: u32, data: &[u8]) -> BoardResult<()> {
-        if index != 0 {
+        if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
-        let spi = self.spi.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        let spi = self.open_spi(index)?;
         // Split every 64 bytes (the FIFO), but the guest keeps CS held, so to
         // the ILI9341 it is still one transfer. A flush follows each chunk.
         spi.write(data).map_err(|_| ErrorCode::Io)
     }
 
     fn spi_transfer(&mut self, index: u32, data: &[u8], buf: &mut [u8]) -> BoardResult<usize> {
-        if index != 0 {
+        if index > 1 {
             return Err(ErrorCode::Unsupported);
         }
-        let spi = self.spi.as_mut().ok_or(ErrorCode::InvalidHandle)?;
+        let spi = self.open_spi(index)?;
         let n = data.len().min(buf.len());
         // The driver's full-duplex transfer works in place, so the outgoing
         // bytes are copied in first.
@@ -553,7 +591,7 @@ impl<S: Serial> Board for EspBoard<S> {
     }
 
     fn spi_close(&mut self, index: u32) {
-        if index != 0 {
+        if !matches!(self.spi, Some((open, _)) if open == index) {
             return;
         }
         // Drop restores the pin routing and the peripheral clock.
@@ -561,7 +599,12 @@ impl<S: Serial> Board for EspBoard<S> {
         // Back to input with no pulls, as in gpio_release. The driver's Drop
         // only disconnects the GPIO matrix signals; it does not touch the pad
         // direction or pulls.
-        for n in [SPI2_SCK, SPI2_MOSI, SPI2_MISO] {
+        let pins: &[u8] = if index == 0 {
+            &[SPI2_SCK, SPI2_MOSI, SPI2_MISO]
+        } else {
+            &[SPI2_LED_MOSI]
+        };
+        for &n in pins {
             let _ = self.gpio_configure(u32::from(n), PinMode::Input);
         }
     }

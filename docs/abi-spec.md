@@ -311,7 +311,7 @@ How `index` is interpreted, and which pins carry SDA/SCL/SCK/MOSI/MISO, is decid
 | ILI9341 CS | `gpio.pin` | GPIO10 | GPIO10 | GP17 | GP17 |
 | ILI9341 DC | `gpio.pin` | GPIO14 | GPIO0 | GP20 | GP20 |
 | ILI9341 RST | `gpio.pin` | GPIO15 | GPIO1 | GP21 | GP21 |
-| On-board RGB LED (WS2812B) | `spi.bus` index 1 | none | SPI2: MOSI=GPIO27 only (SCK / MISO are not routed) | none | none |
+| On-board RGB LED (WS2812B) | `spi.bus` index 1 | SPI2: MOSI=GPIO48 only (SCK / MISO are not routed) | SPI2: MOSI=GPIO27 only (SCK / MISO are not routed) | none | none |
 
 The Pico 2 / Pico 2 W header has the same pinout as the Pico / Pico WH, so the GP numbers are kept the same.
 
@@ -324,8 +324,10 @@ PSRAM; none of these are exposed to the guest.
 On the ESP32-C5, `spi.bus` index 1 is for the on-board RGB LED (WS2812B, wired directly to GPIO27 through 0 Ω)
 (2026-10-12). Only the MOSI of SPI2 is routed to GPIO27, so no wiring is needed. The guest expands each WS2812
 bit into several SPI bits and calls `write` (`apps/rgb-led-rs`). It is the same SPI2 as index 0, so
-**the two cannot be open at the same time** (the second `open` gets `busy`). On the other boards it is
-`unsupported`.
+**the two cannot be open at the same time** (the second `open` gets `busy`).
+
+The ESP32-S3 port does the same with GPIO48 (2026-10-20), where the Freenove ESP32-S3-WROOM board and the
+DevKitC-1 carry their on-board WS2812. On the Pico boards `spi.bus` index 1 is `unsupported`.
 
 The mapping from role names to GPIO numbers that `board.pin-by-role` (§7) answers from (the **wiring table**)
 **lives in the device's config slot, not in the firmware** (owner decision, 2026-10-07;

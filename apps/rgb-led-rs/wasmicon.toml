@@ -1,11 +1,9 @@
 # App manifest (docs/app-workflow.md §4.7).
 # Uses no pins (looks up no role). The RGB LED hangs off spi.bus index 1 of
-# esp32c5 (docs/abi-spec.md §8). On the other boards spi.bus index 1 is
-# unsupported, so the app logs the reason and exits.
+# esp32c5 and esp32s3 (docs/abi-spec.md §8). On the Pico boards spi.bus
+# index 1 is unsupported, so the app logs the reason and exits. No default
+# board: pass --board to deploy.
 version = 1
-
-[defaults]
-board = "esp32c5"
 
 [requirements]
 pin-roles = []

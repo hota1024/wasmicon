@@ -128,7 +128,8 @@ fn main() -> ! {
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
     // / I2C0 and of the pins assigned to SPI2 and I2C0. The UART holds
     // GPIO43/44, which are reserved and overlap neither a role-assignable
-    // GPIO nor the SPI2 pins (GPIO11/12/13) nor the I2C0 pins (GPIO8/9).
+    // GPIO nor the SPI2 pins (GPIO11/12/13 and the RGB LED's GPIO48) nor the
+    // I2C0 pins (GPIO8/9).
     let mut board = unsafe { EspBoard::new(serial) };
 
     // Checks whether the port layer reaches the pads (src/probe.rs). The

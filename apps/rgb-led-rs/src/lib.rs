@@ -1,7 +1,9 @@
-//! Lights the on-board RGB LED (WS2812B) of the ESP32-C5-WIFI6-KIT.
+//! Lights the on-board RGB LED (WS2812B) of the ESP32-C5-WIFI6-KIT and of the
+//! ESP32-S3 boards (Freenove ESP32-S3-WROOM, DevKitC-1).
 //!
-//! The LED is on GPIO27, and the esp32c5 port maps `spi.bus` index 1 to a
-//! bus that drives only the SPI2 MOSI on GPIO27 (docs/abi-spec.md §8). A
+//! The esp32c5 and esp32s3 ports map `spi.bus` index 1 to a bus that drives
+//! only the SPI2 MOSI on the LED's data pin (GPIO27 on the C5, GPIO48 on the
+//! S3; docs/abi-spec.md §8), so the same binary runs on both. A
 //! WS2812 encodes each bit as the length of a High pulse (0 = short,
 //! 1 = long), so each bit is expanded to 3 SPI bits:
 //!
@@ -23,7 +25,7 @@
 use wasmicon_hal::spi::{Bus, Mode};
 use wasmicon_hal::{log, time};
 
-/// SPI bus wired to the RGB LED (chosen by the esp32c5 port,
+/// SPI bus wired to the RGB LED (chosen by the esp32c5 and esp32s3 ports,
 /// docs/abi-spec.md §8).
 const LED_BUS: u32 = 1;
 
@@ -53,7 +55,7 @@ pub extern "C" fn run() {
     log::info("rgb-led start");
 
     let Ok(bus) = Bus::open(LED_BUS, SPI_HZ, Mode::Mode0) else {
-        log::error("cannot open spi.bus index 1 (the RGB LED exists only on esp32c5)");
+        log::error("cannot open spi.bus index 1 (the RGB LED bus exists on esp32c5 and esp32s3)");
         return;
     };
 

@@ -1,6 +1,6 @@
 [package]
 name = "rgb-led-rs"
-description = "Lights the on-board RGB LED (WS2812B) of the ESP32-C5-WIFI6-KIT through spi.bus index 1"
+description = "Lights the on-board RGB LED (WS2812B) of the ESP32-C5-WIFI6-KIT and ESP32-S3 boards through spi.bus index 1"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -163,8 +163,9 @@ const PICO_BUS_PINS: &[u32] = &[4, 5, 16, 18, 19];
 /// PSRAM, 43/44 are the trace UART0.
 const ESP32S3_RESERVED: &[u32] = &[22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 43, 44];
 
-/// Bus pins of the ESP32-S3. I2C0 = GPIO8/9, SPI2 = GPIO11/12/13.
-const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13];
+/// Bus pins of the ESP32-S3. I2C0 = GPIO8/9, SPI2 = GPIO11/12/13, `spi.bus`
+/// index 1 = GPIO48 (the on-board RGB LED; SPI2 drives only MOSI there).
+const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13, 48];
 
 /// Reserved pins of the ESP32-C5. 11/12 are the trace UART0 (wired to the
 /// CH343), 13/14 are native USB (wired to the Type-C port), 15..=22 are SPI
