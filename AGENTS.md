@@ -36,7 +36,7 @@ the commit body.
 
 ## Verify
 
-Root workspace (what CI's `root` job runs):
+Root workspace (the core of CI's `root` job; the full list is in .github/workflows/ci.yml):
 
 ```sh
 sh tools/fetch-testsuite.sh            # once; without it the spec tests silently skip
@@ -56,7 +56,8 @@ Other workspaces are separate: `cd apps`, `cd ports/<board>`, `cd verify/differe
 - Cite documents as `docs/abi-spec.md §4.1` or `docs/decisions.md D-07` (path +
   section, checked by `tools/check-citations.sh`). Code never cites `docs/handoff.md`.
 - Comments explain why. Every `unsafe` block has a `// SAFETY:` comment stating
-  the invariant in full (clippy `undocumented_unsafe_blocks` is on in every crate).
+  the invariant in full (clippy `undocumented_unsafe_blocks` is on in every crate
+  that has unsafe code: runtime, ports, bindings/rust).
   No dates, phase numbers, verification status or build steps in source headers.
 - Prefer a test or script to a prose rule. When you add a rule, add its check.
 - Commits: Conventional Commits, English subject and body; the body says what was
