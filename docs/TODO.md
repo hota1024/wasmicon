@@ -168,7 +168,9 @@ hardware and committed separately.
   app built from cfb7f75. The LED lit red -> green -> blue -> white -> rainbow -> off as intended (owner
   checked by eye), and the trace is identical to the host over 978 lines. `spi.bus` index 1 on the C5
   is a bus that routes only the SPI2 MOSI to GPIO27, docs/abi-spec.md §8; no wiring needed)
-- [ ] **(3) SPI: lcd-demo-rs / life-rs draw on the ILI9341** (the lcd-demo trace matches the host)
+- [ ] **(3) SPI: lcd-demo-rs / life-rs draw on the ILI9341** (the lcd-demo trace matches the host).
+  **lcd-demo-rs done** (2026-10-20): the picture appears and the trace is identical to the host over
+  14,352 lines (docs/verification-report.md §20). **life-rs is still to run**
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 and the whole trace is identical to the host**
 - Decided and known so far:
   - **Less RAM than the S3.** The main RAM usable with the esp-hal linker script is 314 KiB.

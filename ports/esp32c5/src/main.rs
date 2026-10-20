@@ -15,6 +15,8 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod board;
+#[cfg(feature = "hw-probe")]
+mod probe;
 
 use core::mem::MaybeUninit;
 
@@ -132,7 +134,14 @@ fn main() -> ! {
     // GPIO11/12, which are reserved and overlap neither a role-assignable GPIO
     // nor the SPI2 pins (GPIO24/23/5 and GPIO27 for the RGB LED) nor the I2C0
     // pins (GPIO8/9).
-    let board = unsafe { EspBoard::new(serial) };
+    // Borrowed mutably only for hw-probe.
+    #[cfg_attr(not(feature = "hw-probe"), allow(unused_mut))]
+    let mut board = unsafe { EspBoard::new(serial) };
+
+    // Checks whether the port layer reaches the pads (src/probe.rs). The guest
+    // runs right after, so dropping the feature is all it takes afterwards.
+    #[cfg(feature = "hw-probe")]
+    probe::run(&mut board);
 
     // Both the config slot and the app slot are read from it, so it is
     // created once here.

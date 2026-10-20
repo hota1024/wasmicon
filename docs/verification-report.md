@@ -1170,3 +1170,35 @@ path that ran. Both runs were flashed with `espflash flash --after no-reset` and
   checked; the trace cannot show whether the LED latched the right color
 - The S3 run used a Freenove ESP32-S3-WROOM board, not the DevKitC-1 named elsewhere in this report.
   Both carry the WS2812 on GPIO48
+
+## 20. lcd-demo-rs on the ESP32-C5 (2026-10-20)
+
+`apps/lcd-demo-rs` (4088 B, slot crc32 `ed20d87f`) with the wiring table `lcd-cs=10 lcd-dc=0 lcd-rst=1`
+on the Waveshare ESP32-C5-WIFI6-KIT, ILI9341 wired as in docs/abi-spec.md §8. Firmware built from
+`165262b` plus the pad fix below, `trace=on`.
+
+**Result: the picture appears and the trace is identical in full to the host over 14,352 lines**, the
+same count as the Pico 2 W and the ESP32-S3 (§6, §7), including the CRC-32 of every `spi.write`.
+
+### What was hit on the way
+
+The first run already matched the host over 14,352 lines while the screen stayed blank, so the trace
+could not show the faults. Three were found:
+
+- **Firmware: the LP pads were never switched to the digital side.** On the C5, GPIO0..=6 are LP pads.
+  `ports/esp32c5` wrote IO_MUX / GPIO registers directly and skipped what esp-hal's `init_gpio` does
+  first: clear the LP mux bit in `LP_AON` and release the pad hold. `lcd-dc` (GPIO0) and `lcd-rst`
+  (GPIO1) therefore never moved. `gpio_configure` now runs `Flex::new` first
+- **Wiring: the ILI9341 VCC was not on 3V3.** The backlight stayed dark; the module side measured about
+  1.5 V while the board's 3V3 pin read 3.3 V. With VCC tied to 3V3 the backlight came on
+- **Wiring: SCK / MOSI sat on the UART pins.** With `--features hw-probe` (ported from the ESP32-S3 in
+  this change) the ILI9341 ID read `00 00 00 00`, the red fill did not show, and a flood of garbage
+  appeared on the trace UART during the fill. The probe's new pad loopback read every pin (CS, DC,
+  RST, SCK, MOSI, MISO) back as driven, which ruled the firmware out. After the wires were moved off
+  P2-2 / P2-3 (UART TXD / RXD) to GPIO24 / GPIO23, the screen turned red and the demo drew
+
+### What this measurement does not say
+
+- life-rs has not run on the C5 yet
+- The ILI9341 ID was not re-read after the wiring fix (the probe run that turned the screen red was not
+  captured)

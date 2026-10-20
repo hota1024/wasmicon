@@ -20,7 +20,7 @@
 //!
 //! Port in progress; hardware status in docs/TODO.md §1.3.1.
 
-use esp_hal::gpio::AnyPin;
+use esp_hal::gpio::{AnyPin, Flex};
 use esp_hal::i2c::master::{Config as HalI2cConfig, Error as HalI2cError, I2c, SoftwareTimeout};
 use esp_hal::peripherals::{GPIO, I2C0, IO_MUX, SPI2};
 use esp_hal::spi::master::{Config as HalSpiConfig, Spi};
@@ -217,6 +217,20 @@ impl<S: Serial> Board for EspBoard<S> {
             return Err(ErrorCode::InvalidArgument);
         }
         let n = index as usize;
+
+        // Reset the pad the way esp-hal does before any use (`Flex::new` runs
+        // its `init_gpio`). On the C5 this does two things the register writes
+        // below cannot: GPIO0..=6 are LP pads whose mux in `LP_AON` must be
+        // switched back to the digital side, and every pad may still carry a
+        // hold in `LP_AON`, which makes the pad ignore all later
+        // configuration. Without it GPIO0 / GPIO1 (`lcd-dc` / `lcd-rst`) never
+        // move. `Flex` has no `Drop`, so letting it go leaves the pad as is.
+        //
+        // SAFETY: by the contract of EspBoard::new, only this board touches
+        // the GPIOs it opens, and `index < NUM_GPIO` (29) was checked above,
+        // so the number fits in a `u8` and names an existing pad.
+        let _ = Flex::new(unsafe { AnyPin::steal(index as u8) });
+
         // SAFETY: by the contract of EspBoard::new, only this board touches
         // GPIO / IO_MUX.
         let (gpio, io_mux) = unsafe { (GPIO::steal(), IO_MUX::steal()) };

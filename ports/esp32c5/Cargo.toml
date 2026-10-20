@@ -15,6 +15,9 @@ rust-version = "1.95"
 # Build that writes the trace. On by default.
 default = ["trace"]
 trace = []
+# Hardware diagnosis: drives the port layer directly before the guest to read
+# the ILI9341 ID (src/probe.rs). Diagnosis only, so off by default.
+hw-probe = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }
