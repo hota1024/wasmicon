@@ -164,11 +164,10 @@ hardware and committed separately.
   slot and config slot empty it prints `magic mismatch` and parks)
 - [x] **(2) `deploy` runs blink from the slot** (2026-10-12. The wiring table `led`=GPIO4 is read and
   the blink-rs trace is identical to the host over 20 lines)
-- [ ] **Light the on-board RGB LED (WS2812B, GPIO27) with `apps/rgb-led-rs`** (implemented 2026-10-12,
-  **not yet confirmed on hardware**). `spi.bus` index 1 on the C5 is a bus that "routes only the SPI2
-  MOSI to GPIO27" (docs/abi-spec.md §8; no wiring needed). Firmware and app are flashed, but RESET
-  has not been pressed to run it. Check that it lights red -> green -> blue -> white -> rainbow -> off
-  and that the trace matches the host
+- [x] **Light the on-board RGB LED (WS2812B, GPIO27) with `apps/rgb-led-rs`** (2026-10-20. Firmware and
+  app built from cfb7f75. The LED lit red -> green -> blue -> white -> rainbow -> off as intended (owner
+  checked by eye), and the trace is identical to the host over 978 lines. `spi.bus` index 1 on the C5
+  is a bus that routes only the SPI2 MOSI to GPIO27, docs/abi-spec.md §8; no wiring needed)
 - [ ] **(3) SPI: lcd-demo-rs / life-rs draw on the ILI9341** (the lcd-demo trace matches the host)
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 and the whole trace is identical to the host**
 - Decided and known so far:
