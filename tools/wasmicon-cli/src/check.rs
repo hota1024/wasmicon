@@ -16,6 +16,10 @@
 //!   the host it is the mock's table. The firmware has no default table, so a
 //!   role missing from the table is `unsupported` on hardware
 //!   (docs/app-workflow.md §3.9).
+//! - Whether every file of `[assets]` exists, and whether the slot image they
+//!   make fits that board's assets slot (docs/app-workflow.md §3.10). The
+//!   shareware DOOM IWAD fits the ESP boards and not the Pico 2 W, and that
+//!   is better learned here than from `not-found` on the device.
 //!
 //! What it cannot do: enumerate role names. The argument of `pin-by-role` is
 //! a `string` passed at run time, so it cannot be read reliably from the
@@ -33,6 +37,7 @@ use crate::pack;
 use wasmicon_core::module::{ExportDesc, ImportDesc};
 use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
 use wasmicon_port::Hal;
+use wasmicon_port::assets::Directory;
 use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
 
 /// Arena for the decode that only extracts facts (board-independent).
@@ -197,6 +202,52 @@ pub struct Options {
     pub manifest: Option<Manifest>,
 }
 
+/// One `[assets]` entry as `check` sees it (docs/app-workflow.md §3.10).
+pub struct AssetCheck {
+    pub name: String,
+    pub path: PathBuf,
+    /// The file's length, or `None` when it cannot be read.
+    pub len: Option<u64>,
+}
+
+/// Looks at every file of the manifest's `[assets]` table.
+#[must_use]
+pub fn asset_checks(manifest: Option<&Manifest>) -> Vec<AssetCheck> {
+    manifest
+        .map(|m| {
+            m.assets
+                .iter()
+                .map(|(name, path)| AssetCheck {
+                    name: name.clone(),
+                    path: path.clone(),
+                    len: std::fs::metadata(path).ok().map(|md| md.len()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Length of the slot image the table would produce: the directory sector
+/// plus every body on a 4 KiB boundary. `None` when a file is missing (or
+/// too large for the format).
+#[must_use]
+pub fn assets_image_len(checks: &[AssetCheck]) -> Option<u64> {
+    let mut dir = Directory::EMPTY;
+    for c in checks {
+        let len = u32::try_from(c.len?).ok()?;
+        // The CRC is not needed for the length.
+        dir.insert(c.name.as_bytes(), len, 0).ok()?;
+    }
+    Some(u64::from(dir.image_len()))
+}
+
+/// Whether an image of `image_len` bytes fits the board's assets slot.
+/// `None` when the board has no slot (the host serves files).
+#[must_use]
+pub fn assets_fit(p: &Profile, image_len: u64) -> Option<bool> {
+    p.assets.map(|sl| image_len <= u64::from(sl.len))
+}
+
 /// Checks and prints the result. `true` when every board passes.
 pub fn run(opts: &Options) -> Result<bool> {
     let wasm = std::fs::read(&opts.path)
@@ -215,15 +266,19 @@ pub fn run(opts: &Options) -> Result<bool> {
         .as_ref()
         .filter(|m| !m.pin_roles.is_empty())
         .map(|m| m.pin_roles.as_slice());
-    print_module(&opts.path, &wasm, &facts, declared);
+    let assets = asset_checks(opts.manifest.as_ref());
+    // A missing file is common to every board, like a bad import.
+    let missing = assets.iter().filter(|a| a.len.is_none()).count();
+    print_module(&opts.path, &wasm, &facts, declared, &assets);
 
-    let mut all_ok = facts.failures() == 0;
+    let common = facts.failures() + missing;
+    let mut all_ok = common == 0;
     for board in boards {
         let provided = provided_roles(board, opts.manifest.as_ref());
         let v = judge(&wasm, board, &facts, declared, &provided);
         println!();
-        print_verdict(&v, &facts, board, declared);
-        all_ok &= v.is_ok();
+        let fit_fails = print_verdict(&v, &facts, common, board, declared, &assets);
+        all_ok &= v.is_ok() && fit_fails == 0;
     }
     Ok(all_ok)
 }
@@ -476,7 +531,13 @@ fn reason(e: wasmicon_core::Error) -> String {
 
 // ---- printing ----
 
-fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[String]>) {
+fn print_module(
+    path: &Path,
+    wasm: &[u8],
+    f: &Facts,
+    declared: Option<&[String]>,
+    assets: &[AssetCheck],
+) {
     let name = path.file_name().unwrap_or(path.as_os_str());
     println!("{}  {} B", name.to_string_lossy(), thousands(wasm.len()));
     println!();
@@ -554,15 +615,50 @@ fn print_module(path: &Path, wasm: &[u8], f: &Facts, declared: Option<&[String]>
         ),
     }
 
+    // `[assets]`: every file must exist, whatever the board.
+    let missing: Vec<&AssetCheck> = assets.iter().filter(|a| a.len.is_none()).collect();
+    if assets.is_empty() {
+        row("assets", "none", "");
+    } else if missing.is_empty() {
+        let list: Vec<String> = assets
+            .iter()
+            .map(|a| format!("{} ({} B)", a.name, thousands(a.len.unwrap_or(0) as usize)))
+            .collect();
+        row("assets", &list.join(", "), "from wasmicon.toml");
+    } else {
+        row(
+            "assets",
+            &format!("{} of {} files missing", missing.len(), assets.len()),
+            "<- fails",
+        );
+        for a in missing {
+            println!("         - {}  not found at {}", a.name, a.path.display());
+        }
+    }
+
     // Everything above is board-independent. Mixing it into the per-board
     // sections would repeat the same failure for every board and hide which
     // ones are board-specific.
-    if f.failures() > 0 {
-        println!("-> fails on every board ({} failures)", f.failures());
+    let common = f.failures() + missing_count(assets);
+    if common > 0 {
+        println!("-> fails on every board ({common} failures)");
     }
 }
 
-fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[String]>) {
+fn missing_count(assets: &[AssetCheck]) -> usize {
+    assets.iter().filter(|a| a.len.is_none()).count()
+}
+
+/// Prints one board's section. Returns the number of asset failures on this
+/// board (0 or 1: the image does not fit its slot).
+fn print_verdict(
+    v: &Verdict,
+    f: &Facts,
+    common: usize,
+    p: &Profile,
+    declared: Option<&[String]>,
+    assets: &[AssetCheck],
+) -> usize {
     println!("[{}]", v.board);
 
     match (&v.validate, f.mem_pages) {
@@ -611,12 +707,49 @@ fn print_verdict(v: &Verdict, f: &Facts, p: &Profile, declared: Option<&[String]
         }
     }
 
-    match (v.fails(), f.failures()) {
+    // `[assets]` against this board's slot. Only sized when every file
+    // exists (a missing one is reported in the module section).
+    let mut fit_fails = 0;
+    if !assets.is_empty()
+        && let Some(image_len) = assets_image_len(assets)
+    {
+        match (assets_fit(p, image_len), p.assets) {
+            (Some(true), Some(sl)) => row(
+                "assets",
+                &format!("{} B image", thousands(image_len as usize)),
+                &format!(
+                    "fits in the {} assets slot ({} B)",
+                    p.name,
+                    thousands(sl.len as usize)
+                ),
+            ),
+            (Some(false), Some(sl)) => {
+                fit_fails = 1;
+                row(
+                    "assets",
+                    &format!("{} B image", thousands(image_len as usize)),
+                    &format!(
+                        "does not fit in the {} assets slot ({} B)  <- fails",
+                        p.name,
+                        thousands(sl.len as usize)
+                    ),
+                );
+            }
+            _ => row(
+                "assets",
+                &format!("{} B image", thousands(image_len as usize)),
+                "served from the files (no slot on the host)",
+            ),
+        }
+    }
+
+    match (v.fails() + fit_fails, common) {
         (0, 0) => println!("-> pass"),
         (0, n) => println!("-> fail ({n} common to every board; reported above)"),
         (m, 0) => println!("-> fail ({m} on this board)"),
         (m, n) => println!("-> fail ({m} on this board + {n} common to every board)"),
     }
+    fit_fails
 }
 
 /// Aligns the columns. `{:<n}` counts characters, not terminal columns;

@@ -18,6 +18,10 @@ pub struct Options {
     /// Recorded I2C responses. The host has no real sensor, so what reads
     /// return comes from a file (`verify/sht4x-replay.txt`).
     pub i2c_replay: Option<PathBuf>,
+    /// Assets the guest may open, as `(name, file)`: the `[assets]` table of
+    /// `wasmicon.toml` with `--asset` applied on top
+    /// (docs/app-workflow.md §3.10).
+    pub assets: Vec<(String, PathBuf)>,
 }
 
 /// Runs the app. `true` when it finishes without a trap.
@@ -42,11 +46,21 @@ pub fn run(opts: &Options) -> Result<bool> {
             .with_context(|| format!("cannot read `{}`", p.display()))?,
     };
 
+    // A missing asset file stops the run. Silently serving fewer assets than
+    // the table names would make the guest's `not-found` look like its own
+    // mistake.
+    let mut assets = Vec::new();
+    for (name, path) in &opts.assets {
+        let body = std::fs::read(path)
+            .with_context(|| format!("cannot read asset `{name}` at `{}`", path.display()))?;
+        assets.push((name.clone(), body));
+    }
+
     let host_opts = wasmicon_host::Options {
         trace: opts.trace,
         i2c_replay,
         spi_unsupported: false,
-        assets: Vec::new(),
+        assets,
     };
 
     // The entry point that returns the trace even on failure. A trap is

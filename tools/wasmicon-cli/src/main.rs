@@ -1,8 +1,9 @@
 //! `wasmicon`: the one tool app authors touch (docs/app-workflow.md §4).
 //!
 //! Stage 0 (`new` / `check` / `run` / `monitor` / `trace diff` / `doctor`) and
-//! stage 1 (`pack` / `deploy`) of docs/app-workflow.md §5 are implemented.
-//! `size` stays `tools/measure-size.sh` (remaining work: docs/TODO.md §5).
+//! stage 1 (`pack` / `deploy` / `assets pack` / `assets write`) of
+//! docs/app-workflow.md §5 are implemented. `size` stays
+//! `tools/measure-size.sh` (remaining work: docs/TODO.md §5).
 //! Arguments are parsed by hand with a `USAGE` constant, as in `wasmicon-gen`.
 
 use anyhow::{Context, Result, bail};
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wasmicon_cli::{
-    check, deploy, doctor, manifest, monitor, new as new_cmd, pack, run as run_cmd, trace,
+    assets, check, deploy, doctor, manifest, monitor, new as new_cmd, pack, run as run_cmd, trace,
 };
 
 const USAGE: &str = "\
@@ -25,6 +26,8 @@ Commands:
     run <app.wasm>           run on the host port (mock HAL)
     pack <app.wasm>          build the slot image the firmware reads
     deploy <app.wasm>        check, then flash to the board's app slot
+    assets pack              build the assets slot image from [assets] in wasmicon.toml
+    assets write             build it and flash it to the board's assets slot
     monitor                  open the serial port and capture the trace
     trace diff <a> <b>       compare the traces in two serial captures
     trace replay <log>       extract the I2C responses from a hardware trace
@@ -52,6 +55,14 @@ Options for deploy:
     -o <file>                where --monitor writes the capture
     --port <dev>             serial port (default: pick from /dev/cu.usb*)
 
+Options for assets pack:
+    -o <file>                output path (default: assets.bin next to wasmicon.toml)
+    --board <name>           check that the image fits the assets slot and print the flash command
+
+Options for assets write:
+    --board <name>           target board (default: [defaults] board in wasmicon.toml)
+    --port <dev>             serial port (default: pick from /dev/cu.usb*)
+
 Options for monitor:
     --port <dev>             serial port (default: pick from /dev/cu.usb*)
     --baud <n>               baud rate (default: 115200)
@@ -65,6 +76,7 @@ Options for trace replay:
 Options for run:
     --trace                  print every host call in the docs/abi-spec.md §9 format
     --i2c-replay <file>      recorded I2C responses (the host has no sensor)
+    --asset <name>=<file>    serve <file> as the asset <name> (repeatable; on top of [assets])
 
 Common:
     -h, --help               this help
@@ -73,7 +85,8 @@ Common:
 `wasmicon.toml` is read when present (searched upward from the current directory).
 `[requirements] pin-roles` is cross-checked against `[board.<name>.roles]`, and
 deploy writes the wiring table to the device's config slot together with the app
-(the firmware has no default table).
+(the firmware has no default table). `[assets]` names the read-only data the app
+opens: run serves the files, assets write flashes them (deploy leaves them alone).
 
 The check uses the real runtime's decode / validate and the import table generated
 from wit/. The host is more permissive than every board, so only a check with
@@ -117,6 +130,10 @@ fn dispatch() -> Result<bool> {
         "trace" => match parse_trace(args)? {
             TraceCmd::Diff(o) => trace::diff(&o),
             TraceCmd::Replay(o) => trace::replay(&o),
+        },
+        "assets" => match parse_assets(args)? {
+            AssetsCmd::Pack(o) => assets::pack(&o),
+            AssetsCmd::Write(o) => assets::write(&o),
         },
         "doctor" => doctor::run(),
         other if other.starts_with('-') => {
@@ -203,6 +220,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     let mut path: Option<PathBuf> = None;
     let mut trace_on = false;
     let mut i2c_replay: Option<PathBuf> = None;
+    let mut overrides: Vec<(String, PathBuf)> = Vec::new();
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
@@ -211,6 +229,20 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
             "--i2c-replay" => {
                 let v = args.next().context("--i2c-replay needs a value")?;
                 i2c_replay = Some(PathBuf::from(v));
+            }
+            "--asset" => {
+                let v = args.next().context("--asset needs <name>=<file>")?;
+                let Some((name, file)) = v.split_once('=') else {
+                    bail!("--asset takes <name>=<file>, got `{v}`");
+                };
+                if !wasmicon_port::assets::valid_name(name.as_bytes()) {
+                    bail!(
+                        "`{name}` is not a valid asset name (1 to {} of a-z / 0-9 / - / _ / ., \
+                         starting with a letter or a digit)",
+                        wasmicon_port::assets::MAX_NAME
+                    );
+                }
+                overrides.push((name.to_string(), PathBuf::from(file)));
             }
             "-h" | "--help" => help(),
             other if other.starts_with('-') => bail!("unknown option `{other}`\n\n{USAGE}"),
@@ -225,7 +257,8 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
 
     let path = path.context("pass the .wasm to run\n\n".to_string() + USAGE)?;
     // Without `--i2c-replay`, use the manifest default (already resolved
-    // relative to the manifest's directory).
+    // relative to the manifest's directory). The `[assets]` table is the
+    // base that `--asset` overrides by name.
     //
     // An unreadable manifest is never ignored. The manifest is
     // `deny_unknown_fields`, so a misspelling such as `i2c_replay` makes
@@ -233,14 +266,27 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     // silently diverge from the recorded trace, which is exactly the "I set
     // it but it has no effect" failure `manifest.rs` warns about (`check` and
     // `deploy` propagate the error with `?`; this path once dropped it).
+    let manifest = find_manifest()?;
     let i2c_replay = match i2c_replay {
         Some(p) => Some(p),
-        None => find_manifest()?.and_then(|m| m.default_i2c_replay),
+        None => manifest.as_ref().and_then(|m| m.default_i2c_replay.clone()),
     };
+    let mut assets = manifest.map(|m| m.assets).unwrap_or_default();
+    for (name, file) in overrides {
+        assets.insert(name, file);
+    }
+    if assets.len() > wasmicon_port::assets::MAX_ENTRIES {
+        bail!(
+            "{} assets, more than the {} the slot holds",
+            assets.len(),
+            wasmicon_port::assets::MAX_ENTRIES
+        );
+    }
     Ok(run_cmd::Options {
         path,
         trace: trace_on,
         i2c_replay,
+        assets: assets.into_iter().collect(),
     })
 }
 
@@ -406,6 +452,59 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
         a: a.clone(),
         b: b.clone(),
     }))
+}
+
+enum AssetsCmd {
+    Pack(assets::PackOptions),
+    Write(assets::WriteOptions),
+}
+
+fn parse_assets(mut args: impl Iterator<Item = String>) -> Result<AssetsCmd> {
+    let sub = args
+        .next()
+        .context("assets needs a subcommand: pack or write")?;
+    if sub == "-h" || sub == "--help" {
+        help();
+    }
+    if sub != "pack" && sub != "write" {
+        bail!("unknown assets subcommand `{sub}` (pack or write)");
+    }
+    let mut board: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut port: Option<PathBuf> = None;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "-h" | "--help" => help(),
+            "--board" => board = Some(args.next().context("--board needs a value")?),
+            "-o" if sub == "pack" => {
+                out = Some(PathBuf::from(args.next().context("-o needs a value")?));
+            }
+            "--port" if sub == "write" => {
+                port = Some(PathBuf::from(args.next().context("--port needs a value")?));
+            }
+            other => bail!("unknown option `{other}`\n\n{USAGE}"),
+        }
+    }
+    // Both read the `[assets]` table, so the manifest is required here
+    // (elsewhere it is optional).
+    let manifest = find_manifest()?.context(
+        "no wasmicon.toml found: assets pack / write read its [assets] table \
+         (docs/app-workflow.md §4.7)",
+    )?;
+    let board = board.or_else(|| manifest.default_board.clone());
+    Ok(if sub == "pack" {
+        AssetsCmd::Pack(assets::PackOptions {
+            manifest,
+            board,
+            out,
+        })
+    } else {
+        AssetsCmd::Write(assets::WriteOptions {
+            manifest,
+            board,
+            port,
+        })
+    })
 }
 
 fn help() -> ! {

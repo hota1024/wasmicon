@@ -165,6 +165,7 @@ Two places, and **both are needed**.
 | How the RAM slot is taken | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` |
 | Flash write | `rom_data` (same family as RP2350) | `rom_data::connect_internal_flash` / `flash_exit_xip` / `flash_range_erase` / `flash_range_program` / `flash_flush_cache` (rp235x-hal 0.4.0) | `FlashStorage` from `esp-storage` 0.10 (`SECTOR_SIZE` = 4096) |
 | Running from flash | **Implemented 2026-10-04** (the XIP slice is passed as is; no RAM copy) | **Implemented 2026-10-04**, the XIP slice passed as is (64 KiB from `0x10100000`; verified on hardware on 2026-10-04, docs/verification-report.md §9; RP2040 never flashed) | **Copied to RAM.** No assumption that an arbitrary offset is XIP-mapped (MMU / DROM) |
+| Assets slot (§3.10) | `0x111000` to the end of flash (978,944 B), read in place | `0x111000` to the end of flash (3,076,096 B), read in place | `0x111000` to the end of flash (7,270,400 B), read by range through `esp-storage` |
 
 - Apps are currently 775 B to 5.3 KB (`blink_rs` 775 B / `lcd_demo_rs` 4.0 KB /
   `sensor_display_as` 5.3 KB), so even a 64 KiB slot is under 1/5 of `ARENA` on
@@ -693,8 +694,10 @@ existing thing that does the job today.
 | `new <name> --lang rust\|as` | Scaffold. Fills in the ABI-conformant build flags (§4.4) | Nothing |
 | ~~`build`~~ | **Not built.** It would be a thin wrapper that picks `cargo build --release` / `npm run build` by language; the flags live in the files `new` wrote (§4.4), so there is nothing to add | - |
 | `check <app.wasm> --board X` | Runs decode / validate / `Exec` / instantiate **on the real runtime**, **with that board's actual arena size** (§4.3) | Nothing (`wasm-tools validate` sees neither the import table nor the board limits) |
-| `run <app.wasm> [--trace] [--i2c-replay f]` | Runs on the host port. `--i2c-replay` corresponds to the existing env var `WASMICON_I2C_REPLAY` | `cargo run -p wasmicon-host` (the crate stays, used as a lib) |
-| `deploy <app.wasm>` | Sends the app over USB / HTTP. `--persist` for the flash slot | Nothing |
+| `run <app.wasm> [--trace] [--i2c-replay f] [--asset n=f]` | Runs on the host port. `--i2c-replay` corresponds to the existing env var `WASMICON_I2C_REPLAY`. The `[assets]` table of `wasmicon.toml` is served from its files; `--asset` adds or replaces one (§3.10) | `cargo run -p wasmicon-host` (the crate stays, used as a lib) |
+| `deploy <app.wasm>` | Sends the app over USB / HTTP. `--persist` for the flash slot. Never touches the assets slot | Nothing |
+| `assets pack [--board X] [-o f]` | Builds the assets slot image from `[assets]` (§3.10). With a board, checks that it fits the slot and prints the flash command | Nothing |
+| `assets write --board X` | `assets pack`, then flashes the image to the board's assets slot through the same flasher as `deploy`. Per device, not per app: the last write wins | Nothing |
 | `flash --board X [--fw v]` | Flashes **the firmware** (once). The version comes from the manifest (§3.8) | The written procedure (`apps/lcd-demo-rs/README.md`) |
 | `fw list` | Lists the versions on hand and the version on the device (§3.8) | Nothing |
 | `pack <app.wasm>` | Builds the slot image (§3.4). In stage 1, the input for an external flasher | Nothing |
@@ -1079,6 +1082,12 @@ lcd-rst = 21
 lcd-cs = 10
 lcd-dc = 14
 lcd-rst = 15
+
+# Read-only data the app opens through assets.blob (§3.10). Asset name -> file.
+# run serves the files; assets write puts them in the device's assets slot
+[assets]
+"doom1.wad" = "wad/doom1.wad"
+"font.psf" = "assets/terminus-12.psf"
 ```
 
 #### Sources of truth
@@ -1087,6 +1096,7 @@ lcd-rst = 15
 |---|---|---|
 | Required role names (`requirements.pin-roles`) | **The toml.** A property of the app | The source itself |
 | Role -> GPIO | **The toml** (`deploy` writes it to the config slot; §3.9) | The source itself. The device only reads it |
+| Asset name -> file (`[assets]`) | **The toml** (`assets write` writes the slot from it; §3.10). What the app can open on a device is exactly this table, so there is no separate declaration | The source itself. `check` reports a missing file and a slot it does not fit |
 | ABI-conformant build flags | **`.cargo/config.toml` / `asconfig.json`** | **Not allowed here** (below) |
 
 #### Cross-checking `requirements.pin-roles` against the wiring table

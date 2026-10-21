@@ -506,7 +506,7 @@ This does not push §1 aside. **Stage 0 shortens the SHT40 work in §1.3** (capt
 cross-check move into the CLI). **The Phase 4 / 5 / 6 completion criteria in §1.3 do not
 change.**
 
-### Open questions (owner decisions; the text cites them as §5-1 ... §5-9)
+### Open questions (owner decisions; the text cites them as §5-1 ... §5-10)
 
 - [ ] **§5-1 Settle the behavior after a trap as "stay halted, but accept the next app"?**
       Today it is "log and halt, no restart" (docs/decisions.md A-04), and `main` enters
@@ -574,6 +574,27 @@ change.**
       - The minimal version works at stage 1 (the config sector is written from outside
         with `espflash write-bin` / UF2, and the firmware just reads and applies it).
         Through the protocol is stage 2
+- [ ] **§5-10 Assets slot follow-ups** (the slot and `wasmicon:hal/assets@0.1.0` were
+      adopted on 2026-10-22, docs/decisions.md A-10; design: docs/app-workflow.md §3.10)
+      - **Measure the first-`open` CRC check of a multi-megabyte body on the ESP32-S3.**
+        The body is streamed in 512-byte pieces through `esp-storage` and the bitwise
+        `crc32_update` of `ports/common`; the estimate is one to three seconds for 4 MiB,
+        paid once per run. If it is too long for DOOM's start, a table-driven CRC (same
+        output) is the fix, not skipping the check
+      - **No firmware-overlap check for the assets slot on the ESP ports.** The Pico ports
+        refuse a slot the firmware's end reaches into (`slot::xip_region`); the ESP firmware
+        has no linker symbol for its flash extent, so neither the app slot nor the assets
+        slot is checked there today. espflash erases only the sectors it writes
+        (docs/verification-report.md §10), so the risk is a firmware that grows past 1 MiB
+      - **A PSRAM board profile** (ESP32-S3 N8R8 modules such as the Freenove board) with
+        the arena in PSRAM, so that an app the size of DOOM has room. Independent of the
+        slot; `esp-storage` reading straight into a PSRAM slice is to be confirmed
+      - **A read-write store** (a small key-value `storage` interface on its own flash
+        region) is the next interface. The assets slot stays read-only; the two are
+        different in flash handling (no erase on the device today) and in RAM cost
+      - **The 4 MB Pico 2 W cannot hold the shareware IWAD** (4,196,020 B against a
+        3,076,096-byte slot); `check --board rp2350` says so. Not a defect, a fact to keep
+        in the DOOM plans
 
 ### Implementation (stages: docs/app-workflow.md §5)
 
