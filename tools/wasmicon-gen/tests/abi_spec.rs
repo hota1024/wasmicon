@@ -45,6 +45,11 @@ const SPEC_SECTION_7: &[(&str, &str, &str)] = &[
     ("wasmicon:hal/log@0.1.0", "log", "iii:"),
     // wasmicon:hal/board@0.1.0
     ("wasmicon:hal/board@0.1.0", "pin-by-role", "iii:i"),
+    // wasmicon:hal/assets@0.1.0
+    ("wasmicon:hal/assets@0.1.0", "[static]blob.open", "iii:i"),
+    ("wasmicon:hal/assets@0.1.0", "[method]blob.len", "ii:i"),
+    ("wasmicon:hal/assets@0.1.0", "[method]blob.read", "iiiiii:i"),
+    ("wasmicon:hal/assets@0.1.0", "[resource-drop]blob", "i:"),
 ];
 
 /// The `error-code` table of docs/abi-spec.md §7. The status value is discriminant + 1.
@@ -57,6 +62,7 @@ const SPEC_ERROR_CODE: &[&str] = &[
     "Io",
     "Unsupported",
     "OutOfMemory",
+    "NotFound",
 ];
 
 #[test]
@@ -108,7 +114,9 @@ fn interfaces_follow_world_import_order() {
     let names: Vec<&str> = hal.interfaces.iter().map(|i| i.name.as_str()).collect();
     assert_eq!(
         names,
-        ["types", "gpio", "i2c", "spi", "time", "log", "board"],
+        [
+            "types", "gpio", "i2c", "spi", "time", "log", "board", "assets"
+        ],
         "does not follow the import order of world app"
     );
 }

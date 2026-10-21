@@ -29,6 +29,7 @@ use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::{self, ErrorCode, HostFn};
 use wasmicon_core::instance::{Extern, ExternType, Resolver};
 
+use assets::{Directory, MAX_ENTRIES};
 use fmt::Buf;
 use roles::{MAX_ROLES, RoleMap};
 
@@ -36,6 +37,12 @@ use roles::{MAX_ROLES, RoleMap};
 pub const MAX_PINS: usize = 16;
 pub const MAX_I2C: usize = 2;
 pub const MAX_SPI: usize = 2;
+pub const MAX_BLOBS: usize = 4;
+
+/// Chunk size of the default `Board::assets_crc32`: how much of an asset's
+/// body sits on the stack at a time while its CRC-32 is checked. The ESP
+/// ports stream the app slot in 512-byte pieces too (`pick_guest`).
+pub const ASSETS_CHUNK: usize = 512;
 
 /// Identifier assigned to the `env.abort` that AssemblyScript imports.
 /// The one import outside `world app` (docs/decisions.md P-02).
@@ -112,6 +119,49 @@ pub trait Board {
 
     /// One trace line (without a newline). The port sends it to the serial port or similar.
     fn trace(&mut self, line: &[u8]);
+
+    /// Reads `buf.len()` bytes of the assets slot, starting `offset` bytes
+    /// into it (docs/app-workflow.md §3.10). `Hal` has checked that the range
+    /// lies inside a body the directory describes.
+    ///
+    /// The default is for a port without an assets slot: `unsupported`.
+    fn assets_read(&mut self, _offset: u32, _buf: &mut [u8]) -> BoardResult<()> {
+        Err(ErrorCode::Unsupported)
+    }
+
+    /// CRC-32 of `len` bytes of the assets slot from `offset`: the body check
+    /// at an asset's first `open`. The default streams through `assets_read`
+    /// in `ASSETS_CHUNK` pieces; a board whose flash is memory-mapped
+    /// overrides it with `crc32` over the slice.
+    fn assets_crc32(&mut self, offset: u32, len: u32) -> BoardResult<u32> {
+        let mut chunk = [0u8; ASSETS_CHUNK];
+        let mut crc = CRC32_INIT;
+        let (mut at, mut left) = (offset, len);
+        while left > 0 {
+            let n = left.min(ASSETS_CHUNK as u32) as usize;
+            self.assets_read(at, &mut chunk[..n])?;
+            crc = crc32_update(crc, &chunk[..n]);
+            at += n as u32;
+            left -= n as u32;
+        }
+        Ok(crc32_end(crc))
+    }
+}
+
+/// Verdict of an asset's body CRC, taken at its first `open`
+/// (docs/app-workflow.md §3.10).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verified {
+    Unchecked,
+    Ok,
+    Bad,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BlobSlot {
+    open: bool,
+    /// Index into the assets directory.
+    entry: u8,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -139,10 +189,17 @@ pub struct Hal<B: Board> {
     /// docs/abi-spec.md §9 normalization).
     handed: [bool; MAX_ROLES],
     scratch: [u8; SCRATCH],
+    /// Assets directory (docs/app-workflow.md §3.10). `blob.open` looks names up here.
+    assets: Directory,
+    /// Each entry's body CRC verdict. A corrupt body stays `Bad` for the run,
+    /// so it is read once, not on every `open`.
+    verified: [Verified; MAX_ENTRIES],
+    blobs: [BlobSlot; MAX_BLOBS],
 }
 
 impl<B: Board> Hal<B> {
-    /// A `Hal` with no roles. The wiring table comes through `with_roles`.
+    /// A `Hal` with no roles and no assets. The wiring table comes through
+    /// `with_roles`, the assets directory through `with_assets`.
     #[must_use]
     pub fn new(board: B, trace_on: bool) -> Self {
         Hal {
@@ -154,6 +211,9 @@ impl<B: Board> Hal<B> {
             role_map: RoleMap::EMPTY,
             handed: [false; MAX_ROLES],
             scratch: [0; SCRATCH],
+            assets: Directory::EMPTY,
+            verified: [Verified::Unchecked; MAX_ENTRIES],
+            blobs: [BlobSlot::default(); MAX_BLOBS],
         }
     }
 
@@ -163,6 +223,18 @@ impl<B: Board> Hal<B> {
     pub fn with_roles(mut self, map: RoleMap) -> Self {
         self.role_map = map;
         self.handed = [false; MAX_ROLES];
+        self
+    }
+
+    /// Sets the assets directory: on a board what the firmware read from the
+    /// assets slot, on the host the image built from the `[assets]` table
+    /// (docs/app-workflow.md §3.10). Forgets the body verdicts and closes
+    /// every blob.
+    #[must_use]
+    pub fn with_assets(mut self, dir: Directory) -> Self {
+        self.assets = dir;
+        self.verified = [Verified::Unchecked; MAX_ENTRIES];
+        self.blobs = [BlobSlot::default(); MAX_BLOBS];
         self
     }
 
@@ -185,9 +257,10 @@ impl<B: Board> Hal<B> {
     /// No trace line is emitted: this is not a guest host call, and a line
     /// here would change the recorded traces (docs/verification-report.md §6, §7).
     ///
-    /// The release order is fixed: ascending handle, gpio then i2c then spi.
-    /// A per-port order would create a difference between boards that the
-    /// trace does not show.
+    /// The release order is fixed: ascending handle, gpio then i2c then spi,
+    /// then the blobs (which hold no peripheral, so the board is not told). A
+    /// per-port order would create a difference between boards that the trace
+    /// does not show.
     ///
     /// The record of handed-out roles (`handed`) is not cleared here. It is
     /// not a handle but state for the docs/abi-spec.md §9 normalization, and
@@ -216,6 +289,34 @@ impl<B: Board> Hal<B> {
             if slot.open {
                 board.spi_close(slot.index);
                 *slot = BusSlot::default();
+            }
+        }
+        // The body verdicts (`verified`) stay, like `handed`: they describe
+        // the slot, not a handle.
+        for slot in &mut self.blobs {
+            *slot = BlobSlot::default();
+        }
+    }
+
+    /// The body check at an asset's first `open` (docs/app-workflow.md §3.10).
+    ///
+    /// A wrong CRC marks the entry bad for the rest of the run, so a corrupt
+    /// 4 MiB body is read once, not on every `open`. A read failure leaves it
+    /// unchecked: that is the board, not the data.
+    fn verify_asset(&mut self, i: usize) -> BoardResult<()> {
+        match self.verified[i] {
+            Verified::Ok => Ok(()),
+            Verified::Bad => Err(ErrorCode::Io),
+            Verified::Unchecked => {
+                let e = *self.assets.entry(i);
+                let crc = self.board.assets_crc32(e.offset, e.len)?;
+                if crc == e.crc {
+                    self.verified[i] = Verified::Ok;
+                    Ok(())
+                } else {
+                    self.verified[i] = Verified::Bad;
+                    Err(ErrorCode::Io)
+                }
             }
         }
     }
@@ -770,6 +871,105 @@ impl<B: Board> Resolver for Hal<B> {
                     let index = self.spi[i].index;
                     self.board.spi_close(index);
                     self.spi[i] = BusSlot::default();
+                }
+            }
+
+            HostFn::AssetsBlobOpen => {
+                let name = guest_slice(mem, args[0], args[1])?;
+                a.byte(b'"');
+                a.escaped(name);
+                a.byte(b'"');
+                // In this order so that a bad name is reported even when the
+                // table is full, and no body is read for a name that could not
+                // be opened anyway (docs/abi-spec.md §7).
+                status = if !assets::valid_name(name) {
+                    ErrorCode::InvalidArgument.status()
+                } else if let Some(entry) = self.assets.find(name) {
+                    match self.blobs.iter().position(|b| !b.open) {
+                        None => ErrorCode::OutOfMemory.status(),
+                        Some(slot) => match self.verify_asset(entry) {
+                            Ok(()) => {
+                                self.blobs[slot] = BlobSlot {
+                                    open: true,
+                                    entry: entry as u8,
+                                };
+                                let handle = slot as u32 + 1;
+                                put_u32(mem, args[2], handle)?;
+                                o.u32(handle);
+                                0
+                            }
+                            Err(e) => e.status(),
+                        },
+                    }
+                } else {
+                    ErrorCode::NotFound.status()
+                };
+            }
+            HostFn::AssetsBlobLen => {
+                a.u64(args[0]);
+                status = match slot_of(args[0], MAX_BLOBS) {
+                    Err(e) => e,
+                    Ok(i) if !self.blobs[i].open => ErrorCode::InvalidHandle.status(),
+                    Ok(i) => {
+                        let len = self.assets.entry(usize::from(self.blobs[i].entry)).len;
+                        put_u32(mem, args[1], len)?;
+                        o.u32(len);
+                        0
+                    }
+                };
+            }
+            HostFn::AssetsBlobRead => {
+                let offset = args[1] as u32;
+                let len = args[2] as u32;
+                let cap = args[4] as u32;
+                a.u64(args[0]);
+                a.str(", ");
+                a.u32(offset);
+                a.str(", ");
+                a.u32(len);
+                status = match slot_of(args[0], MAX_BLOBS) {
+                    Err(e) => e,
+                    Ok(i) if !self.blobs[i].open => ErrorCode::InvalidHandle.status(),
+                    Ok(i) => {
+                        let ent = *self.assets.entry(usize::from(self.blobs[i].entry));
+                        match offset.checked_add(len) {
+                            // Never a short read (docs/abi-spec.md §4.4, §7).
+                            Some(end) if len > 0 && len <= cap && end <= ent.len => {
+                                let dst = args[3] as u32 as usize;
+                                let dst_end = dst
+                                    .checked_add(len as usize)
+                                    .ok_or(Error::Trap(Trap::MemoryOutOfBounds))?;
+                                let buf = mem
+                                    .get_mut(dst..dst_end)
+                                    .ok_or(Error::Trap(Trap::MemoryOutOfBounds))?;
+                                // Straight into guest memory: a body can be far
+                                // larger than the scratch area. `ent.offset +
+                                // offset` cannot overflow: the directory keeps
+                                // every body inside the slot.
+                                match self.board.assets_read(ent.offset + offset, buf) {
+                                    Ok(()) => {
+                                        put_u32(mem, args[5], len)?;
+                                        o.str("len=");
+                                        o.u32(len);
+                                        o.str(" data=");
+                                        write_bytes(&mut o, &mem[dst..dst_end]);
+                                        0
+                                    }
+                                    Err(e) => e.status(),
+                                }
+                            }
+                            _ => ErrorCode::InvalidArgument.status(),
+                        }
+                    }
+                };
+            }
+            HostFn::AssetsBlobDrop => {
+                a.u64(args[0]);
+                if let Ok(i) = slot_of(args[0], MAX_BLOBS)
+                    && self.blobs[i].open
+                {
+                    // No peripheral to release: the slot is simply freed.
+                    self.blobs[i] = BlobSlot::default();
                 }
             }
 

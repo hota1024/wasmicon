@@ -67,6 +67,7 @@ fn main() -> ExitCode {
             trace,
             i2c_replay: replay,
             spi_unsupported: false,
+            assets: Vec::new(),
         },
     );
     if trace {

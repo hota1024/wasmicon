@@ -26,11 +26,13 @@ pub mod types {
         Unsupported = 6,
         /// The host ran out of resources (for example the handle limit).
         OutOfMemory = 7,
+        /// The named item does not exist (an asset that is not in the slot).
+        NotFound = 8,
     }
 
     impl ErrorCode {
         /// Number of cases.
-        pub const COUNT: u32 = 8;
+        pub const COUNT: u32 = 9;
 
         /// Converts from a discriminant. Out of range gives `None` (docs/abi-spec.md §4.1).
         #[must_use]
@@ -44,6 +46,7 @@ pub mod types {
                 5 => Some(Self::Io),
                 6 => Some(Self::Unsupported),
                 7 => Some(Self::OutOfMemory),
+                8 => Some(Self::NotFound),
                 _ => None,
             }
         }
@@ -357,5 +360,49 @@ pub mod board {
         /// in the device's config slot (docs/abi-spec.md §8).
         #[link_name = "pin-by-role"]
         pub fn pin_by_role(role_ptr: *const u8, role_len: u32, out: *mut u32) -> u32;
+    }
+}
+
+/// Read-only assets the developer ships next to the app (docs/app-workflow.md §3.10).
+/// A WAD, a font, an image: data too large for the `.wasm`, written to the device's
+/// assets slot by `wasmicon assets write`. The guest opens an asset by name and reads
+/// it by range; an asset is never copied to RAM as a whole.
+pub mod assets {
+    #[link(wasm_import_module = "wasmicon:hal/assets@0.1.0")]
+    unsafe extern "C" {
+        /// Opens the asset called `name`.
+        ///
+        /// A name is 1 to 32 bytes of `a-z`, `0-9`, `-`, `_` and `.`, starting with a
+        /// letter or a digit (`doom1.wad`); any other name fails with `invalid-argument`.
+        /// A well-formed name that is not in the slot fails with `not-found`. The first
+        /// successful open of an asset checks its CRC-32; a corrupt body fails with `io`,
+        /// and keeps failing. The same asset may be open more than once. At most 4 blobs
+        /// are open at a time; beyond that, `out-of-memory`.
+        #[link_name = "[static]blob.open"]
+        pub fn blob_open(name_ptr: *const u8, name_len: u32, out: *mut u32) -> u32;
+
+        /// Length of the asset in bytes.
+        #[link_name = "[method]blob.len"]
+        pub fn blob_len(this: u32, out: *mut u32) -> u32;
+
+        /// Reads `len` bytes starting `offset` bytes into the asset.
+        ///
+        /// Never a short read: `offset + len` must not exceed the asset's length, and
+        /// `len` must be at least 1 and at most the caller's buffer, else
+        /// `invalid-argument`. In the Wasmicon ABI the returned `list<u8>` is written
+        /// into a buffer the caller provides.
+        #[link_name = "[method]blob.read"]
+        pub fn blob_read(
+            this: u32,
+            offset: u32,
+            len: u32,
+            buf: *mut u8,
+            cap: u32,
+            len_out: *mut u32,
+        ) -> u32;
+
+        /// Releases a `blob` handle. Invalid handles are ignored (docs/abi-spec.md §5.2).
+        #[link_name = "[resource-drop]blob"]
+        pub fn blob_drop(this: u32);
     }
 }

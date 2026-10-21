@@ -41,6 +41,10 @@ export enum ErrorCode {
    * The host ran out of resources (for example the handle limit).
    */
   OutOfMemory = 7,
+  /**
+   * The named item does not exist (an asset that is not in the slot).
+   */
+  NotFound = 8,
 }
 
 // ---- wasmicon:hal/gpio@0.1.0 ----
@@ -287,3 +291,48 @@ export declare function log_log(level: u32, messagePtr: usize, messageLen: u32):
  */
 @external("wasmicon:hal/board@0.1.0", "pin-by-role")
 export declare function board_pin_by_role(rolePtr: usize, roleLen: u32, out: usize): u32;
+
+// ---- wasmicon:hal/assets@0.1.0 ----
+
+/**
+ * Read-only assets the developer ships next to the app (docs/app-workflow.md §3.10).
+ * A WAD, a font, an image: data too large for the `.wasm`, written to the device's
+ * assets slot by `wasmicon assets write`. The guest opens an asset by name and reads
+ * it by range; an asset is never copied to RAM as a whole.
+ */
+
+/**
+ * Opens the asset called `name`.
+ * 
+ * A name is 1 to 32 bytes of `a-z`, `0-9`, `-`, `_` and `.`, starting with a
+ * letter or a digit (`doom1.wad`); any other name fails with `invalid-argument`.
+ * A well-formed name that is not in the slot fails with `not-found`. The first
+ * successful open of an asset checks its CRC-32; a corrupt body fails with `io`,
+ * and keeps failing. The same asset may be open more than once. At most 4 blobs
+ * are open at a time; beyond that, `out-of-memory`.
+ */
+@external("wasmicon:hal/assets@0.1.0", "[static]blob.open")
+export declare function assets_blob_open(namePtr: usize, nameLen: u32, out: usize): u32;
+
+/**
+ * Length of the asset in bytes.
+ */
+@external("wasmicon:hal/assets@0.1.0", "[method]blob.len")
+export declare function assets_blob_len(self: u32, out: usize): u32;
+
+/**
+ * Reads `len` bytes starting `offset` bytes into the asset.
+ * 
+ * Never a short read: `offset + len` must not exceed the asset's length, and
+ * `len` must be at least 1 and at most the caller's buffer, else
+ * `invalid-argument`. In the Wasmicon ABI the returned `list<u8>` is written
+ * into a buffer the caller provides.
+ */
+@external("wasmicon:hal/assets@0.1.0", "[method]blob.read")
+export declare function assets_blob_read(self: u32, offset: u32, len: u32, buf: usize, cap: u32, lenOut: usize): u32;
+
+/**
+ * Releases a `blob` handle. Invalid handles are ignored (docs/abi-spec.md §5.2).
+ */
+@external("wasmicon:hal/assets@0.1.0", "[resource-drop]blob")
+export declare function assets_blob_drop(self: u32): void;

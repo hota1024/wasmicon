@@ -148,7 +148,7 @@ Rules:
 - The out-pointer is written only on success. On error its contents are undefined (the host need not write it).
 - The out-pointer and `[buf, buf+cap)` must lie inside `memory`; out of range traps. No alignment is required (the host writes byte by byte).
 - In a function that returns `list<u8>`, if the requested length (such as a `len` argument) exceeds `cap`, the host returns `invalid-argument`. The guest is always responsible for passing a sufficient `cap`.
-- In v0.1, `i2c.read` / `i2c.write-read` / `spi.transfer` always set `len-out` equal to the requested length on success. `len-out` exists for future variable-length APIs (UART receive and the like).
+- In v0.1, `i2c.read` / `i2c.write-read` / `spi.transfer` / `assets.blob.read` always set `len-out` equal to the requested length on success. `len-out` exists for future variable-length APIs (UART receive and the like).
 
 ### 4.5 Summary of deviations
 
@@ -183,7 +183,7 @@ A resource handle is an `i32` (interpreted as an unsigned u32). The meaning of t
 
 ### 5.3 Handle limits
 
-The host guarantees at least this many simultaneous handles per type: `gpio.pin` 16, `i2c.bus` 2, `spi.bus` 2. Beyond that: `out-of-memory`.
+The host guarantees at least this many simultaneous handles per type: `gpio.pin` 16, `i2c.bus` 2, `spi.bus` 2, `assets.blob` 4. Beyond that: `out-of-memory`.
 
 ---
 
@@ -283,6 +283,17 @@ The generator's output must match this table. `ec` is the status `i32` of §4.4.
 Role names are **not a fixed vocabulary** (owner decision, 2026-10-07). A name is up to 16 characters of `a-z` / `0-9` / `-`, starting with a lowercase letter. Which GPIO a name maps to is decided by the wiring table of §8.
 If the board has no assignment for the name, the call returns `unsupported`.
 
+### `wasmicon:hal/assets@0.1.0`
+
+| Import name | Core Wasm type | Notes |
+|---|---|---|
+| `[static]blob.open` | `(param i32 i32 i32) (result i32)` | `(name-ptr, name-len, out-handle) -> ec` |
+| `[method]blob.len` | `(param i32 i32) (result i32)` | `(self, out-len) -> ec` |
+| `[method]blob.read` | `(param i32 i32 i32 i32 i32 i32) (result i32)` | `(self, offset, len, buf, cap, len-out) -> ec` |
+| `[resource-drop]blob` | `(param i32)` | `(self)` |
+
+Read-only data the developer ships next to the app, written to the device's assets slot by `wasmicon assets write` (docs/app-workflow.md §3.10). A name is 1 to 32 bytes of `a-z` / `0-9` / `-` / `_` / `.`, starting with a letter or a digit; any other shape is `invalid-argument`, and a well-formed name that is not in the slot is `not-found`. The first successful `open` of an asset checks the body's CRC-32 against the directory; a mismatch is `io`, on every later `open` too. The same asset may be open more than once. `read` is never short: `offset + len` past the asset, `len = 0` or `len > cap` is `invalid-argument`, and the bytes go straight into `[buf, buf+len)`. Dropping a blob releases nothing on the board; the handle is simply freed.
+
 ### `wasmicon:hal/types@0.1.0`
 
 No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
@@ -297,6 +308,7 @@ No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
 | 5 | `io` | 6 |
 | 6 | `unsupported` | 7 |
 | 7 | `out-of-memory` | 8 |
+| 8 | `not-found` | 9 |
 
 ---
 
@@ -378,7 +390,7 @@ When the port layer is built with `WASMICON_TRACE` enabled, it writes every host
 ```
 
 - A `list<u8>` argument is a hex dump; beyond 32 bytes, the first 16 bytes plus a CRC-32.
-- **The bytes received by the read calls (`i2c.read` / `i2c.write-read` / `spi.transfer`) are
+- **The bytes received by the read calls (`i2c.read` / `i2c.write-read` / `spi.transfer` / `assets.blob.read`) are
   also written, in the result on success, as `len=<n> data=<same notation as arguments>`** (added 2026-10-05). Example:
   `< 0 [len=6 data=0x6421e074e970]`. This makes what the board read reproducible from the trace alone
   (`wasmicon trace replay` extracts it in the `--i2c-replay` format). The value is decided by the external
