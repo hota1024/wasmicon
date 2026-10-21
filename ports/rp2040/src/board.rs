@@ -61,6 +61,9 @@ pub struct PicoBoard<S: Serial> {
     /// is emulated with output enable: low is OE=1 and OUT=0, high is OE=0
     /// (high impedance).
     open_drain: u32,
+    /// The assets slot as memory-mapped flash (docs/app-workflow.md §3.10).
+    /// `None` until `set_assets`, and when the slot could not be read.
+    assets: Option<&'static [u8]>,
 }
 
 impl<S: Serial> PicoBoard<S> {
@@ -72,12 +75,19 @@ impl<S: Serial> PicoBoard<S> {
         PicoBoard {
             serial,
             open_drain: 0,
+            assets: None,
         }
     }
 
     /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
+    }
+
+    /// Hands the board the assets slot (`assets::read_xip` in `main`). The
+    /// guest's reads copy out of this slice in place.
+    pub fn set_assets(&mut self, region: Option<&'static [u8]>) {
+        self.assets = region;
     }
 
     fn sio() -> pac::SIO {
@@ -274,6 +284,29 @@ impl<S: Serial> Board for PicoBoard<S> {
         Err(ErrorCode::Unsupported)
     }
     fn spi_close(&mut self, _index: u32) {}
+
+    // --- Assets. The slot is memory-mapped, so bodies are read in place. ---
+
+    fn assets_read(&mut self, offset: u32, buf: &mut [u8]) -> BoardResult<()> {
+        let region = self.assets.ok_or(ErrorCode::Unsupported)?;
+        let at = offset as usize;
+        let src = at
+            .checked_add(buf.len())
+            .and_then(|end| region.get(at..end))
+            .ok_or(ErrorCode::Io)?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
+
+    fn assets_crc32(&mut self, offset: u32, len: u32) -> BoardResult<u32> {
+        let region = self.assets.ok_or(ErrorCode::Unsupported)?;
+        let at = offset as usize;
+        let body = at
+            .checked_add(len as usize)
+            .and_then(|end| region.get(at..end))
+            .ok_or(ErrorCode::Io)?;
+        Ok(wasmicon_port::crc32(body))
+    }
 
     // --- Time. TIMER runs at 1 MHz, so the count is microseconds. ---
 
