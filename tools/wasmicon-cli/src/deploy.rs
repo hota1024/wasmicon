@@ -285,10 +285,33 @@ pub fn run(opts: &Options) -> Result<bool> {
 
 /// Writes the slot. The tool differs per board.
 fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<bool> {
-    let image = plan.image.to_string_lossy().into_owned();
+    write_at(
+        plan.slot.flasher,
+        plan.slot.offset,
+        &plan.image,
+        port,
+        keep_halted,
+    )
+}
+
+/// Writes `image` at `offset` of flash with the board's flasher. `deploy`
+/// uses it for the app slot, `assets write` for the assets slot
+/// (docs/app-workflow.md §3.10).
+///
+/// # Errors
+/// When the flasher cannot be started. A flasher that runs and fails is
+/// `Ok(false)`.
+pub fn write_at(
+    flasher: Flasher,
+    offset: u32,
+    image: &Path,
+    port: Option<&Path>,
+    keep_halted: bool,
+) -> Result<bool> {
+    let image = image.to_string_lossy().into_owned();
     // Never branch on the board name string. The profile carries the tool, so
     // a new port cannot fall into a default branch.
-    match plan.slot.flasher {
+    match flasher {
         // ESP32-S3 enters the ROM bootloader through DTR/RTS, so no button is
         // needed. `write-bin` takes a flash offset.
         Flasher::Espflash => {
@@ -297,7 +320,7 @@ fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<boo
             // reset is not called separately: `espflash reset` never exits,
             // keeps DTR/RTS asserted and leaves the board parked in download
             // mode (seen on hardware; docs/verification-report.md §10).
-            let offset = format!("{:#x}", plan.slot.offset);
+            let offset = format!("{offset:#x}");
             let mut args = vec!["write-bin"];
             let p;
             if let Some(dev) = port {
@@ -323,7 +346,7 @@ fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<boo
         // the extension. `-o` is an address, as picotool's help says ("Load
         // offset (memory address)"); an offset is rejected.
         Flasher::Picotool => {
-            let addr = format!("{:#x}", plan.addr);
+            let addr = format!("{:#x}", pack::XIP_BASE + u64::from(offset));
             let ok = spawn("picotool", &["load", &image, "-t", "bin", "-o", &addr])?;
             if !ok {
                 eprintln!(

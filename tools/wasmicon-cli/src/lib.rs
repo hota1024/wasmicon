@@ -3,6 +3,7 @@
 //! The decisions live in this library rather than in `main` so that tests can
 //! call them (the same layout as `wasmicon-gen`).
 
+pub mod assets;
 pub mod check;
 pub mod deploy;
 pub mod doctor;

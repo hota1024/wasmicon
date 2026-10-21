@@ -56,7 +56,7 @@ thumbv8m.main-none-eabihf (RP2350) (`sh tools/measure-size.sh [target]`).
 ```
 wit/                  HAL definition. Source of truth; never edit the generated files by hand
 tools/wasmicon-gen/   Generator that emits the four generated files from wit/
-tools/wasmicon-cli/   CLI for app authors (binary name wasmicon). check / run / trace diff / doctor
+tools/wasmicon-cli/   CLI for app authors (binary name wasmicon). check / run / deploy / assets / trace diff / doctor
 runtime/              wasmicon-core: the no_std / zero-dependency / no-alloc interpreter
 ports/common/         HAL shared by the ports; only board-specific operations go in the Board trait
 ports/host/           PC port: mock HAL + trace. CI runs here
@@ -73,6 +73,7 @@ apps/                 Guests (separate workspace). Rust and AS versions of blink
                       life-rs keeps drawing Conway's Life on the ILI9341 (with an FPS readout)
                       bench-rs measures interpreter and host-call speed (same .wasm on host and hardware)
                       rgb-led-rs drives the on-board RGB LED (esp32c5 GPIO27, esp32s3 GPIO48)
+                      assets-rs reads two assets from the assets slot and checks every byte
 verify/               Verification tools: differential test against wasmtime, trace diff
 docs/                 Spec, design, verification report, remaining work
 ```
@@ -167,6 +168,15 @@ $w trace diff host.log pico.log
 - **The ESP32-S3 needs no button** (`espflash` resets it over DTR/RTS). Flashing and the trace
   share one port, so `--monitor` delegates to `espflash monitor`
 - To start a new app: `wasmicon new <dir> --lang rust --hal bindings`
+
+**Read-only assets** (a WAD, fonts, images) go in a third slot that `deploy` never touches
+([`docs/app-workflow.md`](docs/app-workflow.md) §3.10). Name them under `[assets]` in
+`wasmicon.toml`; `run` serves the files on the host, and the board gets them once:
+
+```bash
+(cd apps/assets-rs && "$OLDPWD/$w" assets write --board esp32s3)   # from the app's directory
+$w deploy apps/target/wasm32-unknown-unknown/release/assets_rs.wasm --board esp32s3 --monitor
+```
 
 ### Other
 

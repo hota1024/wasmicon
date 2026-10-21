@@ -332,6 +332,12 @@ pin-roles = []
 #
 # [board.esp32s3.roles]
 # led = 2
+
+# Read-only data the app opens through assets.blob (asset name -> file,
+# relative to this file). assets write puts it in the board's assets slot
+# (docs/app-workflow.md §3.10); run serves the files on the host.
+# [assets]
+# \"font.psf\" = \"assets/font.psf\"
 "
     )
 }

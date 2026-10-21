@@ -6,3 +6,4 @@ apps/*/build/
 ports/*/target/
 verify/*/target/
 .claude/worktrees/
+apps/*/assets.bin
