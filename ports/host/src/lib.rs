@@ -70,7 +70,7 @@ pub fn run_wasm(wasm: &[u8], trace: bool) -> Result<Outcome, Error> {
 }
 
 /// Run options.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Options {
     /// Whether to collect the trace.
     pub trace: bool,

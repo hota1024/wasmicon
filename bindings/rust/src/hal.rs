@@ -344,3 +344,75 @@ pub mod board {
         Ok(index)
     }
 }
+
+/// Read-only assets shipped next to the app (docs/app-workflow.md §3.10).
+pub mod assets {
+    use super::{Result, check};
+    use crate::generated::assets as raw;
+
+    /// An open asset. `Drop` releases the handle.
+    pub struct Blob(u32);
+
+    // A blob has a length but no `is_empty`: the question "is this asset empty"
+    // is one more host call, and an empty asset is a packaging mistake, not a
+    // state to branch on.
+    #[allow(clippy::len_without_is_empty)]
+    impl Blob {
+        /// Opens the asset called `name`.
+        ///
+        /// # Errors
+        /// `NotFound` if no asset has that name, `InvalidArgument` if `name` is not a valid
+        /// asset name, `Io` if the body's CRC-32 does not match, `OutOfMemory` if four blobs
+        /// are already open.
+        pub fn open(name: &str) -> Result<Blob> {
+            let mut h: u32 = 0;
+            // SAFETY: `name.as_ptr()` and `name.len()` describe one live UTF-8 slice that
+            // outlives the call; the host only reads it. `h` is a live `u32` on this stack
+            // frame and `&raw mut h` points to it for the whole call; the host writes at most
+            // 4 bytes there, and only on success.
+            check(unsafe { raw::blob_open(name.as_ptr(), name.len() as u32, &raw mut h) })?;
+            Ok(Blob(h))
+        }
+
+        /// Length of the asset in bytes.
+        ///
+        /// # Errors
+        /// `InvalidHandle` if the handle is invalid.
+        pub fn len(&self) -> Result<u32> {
+            let mut v: u32 = 0;
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `v` is a live `u32` on this stack frame and `&raw mut v`
+            // points to it for the whole call; the host writes at most 4 bytes there.
+            check(unsafe { raw::blob_len(self.0, &raw mut v) })?;
+            Ok(v)
+        }
+
+        /// Reads `buf.len()` bytes starting `offset` bytes into the asset. Returns the number
+        /// of bytes read, which is always `buf.len()` (the host never reads short).
+        ///
+        /// # Errors
+        /// `InvalidArgument` if `buf` is empty or `offset + buf.len()` exceeds the asset's
+        /// length.
+        pub fn read(&self, offset: u32, buf: &mut [u8]) -> Result<usize> {
+            let mut len: u32 = 0;
+            let cap = buf.len() as u32;
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `buf.as_mut_ptr()` and `cap` describe one live mutable slice
+            // that outlives the call; the host writes at most `cap` bytes into it. `len` is a
+            // live `u32` on this stack frame; the host writes at most 4 bytes there.
+            check(unsafe {
+                raw::blob_read(self.0, offset, cap, buf.as_mut_ptr(), cap, &raw mut len)
+            })?;
+            Ok(len as usize)
+        }
+    }
+
+    impl Drop for Blob {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is the handle `open` returned and this is its only release.
+            // The host ignores an invalid handle without an error or a trap
+            // (docs/abi-spec.md §5.2). There are no pointer arguments.
+            unsafe { raw::blob_drop(self.0) }
+        }
+    }
+}

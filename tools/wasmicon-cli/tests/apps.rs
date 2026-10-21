@@ -61,3 +61,25 @@ fn every_app_has_a_manifest_whose_roles_are_wired_on_both_boards() {
         }
     }
 }
+
+#[test]
+fn every_asset_in_a_manifest_exists() {
+    // `[assets]` names the files `run` serves and `assets write` flashes
+    // (docs/app-workflow.md §3.10). A missing one would only show up as
+    // `not-found` on the device, so it is caught here.
+    let mut assets = 0;
+    for dir in app_dirs() {
+        let path = dir.join(manifest::FILE_NAME);
+        let m = manifest::load(&path).unwrap_or_else(|e| panic!("{e:#}"));
+        for (name, file) in &m.assets {
+            assert!(
+                file.is_file(),
+                "{}: asset `{name}` is missing at {}",
+                path.display(),
+                file.display()
+            );
+            assets += 1;
+        }
+    }
+    assert!(assets > 0, "no app ships an asset; apps/assets-rs should");
+}
