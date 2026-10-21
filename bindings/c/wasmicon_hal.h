@@ -60,6 +60,15 @@ static inline uint32_t wasmicon_board_pin_by_role_str(const char *role, uint32_t
     return wasmicon_board_pin_by_role(role, wasmicon_strlen(role), out);
 }
 
+/**
+ * Opens the asset with a NUL-terminated name (docs/app-workflow.md §3.10). Returns the
+ * status (0 = success) and writes the handle to `out`. Release it with
+ * `wasmicon_assets_blob_drop`.
+ */
+static inline uint32_t wasmicon_assets_blob_open_str(const char *name, uint32_t *out) {
+    return wasmicon_assets_blob_open(name, wasmicon_strlen(name), out);
+}
+
 #ifdef __cplusplus
 }
 #endif

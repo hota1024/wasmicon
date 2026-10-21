@@ -20,6 +20,9 @@
 //! lcd-cs = 17
 //! lcd-dc = 20
 //! lcd-rst = 21
+//!
+//! [assets]               # read-only data the app opens; assets write flashes it
+//! "font.psf" = "assets/terminus-12.psf"
 //! ```
 //!
 //! Schema rules (docs/app-workflow.md §4.7):
@@ -34,6 +37,11 @@
 //!   (`wasmicon_port::roles::valid_name`).
 //! - "This board has no such role" is `"none"` (same as omitting the key:
 //!   nothing is handed out).
+//! - Asset names follow `wasmicon_port::assets::valid_name` (1 to 32 of
+//!   `a-z` / `0-9` / `-` / `_` / `.`, starting with a letter or a digit); a
+//!   name with a `.` is a quoted key. At most 8 assets. What the app can
+//!   open on a device is exactly this table (`assets write` replaces the
+//!   slot with it), so there is no separate declaration.
 //! - Paths are relative to the directory of `wasmicon.toml`. Relative to the
 //!   CLI's cwd they would break depending on where the CLI is run from.
 //! - Unknown keys are errors. Ignoring them silently hides "I set it but it
@@ -47,6 +55,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use wasmicon_port::assets;
 use wasmicon_port::profile::{self, Profile};
 use wasmicon_port::roles::{self, Limits, RoleMap};
 
@@ -67,6 +76,9 @@ struct Raw {
     /// `[board.<name>.roles]`.
     #[serde(default)]
     board: BTreeMap<String, RawBoard>,
+    /// `[assets]`: asset name -> file.
+    #[serde(default)]
+    assets: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Deserialize, Default)]
@@ -109,6 +121,12 @@ pub struct Manifest {
     /// docs/app-workflow.md §3.9). Checked against the board's constraints
     /// (range, reserved pins, bus pins, duplicates) at load time.
     pub board_roles: BTreeMap<String, BTreeMap<String, Option<u32>>>,
+    /// Asset name -> file (already resolved against `dir`): what `run` serves
+    /// to the guest and `assets write` puts in the board's assets slot
+    /// (docs/app-workflow.md §3.10). Names are checked at load time; the
+    /// files are checked by the commands that read them. The map's order
+    /// (by name) is the order of the slot's directory.
+    pub assets: BTreeMap<String, PathBuf>,
 }
 
 impl Manifest {
@@ -227,12 +245,36 @@ pub fn load(path: &Path) -> Result<Manifest> {
         board_roles.insert(board, map);
     }
 
+    // Names are checked here, files when a command reads them: `check`
+    // reports a missing file, `run` and `assets pack` stop on it.
+    if raw.assets.len() > assets::MAX_ENTRIES {
+        bail!(
+            "`{}`: [assets] has {} entries, more than the {} the slot holds",
+            path.display(),
+            raw.assets.len(),
+            assets::MAX_ENTRIES
+        );
+    }
+    let mut assets_table = BTreeMap::new();
+    for (name, file) in raw.assets {
+        if !assets::valid_name(name.as_bytes()) {
+            bail!(
+                "`{}`: `{name}` is not a valid asset name (1 to {} of a-z / 0-9 / - / _ / ., \
+                 starting with a letter or a digit)",
+                path.display(),
+                assets::MAX_NAME
+            );
+        }
+        assets_table.insert(name, dir.join(file));
+    }
+
     Ok(Manifest {
         dir: dir.clone(),
         pin_roles,
         default_board: raw.defaults.board,
         default_i2c_replay: raw.defaults.i2c_replay.map(|p| dir.join(p)),
         board_roles,
+        assets: assets_table,
     })
 }
 
@@ -415,5 +457,51 @@ lcd-cs = "GP22"
         )
         .expect_err("rejected");
         assert!(format!("{e:#}").contains("none"), "{e:#}");
+    }
+
+    #[test]
+    fn reads_the_assets_table() {
+        let m = parse(
+            "assets",
+            r#"
+version = 1
+[assets]
+"doom1.wad" = "wad/doom1.wad"
+"font.psf" = "assets/terminus-12.psf"
+"#,
+        )
+        .expect("loads");
+        let names: Vec<&String> = m.assets.keys().collect();
+        assert_eq!(names, ["doom1.wad", "font.psf"], "in slot order");
+        for (name, path) in &m.assets {
+            assert!(
+                path.starts_with(&m.dir),
+                "{name}: {path:?} is not under the manifest"
+            );
+        }
+        assert!(m.assets["doom1.wad"].ends_with("wad/doom1.wad"));
+    }
+
+    #[test]
+    fn an_invalid_asset_name_is_rejected_offline() {
+        // The firmware would refuse the directory; stop before writing it.
+        for (name, text, needle) in [
+            ("upper", "\"Doom1.WAD\" = \"a\"", "Doom1.WAD"),
+            ("slash", "\"wad/doom1.wad\" = \"a\"", "wad/doom1.wad"),
+            ("leading-dot", "\".hidden\" = \"a\"", ".hidden"),
+        ] {
+            let e = parse(name, &format!("version = 1\n[assets]\n{text}\n")).expect_err(name);
+            assert!(format!("{e:#}").contains(needle), "{name}: {e:#}");
+        }
+    }
+
+    #[test]
+    fn at_most_eight_assets() {
+        let mut text = String::from("version = 1\n[assets]\n");
+        for i in 0..9 {
+            text.push_str(&format!("a{i} = \"a{i}\"\n"));
+        }
+        let e = parse("nine-assets", &text).expect_err("nine do not fit");
+        assert!(format!("{e:#}").contains("more than the 8"), "{e:#}");
     }
 }

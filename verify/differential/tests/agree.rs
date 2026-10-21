@@ -1,8 +1,9 @@
 //! Locks in that our interpreter and wasmtime produce the same trace.
 //!
 //! The guests are the four apps the trace-equality tests use: blink and sensor-display,
-//! Rust and AS versions. This verifies the interpreter against an external reference
-//! implementation, independently of any hardware (docs/verification-report.md §2).
+//! Rust and AS versions, plus assets-rs for `wasmicon:hal/assets@0.1.0`. This verifies
+//! the interpreter against an external reference implementation, independently of any
+//! hardware (docs/verification-report.md §2).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,9 +71,22 @@ fn sht4x_replay() -> Vec<Vec<u8>> {
         .expect("cannot read the recorded responses")
 }
 
-/// Asserts that the two engines produce identical traces.
-fn assert_agrees(wasm: &[u8], replay: Vec<Vec<u8>>, label: &str) {
-    let c = wasmicon_differential::compare(wasm, replay)
+/// The two assets of `apps/assets-rs`, as `wasmicon run` loads them.
+fn assets_rs_assets() -> Vec<(String, Vec<u8>)> {
+    let dir = repo_root().join("apps/assets-rs/assets");
+    ["hello.txt", "pattern.bin"]
+        .iter()
+        .map(|name| {
+            let body = std::fs::read(dir.join(name))
+                .unwrap_or_else(|e| panic!("cannot read the fixture {name}: {e}"));
+            ((*name).to_string(), body)
+        })
+        .collect()
+}
+
+/// Asserts that the two engines produce identical traces with the same options.
+fn assert_agrees_with(wasm: &[u8], opts: wasmicon_host::Options, label: &str) {
+    let c = wasmicon_differential::compare_with(wasm, opts)
         .unwrap_or_else(|e| panic!("{label}: run failed: {e:#}"));
     if let Some((line, ours, theirs)) = c.first_difference() {
         panic!("{label}: engines differ at line {line}\n  wasmicon: {ours}\n  wasmtime: {theirs}");
@@ -81,6 +95,18 @@ fn assert_agrees(wasm: &[u8], replay: Vec<Vec<u8>>, label: &str) {
     assert!(
         !c.wasmicon.is_empty(),
         "{label}: trace is empty (nothing was verified)"
+    );
+}
+
+/// Asserts that the two engines produce identical traces.
+fn assert_agrees(wasm: &[u8], replay: Vec<Vec<u8>>, label: &str) {
+    assert_agrees_with(
+        wasm,
+        wasmicon_host::Options {
+            i2c_replay: replay,
+            ..Default::default()
+        },
+        label,
     );
 }
 
@@ -113,5 +139,17 @@ fn sensor_display_as_agrees_with_wasmtime() {
         &build_as_app("sensor-display-as", "sensor_display_as.wasm"),
         sht4x_replay(),
         "sensor-display-as",
+    );
+}
+
+#[test]
+fn assets_rs_agrees_with_wasmtime() {
+    assert_agrees_with(
+        &build_rust_app("assets-rs"),
+        wasmicon_host::Options {
+            assets: assets_rs_assets(),
+            ..Default::default()
+        },
+        "assets-rs",
     );
 }

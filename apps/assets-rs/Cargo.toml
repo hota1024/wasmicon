@@ -1,0 +1,13 @@
+[package]
+name = "assets-rs"
+description = "Reads two assets shipped next to the app: a text it logs and a pattern it checks byte by byte"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+# cdylib exports the memory as "memory" (docs/abi-spec.md §3.3).
+crate-type = ["cdylib"]
+
+[dependencies]
+wasmicon-hal.workspace = true

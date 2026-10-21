@@ -13,6 +13,10 @@ import {
   I2cSpeed,
   LogLevel,
   SpiMode,
+  assets_blob_drop,
+  assets_blob_len,
+  assets_blob_open,
+  assets_blob_read,
   board_pin_by_role,
   gpio_pin_drop,
   gpio_pin_open,
@@ -200,5 +204,52 @@ export namespace board {
     );
     if (status != 0) return -1;
     return out32[0] as i32;
+  }
+}
+
+/// An open asset: read-only data shipped next to the app (docs/app-workflow.md §3.10).
+export class Blob {
+  constructor(public handle: u32) {}
+
+  /// Opens the asset called name. Returns null on failure (not found, bad name,
+  /// corrupt body, or four blobs already open).
+  static open(name: string): Blob | null {
+    const bytes = String.UTF8.encode(name);
+    const status = assets_blob_open(
+      changetype<usize>(bytes),
+      bytes.byteLength,
+      out32.dataStart
+    );
+    if (status != 0) return null;
+    return new Blob(out32[0]);
+  }
+
+  /// Length of the asset in bytes. Returns -1 on failure.
+  len(): i64 {
+    const status = assets_blob_len(this.handle, out32.dataStart);
+    if (status != 0) return -1;
+    return out32[0] as i64;
+  }
+
+  /// Reads buf.length bytes starting offset bytes into the asset. Returns the
+  /// number of bytes read (always buf.length: the host never reads short), or -1
+  /// on failure.
+  read(offset: u32, buf: Uint8Array): i32 {
+    const cap = buf.length as u32;
+    const status = assets_blob_read(
+      this.handle,
+      offset,
+      cap,
+      buf.dataStart,
+      cap,
+      out32.dataStart
+    );
+    if (status != 0) return -1;
+    return out32[0] as i32;
+  }
+
+  /// Releases the handle. Call it explicitly; AssemblyScript has no Drop.
+  close(): void {
+    assets_blob_drop(this.handle);
   }
 }

@@ -163,9 +163,16 @@ impl Comparison {
 
 /// Runs the module on wasmtime and returns its trace.
 ///
+/// Takes the same options as `wasmicon_host::run_wasm_opts` (`trace` is
+/// ignored: the trace is always collected) and builds the same mock board,
+/// so the only difference between the two runs is the engine.
+///
 /// # Errors
 /// When the module cannot be loaded, linked or run.
-pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> {
+///
+/// # Panics
+/// When `opts.assets` is not a valid asset list (as `run_wasm_capture`).
+pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<String> {
     let engine = Engine::default();
     let module =
         Module::new(&engine, wasm).map_err(|e| anyhow!("wasmtime cannot load the module: {e}"))?;
@@ -192,11 +199,24 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
         HOST_ENV_ABORT,
     )?;
 
-    let board = HostBoard::new().with_i2c_replay(i2c_replay);
+    let image = match wasmicon_host::assets::image(&opts.assets) {
+        Ok(image) => image,
+        Err(e) => panic!("invalid assets list: {}", e.reason()),
+    };
+    let dir = match wasmicon_host::assets::directory(&image) {
+        Ok(dir) => dir,
+        Err(e) => panic!("the assets image does not parse: {}", e.reason()),
+    };
+    let board = HostBoard::new()
+        .with_i2c_replay(opts.i2c_replay)
+        .with_spi_unsupported(opts.spi_unsupported)
+        .with_assets(image);
     let mut store = Store::new(
         &engine,
         State {
-            hal: Hal::new(board, true).with_roles(wasmicon_host::hal::host_roles()),
+            hal: Hal::new(board, true)
+                .with_roles(wasmicon_host::hal::host_roles())
+                .with_assets(dir),
         },
     );
     let instance = linker
@@ -212,16 +232,37 @@ pub fn run_on_wasmtime(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<String> 
     Ok(store.data_mut().hal.board_mut().trace_output().to_string())
 }
 
-/// Runs the same `.wasm` on our interpreter and on wasmtime and compares the traces.
+/// Runs the same `.wasm` on our interpreter and on wasmtime with the same
+/// options and compares the traces.
 ///
 /// # Errors
 /// When either engine fails to run the module.
-pub fn compare(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<Comparison> {
-    let ours = wasmicon_host::run_wasm_with(wasm, true, i2c_replay.clone())
-        .map_err(|e| anyhow!("wasmicon: {} [{}]", e.reason(), e.kind().name()))?;
-    let theirs = run_on_wasmtime(wasm, i2c_replay)?;
+pub fn compare_with(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Comparison> {
+    let ours = wasmicon_host::run_wasm_opts(
+        wasm,
+        wasmicon_host::Options {
+            trace: true,
+            ..opts.clone()
+        },
+    )
+    .map_err(|e| anyhow!("wasmicon: {} [{}]", e.reason(), e.kind().name()))?;
+    let theirs = run_on_wasmtime(wasm, opts)?;
     Ok(Comparison {
         wasmicon: ours.trace,
         wasmtime: theirs,
     })
+}
+
+/// `compare_with` with recorded I2C responses and nothing else.
+///
+/// # Errors
+/// When either engine fails to run the module.
+pub fn compare(wasm: &[u8], i2c_replay: Vec<Vec<u8>>) -> Result<Comparison> {
+    compare_with(
+        wasm,
+        wasmicon_host::Options {
+            i2c_replay,
+            ..Default::default()
+        },
+    )
 }

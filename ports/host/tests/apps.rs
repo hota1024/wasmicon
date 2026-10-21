@@ -601,3 +601,90 @@ fn sensor_display_agrees_when_sensor_is_silent() {
     );
     assert_traces_equal(&rs, &as_);
 }
+
+/// The two assets of `apps/assets-rs`, as `wasmicon run` loads them from its
+/// `wasmicon.toml`.
+fn assets_rs_assets() -> Vec<(String, Vec<u8>)> {
+    let dir = repo_root().join("apps/assets-rs/assets");
+    ["hello.txt", "pattern.bin"]
+        .iter()
+        .map(|name| {
+            let body = std::fs::read(dir.join(name))
+                .unwrap_or_else(|e| panic!("cannot read the fixture {name}: {e}"));
+            ((*name).to_string(), body)
+        })
+        .collect()
+}
+
+/// assets-rs reads a text and a 4,100-byte pattern through
+/// `wasmicon:hal/assets@0.1.0` and checks every byte (docs/app-workflow.md §3.10).
+#[test]
+fn assets_rs_runs_on_host() {
+    let wasm = build_rust_app("assets-rs");
+    assert_within_feature_set(&wasm, "assets-rs");
+    let opts = wasmicon_host::Options {
+        trace: true,
+        assets: assets_rs_assets(),
+        ..Default::default()
+    };
+    let trace = match wasmicon_host::run_wasm_opts(&wasm, opts) {
+        Ok(out) => out.trace,
+        Err(e) => panic!(
+            "assets-rs execution failed: {} [{}]",
+            e.reason(),
+            e.kind().name()
+        ),
+    };
+    println!("{trace}");
+    assert_no_host_errors(&trace, "assets-rs");
+
+    // hello.txt: opened, measured, read whole and logged as text.
+    assert!(
+        trace.contains("> wasmicon:hal/assets@0.1.0/[static]blob.open(\"hello.txt\")\n< 0 [1]"),
+        "{trace}"
+    );
+    assert!(trace.contains("[method]blob.len(1)\n< 0 [27]"), "{trace}");
+    assert!(
+        trace.contains("[method]blob.read(1, 0, 27)\n< 0 [len=27 data=0x"),
+        "{trace}"
+    );
+    assert!(
+        trace.contains(r#"log(2, "Hello from the assets slot.")"#),
+        "{trace}"
+    );
+    // pattern.bin takes the same handle once hello.txt is dropped, and is
+    // read in five 1,024-byte chunks (the last one 4 bytes), crossing the
+    // 4 KiB boundary of the slot.
+    assert!(
+        trace.contains("[static]blob.open(\"pattern.bin\")\n< 0 [1]"),
+        "{trace}"
+    );
+    assert_eq!(
+        trace.matches("[method]blob.read(").count(),
+        1 + 5,
+        "{trace}"
+    );
+    assert!(
+        trace.contains("[method]blob.read(1, 4096, 4)\n< 0 [len=4 data=0x"),
+        "{trace}"
+    );
+    assert!(trace.contains(r#"log(2, "pattern ok")"#), "{trace}");
+    assert_eq!(trace.matches("[resource-drop]blob(1)").count(), 2);
+}
+
+/// Without the assets the app reports the missing one and returns; it must not trap.
+#[test]
+fn assets_rs_without_the_assets_logs_and_exits() {
+    let wasm = build_rust_app("assets-rs");
+    let trace = run(&wasm, "assets-rs");
+    println!("{trace}");
+    assert!(
+        trace.contains("[static]blob.open(\"hello.txt\")\n< 9\n"),
+        "not-found: {trace}"
+    );
+    assert!(trace.contains(r#"log(0, "no asset hello.txt")"#), "{trace}");
+    assert!(
+        !trace.contains("pattern.bin"),
+        "stops at the first missing asset: {trace}"
+    );
+}
