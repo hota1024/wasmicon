@@ -208,7 +208,7 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
     let i = profile::RP2040.interfaces;
     assert!(!i.i2c, "rp2040 I2C is not implemented");
     assert!(!i.spi, "rp2040 SPI is not implemented");
-    assert!(i.gpio && i.time && i.log && i.board);
+    assert!(i.gpio && i.time && i.log && i.board && i.assets);
 
     for p in [
         &profile::RP2350,
@@ -218,11 +218,37 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
     ] {
         let i = p.interfaces;
         assert!(
-            i.gpio && i.i2c && i.spi && i.time && i.log && i.board,
+            i.gpio && i.i2c && i.spi && i.time && i.log && i.board && i.assets,
             "{} implements every interface",
             p.name
         );
     }
+}
+
+#[test]
+fn every_board_has_an_assets_slot_to_the_end_of_flash() {
+    // Right after the config slot (docs/app-workflow.md §3.10), so it never
+    // moves when the app is replaced, and as large as the flash allows. The
+    // flash sizes are the boards' (docs/TODO.md §5-2).
+    for (p, flash) in [
+        (&profile::RP2040, 2u32 << 20),
+        (&profile::RP2350, 4 << 20),
+        (&profile::ESP32S3, 8 << 20),
+        (&profile::ESP32C5, 16 << 20),
+    ] {
+        let r = p
+            .role_slot
+            .unwrap_or_else(|| panic!("{} has a config slot", p.name));
+        let a = p
+            .assets
+            .unwrap_or_else(|| panic!("{} has an assets slot", p.name));
+        assert_eq!(a.offset, r.offset + r.len, "{}", p.name);
+        assert_eq!(a.offset, 0x11_1000, "{}", p.name);
+        assert_eq!(a.offset % 4096, 0, "{}: erase-unit aligned", p.name);
+        assert_eq!(a.offset + a.len, flash, "{}: runs to the end", p.name);
+        assert!(a.read == r.read && a.flasher == r.flasher, "{}", p.name);
+    }
+    assert!(profile::HOST.assets.is_none(), "the mock reads files");
 }
 
 #[test]

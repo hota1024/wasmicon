@@ -3,6 +3,7 @@
 //! Runs a guest on the host and collects its trace (docs/abi-spec.md §9). The
 //! host tests and the `wasmicon` CLI build on this.
 
+pub mod assets;
 pub mod hal;
 
 use wasmicon_core::{Arena, Error, Exec, decode, instantiate, invoke, validate};

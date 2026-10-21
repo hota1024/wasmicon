@@ -167,6 +167,7 @@ fn the_arena_is_part_of_the_judgement() {
         scratch: 8 * 1024,
         slot: None,
         role_slot: None,
+        assets: None,
     };
     let (stage, err) = check::instantiate_with(&wasm, &tight).expect_err("fails: not enough arena");
     assert_eq!(
