@@ -32,6 +32,7 @@ use rp235x_hal as hal;
 use rp235x_hal::Clock;
 use rp235x_hal::fugit::RateExtU32;
 use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
+use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
 use wasmicon_port::roles::{self, Limits, RoleMap};
@@ -56,6 +57,13 @@ const XIP_BASE: usize = 0x1000_0000;
 const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2350.role_slot {
     Some(s) => s,
     None => panic!("the RP2350 profile has no config slot"),
+};
+
+/// Assets slot (docs/app-workflow.md §3.10), right after the config slot, to
+/// the end of flash.
+const ASSETS_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::RP2350.assets {
+    Some(s) => s,
+    None => panic!("the RP2350 profile has no assets slot"),
 };
 
 /// Limits on the GPIOs the wiring table may assign.
@@ -199,6 +207,12 @@ fn main() -> ! {
     // (docs/app-workflow.md §3.9).
     let map = pick_roles(hal.board_mut().serial());
     let mut hal = hal.with_roles(map);
+    // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
+    // slot is memory-mapped, so the board keeps the slice and the guest's
+    // reads copy out of it in place.
+    let (region, dir) = pick_assets(hal.board_mut().serial());
+    hal.board_mut().set_assets(region);
+    let mut hal = hal.with_assets(dir);
 
     // SAFETY: single core, and no interrupt touches ARENA, so this is the only
     // place that creates a reference to it, and it runs once.
@@ -254,6 +268,35 @@ fn pick_roles(serial: &mut impl Serial) -> RoleMap {
     serial.write(out.as_bytes());
     serial.write(b"\r\n");
     result.unwrap_or(RoleMap::EMPTY)
+}
+
+/// Reads the assets directory from the assets slot and prints it, or the
+/// reason it cannot be read, to the serial port (docs/app-workflow.md §3.10).
+///
+/// Returns the slot as an XIP slice (the bodies are read from it in place)
+/// and the directory. With an empty or corrupt slot there are no assets: the
+/// guest's `open` answers `not-found`.
+fn pick_assets(serial: &mut impl Serial) -> (Option<&'static [u8]>, Directory) {
+    // `__flash_binary_end` is a linker symbol; only its address is used, never
+    // its contents.
+    let fw_end = (&raw const __flash_binary_end) as usize;
+    // SAFETY: XIP is mapped read-only, and the assets slot (from the end of
+    // the config slot to the end of the 4 MB flash) lies inside the flash.
+    // Overlap with the firmware is rejected by xip_region using fw_end.
+    let result = unsafe { assets::read_xip(XIP_BASE, ASSETS_SLOT, fw_end) };
+    let mut line = [0u8; 384];
+    let mut out = Buf::new(&mut line);
+    let directory = match &result {
+        Ok((_, dir)) => Ok(*dir),
+        Err(e) => Err(*e),
+    };
+    assets::describe(&directory, &mut out);
+    serial.write(out.as_bytes());
+    serial.write(b"\r\n");
+    match result {
+        Ok((region, dir)) => (Some(region), dir),
+        Err(_) => (None, Directory::EMPTY),
+    }
 }
 
 /// Picks the app to run from the slot.

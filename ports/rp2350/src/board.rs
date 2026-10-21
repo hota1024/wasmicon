@@ -112,6 +112,9 @@ pub struct Pico2Board<S: Serial> {
     /// disable), so it is emulated with output enable: low is OE=1 and OUT=0,
     /// high is OE=0 (high impedance).
     open_drain: u32,
+    /// The assets slot as memory-mapped flash (docs/app-workflow.md §3.10).
+    /// `None` until `set_assets`, and when the slot could not be read.
+    assets: Option<&'static [u8]>,
 }
 
 impl<S: Serial> Pico2Board<S> {
@@ -133,12 +136,19 @@ impl<S: Serial> Pico2Board<S> {
             peri_clock_hz,
             sys_clock_hz,
             open_drain: 0,
+            assets: None,
         }
     }
 
     /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
+    }
+
+    /// Hands the board the assets slot (`assets::read_xip` in `main`). The
+    /// guest's reads copy out of this slice in place.
+    pub fn set_assets(&mut self, region: Option<&'static [u8]>) {
+        self.assets = region;
     }
 
     fn sio() -> pac::SIO {
@@ -946,6 +956,29 @@ impl<S: Serial> Board for Pico2Board<S> {
         for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
             let _ = self.gpio_configure(n as u32, PinMode::Input);
         }
+    }
+
+    // --- Assets. The slot is memory-mapped, so bodies are read in place. ---
+
+    fn assets_read(&mut self, offset: u32, buf: &mut [u8]) -> BoardResult<()> {
+        let region = self.assets.ok_or(ErrorCode::Unsupported)?;
+        let at = offset as usize;
+        let src = at
+            .checked_add(buf.len())
+            .and_then(|end| region.get(at..end))
+            .ok_or(ErrorCode::Io)?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
+
+    fn assets_crc32(&mut self, offset: u32, len: u32) -> BoardResult<u32> {
+        let region = self.assets.ok_or(ErrorCode::Unsupported)?;
+        let at = offset as usize;
+        let body = at
+            .checked_add(len as usize)
+            .and_then(|end| region.get(at..end))
+            .ok_or(ErrorCode::Io)?;
+        Ok(wasmicon_port::crc32(body))
     }
 
     // --- Time. TIMER0 runs at 1 MHz, so the count is microseconds. ---
