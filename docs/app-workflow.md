@@ -400,7 +400,7 @@ At boot, the line after the banner is a one-line identity (`identity` in
 `ports/common`):
 
 ```
-wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board slot=v1/65536 roles=v1/4096
+wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets slot=v1/65536 roles=v1/4096 assets=v1/7270400
 ```
 
 - `git` is `git describe --always --dirty` at build time (each port's `build.rs`

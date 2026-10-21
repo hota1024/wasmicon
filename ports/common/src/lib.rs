@@ -134,13 +134,17 @@ pub trait Board {
     /// in `ASSETS_CHUNK` pieces; a board whose flash is memory-mapped
     /// overrides it with `crc32` over the slice.
     fn assets_crc32(&mut self, offset: u32, len: u32) -> BoardResult<u32> {
-        let mut chunk = [0u8; ASSETS_CHUNK];
+        // Word-aligned, so a port that reads flash by words (the ESP ports)
+        // takes its direct path instead of copying through a window.
+        #[repr(align(4))]
+        struct Chunk([u8; ASSETS_CHUNK]);
+        let mut chunk = Chunk([0; ASSETS_CHUNK]);
         let mut crc = CRC32_INIT;
         let (mut at, mut left) = (offset, len);
         while left > 0 {
             let n = left.min(ASSETS_CHUNK as u32) as usize;
-            self.assets_read(at, &mut chunk[..n])?;
-            crc = crc32_update(crc, &chunk[..n]);
+            self.assets_read(at, &mut chunk.0[..n])?;
+            crc = crc32_update(crc, &chunk.0[..n]);
             at += n as u32;
             left -= n as u32;
         }
