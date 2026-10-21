@@ -461,6 +461,7 @@ fn implemented(i: &Interfaces, iface: &str) -> Option<bool> {
         "time" => Some(i.time),
         "log" => Some(i.log),
         "board" => Some(i.board),
+        "assets" => Some(i.assets),
         // types has no functions, so it never appears as an import
         // (docs/abi-spec.md §7).
         _ => None,
@@ -694,6 +695,7 @@ mod tests {
         assert_eq!(implemented(&i, "i2c"), Some(false));
         assert_eq!(implemented(&i, "spi"), Some(false));
         assert_eq!(implemented(&i, "gpio"), Some(true));
+        assert_eq!(implemented(&i, "assets"), Some(true));
         // types has no functions, so it never appears as an import.
         assert_eq!(implemented(&i, "types"), None);
     }

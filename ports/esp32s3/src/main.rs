@@ -108,7 +108,7 @@ fn main() -> ! {
     // git, ABI and configuration, so a captured trace records which build
     // produced it.
     {
-        let mut line = [0u8; 192];
+        let mut line = [0u8; 256];
         let mut out = Buf::new(&mut line);
         identity::describe(
             &Identity {

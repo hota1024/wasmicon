@@ -618,6 +618,58 @@ one more candidate cause.
 - **Rewriting over the protocol** (`config apply`) is stage 2 (USB control channel).
   Today `deploy` writes it from outside together with the app (stage 1)
 
+### 3.10 The assets slot (read-only data the app ships)
+
+Large read-only data (DOOM's IWAD, fonts, images) does not belong in the `.wasm`:
+it would not fit the app slot, and every app update would resend it. It goes into a
+third slot, right after the config slot, that runs to the end of flash
+(`Profile::assets`; the `assets` module in `ports/common`). The guest opens an asset
+by name through `wasmicon:hal/assets@0.1.0` (docs/abi-spec.md §7) and reads it by
+range; a body is never copied to RAM as a whole.
+
+| | RP2040 | RP2350 | ESP32-S3 | ESP32-C5 |
+|---|---|---|---|---|
+| Offset | `0x111000` | `0x111000` | `0x111000` | `0x111000` |
+| Size | 978,944 B | 3,076,096 B | 7,270,400 B | 15,659,008 B |
+| Read | XIP slice, in place | XIP slice, in place | `esp-storage`, by range | `esp-storage`, by range |
+
+The shareware IWAD (4,196,020 B) fits only the ESP boards; `check --board` says so
+before anything is flashed.
+
+```
+offset  size  content
+0       4     magic "WMCB" (Wasmicon Blobs)
+4       2     format version (= 1)
+6       2     number of entries (at most 8)
+8       4     CRC-32 of the entry table (u32 LE)
+12      4     reserved (0)
+16      44*n  entries: name (32 bytes, NUL-padded), body offset (u32 LE, from the
+              start of the slot, a multiple of 4096), body length (u32 LE),
+              body CRC-32 (u32 LE)
+4096    ...   bodies, each on a 4096-byte boundary, in table order
+```
+
+- The format is owned by `assets` in `ports/common` (writer and reader share it, as
+  for the app slot in §3.4). `wasmicon assets pack` builds the image from the
+  `[assets]` table of `wasmicon.toml` (§4.7) and `wasmicon assets write` flashes it
+- **Only the CLI writes the slot.** The firmware never writes flash, and `deploy` does
+  not touch this slot, so the data survives app updates. The slot is per device, not
+  per app: the last `assets write` wins
+- Names: 1..32 bytes of `a-z` / `0-9` / `-` / `_` / `.`, starting with a letter or a
+  digit. Flat: no `/`, no directories. At most 8 entries
+- Each body starts on an erase-unit boundary, so a body is one contiguous range (on
+  XIP boards the guest's `read` is a `memcpy` out of it) and can be rewritten alone later
+- **Empty (erased `0xff` / unused `0x00`) is "no assets", not a failure.** The firmware
+  prints `wasmicon: assets none` and runs; `open` answers `not-found`
+- **Two CRCs, two moments.** The table's CRC is checked at boot; one bad entry discards
+  the whole directory (`wasmicon: <reason>, no assets`). A body's CRC is checked once,
+  at the guest's first successful `open` of it, and the verdict is kept for the run: a
+  mismatch makes that `open` fail with `io`. Checking every body at boot would delay
+  every boot by the size of the slot
+- At boot the firmware prints the directory: `wasmicon: assets doom1.wad=4196020
+  font.psf=3092` (names and lengths). The identity line (§3.8) carries
+  `assets=v1/<slot size>`
+
 ---
 
 ## 4. The `wasmicon` CLI

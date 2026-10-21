@@ -36,6 +36,7 @@ pub struct Interfaces {
     pub time: bool,
     pub log: bool,
     pub board: bool,
+    pub assets: bool,
 }
 
 impl Interfaces {
@@ -47,6 +48,7 @@ impl Interfaces {
         time: true,
         log: true,
         board: true,
+        assets: true,
     };
 }
 
@@ -91,6 +93,15 @@ pub struct Profile {
     /// `deploy` writes the app slot and this one as a single image in one go
     /// (`pack::build`). `None` means no flash (the host).
     pub role_slot: Option<Slot>,
+    /// Location of the assets slot (read-only data the developer ships next
+    /// to the app; `assets` module, docs/app-workflow.md §3.10): right after
+    /// the config slot, to the end of flash.
+    ///
+    /// Only `wasmicon assets write` writes it, never `deploy`, so the data
+    /// survives an app update. Bodies are read by range and never copied to
+    /// RAM as a whole, whatever `read` says. `None` means no flash (the host
+    /// mock reads files instead).
+    pub assets: Option<Slot>,
 }
 
 /// Location and size of the app slot, plus how to read and flash it.
@@ -187,6 +198,25 @@ const fn role_slot_after(app: Slot) -> Slot {
     }
 }
 
+/// The assets slot placed right after the config slot, to the end of flash
+/// (docs/app-workflow.md §3.10). Underflow here is a compile error, so a
+/// board whose flash ends before the config slot cannot be declared.
+const fn assets_after(role: Slot, flash: u32) -> Slot {
+    let offset = role.offset + role.len;
+    Slot {
+        offset,
+        len: flash - offset,
+        read: role.read,
+        flasher: role.flasher,
+    }
+}
+
+/// Flash sizes of the evaluation boards. The assets slot runs to the end.
+const RP2040_FLASH: u32 = 2 << 20;
+const RP2350_FLASH: u32 = 4 << 20;
+const ESP32S3_FLASH: u32 = 8 << 20;
+const ESP32C5_FLASH: u32 = 16 << 20;
+
 /// App slot of the Pico family (same location on RP2040 and RP2350).
 const PICO_SLOT: Slot = Slot {
     offset: 1 << 20,
@@ -220,6 +250,7 @@ pub const RP2040: Profile = Profile {
     // as the RP2350.
     slot: Some(PICO_SLOT),
     role_slot: Some(role_slot_after(PICO_SLOT)),
+    assets: Some(assets_after(role_slot_after(PICO_SLOT), RP2040_FLASH)),
 };
 
 /// Raspberry Pi Pico 2 / Pico 2 W.
@@ -240,6 +271,7 @@ pub const RP2350: Profile = Profile {
     // would corrupt the firmware itself).
     slot: Some(PICO_SLOT),
     role_slot: Some(role_slot_after(PICO_SLOT)),
+    assets: Some(assets_after(role_slot_after(PICO_SLOT), RP2350_FLASH)),
 };
 
 /// ESP32-S3 DevKitC-1.
@@ -263,6 +295,7 @@ pub const ESP32S3: Profile = Profile {
     // (docs/verification-report.md §10).
     slot: Some(ESP32S3_SLOT),
     role_slot: Some(role_slot_after(ESP32S3_SLOT)),
+    assets: Some(assets_after(role_slot_after(ESP32S3_SLOT), ESP32S3_FLASH)),
 };
 
 /// App slot of the ESP32-S3.
@@ -293,6 +326,7 @@ pub const ESP32C5: Profile = Profile {
     // 16 MB of flash (N16R4). Starts at 1 MiB like the other ports.
     slot: Some(ESP32C5_SLOT),
     role_slot: Some(role_slot_after(ESP32C5_SLOT)),
+    assets: Some(assets_after(role_slot_after(ESP32C5_SLOT), ESP32C5_FLASH)),
 };
 
 /// App slot of the ESP32-C5. Copied to RAM like on the S3.
@@ -318,6 +352,7 @@ pub const HOST: Profile = Profile {
     // The mock has no flash.
     slot: None,
     role_slot: None,
+    assets: None,
 };
 
 /// Lookup table by name. Used by the CLI and `info` (docs/app-workflow.md §3.8).

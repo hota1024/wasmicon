@@ -13,6 +13,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod assets;
 pub mod fmt;
 pub mod identity;
 pub mod idle;
