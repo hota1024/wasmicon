@@ -54,6 +54,8 @@ fn accepts_the_subset() {
          \x20       open: static func(index: u32) -> result<thing, error-code>;\n\
          \x20       send: func(data: list<u8>) -> result<_, error-code>;\n\
          \x20       recv: func(len: u32) -> result<list<u8>, error-code>;\n\
+         \x20       size: func() -> result<u32, error-code>;\n\
+         \x20       find: static func(name: string) -> result<thing, error-code>;\n\
          \x20   }",
     )
     .expect("WIT inside the subset was rejected");

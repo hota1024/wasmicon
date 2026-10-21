@@ -48,6 +48,9 @@ pub struct HostBoard {
     /// Makes SPI return `unsupported`, as a port without SPI does (rp2040), to
     /// test the failure path.
     spi_unsupported: bool,
+    /// The assets slot image (`crate::assets::image`), what a board has in
+    /// flash. Empty means no assets.
+    assets: Vec<u8>,
 }
 
 impl HostBoard {
@@ -60,7 +63,15 @@ impl HostBoard {
             i2c_replay: Vec::new(),
             replay_pos: 0,
             spi_unsupported: false,
+            assets: Vec::new(),
         }
+    }
+
+    /// Sets the assets slot image (built by `crate::assets::image`).
+    #[must_use]
+    pub fn with_assets(mut self, image: Vec<u8>) -> Self {
+        self.assets = image;
+        self
     }
 
     /// Makes SPI return `unsupported` (for testing the failure path).
@@ -212,6 +223,18 @@ impl Board for HostBoard {
     }
 
     fn spi_close(&mut self, _index: u32) {}
+
+    // --- assets: the slot image in memory ---
+
+    fn assets_read(&mut self, offset: u32, buf: &mut [u8]) -> BoardResult<()> {
+        let at = offset as usize;
+        let src = at
+            .checked_add(buf.len())
+            .and_then(|end| self.assets.get(at..end))
+            .ok_or(ErrorCode::Io)?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
 
     // --- time ---
 

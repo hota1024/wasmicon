@@ -546,6 +546,7 @@ fn sensor_display_agrees_when_spi_is_unsupported() {
         trace: true,
         i2c_replay: sht4x_replay(),
         spi_unsupported: true,
+        assets: Vec::new(),
     };
     let go = |wasm: &[u8], label: &str| -> String {
         match wasmicon_host::run_wasm_opts(wasm, opts()) {

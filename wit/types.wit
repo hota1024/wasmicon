@@ -23,5 +23,7 @@ interface types {
         unsupported,
         /// The host ran out of resources (for example the handle limit).
         out-of-memory,
+        /// The named item does not exist (an asset that is not in the slot).
+        not-found,
     }
 }

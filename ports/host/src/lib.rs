@@ -79,6 +79,9 @@ pub struct Options {
     /// Makes SPI return `unsupported`, as a port without SPI does, to test the
     /// failure path.
     pub spi_unsupported: bool,
+    /// Assets the guest may open, as `(name, body)`: the files behind the
+    /// `[assets]` table of `wasmicon.toml` (docs/app-workflow.md §3.10).
+    pub assets: Vec<(String, Vec<u8>)>,
 }
 
 /// Runs with explicit recorded I2C responses.
@@ -92,6 +95,7 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
             trace,
             i2c_replay,
             spi_unsupported: false,
+            assets: Vec::new(),
         },
     )
 }
@@ -115,8 +119,22 @@ pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
 ///
 /// When the second element is `Err`, the first still holds every line up to
 /// the failure.
+///
+/// # Panics
+/// When `opts.assets` has a name outside the grammar, a duplicate, or more
+/// than eight entries. The CLI checks the manifest before it gets here.
 pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Error>) {
     let (trace, i2c_replay, spi_unsupported) = (opts.trace, opts.i2c_replay, opts.spi_unsupported);
+    // The same image the CLI writes to a board (docs/app-workflow.md §3.10),
+    // so the host and the boards read one layout.
+    let image = match assets::image(&opts.assets) {
+        Ok(image) => image,
+        Err(e) => panic!("invalid assets list: {}", e.reason()),
+    };
+    let dir = match assets::directory(&image) {
+        Ok(dir) => dir,
+        Err(e) => panic!("the assets image does not parse: {}", e.reason()),
+    };
     let mut buf = vec![0u8; ARENA];
     let mut scratch_buf = vec![0u8; SCRATCH];
     let mut arena = Arena::new(&mut buf);
@@ -129,10 +147,12 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
     let mut hal = Hal::new(
         hal::HostBoard::new()
             .with_i2c_replay(i2c_replay)
-            .with_spi_unsupported(spi_unsupported),
+            .with_spi_unsupported(spi_unsupported)
+            .with_assets(image),
         trace,
     )
-    .with_roles(hal::host_roles());
+    .with_roles(hal::host_roles())
+    .with_assets(dir);
 
     // A failure before the guest starts (decode / validate / Exec / instantiate)
     // leaves the trace empty; a failure afterwards leaves every line so far in

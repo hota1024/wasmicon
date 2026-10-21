@@ -11,6 +11,7 @@ world app {
     import time;
     import log;
     import board;
+    import assets;
 
     /// Entry point. The host calls it once after instantiation.
     /// When it returns, the host may destroy the instance.

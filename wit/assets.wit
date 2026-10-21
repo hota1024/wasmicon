@@ -1,0 +1,33 @@
+package wasmicon:hal@0.1.0;
+
+/// Read-only assets the developer ships next to the app (docs/app-workflow.md §3.10).
+/// A WAD, a font, an image: data too large for the `.wasm`, written to the device's
+/// assets slot by `wasmicon assets write`. The guest opens an asset by name and reads
+/// it by range; an asset is never copied to RAM as a whole.
+interface assets {
+    use types.{error-code};
+
+    /// An open asset. Reads take an absolute offset; there is no cursor.
+    resource blob {
+        /// Opens the asset called `name`.
+        ///
+        /// A name is 1 to 32 bytes of `a-z`, `0-9`, `-`, `_` and `.`, starting with a
+        /// letter or a digit (`doom1.wad`); any other name fails with `invalid-argument`.
+        /// A well-formed name that is not in the slot fails with `not-found`. The first
+        /// successful open of an asset checks its CRC-32; a corrupt body fails with `io`,
+        /// and keeps failing. The same asset may be open more than once. At most 4 blobs
+        /// are open at a time; beyond that, `out-of-memory`.
+        open: static func(name: string) -> result<blob, error-code>;
+
+        /// Length of the asset in bytes.
+        len: func() -> result<u32, error-code>;
+
+        /// Reads `len` bytes starting `offset` bytes into the asset.
+        ///
+        /// Never a short read: `offset + len` must not exceed the asset's length, and
+        /// `len` must be at least 1 and at most the caller's buffer, else
+        /// `invalid-argument`. In the Wasmicon ABI the returned `list<u8>` is written
+        /// into a buffer the caller provides.
+        read: func(offset: u32, len: u32) -> result<list<u8>, error-code>;
+    }
+}

@@ -62,6 +62,14 @@ pub enum HostFn {
     LogLog,
     /// `pin-by-role` in `wasmicon:hal/board@0.1.0`
     BoardPinByRole,
+    /// `[static]blob.open` in `wasmicon:hal/assets@0.1.0`
+    AssetsBlobOpen,
+    /// `[method]blob.len` in `wasmicon:hal/assets@0.1.0`
+    AssetsBlobLen,
+    /// `[method]blob.read` in `wasmicon:hal/assets@0.1.0`
+    AssetsBlobRead,
+    /// `[resource-drop]blob` in `wasmicon:hal/assets@0.1.0`
+    AssetsBlobDrop,
 }
 
 impl HostFn {
@@ -95,13 +103,17 @@ impl HostFn {
             17 => Some(Self::TimeSleepUs),
             18 => Some(Self::LogLog),
             19 => Some(Self::BoardPinByRole),
+            20 => Some(Self::AssetsBlobOpen),
+            21 => Some(Self::AssetsBlobLen),
+            22 => Some(Self::AssetsBlobRead),
+            23 => Some(Self::AssetsBlobDrop),
             _ => None,
         }
     }
 }
 
 /// All HAL imports of v0.1 (docs/abi-spec.md §7).
-pub static IMPORTS: [ImportDesc; 20] = [
+pub static IMPORTS: [ImportDesc; 24] = [
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[static]pin.open",
@@ -222,6 +234,30 @@ pub static IMPORTS: [ImportDesc; 20] = [
         sig: "iii:i",
         host_fn: HostFn::BoardPinByRole,
     },
+    ImportDesc {
+        module: "wasmicon:hal/assets@0.1.0",
+        name: "[static]blob.open",
+        sig: "iii:i",
+        host_fn: HostFn::AssetsBlobOpen,
+    },
+    ImportDesc {
+        module: "wasmicon:hal/assets@0.1.0",
+        name: "[method]blob.len",
+        sig: "ii:i",
+        host_fn: HostFn::AssetsBlobLen,
+    },
+    ImportDesc {
+        module: "wasmicon:hal/assets@0.1.0",
+        name: "[method]blob.read",
+        sig: "iiiiii:i",
+        host_fn: HostFn::AssetsBlobRead,
+    },
+    ImportDesc {
+        module: "wasmicon:hal/assets@0.1.0",
+        name: "[resource-drop]blob",
+        sig: "i:",
+        host_fn: HostFn::AssetsBlobDrop,
+    },
 ];
 
 /// Looks up an import by module and field name. The caller checks `sig`.
@@ -255,11 +291,13 @@ pub mod types {
         Unsupported = 6,
         /// The host ran out of resources (for example the handle limit).
         OutOfMemory = 7,
+        /// The named item does not exist (an asset that is not in the slot).
+        NotFound = 8,
     }
 
     impl ErrorCode {
         /// Number of cases.
-        pub const COUNT: u32 = 8;
+        pub const COUNT: u32 = 9;
 
         /// Converts from a discriminant. Out of range gives `None` (docs/abi-spec.md §4.1).
         #[must_use]
@@ -273,6 +311,7 @@ pub mod types {
                 5 => Some(Self::Io),
                 6 => Some(Self::Unsupported),
                 7 => Some(Self::OutOfMemory),
+                8 => Some(Self::NotFound),
                 _ => None,
             }
         }

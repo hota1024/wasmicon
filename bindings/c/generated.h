@@ -57,10 +57,14 @@ typedef enum wasmicon_error_code {
      * The host ran out of resources (for example the handle limit).
      */
     WASMICON_ERROR_CODE_OUT_OF_MEMORY = 7,
+    /**
+     * The named item does not exist (an asset that is not in the slot).
+     */
+    WASMICON_ERROR_CODE_NOT_FOUND = 8,
 } wasmicon_error_code_t;
 
 /** Number of cases. Any other value is invalid (docs/abi-spec.md §4.1). */
-#define WASMICON_ERROR_CODE_COUNT 8u
+#define WASMICON_ERROR_CODE_COUNT 9u
 
 /** Status value that means success. */
 #define WASMICON_OK 0u
@@ -338,6 +342,51 @@ void wasmicon_log_log(uint32_t level, const char *message_ptr, uint32_t message_
  */
 WASMICON_IMPORT("wasmicon:hal/board@0.1.0", "pin-by-role")
 uint32_t wasmicon_board_pin_by_role(const char *role_ptr, uint32_t role_len, uint32_t *out);
+
+// ---- wasmicon:hal/assets@0.1.0 ----
+
+/**
+ * Read-only assets the developer ships next to the app (docs/app-workflow.md §3.10).
+ * A WAD, a font, an image: data too large for the `.wasm`, written to the device's
+ * assets slot by `wasmicon assets write`. The guest opens an asset by name and reads
+ * it by range; an asset is never copied to RAM as a whole.
+ */
+
+/**
+ * Opens the asset called `name`.
+ *
+ * A name is 1 to 32 bytes of `a-z`, `0-9`, `-`, `_` and `.`, starting with a
+ * letter or a digit (`doom1.wad`); any other name fails with `invalid-argument`.
+ * A well-formed name that is not in the slot fails with `not-found`. The first
+ * successful open of an asset checks its CRC-32; a corrupt body fails with `io`,
+ * and keeps failing. The same asset may be open more than once. At most 4 blobs
+ * are open at a time; beyond that, `out-of-memory`.
+ */
+WASMICON_IMPORT("wasmicon:hal/assets@0.1.0", "[static]blob.open")
+uint32_t wasmicon_assets_blob_open(const char *name_ptr, uint32_t name_len, uint32_t *out);
+
+/**
+ * Length of the asset in bytes.
+ */
+WASMICON_IMPORT("wasmicon:hal/assets@0.1.0", "[method]blob.len")
+uint32_t wasmicon_assets_blob_len(uint32_t self, uint32_t *out);
+
+/**
+ * Reads `len` bytes starting `offset` bytes into the asset.
+ *
+ * Never a short read: `offset + len` must not exceed the asset's length, and
+ * `len` must be at least 1 and at most the caller's buffer, else
+ * `invalid-argument`. In the Wasmicon ABI the returned `list<u8>` is written
+ * into a buffer the caller provides.
+ */
+WASMICON_IMPORT("wasmicon:hal/assets@0.1.0", "[method]blob.read")
+uint32_t wasmicon_assets_blob_read(uint32_t self, uint32_t offset, uint32_t len, uint8_t *buf, uint32_t cap, uint32_t *len_out);
+
+/**
+ * Releases a `blob` handle. Invalid handles are ignored (docs/abi-spec.md §5.2).
+ */
+WASMICON_IMPORT("wasmicon:hal/assets@0.1.0", "[resource-drop]blob")
+void wasmicon_assets_blob_drop(uint32_t self);
 
 #ifdef __cplusplus
 }

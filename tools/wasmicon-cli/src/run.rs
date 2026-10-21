@@ -46,6 +46,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         trace: opts.trace,
         i2c_replay,
         spi_unsupported: false,
+        assets: Vec::new(),
     };
 
     // The entry point that returns the trace even on failure. A trap is
