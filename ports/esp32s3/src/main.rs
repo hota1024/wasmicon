@@ -23,6 +23,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_storage::FlashStorage;
 use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
+use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
 use wasmicon_port::roles::{self, Limits, RoleMap};
@@ -40,6 +41,13 @@ esp_bootloader_esp_idf::esp_app_desc!();
 const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.role_slot {
     Some(s) => s,
     None => panic!("the ESP32-S3 profile has no config slot"),
+};
+
+/// Assets slot (docs/app-workflow.md §3.10), right after the config slot, to
+/// the end of flash.
+const ASSETS_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.assets {
+    Some(s) => s,
+    None => panic!("the ESP32-S3 profile has no assets slot"),
 };
 
 /// Limits on the GPIOs the wiring table may assign.
@@ -123,6 +131,10 @@ fn main() -> ! {
         serial.write(b"\r\n");
     }
 
+    // The app slot, the config slot and the assets are all read through it.
+    // The board owns it: the guest's asset reads happen while the app runs.
+    let storage = FlashStorage::new(p.FLASH);
+
     // Mutable only for hw-probe, which borrows the board before the guest runs.
     #[cfg_attr(not(feature = "hw-probe"), allow(unused_mut))]
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
@@ -130,23 +142,25 @@ fn main() -> ! {
     // GPIO43/44, which are reserved and overlap neither a role-assignable
     // GPIO nor the SPI2 pins (GPIO11/12/13 and the RGB LED's GPIO48) nor the
     // I2C0 pins (GPIO8/9).
-    let mut board = unsafe { EspBoard::new(serial) };
+    let mut board = unsafe { EspBoard::new(serial, storage, ASSETS_SLOT.offset) };
 
     // Checks whether the port layer reaches the pads (src/probe.rs). The
     // guest runs right after, so once done the feature is simply left off.
     #[cfg(feature = "hw-probe")]
     probe::run(&mut board);
 
-    // Both the config slot and the app slot are read from it, so it is
-    // created once here.
-    let mut storage = FlashStorage::new(p.FLASH);
-
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
     // Roles come only from the table in the config slot. The firmware has no
     // default table: an empty or corrupt slot hands out no roles at all
     // (docs/app-workflow.md §3.9).
-    let map = pick_roles(&mut storage, hal.board_mut().serial());
+    let (storage, serial) = hal.board_mut().parts();
+    let map = pick_roles(storage, serial);
     let mut hal = hal.with_roles(map);
+    // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
+    // bodies stay in flash; the guest's reads go through `esp-storage` by range.
+    let (storage, serial) = hal.board_mut().parts();
+    let dir = pick_assets(storage, serial);
+    let mut hal = hal.with_assets(dir);
 
     // SAFETY: only one task ever touches ARENA, so this is the only place
     // that creates a reference to it, and it runs once.
@@ -155,7 +169,7 @@ fn main() -> ! {
     // that creates a reference to it, and it runs once.
     let scratch_buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH) };
 
-    let outcome = run(&mut hal, &mut storage, arena_buf, scratch_buf);
+    let outcome = run(&mut hal, arena_buf, scratch_buf);
 
     // The firmware embeds no app (docs/app-workflow.md §3.3). If the slot is
     // empty or corrupt, pick_guest has already printed the reason.
@@ -327,20 +341,49 @@ fn read_roles(storage: &mut FlashStorage<'_>) -> Result<RoleMap, roles::RolesErr
     roles::parse_checked(body, &header, &LIMITS)
 }
 
+/// Reads the assets directory from the assets slot and prints it, or the
+/// reason it cannot be read, to the serial port (docs/app-workflow.md §3.10).
+///
+/// Only the directory (`assets::DIR_LEN` bytes) is read here; the bodies
+/// stay in flash and the guest's reads go through `esp-storage` by range.
+/// With an empty or corrupt slot there are no assets: the guest's `open`
+/// answers `not-found`.
+fn pick_assets(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> Directory {
+    let result = read_assets(storage);
+    let mut line = [0u8; 384];
+    let mut out = Buf::new(&mut line);
+    assets::describe(&result, &mut out);
+    serial.write(out.as_bytes());
+    serial.write(b"\r\n");
+    result.unwrap_or(Directory::EMPTY)
+}
+
+fn read_assets(storage: &mut FlashStorage<'_>) -> Result<Directory, assets::AssetsError> {
+    let mut dir = [0u8; assets::DIR_LEN];
+    if storage.read(ASSETS_SLOT.offset, &mut dir).is_err() {
+        // Unreadable counts as empty: fail toward having no assets.
+        return Err(assets::AssetsError::Empty);
+    }
+    assets::parse(&dir, ASSETS_SLOT.len)
+}
+
 /// From reading the slot to the `run` call.
 ///
 /// `Ok(false)` when there is no app to run, `Ok(true)` once the app has run
 /// and returned.
 fn run(
     hal: &mut Hal<EspBoard<SerialPort<'static>>>,
-    storage: &mut FlashStorage<'_>,
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) -> Result<bool, wasmicon_core::Error> {
     let mut arena = Arena::new(arena_buf);
     let mut scratch = Arena::new(scratch_buf);
 
-    let Some(guest) = pick_guest(storage, &mut arena, hal.board_mut().serial()) else {
+    let guest = {
+        let (storage, serial) = hal.board_mut().parts();
+        pick_guest(storage, &mut arena, serial)
+    };
+    let Some(guest) = guest else {
         return Ok(false);
     };
     let m = decode::decode(guest, &mut arena)?;

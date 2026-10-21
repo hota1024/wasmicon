@@ -27,6 +27,7 @@ use esp_hal::spi::master::{Config as HalSpiConfig, Spi};
 use esp_hal::spi::Mode as HalSpiMode;
 use esp_hal::time::{Duration, Rate};
 use esp_hal::Blocking;
+use esp_storage::FlashStorage;
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
@@ -124,6 +125,12 @@ pub trait Serial {
 /// The ESP32-C5-WIFI6-KIT board.
 pub struct EspBoard<S: Serial> {
     serial: S,
+    /// Flash, for the guest's asset reads (docs/app-workflow.md §3.10).
+    /// `main` reads the app and config slots through it at boot as well
+    /// (`parts`).
+    storage: FlashStorage<'static>,
+    /// Flash offset of the assets slot; `assets_read` offsets count from it.
+    assets_base: u32,
     /// The open SPI2 driver and the `index` it was opened with (0 = general
     /// purpose, 1 = RGB LED). Dropping it in `spi_close` restores the pin
     /// routing and the peripheral clock.
@@ -139,9 +146,11 @@ impl<S: Serial> EspBoard<S> {
     /// of the GPIOs assigned to SPI2 and I2C0 (`SPI2_SCK` / `SPI2_MOSI` /
     /// `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` / `I2C0_SCL`).
     #[must_use]
-    pub unsafe fn new(serial: S) -> Self {
+    pub unsafe fn new(serial: S, storage: FlashStorage<'static>, assets_base: u32) -> Self {
         EspBoard {
             serial,
+            storage,
+            assets_base,
             spi: None,
             i2c: None,
         }
@@ -150,6 +159,12 @@ impl<S: Serial> EspBoard<S> {
     /// The serial port, used to print the reason for a failure.
     pub fn serial(&mut self) -> &mut S {
         &mut self.serial
+    }
+
+    /// The flash and the serial port together, for the slot reads at boot
+    /// (they print what they find).
+    pub fn parts(&mut self) -> (&mut FlashStorage<'static>, &mut S) {
+        (&mut self.storage, &mut self.serial)
     }
 
     /// The SPI2 driver open under `index`. `invalid-handle` if it is not open
@@ -196,6 +211,52 @@ fn i2c_error(e: HalI2cError) -> ErrorCode {
         // Bus-side failures: lost arbitration, inconsistent command sequence.
         _ => ErrorCode::Io,
     }
+}
+
+/// A word-aligned window for the ragged edges of `read_flash`.
+#[repr(align(4))]
+struct Window([u8; 256]);
+
+/// Reads `buf.len()` bytes of flash from `at` into `buf`.
+///
+/// Not `FlashStorage::read`: that puts a 4 KiB sector buffer on the stack on
+/// every call, and the guest's asset reads happen while the interpreter is
+/// running, with the native stack (about 20 KiB here, docs/TODO.md §1.4)
+/// already in use. `read_nor` wants a word-aligned flash offset and length
+/// and reads straight into a word-aligned destination, so an aligned request
+/// goes straight into the guest's memory and anything else goes through a
+/// 256-byte window. The same as on the ESP32-S3.
+fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> BoardResult<()> {
+    const WORD: u32 = 4;
+    const MASK: usize = WORD as usize - 1;
+    let aligned =
+        (at as usize) & MASK == 0 && buf.len() & MASK == 0 && (buf.as_ptr() as usize) & MASK == 0;
+    if aligned {
+        return storage.read_nor(at, buf).map_err(|_| ErrorCode::Io);
+    }
+    let cap = u32::try_from(storage.capacity()).unwrap_or(u32::MAX);
+    let mut window = Window([0; 256]);
+    let mut done = 0usize;
+    while done < buf.len() {
+        let pos = at.checked_add(done as u32).ok_or(ErrorCode::Io)?;
+        let start = pos & !(WORD - 1);
+        let skip = (pos - start) as usize;
+        let want = (buf.len() - done).min(window.0.len() - skip);
+        // The span is rounded up to whole words and clipped to the flash, so
+        // the padding never reads past its end (the wanted bytes are inside
+        // the slot, which ends with the flash).
+        let span = ((skip + want + WORD as usize - 1) & !(WORD as usize - 1))
+            .min(cap.saturating_sub(start) as usize);
+        if span < skip + want {
+            return Err(ErrorCode::Io);
+        }
+        storage
+            .read_nor(start, &mut window.0[..span])
+            .map_err(|_| ErrorCode::Io)?;
+        buf[done..done + want].copy_from_slice(&window.0[skip..skip + want]);
+        done += want;
+    }
+    Ok(())
 }
 
 /// The bit of a GPIO number. The C5 has 29 GPIOs, so one register bank is enough.
@@ -568,6 +629,13 @@ impl<S: Serial> Board for EspBoard<S> {
         for &n in pins {
             let _ = self.gpio_configure(u32::from(n), PinMode::Input);
         }
+    }
+
+    // --- Assets: read from flash by range (docs/app-workflow.md §3.10) ---
+
+    fn assets_read(&mut self, offset: u32, buf: &mut [u8]) -> BoardResult<()> {
+        let at = self.assets_base.checked_add(offset).ok_or(ErrorCode::Io)?;
+        read_flash(&mut self.storage, at, buf)
     }
 
     // --- Time ---

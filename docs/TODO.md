@@ -828,7 +828,7 @@ change.**
         14,352 lines identical to the host**. Unlike the Pico, **no button presses**
 - [x] **Make the firmware state who it is** (2026-10-09, **the banner part**. `info` comes
       with the USB control channel (stage 2)). The line after the banner is
-      `wasmicon id <board> fw=... git=...(-dirty) abi=... trace=on|off pages=... if=... slot=v1/... roles=v1/...`
+      `wasmicon id <board> fw=... git=...(-dirty) abi=... trace=on|off pages=... if=... slot=v1/... roles=v1/... assets=v1/...`
       (`identity` in `ports/common`. git is filled in by each port's `build.rs` from
       `ports/common/build/git.rs`. The ABI version is `generated::PACKAGE`, generated from
       `wit/`). `trace diff` warns when the two logs' identities differ (the verdict is
