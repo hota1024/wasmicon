@@ -607,9 +607,12 @@ change.**
         (sequential / cache miss). Still to settle:
         - Built as its own profile and firmware (a PSRAM-less module has no PSRAM to map,
           and `check --board` needs a static limit), not detected at run time
-        - Linear memory only in PSRAM: the runtime takes one arena today
-          (`Arena::alloc_rest`), so the port would hand it a second region. Measure the
-          interpreter with the whole arena in PSRAM first
+        - ~~Linear memory only in PSRAM~~ -> **not needed so far** (measured 2026-10-22,
+          docs/verification-report.md §23): with the whole arena in PSRAM, `bench-rs` is
+          unchanged and random reads over 4 MiB of linear memory are 6.7% slower; keeping
+          the interpreter's state in SRAM gains under 0.1%. If it is ever wanted, no
+          runtime change is needed: `instantiate` already takes its own `Arena`. Still
+          open: a module larger than the data cache fetching its bytecode from PSRAM
         - ~~Octal PSRAM also uses GPIO33..=37~~ -> **reserved in the `esp32s3` profile
           itself** (owner decision, 2026-10-22): the pads are wired to the PSRAM whether or
           not the firmware uses it. A PSRAM-less N8 module loses GPIO35..=37 to this

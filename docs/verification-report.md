@@ -1322,3 +1322,57 @@ cost that matters is static: every app on such a firmware loses a page, Wi-Fi or
   100 KiB in total
 - The interpreter's speed with esp-rtos ticking was not measured
 - Whether parts of the radio heap may live in PSRAM was not tried
+
+## 23. The interpreter with its arena in PSRAM (2026-10-22)
+
+Question (docs/TODO.md §5-10): how much slower is a guest when the arena, or only linear memory, lives
+in the board's PSRAM (§21)?
+
+An uncommitted experiment on top of `c23954a` added two features to `ports/esp32s3`, both mapping the
+octal PSRAM with esp-hal's `Psram` (40 MHz default):
+
+| Build | Bytecode, decode tables, `Exec` | Instance and linear memory | Page limit |
+|---|---|---|---|
+| `sram` (the port as is) | SRAM `ARENA` | SRAM `ARENA` | 4 |
+| `psram-mem` | SRAM `ARENA` | a 6 MiB PSRAM slice passed to `instantiate` | 80 |
+| `psram-all` | the 6 MiB PSRAM slice | the same slice | 80 |
+
+`psram-mem` needs no runtime change: `instantiate` already takes its own `Arena`. All three were built
+with `trace` off and run on the Freenove board at 240 MHz.
+
+### `apps/bench-rs`: no difference
+
+Two rounds each. Every item agreed across the three builds within 0.01% (integer loop 6.950 s, fib
+0.812 s, sieve 2.206 s, life 0.863 s, `time.now-us` 10.76 ms, `gpio.write` 9.7 ms, `spi.write` 1 B
+14.7 ms / 98 B 74.0 ms per 1000 calls), and the integer loop matches the 2026-10-11 ESP32-S3 record in
+docs/TODO.md §4 (6.983 s). Its working
+set is a few KB, so everything stays in the data cache.
+
+### A guest that walks a large linear memory
+
+A throwaway guest (2,294 B, not committed) grows linear memory and, for each region size, does 262,144
+sequential writes, 262,144 sequential reads and 262,144 xorshift-random reads, all 32-bit
+(microseconds):
+
+| Region | Build | Write | Sequential read | Random read |
+|---|---|---|---|---|
+| 128 KiB | `sram` | 2,797,303 | 2,978,620 | 3,419,880 |
+| 128 KiB | `psram-mem` | 2,816,704 | 2,998,159 | 3,536,642 |
+| 512 KiB | `psram-mem` | 2,816,699 | 2,998,154 | 3,623,048 |
+| 4 MiB | `psram-mem` | 2,816,699 | 2,998,153 | 3,647,867 |
+| 4 MiB | `psram-all` | 2,817,121 | 2,998,352 | 3,649,593 |
+
+`sram` cannot grow past 4 pages, so 128 KiB is its largest row. Against it, a 4 MiB region in PSRAM
+costs +0.7% for writes, +0.7% for sequential reads and **+6.7% for random reads** (about 0.87 us more
+per load, roughly 210 cycles per cache miss). The raw 8.5x of §21 is diluted by the interpreter's
+roughly 10 us per loop iteration. Moving the interpreter's own state to PSRAM as well (`psram-all`)
+adds under 0.1%.
+
+### What this measurement does not say
+
+- Both guests are a few KB of bytecode. A module larger than the data cache (DOOM) fetching its
+  bytecode from PSRAM under `psram-all` was not measured; under `psram-mem` such a module would not fit
+  the SRAM arena anyway
+- PSRAM at 80 MHz was not tried
+- Host calls that move guest buffers (`spi.write` of large blocks, assets reads) from PSRAM were not
+  measured beyond the 98-byte `spi.write` above
