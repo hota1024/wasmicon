@@ -1246,3 +1246,17 @@ Together with 8 MB of flash this is an N8R8-class module.
   cache-miss case, not a typical guest. Interpreter speed with linear memory in PSRAM was not measured
 - The PSRAM frequency was esp-hal's default (40 MHz); 80 MHz was not tried
 - `esp-storage` reading straight into a PSRAM buffer was not tried
+
+### The reserved PSRAM pins on hardware
+
+`b3adf03` reserves GPIO33..=37 on the esp32s3 profile. Checked the same day on this board:
+
+| Wiring table | Path | Result |
+|---|---|---|
+| `led = 33`, `35`, `37` in `[board.esp32s3.roles]` | `wasmicon check --board esp32s3` | rejected: `role gpio is reserved` |
+| `led = 38` | `wasmicon check --board esp32s3` | pass |
+| `led=35`, written to the config slot (0x110000) with `espflash write-bin`, bypassing the CLI | firmware built from `b3adf03`, boot log on UART0 | `wasmicon: role gpio is reserved, no roles` |
+| `led=38`, written the same way | firmware built from `01d2fdf` plus the same change | `wasmicon: roles led=38` |
+
+The config slot was left holding an empty table afterwards (`wasmicon: roles none`); the app slot holds
+`apps/rgb-led-rs` (1247 B, crc32 `52991a6d`).
