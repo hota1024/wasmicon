@@ -525,10 +525,22 @@ change.**
       - The RP2350 side is settled as the Pico 2 W (4 MB flash) (§1.1)
 - [ ] **§5-3 What to do about the ESP32-S3 RAM budget** (prerequisite for HTTP). DRAM is
       nearly exhausted (`.bss` 315 KB / `ARENA` 300 KB / native stack 17.4 KiB. §1.4).
-      Adding `esp-wifi` leaves two options:
-      - Lower `max_memory_pages` from 4 to 2. docs/abi-spec.md §6.2 says "the port decides
-        the limit", so **it is not a spec violation**, but **"the same binary runs on every
-        board" effectively breaks**
+      Measured (docs/verification-report.md §22): linking esp-radio costs **55,524 B of
+      internal SRAM whether or not Wi-Fi is started** (31,980 B of it is radio code kept in
+      IRAM), and starting Wi-Fi and scanning peaks at 49,048 B of heap, which fits in the
+      unused reclaimed region (`dram2_seg`, about 72 KiB). Without PSRAM a firmware that
+      links esp-radio can give linear memory 3 pages, not 4. Options:
+      - ~~One firmware that decides at boot, from the app's imports, whether to start Wi-Fi
+        and how much RAM the arena gets~~ -> **rejected by the measurement**: the boot-time
+        decision saves only the heap, which fits in `dram2_seg` anyway; the static cost
+        that takes the fourth page is paid by every app
+      - **Separate firmware builds**: plain (4 pages, no radio) and Wi-Fi (3 pages). The
+        app's imports say which one it needs (a network interface in `wit/` is itself an
+        ABI addition for the owner), the identity line's `if=` says which one is on the
+        device, and the CLI checks or picks. Costs a firmware variant per board
+      - Lower `max_memory_pages` for every ESP32-S3 firmware. docs/abi-spec.md §6.2 says
+        "the port decides the limit", so **it is not a spec violation**, but **"the same
+        binary runs on every board" effectively breaks**. Dominated by separate builds
       - **Put linear memory in PSRAM.** Possible on the board on hand (8 MiB octal PSRAM,
         §5-2). PSRAM reads were about 2.9x slower than SRAM sequentially and about 8.5x on
         cache misses (docs/verification-report.md §21), so the interpreter's own state

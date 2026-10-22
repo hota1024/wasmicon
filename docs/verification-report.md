@@ -1260,3 +1260,65 @@ Together with 8 MB of flash this is an N8R8-class module.
 
 The config slot was left holding an empty table afterwards (`wasmicon: roles none`); the app slot holds
 `apps/rgb-led-rs` (1247 B, crc32 `52991a6d`).
+
+## 22. What esp-radio costs in RAM on the ESP32-S3 (2026-10-22)
+
+Question (docs/TODO.md §5-3): can one firmware carry Wi-Fi and give its RAM to the arena when the app
+does not use the network, deciding at boot from the app's imports?
+
+A throwaway firmware outside the repository (esp-hal 1.2.2, esp-radio 1.0.0-beta.1 with `wifi`,
+esp-rtos 0.4.0, esp-alloc 0.11.0, release build, `build-std` with `alloc`) was built three ways:
+`none` without esp-radio; `link` with esp-radio linked but initialised only behind a run-time flag
+that is false; `init`, the same binary shape with the flag true. `link` and `init` have identical
+section sizes, which is the shape the one-firmware design would have.
+
+### Static RAM: about 54 KiB, paid whether or not Wi-Fi starts
+
+| Section | `none` | `link` / `init` | Difference |
+|---|---|---|---|
+| `.rwtext` | 4,976 | 8,804 | +3,828 |
+| `.rwtext.wifi` (radio code the linker script keeps in IRAM) | 0 | 31,980 | +31,980 |
+| `.data` + `.data.wifi` | 1,332 | 9,808 | +8,476 |
+| `.bss` | 88 | 11,328 | +11,240 |
+| Left for the stack | 334,340 | 278,816 | -55,524 |
+
+IRAM and DRAM share the same SRAM on the ESP32-S3 (`.rwdata_dummy` mirrors the IRAM use), so all
+55,524 B come out of what the arena and the native stack can have. Neither esp-hal 1.2.2 nor esp-radio
+1.0.0-beta.1 has an option that moves `.rwtext.wifi` to flash.
+
+### Heap: 49 KiB peak to start Wi-Fi and scan
+
+`init` on the Freenove board, with a 64 KiB heap in the reclaimed region (`#[ram(reclaimed)]`,
+`dram2_seg`, about 72 KiB, unused by `ports/esp32s3` today):
+
+| Step | Heap in use |
+|---|---|
+| `esp_rtos::start` | 0 |
+| `WifiController::new` | 46,844 B |
+| `set_config` (station, default) | 46,844 B |
+| `scan_async` (5 access points found, 169 ms) | 47,220 B |
+| Peak over the run | 49,048 B |
+
+esp-rtos and the radio were both started from inside the run-time branch; nothing before it had to
+change. `scan_async` was driven by a busy-polling `block_on` from the main task while esp-rtos
+preempted it.
+
+### Applied to `ports/esp32s3` (without PSRAM)
+
+| | Today | With esp-radio linked |
+|---|---|---|
+| Static use other than `ARENA` | 17,144 B | 72,668 B (64,476 B with the 8 KiB `SCRATCH` moved to `dram2_seg`) |
+| Native stack | 17,416 B | 17,416 B |
+| Room for `ARENA` | 307,200 B | at most 259,868 B |
+| Linear memory | 4 pages | 3 pages (4 pages need 256 KiB plus about 32 KiB of runtime structures) |
+
+So a boot-time split saves only the heap, and the heap fits in `dram2_seg`, which is free anyway. The
+cost that matters is static: every app on such a firmware loses a page, Wi-Fi or not.
+
+### What this measurement does not say
+
+- Connecting to an access point, DHCP, a TCP/IP stack and HTTP were not run (no credentials on hand);
+  their heap and static cost come on top. esp-radio's documentation sizes its example heap at
+  100 KiB in total
+- The interpreter's speed with esp-rtos ticking was not measured
+- Whether parts of the radio heap may live in PSRAM was not tried

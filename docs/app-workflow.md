@@ -273,12 +273,14 @@ sync and log lines collide. And **both boards have a free USB port** (the ESP32-
 
 **HTTP:**
 
-- **Start with ESP32-S3 + `esp-wifi`. The RAM budget is the real issue.** DRAM is
-  nearly exhausted today (`.bss` 315 KB / `ARENA` 300 KB / native stack 17.4 KiB;
-  docs/TODO.md §1.4). esp-wifi wants tens of KB of heap, so it is **either lower
-  `max_memory_pages` from 4 to 2 or move the arena to PSRAM**. The former is within
-  what docs/abi-spec.md §6.2 allows (the port decides the limit) but **effectively
-  breaks "the same binary runs on every board"**. The latter works on the board on hand (a
+- **Start with ESP32-S3 + Wi-Fi (`esp-radio`). The RAM budget is the real issue.** DRAM
+  is nearly exhausted today (`.bss` 315 KB / `ARENA` 300 KB / native stack 17.4 KiB;
+  docs/TODO.md §1.4). Linking esp-radio costs about 54 KiB of internal SRAM even
+  when Wi-Fi is never started, and starting it needs about 49 KiB of heap
+  (docs/verification-report.md §22), so it is **either a separate Wi-Fi firmware with
+  3 pages instead of 4, or linear memory in PSRAM**. The former is within what
+  docs/abi-spec.md §6.2 allows (the port decides the limit) but **an app that uses the
+  fourth page does not run on the Wi-Fi firmware**. The latter works on the board on hand (a
   Freenove ESP32-S3-WROOM board with 8 MiB of octal PSRAM; docs/verification-report.md
   §21), but **PSRAM is slower** (reads 2.9x sequential, 8.5x on cache misses) and a
   PSRAM-less module cannot do it -> docs/TODO.md §5-3
