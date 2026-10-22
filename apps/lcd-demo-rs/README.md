@@ -9,8 +9,8 @@ and GPIO, so the display alone is enough.
 Rust only. There is no AssemblyScript counterpart (unlike `sensor-display-*`,
 this app is not for comparing two implementations).
 
-The same `.wasm` runs on the Raspberry Pi Pico 2 (W) and the ESP32-S3
-DevKitC-1. The guest asks the host for pin numbers through
+The same `.wasm` runs on the Raspberry Pi Pico 2 (W) and the Freenove
+ESP32-S3-WROOM board. The guest asks the host for pin numbers through
 `board.pin-by-role`, so nothing board-specific is in the guest
 (docs/abi-spec.md §8). Portability is checked by flashing the same binary to
 both boards and cross-checking the traces (docs/verification-report.md §5).
@@ -82,14 +82,14 @@ not a supply. There are 8 GND pins (3 / 8 / 13 / 18 / 23 / 28 / 33 / 38).
 Serial (trace and log) is UART0: GP0=TX (pin 1) / GP1=RX (pin 2),
 115200 8N1. It is not USB, so a USB-serial adapter is needed (share GND).
 
-### ESP32-S3 DevKitC-1
+### Freenove ESP32-S3-WROOM board
 
-This wiring was verified on a DevKitC-1 on 2026-09-26
+This wiring was verified on a Freenove board on 2026-09-26
 (docs/verification-report.md §7). To use other pins: the roles are in
 `[board.esp32s3.roles]` of `wasmicon.toml`, and the SPI pins are `SPI2_SCK` /
 `SPI2_MOSI` / `SPI2_MISO` in `ports/esp32s3/src/board.rs`.
 
-| ILI9341 module | ESP32-S3 DevKitC-1 |
+| ILI9341 module | Freenove ESP32-S3-WROOM board |
 |---|---|
 | `VCC` | `3V3` |
 | `GND` | `G` (`GND`) |
@@ -101,7 +101,7 @@ This wiring was verified on a DevKitC-1 on 2026-09-26
 | `LED` / `BL` | `3V3` (same as `VCC`) |
 | `SDO` / `MISO` | `GPIO13` (may stay unconnected) |
 
-The DevKitC-1 silkscreen shows the GPIO numbers directly, so there is no
+The Freenove board's silkscreen shows the GPIO numbers directly, so there is no
 physical-pin lookup as on the Pico. All six signals above are in the
 `IO10`..`IO15` run.
 
@@ -119,7 +119,7 @@ the right), so `VCC` and `LED` can be fed from different pins. Unlike the
 Pico, there is no single-pin constraint.
 
 Serial (trace and log) is UART0: GPIO43=TX / GPIO44=RX, 115200 8N1. On the
-DevKitC-1 the USB-C port labeled `USB-UART` connects to it through a
+Freenove board the USB-C port labeled `USB-UART` connects to it through a
 USB-serial bridge, so one cable does both flashing and trace capture (no
 separate USB-serial adapter). The other port, `USB-OTG`, is native USB and
 this firmware prints nothing there (flashing alone works through
@@ -168,7 +168,7 @@ $w deploy "$app" --board rp2350
 RP2040 and does not work. From the second time on, if the firmware is
 unchanged, only the slot needs reflashing (step 3 only).
 
-### ESP32-S3 DevKitC-1
+### Freenove ESP32-S3-WROOM board
 
 ```bash
 # 1. Build and flash the firmware (build.sh sources ~/export-esp.sh)
@@ -180,7 +180,7 @@ espflash flash --non-interactive \
 $w deploy "$app" --board esp32s3 --monitor -o esp32s3.log
 ```
 
-`espflash` connects to the `USB-UART` port of the DevKitC-1. If several USB
+`espflash` connects to the `USB-UART` port of the Freenove board. If several USB
 serial devices are visible, pass `--port` (the name depends on the bridge
 chip; see "Wiring" above).
 
@@ -246,7 +246,7 @@ safe choice.
 
 ## When it does not work
 
-This setup is verified on both a Pico 2 W and an ESP32-S3 DevKitC-1
+This setup is verified on both a Pico 2 W and a Freenove ESP32-S3-WROOM board
 (docs/verification-report.md §6 / §7). If it still shows nothing, suspect in
 this order:
 
@@ -272,7 +272,7 @@ this order:
 the order the problems were actually hit in docs/verification-report.md §7:
 
 1. Not even the banner `wasmicon esp32s3` appears: wrong UART port. The
-   DevKitC-1 has two USB-C ports, and the trace comes out of the `USB-UART`
+   Freenove board has two USB-C ports, and the trace comes out of the `USB-UART`
    side (USB-serial bridge to GPIO43/44). The `USB-OTG` side is native USB
    and this firmware prints nothing there. The device name depends on the
    bridge chip, so check with `ls /dev/cu.usb*`
@@ -294,7 +294,7 @@ the order the problems were actually hit in docs/verification-report.md §7:
    - If `SPI2_SCK` / `SPI2_MOSI` were moved from GPIO12 / GPIO11, were both
      the constants and the table in docs/abi-spec.md §8 updated
 4. It stops partway and starts over: power. Feeding the backlight from the
-   breadboard 3V3 can be too much (the DevKitC-1 3V3 is the on-board
+   breadboard 3V3 can be too much (the Freenove board's 3V3 is the on-board
    regulator output)
 5. The image appears but turns white after drawing: see "The image
    disappears and the screen turns white after drawing" above. A pull-up on

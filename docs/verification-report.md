@@ -169,7 +169,7 @@ CI fail suddenly (which is exactly what happened here). **Whether to pin it is o
    - ESP32-S3: `sh ports/esp32s3/build.sh run --release` (espflash)
 4. Capture serial (115200 8N1 in all cases) to a file
    - RP2040 / RP2350: UART0 (GP0=TX, GP1=RX)
-   - ESP32-S3: UART0 (GPIO43/44; the DevKitC-1's `USB-UART` port is wired straight through the USB-serial
+   - ESP32-S3: UART0 (GPIO43/44; the Freenove board's `USB-UART` port is wired straight through the USB-serial
      bridge. The output of `espflash flash --monitor` can be captured as-is).
      **The bridge chip varies between units** (the official schematic has a CP2102N, but the board on hand has
      a CH343 and shows up as `/dev/cu.usbmodem*` on macOS. See the conditions table in §7).
@@ -956,7 +956,7 @@ causes:
   `waiting for download`. The LCD stayed dark. In §10 it flashed and ran through the same port, so what
   changed has not been pinned down
 - **Using the `USB-UART` side (CH343) with the CP2102N still connected to UART0 puts 2 transmitters on
-  GPIO44.** The DevKitC-1's CH343 TX is wired straight to GPIO44 on the board, so it fights the CP2102N's TX,
+  GPIO44.** The Freenove board's CH343 TX is wired straight to GPIO44 on the board, so it fights the CP2102N's TX,
   the Mac -> chip direction (flashing sync) breaks, and the result is `Failed to connect to the device`. The
   chip -> Mac direction (GPIO43) just has 2 receivers, so the trace is still readable and it is easy to miss.
   **If the CH343 is used, disconnect the CP2102N**
@@ -1120,7 +1120,7 @@ compared with `wasmicon trace diff`.
 
 | Board | Capture | Result |
 |---|---|---|
-| ESP32-S3 DevKitC-1 | `deploy --monitor` through the `USB-UART` port (CH343). Flash, reset and capture in one command; no `RST` press was needed this time | **identical in full, 20 lines**, against host and against blink-rs on host |
+| Freenove ESP32-S3-WROOM board | `deploy --monitor` through the `USB-UART` port (CH343). Flash, reset and capture in one command; no `RST` press was needed this time | **identical in full, 20 lines**, against host and against blink-rs on host |
 | Pico 2 W | `deploy --monitor` from BOOTSEL, trace on UART0 through a CP2102N | **identical in full, 20 lines**, against host and against the ESP32-S3 |
 
 Every host call succeeded (`pin-by-role` -> `role:led`, `pin.open`, 3 x `write` / `toggle`,
@@ -1168,8 +1168,8 @@ path that ran. Both runs were flashed with `espflash flash --after no-reset` and
 
 - The SPI waveform was not measured with a scope. Only the visible colors and the host-call trace were
   checked; the trace cannot show whether the LED latched the right color
-- The S3 run used a Freenove ESP32-S3-WROOM board, not the DevKitC-1 named elsewhere in this report.
-  Both carry the WS2812 on GPIO48
+- The S3 run used the Freenove ESP32-S3-WROOM board, which carries the WS2812 on GPIO48. Earlier
+  sections called the same board "DevKitC-1"
 
 ## 20. lcd-demo-rs on the ESP32-C5 (2026-10-20)
 

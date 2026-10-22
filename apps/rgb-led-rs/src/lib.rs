@@ -1,5 +1,5 @@
 //! Lights the on-board RGB LED (WS2812B) of the ESP32-C5-WIFI6-KIT and of the
-//! ESP32-S3 boards (Freenove ESP32-S3-WROOM, DevKitC-1).
+//! Freenove ESP32-S3-WROOM board.
 //!
 //! The esp32c5 and esp32s3 ports map `spi.bus` index 1 to a bus that drives
 //! only the SPI2 MOSI on the LED's data pin (GPIO27 on the C5, GPIO48 on the

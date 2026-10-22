@@ -62,7 +62,7 @@ ports/common/         HAL shared by the ports; only board-specific operations go
 ports/host/           PC port: mock HAL + trace. CI runs here
 ports/rp2040/         Raspberry Pi Pico WH (separate workspace; build-only, not evaluated)
 ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W (separate workspace, Cortex-M33)
-ports/esp32s3/        ESP32-S3 DevKitC-1 (separate workspace, esp toolchain)
+ports/esp32s3/        Freenove ESP32-S3-WROOM board (separate workspace, esp toolchain)
 ports/esp32c5/        ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT; separate workspace, RISC-V; hardware bring-up in progress)
 bindings/rust/        Rust bindings for guests
 bindings/assemblyscript/  AssemblyScript bindings for guests

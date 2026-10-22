@@ -12,7 +12,7 @@ history in `docs/handoff.md` (a historical record), and the verification status 
 
 ## 1. Work that needs hardware
 
-**A Raspberry Pi Pico 2 W and an ESP32-S3 DevKitC-1 are on hand** (both verified on
+**A Raspberry Pi Pico 2 W and a Freenove ESP32-S3-WROOM board are on hand** (both verified on
 hardware with `lcd-demo-rs` on 2026-09-26. docs/verification-report.md §6, §7).
 **The temperature / humidity sensor on hand is an SHT40** (2026-09-29. docs/decisions.md D-09
 was changed from SHT31/SHT30 to SHT4x and the guest driver was fixed).
@@ -59,7 +59,7 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
         without it the test fails with the misleading message that the measurement
         command differs)
 - [x] **Role names** (owner decision 2026-10-07: the defaults are final). `led` / `lcd-cs` / `lcd-dc` / `lcd-rst`. Changing them means three places (the comment in `wit/board.wit`, the table in docs/abi-spec.md §8, `profile` in `ports/common`). **Changing only a number is one place, `profile`**; adding to the vocabulary (names) also means `ROLE_NAMES` (`assert_role_names` rejects a mismatch at compile time) [Superseded: names are free-form and wiring lives in wasmicon.toml, §5-9]
-- [x] **An external LED serves as `led`** (closed 2026-10-07. **`led` is no longer a firmware role**. Role names have no fixed vocabulary; the wiring goes in the app's `wasmicon.toml` (§5-9). The blink apps' `apps/blink-*/wasmicon.toml` assign `led` to GP15 / GPIO2. Actually lighting an external LED stays in the Phase 4 blink item). No board has an onboard LED on a plain GPIO (Pico W/WH and Pico 2 W drive it through the CYW43439, the DevKitC-1 has a WS2812). Only the Pico 2 (no radio) has GP25 as a plain LED, but it is kept external to match the Pico 2 W
+- [x] **An external LED serves as `led`** (closed 2026-10-07. **`led` is no longer a firmware role**. Role names have no fixed vocabulary; the wiring goes in the app's `wasmicon.toml` (§5-9). The blink apps' `apps/blink-*/wasmicon.toml` assign `led` to GP15 / GPIO2. Actually lighting an external LED stays in the Phase 4 blink item). No board has an onboard LED on a plain GPIO (Pico W/WH and Pico 2 W drive it through the CYW43439, the Freenove board has a WS2812). Only the Pico 2 (no radio) has GP25 as a plain LED, but it is kept external to match the Pico 2 W
 - [x] **RP2350 board variant** -> fixed as **Pico 2 W** (RP2350A, GP0..GP29). `NUM_GPIO` stays 30
 - [x] **Treat RP2350 as Arm only?** (owner decision 2026-10-07: Arm (Cortex-M33) only. The RISC-V Hazard3 cores are out of scope). `ports/rp2350` targets Cortex-M33 (`thumbv8m.main-none-eabihf`) only. Whether RISC-V (Hazard3) produces the same trace is not part of the v0.1 verification
 
@@ -190,7 +190,7 @@ hardware and committed separately.
 ### 1.4 What to suspect first on hardware
 
 **RP2350 and ESP32-S3 are verified on hardware** (both on 2026-09-26). `lcd-demo-rs` ran on the
-Pico 2 W and the ESP32-S3 DevKitC-1, the host call trace is identical to the host port
+Pico 2 W and the Freenove ESP32-S3-WROOM board, the host call trace is identical to the host port
 (14,352 lines on both, including 3,272 `spi.write` CRC-32 values), and a picture appeared
 (docs/verification-report.md §6, §7). Of the concerns below, **those about GPIO / SPI
 register settings** are resolved on RP2350 / ESP32-S3 (the `ARENA` and native stack items

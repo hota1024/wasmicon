@@ -1,10 +1,10 @@
-//! Wasmicon port for the ESP32-S3 (DevKitC-1).
+//! Wasmicon port for the ESP32-S3 (Freenove ESP32-S3-WROOM).
 //!
 //! The guest `.wasm` is read from the app slot in flash with `esp-storage`,
 //! copied into the arena and handed to the runtime. The firmware embeds no
 //! app (docs/app-workflow.md §3.3). If the slot is empty, print the reason
 //! and park (`wasmicon_port::idle`; pins are not driven).
-//! Traces go to UART0 (GPIO43=TX, GPIO44=RX) at 115200 8N1. On the DevKitC-1
+//! Traces go to UART0 (GPIO43=TX, GPIO44=RX) at 115200 8N1. On the Freenove board
 //! UART0 is wired to the USB-serial bridge.
 //!
 //! SPI2 and I2C0 are implemented with the `esp-hal` drivers.

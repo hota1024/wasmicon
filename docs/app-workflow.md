@@ -278,7 +278,7 @@ sync and log lines collide. And **both boards have a free USB port** (the ESP32-
   docs/TODO.md §1.4). esp-wifi wants tens of KB of heap, so it is **either lower
   `max_memory_pages` from 4 to 2 or move the arena to PSRAM**. The former is within
   what docs/abi-spec.md §6.2 allows (the port decides the limit) but **effectively
-  breaks "the same binary runs on every board"**. The latter depends on the DevKitC-1
+  breaks "the same binary runs on every board"**. The latter depends on the Freenove board
   variant (N8R8 has 8 MB PSRAM; `esp-hal` has `psram`), and **linear memory in PSRAM
   is slower** (not measured) -> §5-3
 - **Pico 2 W / Pico WH have a CYW43439.** The usable driver `cyw43` assumes embassy
@@ -778,7 +778,7 @@ agree**. The values were locked in to the numbers from before the move, in
 ```
 profile::RP2040   2 pages / I2C and SPI not implemented / GPIO constraints (reserved and bus pins)
 profile::RP2350   4 pages / everything implemented   / same constraints (same header)
-profile::ESP32S3  4 pages / everything implemented   / DevKitC-1 constraints
+profile::ESP32S3  4 pages / everything implemented   / Freenove board constraints
 profile::HOST     Config::DEFAULT (loose) / the mock role table (host only)
 ```
 

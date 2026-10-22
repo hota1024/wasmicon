@@ -1,4 +1,4 @@
-//! Board implementation for the ESP32-S3 (DevKitC-1).
+//! Board implementation for the ESP32-S3 (Freenove ESP32-S3-WROOM).
 //!
 //! GPIOs are addressed by number at run time, so instead of typed pins this
 //! drives the GPIO / IO_MUX registers directly. The shared part of the HAL
@@ -78,7 +78,7 @@ const SIG_GPIO_OUT: u16 = 256;
 /// - 26..=32: SPI flash and PSRAM; touching them while executing from XIP
 ///   crashes the firmware
 /// - 43, 44: UART0, which carries the trace (wired to USB-serial on the
-///   DevKitC-1)
+///   Freenove board)
 const fn reserved(index: u32) -> bool {
     matches!(index, 22..=32 | 43 | 44)
 }
@@ -123,7 +123,7 @@ const SPI2_MOSI: u8 = 11;
 const SPI2_MISO: u8 = 13;
 
 /// MOSI of `spi.bus` index 1. GPIO48 drives the DIN of the on-board RGB LED
-/// (WS2812) on the Freenove ESP32-S3-WROOM board and on the DevKitC-1.
+/// (WS2812) on the Freenove ESP32-S3-WROOM board.
 ///
 /// SPI2 drives this pin with MOSI only (no SCK / MISO). The guest expands
 /// each WS2812 bit into several SPI bits (`apps/rgb-led-rs`). The GPIO matrix
@@ -141,7 +141,7 @@ pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
 }
 
-/// The DevKitC-1 board.
+/// The Freenove ESP32-S3-WROOM board.
 pub struct EspBoard<S: Serial> {
     serial: S,
     /// Flash, for the guest's asset reads (docs/app-workflow.md §3.10).

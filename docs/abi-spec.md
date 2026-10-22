@@ -316,7 +316,7 @@ No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
 
 How `index` is interpreted, and which pins carry SDA/SCL/SCK/MOSI/MISO, is decided by the port layer's board configuration. The guest sees only `index`. Initial assignment for the target app:
 
-| Purpose | WIT designation | ESP32-S3 (DevKitC-1) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
+| Purpose | WIT designation | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
 |---|---|---|---|---|---|
 | I2C bus (SHT4x) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
 | SPI bus (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | SPI2: SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
@@ -338,8 +338,8 @@ On the ESP32-C5, `spi.bus` index 1 is for the on-board RGB LED (WS2812B, wired d
 bit into several SPI bits and calls `write` (`apps/rgb-led-rs`). It is the same SPI2 as index 0, so
 **the two cannot be open at the same time** (the second `open` gets `busy`).
 
-The ESP32-S3 port does the same with GPIO48 (2026-10-20), where the Freenove ESP32-S3-WROOM board and the
-DevKitC-1 carry their on-board WS2812. On the Pico boards `spi.bus` index 1 is `unsupported`.
+The ESP32-S3 port does the same with GPIO48 (2026-10-20), where the Freenove ESP32-S3-WROOM board carries its
+on-board WS2812. On the Pico boards `spi.bus` index 1 is `unsupported`.
 
 The mapping from role names to GPIO numbers that `board.pin-by-role` (§7) answers from (the **wiring table**)
 **lives in the device's config slot, not in the firmware** (owner decision, 2026-10-07;
@@ -360,7 +360,7 @@ docs/app-workflow.md §3.9).
 
 The wiring used by the evaluation setup (SHT40 + ILI9341) is in `apps/*/wasmicon.toml`:
 
-| Role name | ESP32-S3 (DevKitC-1) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico 2 W | Apps that use it |
+| Role name | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico 2 W | Apps that use it |
 |---|---|---|---|---|
 | `lcd-cs` | GPIO10 | GPIO10 | GP17 | lcd-demo / sensor-display |
 | `lcd-dc` | GPIO14 | GPIO0 | GP20 | lcd-demo / sensor-display |
@@ -369,7 +369,7 @@ The wiring used by the evaluation setup (SHT40 + ILI9341) is in `apps/*/wasmicon
 
 `led` is just one of the names blink looks up (nothing special to the firmware).
 No board has an on-board LED on a plain GPIO, so an external LED is used
-(the Pico 2 W's LED is on the CYW43439 side; the ESP32-S3 DevKitC-1's is a WS2812).
+(the Pico 2 W's LED is on the CYW43439 side; the Freenove ESP32-S3-WROOM board's is a WS2812).
 
 **Because GPIO numbers differ per board**, achieving "the same binary, the same result" for the target app needs a mechanism that keeps the guest from hard-coding pin numbers. v0.1 adopted (b) below (§10 item 1, docs/decisions.md A-02); both alternatives are kept as the record:
 

@@ -1,4 +1,4 @@
-# Port for the ESP32-S3 (DevKitC-1).
+# Port for the ESP32-S3 (Freenove ESP32-S3-WROOM).
 # Xtensa is not supported by upstream Rust, so this uses the esp toolchain
 # from espup (docs/decisions.md P-10). Its own workspace: toolchain and target
 # differ from the root workspace.

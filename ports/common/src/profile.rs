@@ -274,7 +274,7 @@ pub const RP2350: Profile = Profile {
     assets: Some(assets_after(role_slot_after(PICO_SLOT), RP2350_FLASH)),
 };
 
-/// ESP32-S3 DevKitC-1.
+/// Freenove ESP32-S3-WROOM board.
 pub const ESP32S3: Profile = Profile {
     name: "esp32s3",
     config: MCU,
