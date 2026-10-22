@@ -5,26 +5,9 @@
 //! `Options::assets` list and that the calls produce the docs/abi-spec.md §9
 //! trace lines. The sample app is covered by `tests/apps.rs`.
 
-use std::path::PathBuf;
-use std::process::Command;
+mod common;
 
-fn wat_to_wasm(name: &str) -> Vec<u8> {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join(name);
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target")
-        .join(format!("{name}.wasm"));
-    let status = Command::new("wasm-tools")
-        .arg("parse")
-        .arg(&src)
-        .arg("-o")
-        .arg(&out)
-        .status()
-        .expect("cannot run wasm-tools");
-    assert!(status.success(), "wasm-tools parse failed");
-    std::fs::read(&out).unwrap()
-}
+use common::wat_to_wasm;
 
 fn run(assets: Vec<(String, Vec<u8>)>) -> String {
     let wasm = wat_to_wasm("assets.wat");

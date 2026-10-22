@@ -258,7 +258,7 @@ pub fn run(opts: &Options) -> Result<bool> {
     };
 
     // espflash `write-bin` resets by default (see above).
-    if !mode.shared_port && !reset(&plan)? {
+    if !mode.shared_port && !reboot()? {
         eprintln!("  written, but the reset failed; unplug and replug USB");
         return Ok(false);
     }
@@ -359,9 +359,13 @@ pub fn write_at(
     }
 }
 
-/// Resets the board so the app runs (Pico boards only; ESP32-S3's
-/// `write-bin` does it by default).
-fn reset(_plan: &Plan) -> Result<bool> {
+/// Resets a Pico board so the app runs (ESP32's `write-bin` does it by
+/// default). `picotool load` leaves the board in the bootloader; `deploy`
+/// and `assets write` both call this after it.
+///
+/// # Errors
+/// When picotool cannot be started. A failed reboot is `Ok(false)`.
+pub fn reboot() -> Result<bool> {
     spawn("picotool", &["reboot"])
 }
 

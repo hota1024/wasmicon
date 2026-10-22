@@ -109,6 +109,14 @@ fn a_missing_asset_file_fails_check() {
 
     let (wasm, m) = project("present", Some(1000));
     assert!(run(wasm, m, "rp2350"));
+
+    // A directory where the file should be is "no file" too: `run` and
+    // `assets pack` cannot read it, so `check` must not pass it.
+    let (wasm, m) = project("directory", None);
+    std::fs::create_dir(wasm.with_file_name("big.bin")).expect("cannot create");
+    let checks = check::asset_checks(Some(&m));
+    assert!(checks[0].len.is_none(), "a directory is not a file");
+    assert!(!run(wasm, m, "rp2350"));
 }
 
 #[test]

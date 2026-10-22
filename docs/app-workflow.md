@@ -661,7 +661,8 @@ offset  size  content
 - Each body starts on an erase-unit boundary, so a body is one contiguous range (on
   XIP boards the guest's `read` is a `memcpy` out of it) and can be rewritten alone later
 - **Empty (erased `0xff` / unused `0x00`) is "no assets", not a failure.** The firmware
-  prints `wasmicon: assets none` and runs; `open` answers `not-found`
+  prints `wasmicon: assets empty, no assets` and runs; `open` answers `not-found`. A
+  directory that was written with no entries prints `wasmicon: assets none`
 - **Two CRCs, two moments.** The table's CRC is checked at boot; one bad entry discards
   the whole directory (`wasmicon: <reason>, no assets`). A body's CRC is checked once,
   at the guest's first successful `open` of it, and the verdict is kept for the run: a

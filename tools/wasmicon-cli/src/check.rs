@@ -206,7 +206,8 @@ pub struct Options {
 pub struct AssetCheck {
     pub name: String,
     pub path: PathBuf,
-    /// The file's length, or `None` when it cannot be read.
+    /// The file's length, or `None` when there is no file there (a
+    /// directory counts as no file: `run` and `assets pack` cannot read it).
     pub len: Option<u64>,
 }
 
@@ -220,7 +221,10 @@ pub fn asset_checks(manifest: Option<&Manifest>) -> Vec<AssetCheck> {
                 .map(|(name, path)| AssetCheck {
                     name: name.clone(),
                     path: path.clone(),
-                    len: std::fs::metadata(path).ok().map(|md| md.len()),
+                    len: std::fs::metadata(path)
+                        .ok()
+                        .filter(std::fs::Metadata::is_file)
+                        .map(|md| md.len()),
                 })
                 .collect()
         })
@@ -228,8 +232,9 @@ pub fn asset_checks(manifest: Option<&Manifest>) -> Vec<AssetCheck> {
 }
 
 /// Length of the slot image the table would produce: the directory sector
-/// plus every body on a 4 KiB boundary. `None` when a file is missing (or
-/// too large for the format).
+/// plus every body on a 4 KiB boundary. `None` when a file is missing, or
+/// when the bodies cannot be laid out (one over 4 GiB, or the lot past
+/// the end of a 32-bit offset).
 #[must_use]
 pub fn assets_image_len(checks: &[AssetCheck]) -> Option<u64> {
     let mut dir = Directory::EMPTY;
@@ -710,36 +715,46 @@ fn print_verdict(
     // `[assets]` against this board's slot. Only sized when every file
     // exists (a missing one is reported in the module section).
     let mut fit_fails = 0;
-    if !assets.is_empty()
-        && let Some(image_len) = assets_image_len(assets)
-    {
-        match (assets_fit(p, image_len), p.assets) {
-            (Some(true), Some(sl)) => row(
-                "assets",
-                &format!("{} B image", thousands(image_len as usize)),
-                &format!(
-                    "fits in the {} assets slot ({} B)",
-                    p.name,
-                    thousands(sl.len as usize)
-                ),
-            ),
-            (Some(false), Some(sl)) => {
+    if !assets.is_empty() && assets.iter().all(|a| a.len.is_some()) {
+        match assets_image_len(assets) {
+            None => {
+                // The files exist but cannot be laid out: `assets pack`
+                // would refuse them too.
                 fit_fails = 1;
                 row(
                     "assets",
+                    "cannot size the image",
+                    "a file is larger than the slot format allows  <- fails",
+                );
+            }
+            Some(image_len) => match (assets_fit(p, image_len), p.assets) {
+                (Some(true), Some(sl)) => row(
+                    "assets",
                     &format!("{} B image", thousands(image_len as usize)),
                     &format!(
-                        "does not fit in the {} assets slot ({} B)  <- fails",
+                        "fits in the {} assets slot ({} B)",
                         p.name,
                         thousands(sl.len as usize)
                     ),
-                );
-            }
-            _ => row(
-                "assets",
-                &format!("{} B image", thousands(image_len as usize)),
-                "served from the files (no slot on the host)",
-            ),
+                ),
+                (Some(false), Some(sl)) => {
+                    fit_fails = 1;
+                    row(
+                        "assets",
+                        &format!("{} B image", thousands(image_len as usize)),
+                        &format!(
+                            "does not fit in the {} assets slot ({} B)  <- fails",
+                            p.name,
+                            thousands(sl.len as usize)
+                        ),
+                    );
+                }
+                _ => row(
+                    "assets",
+                    &format!("{} B image", thousands(image_len as usize)),
+                    "served from the files (no slot on the host)",
+                ),
+            },
         }
     }
 
