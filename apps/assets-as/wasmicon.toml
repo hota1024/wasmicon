@@ -1,0 +1,14 @@
+# App manifest (docs/app-workflow.md §4.7).
+# This app looks up no roles. It opens the two assets below, which
+# `wasmicon assets write` puts in the board's assets slot
+# (docs/app-workflow.md §3.10) and `wasmicon run` serves from these files.
+# The files are shared with assets-rs so the three versions read the same bytes.
+version = 1
+
+[requirements]
+pin-roles = []
+
+# Asset name -> file, relative to this directory. A name with a `.` needs quotes.
+[assets]
+"hello.txt" = "../assets-rs/assets/hello.txt"
+"pattern.bin" = "../assets-rs/assets/pattern.bin"

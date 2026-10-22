@@ -153,3 +153,15 @@ fn assets_rs_agrees_with_wasmtime() {
         "assets-rs",
     );
 }
+
+#[test]
+fn assets_as_agrees_with_wasmtime() {
+    assert_agrees_with(
+        &build_as_app("assets-as", "assets_as.wasm"),
+        wasmicon_host::Options {
+            assets: assets_rs_assets(),
+            ..Default::default()
+        },
+        "assets-as",
+    );
+}

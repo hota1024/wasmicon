@@ -616,75 +616,128 @@ fn assets_rs_assets() -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// assets-rs reads a text and a 4,100-byte pattern through
-/// `wasmicon:hal/assets@0.1.0` and checks every byte (docs/app-workflow.md §3.10).
-#[test]
-fn assets_rs_runs_on_host() {
-    let wasm = build_rust_app("assets-rs");
-    assert_within_feature_set(&wasm, "assets-rs");
+/// Runs an assets-* guest with the two fixtures served.
+fn run_with_assets(wasm: &[u8], label: &str) -> String {
     let opts = wasmicon_host::Options {
         trace: true,
         assets: assets_rs_assets(),
         ..Default::default()
     };
-    let trace = match wasmicon_host::run_wasm_opts(&wasm, opts) {
+    match wasmicon_host::run_wasm_opts(wasm, opts) {
         Ok(out) => out.trace,
         Err(e) => panic!(
-            "assets-rs execution failed: {} [{}]",
+            "{label} execution failed: {} [{}]",
             e.reason(),
             e.kind().name()
         ),
-    };
-    println!("{trace}");
-    assert_no_host_errors(&trace, "assets-rs");
+    }
+}
+
+/// Checks that an assets-* guest reads the text and the 4,100-byte pattern
+/// through `wasmicon:hal/assets@0.1.0` and checks every byte
+/// (docs/app-workflow.md §3.10).
+fn assert_assets_trace(trace: &str, label: &str) {
+    assert_no_host_errors(trace, label);
 
     // hello.txt: opened, measured, read whole and logged as text.
     assert!(
         trace.contains("> wasmicon:hal/assets@0.1.0/[static]blob.open(\"hello.txt\")\n< 0 [1]"),
-        "{trace}"
+        "{label}: {trace}"
     );
-    assert!(trace.contains("[method]blob.len(1)\n< 0 [27]"), "{trace}");
+    assert!(
+        trace.contains("[method]blob.len(1)\n< 0 [27]"),
+        "{label}: {trace}"
+    );
     assert!(
         trace.contains("[method]blob.read(1, 0, 27)\n< 0 [len=27 data=0x"),
-        "{trace}"
+        "{label}: {trace}"
     );
     assert!(
         trace.contains(r#"log(2, "Hello from the assets slot.")"#),
-        "{trace}"
+        "{label}: {trace}"
     );
     // pattern.bin takes the same handle once hello.txt is dropped, and is
     // read in five 1,024-byte chunks (the last one 4 bytes), crossing the
     // 4 KiB boundary of the slot.
     assert!(
         trace.contains("[static]blob.open(\"pattern.bin\")\n< 0 [1]"),
-        "{trace}"
+        "{label}: {trace}"
     );
     assert_eq!(
         trace.matches("[method]blob.read(").count(),
         1 + 5,
-        "{trace}"
+        "{label}: {trace}"
     );
     assert!(
         trace.contains("[method]blob.read(1, 4096, 4)\n< 0 [len=4 data=0x"),
-        "{trace}"
+        "{label}: {trace}"
     );
-    assert!(trace.contains(r#"log(2, "pattern ok")"#), "{trace}");
-    assert_eq!(trace.matches("[resource-drop]blob(1)").count(), 2);
+    assert!(
+        trace.contains(r#"log(2, "pattern ok")"#),
+        "{label}: {trace}"
+    );
+    assert_eq!(
+        trace.matches("[resource-drop]blob(1)").count(),
+        2,
+        "{label}: {trace}"
+    );
 }
 
-/// Without the assets the app reports the missing one and returns; it must not trap.
 #[test]
-fn assets_rs_without_the_assets_logs_and_exits() {
+fn assets_rs_runs_on_host() {
     let wasm = build_rust_app("assets-rs");
-    let trace = run(&wasm, "assets-rs");
+    assert_within_feature_set(&wasm, "assets-rs");
+    let trace = run_with_assets(&wasm, "assets-rs");
     println!("{trace}");
+    assert_assets_trace(&trace, "assets-rs");
+}
+
+#[test]
+fn assets_as_runs_on_host() {
+    let wasm = build_as_app("assets-as", "assets_as.wasm");
+    assert_within_feature_set(&wasm, "assets-as");
+    let trace = run_with_assets(&wasm, "assets-as");
+    println!("{trace}");
+    assert_assets_trace(&trace, "assets-as");
+}
+
+#[test]
+fn assets_c_runs_on_host() {
+    let wasm = build_c_app("assets-c", "assets_c.wasm");
+    assert_within_feature_set(&wasm, "assets-c");
+    let trace = run_with_assets(&wasm, "assets-c");
+    println!("{trace}");
+    assert_assets_trace(&trace, "assets-c");
+}
+
+/// The three versions produce the same trace: the same opens, lengths,
+/// chunked reads (with the data CRCs) and log lines (docs/decisions.md D-10).
+#[test]
+fn assets_rs_as_and_c_agree() {
+    let rs = run_with_assets(&build_rust_app("assets-rs"), "assets-rs");
+    let as_ = run_with_assets(&build_as_app("assets-as", "assets_as.wasm"), "assets-as");
+    let c = run_with_assets(&build_c_app("assets-c", "assets_c.wasm"), "assets-c");
+    assert_traces_equal(&rs, &as_);
+    assert_traces_equal(&rs, &c);
+}
+
+/// Without the assets each version reports the missing one and returns; none
+/// traps, and the three agree on that path too.
+#[test]
+fn assets_versions_agree_without_the_assets() {
+    let rs = run(&build_rust_app("assets-rs"), "assets-rs");
+    println!("{rs}");
     assert!(
-        trace.contains("[static]blob.open(\"hello.txt\")\n< 9\n"),
-        "not-found: {trace}"
+        rs.contains("[static]blob.open(\"hello.txt\")\n< 9\n"),
+        "not-found: {rs}"
     );
-    assert!(trace.contains(r#"log(0, "no asset hello.txt")"#), "{trace}");
+    assert!(rs.contains(r#"log(0, "no asset hello.txt")"#), "{rs}");
     assert!(
-        !trace.contains("pattern.bin"),
-        "stops at the first missing asset: {trace}"
+        !rs.contains("pattern.bin"),
+        "stops at the first missing asset: {rs}"
     );
+    let as_ = run(&build_as_app("assets-as", "assets_as.wasm"), "assets-as");
+    let c = run(&build_c_app("assets-c", "assets_c.wasm"), "assets-c");
+    assert_traces_equal(&rs, &as_);
+    assert_traces_equal(&rs, &c);
 }
