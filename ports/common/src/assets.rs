@@ -399,8 +399,9 @@ pub unsafe fn read_xip(
 /// Builds the one line printed to the serial port at boot.
 ///
 /// `wasmicon: assets doom1.wad=4196020 font.psf=3092` when the directory was
-/// read (`assets none` when empty), `wasmicon: <reason>, no assets`
-/// otherwise. A banner line, not a trace line (`>` / `<`), so `trace diff`
+/// read (`assets none` for a directory with no entries), and `wasmicon:
+/// <reason>, no assets` otherwise (an erased slot is `assets empty, no
+/// assets`). A banner line, not a trace line (`>` / `<`), so `trace diff`
 /// does not compare it.
 ///
 /// `out` of 384 bytes holds even `MAX_ENTRIES` entries with the longest names.

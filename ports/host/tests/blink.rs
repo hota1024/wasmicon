@@ -5,26 +5,12 @@
 //! that GPIO host calls produce the docs/abi-spec.md §9 trace lines and that
 //! `time` stays out of the trace. The real apps are covered by `tests/apps.rs`.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
-fn wat_to_wasm(name: &str) -> Vec<u8> {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join(name);
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target")
-        .join(format!("{name}.wasm"));
-    let status = Command::new("wasm-tools")
-        .arg("parse")
-        .arg(&src)
-        .arg("-o")
-        .arg(&out)
-        .status()
-        .expect("cannot run wasm-tools");
-    assert!(status.success(), "wasm-tools parse failed");
-    std::fs::read(&out).unwrap()
-}
+use common::wat_to_wasm;
 
 #[test]
 fn blink_runs_and_traces() {
