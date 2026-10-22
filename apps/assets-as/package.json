@@ -1,0 +1,13 @@
+{
+  "name": "assets-as",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Assets (AssemblyScript). Produces the same host-call sequence as assets-rs",
+  "type": "module",
+  "dependencies": {
+    "@wasmicon/hal": "*"
+  },
+  "scripts": {
+    "build": "asc assembly/index.ts --config asconfig.json --target release"
+  }
+}

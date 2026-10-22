@@ -5,7 +5,8 @@
   "workspaces": [
     "bindings/assemblyscript",
     "apps/blink-as",
-    "apps/sensor-display-as"
+    "apps/sensor-display-as",
+    "apps/assets-as"
   ],
   "devDependencies": {
     "assemblyscript": "^0.28.8"

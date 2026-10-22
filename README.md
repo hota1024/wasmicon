@@ -74,6 +74,7 @@ apps/                 Guests (separate workspace). Rust and AS versions of blink
                       bench-rs measures interpreter and host-call speed (same .wasm on host and hardware)
                       rgb-led-rs drives the on-board RGB LED (esp32c5 GPIO27, esp32s3 GPIO48)
                       assets-rs reads two assets from the assets slot and checks every byte
+                      assets-as and assets-c are its AssemblyScript and C versions (same trace)
 verify/               Verification tools: differential test against wasmtime, trace diff
 docs/                 Spec, design, verification report, remaining work
 ```
