@@ -295,7 +295,7 @@ were eliminated. That story is kept too: the same shape of failure will happen i
 
 | | |
 |---|---|
-| Board | a board carrying an ESP32-S3-WROOM-1 (2 ports, `USB-UART` / `USB-OTG`). chip rev v0.2, flash 8 MB, no PSRAM |
+| Board | a board carrying an ESP32-S3-WROOM-1 (2 ports, `USB-UART` / `USB-OTG`). chip rev v0.2, flash 8 MB, PSRAM not used (8 MiB octal PSRAM fitted; §21) |
 | Guest | `apps/lcd-demo-rs`. **The identical file flashed to the RP2350** (SHA-256 `fc470947ac08b230ccdc59e04e09aa11105a5c8754efd00533858470f11d2453`) |
 | Wiring | the defaults of docs/abi-spec.md §8 (CS=GPIO10 / DC=GPIO14 / RST=GPIO15 / SCK=GPIO12 / MOSI=GPIO11, MISO not connected) |
 | SPI | 16 MHz requested. APB is 80 MHz, so 80/5 gives exactly 16 MHz |
@@ -677,7 +677,7 @@ Features:          WiFi, BLE, Embedded Flash
 ```
 
 **Flash is 8 MB** (docs/TODO.md §5-2 resolved). **PSRAM does not appear in Features** -- it looks like it is
-not fitted (N8, not N8R8). **One option of §5-3 disappears** (the arena cannot be moved to PSRAM, so for HTTP
+not fitted (N8, not N8R8). **[Wrong: the board has 8 MiB of octal PSRAM; §21.]** **One option of §5-3 disappears** (the arena cannot be moved to PSRAM, so for HTTP
 the only choice is to lower `max_memory_pages` from 4 to 2). The evidence is espflash's output, so
 **confirming against the module marking would make it certain**.
 
@@ -1169,7 +1169,7 @@ path that ran. Both runs were flashed with `espflash flash --after no-reset` and
 - The SPI waveform was not measured with a scope. Only the visible colors and the host-call trace were
   checked; the trace cannot show whether the LED latched the right color
 - The S3 run used the Freenove ESP32-S3-WROOM board, which carries the WS2812 on GPIO48. Earlier
-  sections called the same board "DevKitC-1"
+  sections called the same board "DevKitC-1" (see §21)
 
 ## 20. lcd-demo-rs on the ESP32-C5 (2026-10-20)
 
@@ -1202,3 +1202,47 @@ could not show the faults. Three were found:
 - life-rs has not run on the C5 yet
 - The ILI9341 ID was not re-read after the wiring fix (the probe run that turned the screen red was not
   captured)
+
+## 21. The ESP32-S3 board has 8 MiB of octal PSRAM (2026-10-22)
+
+The ESP32-S3 board used throughout this report is a **Freenove ESP32-S3-WROOM board**. This report
+called it "DevKitC-1" until 2026-10-22; its USB-UART bridge is a CH343, while the official
+DevKitC-1 schematic has a CP2102N (§5). The module marking is not legible. The back of the board says
+`*:PSRAM PIN` and marks GPIO35, GPIO36 and GPIO37, the pins an octal-PSRAM WROOM-1 gives to the PSRAM.
+
+### `espflash board-info` does not show PSRAM
+
+The same chip (MAC `3c:0f:02:f5:04:6c`, read both through `board-info` on the CH343 port and as the USB
+serial number of the native USB-Serial-JTAG port) reports:
+
+```
+Chip type:         esp32s3 (revision v0.2)
+Flash size:        8MB
+Features:          WiFi, BLE, Embedded Flash
+```
+
+§7 read the missing PSRAM entry as "not fitted (N8, not N8R8)". **That reading was wrong**: the
+measurement below finds working PSRAM on this chip. The `Features` line is not evidence either way.
+
+### Measurement
+
+A throwaway firmware outside the repository (esp-hal 1.2.1, `unstable`, `CpuClock::max()`, release
+build) called `esp_hal::psram::Psram::new` with `PsramMode::OctalSpi` and default size detection, then
+reported over USB-Serial-JTAG:
+
+| | Result |
+|---|---|
+| Detected size | 8,388,608 B (8 MiB) |
+| Write a per-word pattern over all 2,097,152 words, read it back | 0 mismatches |
+| Sequential read, 1 MiB of `u32` | SRAM 10,934 us / PSRAM 31,951 us (about 2.9x) |
+| 262,144 pseudo-random `u32` reads | SRAM, 64 KiB range: 29,226 us / PSRAM, whole 8 MiB: 248,564 us (about 8.5x) |
+
+Together with 8 MB of flash this is an N8R8-class module.
+
+### What this measurement does not say
+
+- Quad mode was not tried; octal initialised on the first attempt
+- The random-read row compares a cache-resident SRAM range with an 8 MiB PSRAM range, so it is the
+  cache-miss case, not a typical guest. Interpreter speed with linear memory in PSRAM was not measured
+- The PSRAM frequency was esp-hal's default (40 MHz); 80 MHz was not tried
+- `esp-storage` reading straight into a PSRAM buffer was not tried

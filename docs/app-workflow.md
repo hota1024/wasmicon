@@ -278,9 +278,10 @@ sync and log lines collide. And **both boards have a free USB port** (the ESP32-
   docs/TODO.md §1.4). esp-wifi wants tens of KB of heap, so it is **either lower
   `max_memory_pages` from 4 to 2 or move the arena to PSRAM**. The former is within
   what docs/abi-spec.md §6.2 allows (the port decides the limit) but **effectively
-  breaks "the same binary runs on every board"**. The latter depends on the Freenove board
-  variant (N8R8 has 8 MB PSRAM; `esp-hal` has `psram`), and **linear memory in PSRAM
-  is slower** (not measured) -> §5-3
+  breaks "the same binary runs on every board"**. The latter works on the board on hand (a
+  Freenove ESP32-S3-WROOM board with 8 MiB of octal PSRAM; docs/verification-report.md
+  §21), but **PSRAM is slower** (reads 2.9x sequential, 8.5x on cache misses) and a
+  PSRAM-less module cannot do it -> docs/TODO.md §5-3
 - **Pico 2 W / Pico WH have a CYW43439.** The usable driver `cyw43` assumes embassy
   (async), which means rewriting the port away from the current blocking setup.
   The recommendation is **HTTP in v1 on ESP32-S3 only** -> §5-4

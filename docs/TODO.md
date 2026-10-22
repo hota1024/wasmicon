@@ -517,11 +517,11 @@ change.**
 - [x] **§5-2 Board variant** (measured 2026-10-04). Output of `espflash board-info`:
       **`Flash size: 8MB`**, `Features: WiFi, BLE, Embedded Flash`,
       `esp32s3 (revision v0.2)`, 40 MHz crystal
-      - **PSRAM does not appear in Features** -> apparently not fitted (N8, not N8R8).
-        **One option of §5-3 disappears** (the arena cannot move to PSRAM, so HTTP leaves
-        only lowering `max_memory_pages` from 4 to 2)
-      - The evidence is espflash's output, so **confirming against the module marking
-        (WROOM-1-N8 or N8R8) would make it certain**. Matters when deciding §5-3
+      - **The board has 8 MiB of octal PSRAM** (measured 2026-10-22,
+        docs/verification-report.md §21). PSRAM does not appear in espflash's Features, and
+        the first reading of that ("not fitted, N8") was wrong. The board is a Freenove
+        ESP32-S3-WROOM board (called DevKitC-1 until 2026-10-22); the module marking is not
+        legible, but 8 MB flash + 8 MiB octal PSRAM is an N8R8-class module
       - The RP2350 side is settled as the Pico 2 W (4 MB flash) (§1.1)
 - [ ] **§5-3 What to do about the ESP32-S3 RAM budget** (prerequisite for HTTP). DRAM is
       nearly exhausted (`.bss` 315 KB / `ARENA` 300 KB / native stack 17.4 KiB. §1.4).
@@ -529,9 +529,11 @@ change.**
       - Lower `max_memory_pages` from 4 to 2. docs/abi-spec.md §6.2 says "the port decides
         the limit", so **it is not a spec violation**, but **"the same binary runs on every
         board" effectively breaks**
-      - ~~Put the arena in PSRAM~~ -> **not an option**. The measurement of 2026-10-04 showed
-        no PSRAM (§5-2). Not fully closed until the marking confirms it, but it does not
-        appear in the Features of `espflash board-info`
+      - **Put linear memory in PSRAM.** Possible on the board on hand (8 MiB octal PSRAM,
+        §5-2). PSRAM reads were about 2.9x slower than SRAM sequentially and about 8.5x on
+        cache misses (docs/verification-report.md §21), so the interpreter's own state
+        should stay in SRAM. Only for boards that have PSRAM: see the PSRAM board profile
+        in §5-10
 - [ ] **§5-4 Do Wi-Fi on the Pico 2 W / Pico WH?** They use the CYW43439, and the practical
       driver `cyw43` assumes embassy (async). From the current blocking setup this means
       **rewriting the port**. Recommendation: limit v1 HTTP to the ESP32-S3
@@ -587,8 +589,20 @@ change.**
         slot is checked there today. espflash erases only the sectors it writes
         (docs/verification-report.md §10), so the risk is a firmware that grows past 1 MiB
       - **A PSRAM board profile** (ESP32-S3 N8R8 modules such as the Freenove board) with
-        the arena in PSRAM, so that an app the size of DOOM has room. Independent of the
-        slot; `esp-storage` reading straight into a PSRAM slice is to be confirmed
+        linear memory in PSRAM, so that an app the size of DOOM has room. Independent of the
+        slot. Known (docs/verification-report.md §21): the board on hand has 8 MiB, esp-hal
+        1.2 initialises it with `PsramMode::OctalSpi`, reads are 2.9x / 8.5x slower than SRAM
+        (sequential / cache miss). Still to settle:
+        - Built as its own profile and firmware (a PSRAM-less module has no PSRAM to map,
+          and `check --board` needs a static limit), not detected at run time
+        - Linear memory only in PSRAM: the runtime takes one arena today
+          (`Arena::alloc_rest`), so the port would hand it a second region. Measure the
+          interpreter with the whole arena in PSRAM first
+        - **Octal PSRAM also uses GPIO33..=37.** `reserved` in `ports/esp32s3/src/board.rs`
+          is 22..=32 today, so the wiring table can hand out GPIO35..=37, which this board
+          marks as PSRAM pins. Reserve them in the PSRAM profile (and decide whether the
+          plain profile should too, since the pins are wired to the PSRAM either way)
+        - `esp-storage` reading straight into a PSRAM slice
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost

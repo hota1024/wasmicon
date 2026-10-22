@@ -202,7 +202,7 @@ Not supported: SIMD, threads/atomics, exception-handling, tail-call, GC, the ref
 ### 6.2 Memory
 
 - Define exactly one `memory` and export it as `"memory"`. An imported memory is not allowed.
-- The minimum page count must not exceed the platform's limit. **The port decides the limit.** Reference values: RP2040 = 2 pages (128 KiB), RP2350 = 4 pages (256 KiB), ESP32-S3 (no PSRAM) = 4 pages (256 KiB).
+- The minimum page count must not exceed the platform's limit. **The port decides the limit.** Reference values: RP2040 = 2 pages (128 KiB), RP2350 = 4 pages (256 KiB), ESP32-S3 (PSRAM not used) = 4 pages (256 KiB).
 - `memory.grow` succeeds up to the limit and returns `-1` beyond it (no trap).
 - Data segments may be passive or active.
 

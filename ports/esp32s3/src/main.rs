@@ -60,8 +60,8 @@ const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3
 };
 
 /// Runtime arena; whatever is left becomes linear memory (`Arena::alloc_rest`).
-/// The ESP32-S3 has 512 KB of SRAM and no PSRAM here, so the size fits four
-/// pages of linear memory (256 KB).
+/// The ESP32-S3 has 512 KB of SRAM and the port does not use PSRAM, so the
+/// size fits four pages of linear memory (256 KB).
 static mut ARENA: [u8; wasmicon_port::profile::ESP32S3.arena] =
     [0; wasmicon_port::profile::ESP32S3.arena];
 
