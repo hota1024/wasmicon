@@ -77,10 +77,14 @@ const SIG_GPIO_OUT: u16 = 256;
 /// - 22..=25: do not exist on the ESP32-S3
 /// - 26..=32: SPI flash and PSRAM; touching them while executing from XIP
 ///   crashes the firmware
+/// - 33..=37: the extra data lines and DQS of octal PSRAM. The Freenove
+///   board's module has it in the package, so the pads stay wired to the
+///   PSRAM whether or not the firmware uses it (the board marks 35..=37 as
+///   PSRAM pins; 33 and 34 are not brought out)
 /// - 43, 44: UART0, which carries the trace (wired to USB-serial on the
 ///   Freenove board)
 const fn reserved(index: u32) -> bool {
-    matches!(index, 22..=32 | 43 | 44)
+    matches!(index, 22..=37 | 43 | 44)
 }
 
 // The wiring-table check (CLI and firmware, `wasmicon_port::roles`) uses the

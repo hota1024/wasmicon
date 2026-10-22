@@ -333,6 +333,11 @@ The ESP32-C5 assignment was taken from the schematic of the Waveshare ESP32-C5-W
 GPIO11/12 are the trace UART0 (CH343), 13/14 are native USB, and 15..=22 are flash /
 PSRAM; none of these are exposed to the guest.
 
+On the ESP32-S3, 26..=32 are flash / PSRAM, **33..=37 are the octal PSRAM's extra lines** and 43/44 are the
+trace UART0; none of these are exposed to the guest either. The Freenove ESP32-S3-WROOM board has octal PSRAM
+in the module package, so 35..=37 stay wired to it even though the port does not use PSRAM (2026-10-22,
+docs/verification-report.md §21).
+
 On the ESP32-C5, `spi.bus` index 1 is for the on-board RGB LED (WS2812B, wired directly to GPIO27 through 0 Ω)
 (2026-10-12). Only the MOSI of SPI2 is routed to GPIO27, so no wiring is needed. The guest expands each WS2812
 bit into several SPI bits and calls `write` (`apps/rgb-led-rs`). It is the same SPI2 as index 0, so

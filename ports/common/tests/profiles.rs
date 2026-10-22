@@ -190,7 +190,9 @@ fn gpio_limits_are_what_the_ports_have() {
     assert_eq!(profile::ESP32S3.gpio_count, 49);
     assert_eq!(
         profile::ESP32S3.reserved,
-        [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 43, 44]
+        [
+            22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44
+        ]
     );
     assert_eq!(profile::ESP32S3.bus_pins, [8, 9, 11, 12, 13, 48]);
     assert_eq!(profile::ESP32C5.gpio_count, 29);

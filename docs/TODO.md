@@ -598,10 +598,9 @@ change.**
         - Linear memory only in PSRAM: the runtime takes one arena today
           (`Arena::alloc_rest`), so the port would hand it a second region. Measure the
           interpreter with the whole arena in PSRAM first
-        - **Octal PSRAM also uses GPIO33..=37.** `reserved` in `ports/esp32s3/src/board.rs`
-          is 22..=32 today, so the wiring table can hand out GPIO35..=37, which this board
-          marks as PSRAM pins. Reserve them in the PSRAM profile (and decide whether the
-          plain profile should too, since the pins are wired to the PSRAM either way)
+        - ~~Octal PSRAM also uses GPIO33..=37~~ -> **reserved in the `esp32s3` profile
+          itself** (owner decision, 2026-10-22): the pads are wired to the PSRAM whether or
+          not the firmware uses it. A PSRAM-less N8 module loses GPIO35..=37 to this
         - `esp-storage` reading straight into a PSRAM slice
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are

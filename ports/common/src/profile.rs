@@ -171,8 +171,10 @@ const PICO_RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 const PICO_BUS_PINS: &[u32] = &[4, 5, 16, 18, 19];
 
 /// Reserved pins of the ESP32-S3. 22..=25 do not exist, 26..=32 are SPI flash /
-/// PSRAM, 43/44 are the trace UART0.
-const ESP32S3_RESERVED: &[u32] = &[22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 43, 44];
+/// PSRAM, 33..=37 are the octal PSRAM's extra lines, 43/44 are the trace UART0.
+const ESP32S3_RESERVED: &[u32] = &[
+    22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44,
+];
 
 /// Bus pins of the ESP32-S3. I2C0 = GPIO8/9, SPI2 = GPIO11/12/13, `spi.bus`
 /// index 1 = GPIO48 (the on-board RGB LED; SPI2 drives only MOSI there).
