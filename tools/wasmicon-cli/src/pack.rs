@@ -74,27 +74,33 @@ pub fn run(opts: &Options) -> Result<bool> {
     if let Some(p) = board
         && let Some(sl) = p.slot
     {
-        if sl.flasher == Flasher::Espflash {
-            // espflash takes a flash offset. It does `--after hard-reset` by
-            // default, so no separate reset is needed.
-            println!(
-                "-> flash: espflash write-bin --port <dev> {:#x} {}",
-                sl.offset,
-                out.display()
-            );
-            println!("  (no button needed; DTR/RTS resets the board)");
-        } else {
-            // picotool's `-o` is an absolute address, not a flash offset.
-            // An offset is rejected with "invalid memory range
-            // 0x00100000-..." (seen on Pico 2 W;
-            // docs/verification-report.md §9). XIP starts at 0x1000_0000.
-            let addr = XIP_BASE + u64::from(sl.offset);
-            println!("-> flash: picotool load -o {addr:#x} {}", out.display());
-            println!("  (hold BOOTSEL while plugging in USB first)");
-        }
+        flash_hint(sl, &out);
         println!("  `wasmicon deploy` does this in one command");
     }
     Ok(true)
+}
+
+/// Prints the flasher command that writes `image` to `sl`. Shared by `pack`
+/// (the app slot) and `assets pack` (the assets slot).
+pub fn flash_hint(sl: profile::Slot, image: &std::path::Path) {
+    if sl.flasher == Flasher::Espflash {
+        // espflash takes a flash offset. It does `--after hard-reset` by
+        // default, so no separate reset is needed.
+        println!(
+            "-> flash: espflash write-bin --port <dev> {:#x} {}",
+            sl.offset,
+            image.display()
+        );
+        println!("  (no button needed; DTR/RTS resets the board)");
+    } else {
+        // picotool's `-o` is an absolute address, not a flash offset.
+        // An offset is rejected with "invalid memory range
+        // 0x00100000-..." (seen on Pico 2 W;
+        // docs/verification-report.md §9). XIP starts at 0x1000_0000.
+        let addr = XIP_BASE + u64::from(sl.offset);
+        println!("-> flash: picotool load -o {addr:#x} {}", image.display());
+        println!("  (hold BOOTSEL while plugging in USB first)");
+    }
 }
 
 /// Start of XIP on RP2040 / RP2350. Base of the address passed to `picotool`.
