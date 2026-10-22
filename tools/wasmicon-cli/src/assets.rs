@@ -8,7 +8,7 @@
 //! and a multi-megabyte write does not belong in the app's edit-flash loop.
 
 use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::manifest::Manifest;
 use crate::{deploy, pack};
@@ -111,8 +111,8 @@ pub fn pack(opts: &PackOptions) -> Result<bool> {
         describe(&entries)
     );
 
-    if let (Some(p), Some(sl)) = (board, slot) {
-        print_flash_hint(p, sl, &out);
+    if let Some(sl) = slot {
+        pack::flash_hint(sl, &out);
         println!("  `wasmicon assets write` does this in one command");
     }
     Ok(true)
@@ -155,23 +155,4 @@ pub fn write(opts: &WriteOptions) -> Result<bool> {
     }
     println!("-> written; the board runs its app with the new assets");
     Ok(true)
-}
-
-/// The flasher command for an image at `sl`, as `pack` prints it for the app slot.
-fn print_flash_hint(p: &Profile, sl: Slot, out: &Path) {
-    match sl.flasher {
-        wasmicon_port::profile::Flasher::Espflash => {
-            println!(
-                "-> flash: espflash write-bin --port <dev> {:#x} {}",
-                sl.offset,
-                out.display()
-            );
-        }
-        wasmicon_port::profile::Flasher::Picotool => {
-            let addr = pack::XIP_BASE + u64::from(sl.offset);
-            println!("-> flash: picotool load -o {addr:#x} {}", out.display());
-            println!("  (hold BOOTSEL while plugging in USB first)");
-        }
-    }
-    let _ = p;
 }

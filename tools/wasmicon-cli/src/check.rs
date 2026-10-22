@@ -272,9 +272,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         .filter(|m| !m.pin_roles.is_empty())
         .map(|m| m.pin_roles.as_slice());
     let assets = asset_checks(opts.manifest.as_ref());
-    // A missing file is common to every board, like a bad import.
-    let missing = assets.iter().filter(|a| a.len.is_none()).count();
-    print_module(&opts.path, &wasm, &facts, declared, &assets);
+    // A missing asset file is common to every board, like a bad import.
+    let missing = print_module(&opts.path, &wasm, &facts, declared, &assets);
 
     let common = facts.failures() + missing;
     let mut all_ok = common == 0;
@@ -536,13 +535,15 @@ fn reason(e: wasmicon_core::Error) -> String {
 
 // ---- printing ----
 
+/// Prints the board-independent section. Returns the number of `[assets]`
+/// files that are missing (failures common to every board).
 fn print_module(
     path: &Path,
     wasm: &[u8],
     f: &Facts,
     declared: Option<&[String]>,
     assets: &[AssetCheck],
-) {
+) -> usize {
     let name = path.file_name().unwrap_or(path.as_os_str());
     println!("{}  {} B", name.to_string_lossy(), thousands(wasm.len()));
     println!();
@@ -636,7 +637,7 @@ fn print_module(
             &format!("{} of {} files missing", missing.len(), assets.len()),
             "<- fails",
         );
-        for a in missing {
+        for a in &missing {
             println!("         - {}  not found at {}", a.name, a.path.display());
         }
     }
@@ -644,14 +645,11 @@ fn print_module(
     // Everything above is board-independent. Mixing it into the per-board
     // sections would repeat the same failure for every board and hide which
     // ones are board-specific.
-    let common = f.failures() + missing_count(assets);
+    let common = f.failures() + missing.len();
     if common > 0 {
         println!("-> fails on every board ({common} failures)");
     }
-}
-
-fn missing_count(assets: &[AssetCheck]) -> usize {
-    assets.iter().filter(|a| a.len.is_none()).count()
+    missing.len()
 }
 
 /// Prints one board's section. Returns the number of asset failures on this

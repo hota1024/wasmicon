@@ -76,15 +76,16 @@ fn opts(path: PathBuf, board: Option<&str>) -> deploy::Options {
 }
 
 #[test]
-fn a_runnable_app_gets_an_image_and_an_address() {
+fn a_runnable_app_gets_an_image_and_a_slot() {
     let dir = tmp("ok");
     let app = dir.join("blink.wasm");
     std::fs::write(&app, build("blink-rs")).expect("cannot write");
 
     let plan = prepared(&opts(app, Some("rp2350")));
     assert_eq!(plan.board.name, "rp2350");
-    // picotool takes an address, not an offset.
-    assert_eq!(plan.addr, 0x1010_0000);
+    // The app slot at 1 MiB; `write_at` turns it into the address picotool
+    // takes (XIP_BASE + offset).
+    assert_eq!(plan.slot.offset, 0x10_0000);
     assert_eq!(plan.image_len, plan.wasm_len + 16);
     assert!(plan.image.is_file(), "the image is written next to the app");
     assert!(

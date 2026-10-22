@@ -49,8 +49,6 @@ pub struct Plan {
     pub slot: Slot,
     /// The slot image that was written.
     pub image: PathBuf,
-    /// The address passed to `picotool` (not the offset).
-    pub addr: u64,
     pub wasm_len: usize,
     pub image_len: usize,
     pub crc: u32,
@@ -161,7 +159,6 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         board,
         slot,
         image: out,
-        addr: pack::XIP_BASE + u64::from(slot.offset),
         wasm_len: wasm.len(),
         image_len: app.len(),
         crc: pack::crc_of(&image),
@@ -177,9 +174,9 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 pub fn run(opts: &Options) -> Result<bool> {
     let plan = prepare(opts)?;
 
-    // The summary shows the slot offset. `plan.addr` is the absolute address
-    // picotool takes and means nothing on ESP32-S3 (which flashes by offset).
-    // Showing the address would be wrong for one board or the other.
+    // The summary shows the slot offset. The absolute address picotool
+    // takes (`write_at` derives it) means nothing on ESP32-S3, which flashes
+    // by offset; showing it would be wrong for one board or the other.
     println!(
         "{} -> {} slot (+{:#x})  {} B (wasm {} B, crc32 {:08x})",
         plan.image.display(),
