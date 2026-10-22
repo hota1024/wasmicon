@@ -1376,3 +1376,29 @@ adds under 0.1%.
 - PSRAM at 80 MHz was not tried
 - Host calls that move guest buffers (`spi.write` of large blocks, assets reads) from PSRAM were not
   measured beyond the 98-byte `spi.write` above
+
+## 24. `esp-storage` reads into PSRAM (2026-10-22)
+
+Question (docs/TODO.md §5-10): can `FlashStorage::read` write straight into a PSRAM buffer? The port
+reads the app into the arena and the guest's asset reads land in linear memory, so with the arena in
+PSRAM (§23) both destinations would be PSRAM.
+
+`esp-storage` 0.10.0 reads through `esp_rom_spiflash_read` into a 4 KiB buffer on the stack (internal
+SRAM, inside a critical section) and then copies to the caller's slice with ordinary code, so the
+caller's buffer is never touched while the ROM routine drives the SPI bus. Checked on the Freenove
+board with a throwaway firmware outside the repository (esp-hal 1.2.1, octal PSRAM, 240 MHz):
+
+| Check | Result |
+|---|---|
+| Flash 0x0..0x400000 read in 64 KiB pieces into SRAM vs. in one call into PSRAM | same CRC-32 (`89f1577a`) |
+| Unaligned offset / length into PSRAM (1+3, 4095+2, 0x10003+5000, 0x100001+65535) against the same reads into SRAM | 4 of 4 equal |
+| Eight more 4 MiB reads into PSRAM | 8 of 8 same CRC |
+| A 4 MiB guard pattern elsewhere in PSRAM, checked after all of the above | 0 of 1,048,576 words changed |
+| One 4 MiB read into PSRAM | 772,953 us (about 5.4 MB/s) |
+
+### What this measurement does not say
+
+- Writes and erases were not tried (the port does not write flash today)
+- Reads were made with nothing else using PSRAM concurrently; the port is single-threaded, so that is
+  the case that matters, but an interrupt handler touching PSRAM during a read was not tried
+- The SRAM row's time includes the CRC, so it is not a read speed and is not compared

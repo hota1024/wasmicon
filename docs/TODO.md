@@ -616,7 +616,10 @@ change.**
         - ~~Octal PSRAM also uses GPIO33..=37~~ -> **reserved in the `esp32s3` profile
           itself** (owner decision, 2026-10-22): the pads are wired to the PSRAM whether or
           not the firmware uses it. A PSRAM-less N8 module loses GPIO35..=37 to this
-        - `esp-storage` reading straight into a PSRAM slice
+        - ~~`esp-storage` reading straight into a PSRAM slice~~ -> **works** (2026-10-22,
+          docs/verification-report.md §24): it reads through a stack buffer in SRAM and then
+          copies, so 4 MiB into PSRAM matched the SRAM read and left the rest of PSRAM intact
+          (about 5.4 MB/s)
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost
