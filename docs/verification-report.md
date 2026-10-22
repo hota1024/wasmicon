@@ -1315,11 +1315,41 @@ preempted it.
 So a boot-time split saves only the heap, and the heap fits in `dram2_seg`, which is free anyway. The
 cost that matters is static: every app on such a firmware loses a page, Wi-Fi or not.
 
+### Connecting and fetching over HTTP (2026-10-23)
+
+The same probe, extended with embassy-net 0.9.1 (`dhcpv4`, `dns`, `tcp`, 3 sockets) run by esp-rtos's
+embassy executor, joined a WPA2 access point, took a DHCP lease, resolved `example.com` and fetched
+`/` over plain HTTP (one TCP socket with a 4 KiB receive and a 1 KiB send buffer). The heap was
+100 KiB (64 KiB in `dram2_seg` plus 36 KiB in `.bss`) so it could not run out. The credentials were
+passed as build-time environment variables; the binaries were deleted afterwards, and a read-back of
+flash 0x9000..0x100000 found neither the SSID nor the password.
+
+| Step | Time | Heap in use |
+|---|---|---|
+| Scan (9 access points) | 181 ms | 47,596 B |
+| `connect_async` | 1,828 ms | 47,548 B |
+| embassy-net stack created | | 47,776 B |
+| DHCP lease | 563 ms | 47,724 B |
+| DNS A query | | 47,724 B |
+| TCP connect to port 80 | 1,009 ms | 47,996 B |
+| `GET /` (890 B, `HTTP/1.1 200`) | 24 ms | 47,800 B |
+| Peak over the run | | 51,208 B |
+
+The network stack adds 11,104 B of static RAM on top of esp-radio (`.rwtext` +1,352, `.data` +1,096,
+`.bss` +8,656 not counting the 36 KiB heap; the socket buffers and `StackResources<3>` are 7,888 B of
+it). Linking esp-radio plus a TCP/IP stack therefore costs about 66,628 B of internal SRAM, which leaves
+`ARENA` at most 248,764 B on `ports/esp32s3` without PSRAM: still 3 pages.
+
+`embassy-time` timers need wakers from an embassy executor; a hand-written busy `block_on` panics in
+the first DHCP timer. A port that offers networking would run an executor (esp-rtos provides one)
+next to the interpreter.
+
 ### What this measurement does not say
 
-- Connecting to an access point, DHCP, a TCP/IP stack and HTTP were not run (no credentials on hand);
-  their heap and static cost come on top. esp-radio's documentation sizes its example heap at
-  100 KiB in total
+- TLS (HTTPS) was not tried, so its heap and static RAM are unknown
+- Whether 51 KiB peak fits a 64 KiB heap alone was not run (the heap had a second 36 KiB region)
+- The guest-facing side (a WIT network interface, how a blocking interpreter drives the executor) is
+  not designed
 - The interpreter's speed with esp-rtos ticking was not measured
 - Whether parts of the radio heap may live in PSRAM was not tried
 

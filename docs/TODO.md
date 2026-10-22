@@ -528,8 +528,10 @@ change.**
       Measured (docs/verification-report.md §22): linking esp-radio costs **55,524 B of
       internal SRAM whether or not Wi-Fi is started** (31,980 B of it is radio code kept in
       IRAM), and starting Wi-Fi and scanning peaks at 49,048 B of heap, which fits in the
-      unused reclaimed region (`dram2_seg`, about 72 KiB). Without PSRAM a firmware that
-      links esp-radio can give linear memory 3 pages, not 4. Options:
+      unused reclaimed region (`dram2_seg`, about 72 KiB). Connecting, DHCP, DNS and a plain
+      HTTP GET through embassy-net peak at 51,208 B of heap and add 11,104 B of static RAM
+      (2026-10-23). Without PSRAM a firmware that links esp-radio and a TCP/IP stack can
+      give linear memory 3 pages, not 4. TLS is not measured. Options:
       - ~~One firmware that decides at boot, from the app's imports, whether to start Wi-Fi
         and how much RAM the arena gets~~ -> **rejected by the measurement**: the boot-time
         decision saves only the heap, which fits in `dram2_seg` anyway; the static cost
