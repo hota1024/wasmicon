@@ -202,7 +202,7 @@ Not supported: SIMD, threads/atomics, exception-handling, tail-call, GC, the ref
 ### 6.2 Memory
 
 - Define exactly one `memory` and export it as `"memory"`. An imported memory is not allowed.
-- The minimum page count must not exceed the platform's limit. **The port decides the limit.** Reference values: RP2040 = 2 pages (128 KiB), RP2350 = 4 pages (256 KiB), ESP32-S3 (PSRAM not used) = 4 pages (256 KiB).
+- The minimum page count must not exceed the platform's limit. **The port decides the limit.** Reference values: RP2040 = 2 pages (128 KiB), RP2350 = 4 pages (256 KiB), ESP32-S3 = 4 pages (256 KiB), the same board with its PSRAM as the arena (`esp32s3-psram`) = 112 pages (7 MiB; provisional, docs/TODO.md §5-10).
 - `memory.grow` succeeds up to the limit and returns `-1` beyond it (no trap).
 - Data segments may be passive or active.
 
@@ -335,7 +335,7 @@ PSRAM; none of these are exposed to the guest.
 
 On the ESP32-S3, 26..=32 are flash / PSRAM, **33..=37 are the octal PSRAM's extra lines** and 43/44 are the
 trace UART0; none of these are exposed to the guest either. The Freenove ESP32-S3-WROOM board has octal PSRAM
-in the module package, so 35..=37 stay wired to it even though the port does not use PSRAM (2026-10-22,
+in the module package, so 35..=37 stay wired to it whether or not the firmware uses PSRAM (2026-10-22,
 docs/verification-report.md §21).
 
 On the ESP32-C5, `spi.bus` index 1 is for the on-board RGB LED (WS2812B, wired directly to GPIO27 through 0 Ω)

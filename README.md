@@ -116,6 +116,9 @@ sh bindings/c/build.sh apps/blink-c/build/blink_c.wasm apps/blink-c/src/main.c
 (cd ports/rp2040 && cargo build --release)
 (cd ports/rp2350 && cargo build --release)
 sh ports/esp32s3/build.sh build --release   # sources ~/export-esp.sh, then calls cargo
+# The same board with its PSRAM as the arena (--board esp32s3-psram, 112 pages;
+# needs a module with 8 MiB of PSRAM, docs/app-workflow.md §4.7)
+sh ports/esp32s3/build.sh build --release --features psram
 (cd ports/esp32c5 && cargo build --release)  # RISC-V; upstream Rust is enough
 
 # Differential test against wasmtime (interpreter correctness)

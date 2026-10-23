@@ -1137,9 +1137,37 @@ table".
 | **Unknown keys are errors** | Silently ignoring them hides "I set it but it has no effect". Typos stop here |
 | **`version`** | Newer than the CLI supports: error. Older: accepted |
 | **The toml is optional (but required to use roles on hardware)** | `check` / `run` **work without a toml**. Real boards have no default table, though, so an app `deploy`ed without a toml gets no roles at all |
+| **One wiring table per circuit board** | A firmware variant of a board reads that board's table: `--board esp32s3-psram` uses `[board.esp32s3.roles]` (below). A `[board.esp32s3-psram]` table is an error, since it would never be read |
 
 - **`check` / `deploy` inside a project** -> declaration and wiring table are cross-checked
 - **A bare `.wasm` received on its own** -> roles are not cross-checked (they cannot be enumerated)
+
+#### One board, two firmwares: `esp32s3` and `esp32s3-psram`
+
+The Freenove ESP32-S3-WROOM board carries 8 MiB of octal PSRAM
+(docs/verification-report.md §21). `ports/esp32s3` builds two firmwares for it, and
+each has its own profile, because `check --board` needs a static page limit and a
+module without PSRAM has nothing to map:
+
+| `--board` | Firmware | Arena | Page limit |
+|---|---|---|---|
+| `esp32s3` | `build.sh build --release` | 300 KiB of SRAM | 4 |
+| `esp32s3-psram` | `build.sh build --release --features psram` | 8 MiB of PSRAM | 112 (provisional; docs/TODO.md §5-10) |
+
+Everything else is the board's: pins, reserved pins, bus pins, the app, config and
+assets slots, and the wiring table (`Profile::wiring` names `esp32s3`).
+`ports/common/tests/profiles.rs` fails if the two profiles ever disagree on a pin or
+a slot. So one `.wasm` and one `wasmicon.toml` serve both:
+
+- `check` without `--board` prints one row more. An app meant for both stays within
+  the 4 pages of `esp32s3`; a larger one passes only `esp32s3-psram`
+- `deploy` takes the board from `--board` (or `[defaults] board`, which names one).
+  It does not ask the device which firmware it runs yet (docs/TODO.md §5): a large app
+  deployed with `--board esp32s3-psram` to the plain firmware passes `check` and fails
+  in `instantiate` on the board. The identity line (`wasmicon id esp32s3-psram ...
+  pages=112`) says which firmware is there
+- The PSRAM firmware prints `psram missing or smaller than the arena, halt` after the
+  identity line on a module without PSRAM
 
 `wasmicon.toml` is **searched for upward from the current directory** (like cargo).
 If the declaration and the wiring table disagree, **it stops before flashing, with no

@@ -607,20 +607,19 @@ change.**
         slot. Known (docs/verification-report.md §21): the board on hand has 8 MiB, esp-hal
         1.2 initialises it with `PsramMode::OctalSpi`, reads are 2.9x / 8.5x slower than SRAM
         (sequential / cache miss). Still to settle:
-        - Built as its own profile and firmware (a PSRAM-less module has no PSRAM to map,
-          and `check --board` needs a static limit), not detected at run time
-        - **Board name and wiring table.** Options: (a) a separate board `esp32s3-psram`
-          with its own `[board.esp32s3-psram.roles]`, which means writing the same board's
-          wiring twice; (b) `--board esp32s3 --variant psram`, which adds a variant concept
-          to the CLI; (c) a separate profile `esp32s3-psram` that reads the wiring table of
-          `esp32s3` (one new `Profile` field naming the table). Recommendation: (c), the
-          smallest change. With (c) one `.wasm` and one `wasmicon.toml` serve both
-          boards: `check` without `--board` prints one more row, an app that must run on
-          both stays within the 4 pages of `esp32s3`, and `deploy` picks the board with
-          `--board` (`[defaults] board` holds only one name)
-        - **Page limit.** 8 MiB is 128 pages; 96 to 112 leaves room for Wi-Fi buffers.
-          Better settled after measuring DOOM. The other `Config` limits (value stack,
-          call depth, table size) may need the same review
+        - ~~Built as its own profile and firmware, not detected at run time~~ and
+          ~~board name and wiring table~~ -> **option (c), implemented 2026-10-23** (owner
+          decision): the profile `esp32s3-psram` (`ports/esp32s3` with `--features psram`,
+          the whole arena in PSRAM) reads `[board.esp32s3.roles]` through
+          `Profile::wiring`; `[board.esp32s3-psram]` is rejected
+          (docs/app-workflow.md §4.7). The options that were weighed: (a) a separate
+          board with its own table, the same wiring written twice; (b)
+          `--board esp32s3 --variant psram`, a new CLI concept. Not yet run on hardware
+        - **Page limit.** **112 pages (7 MiB) for now** (2026-10-23, provisional; the 1 MiB
+          left in the 8 MiB arena holds the copied app, the decoded module and `Exec`).
+          Better settled after measuring DOOM; Wi-Fi buffers in PSRAM would need the arena
+          to shrink. The other `Config` limits (value stack, call depth, table size) may
+          need the same review
         - **App slot size.** The 64 KiB app slot cannot hold a DOOM-sized `.wasm`, so the
           larger linear memory alone does not make room for one. A larger slot moves the
           config and assets slots, so decide whether only this profile gets the new layout
