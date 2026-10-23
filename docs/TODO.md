@@ -617,6 +617,12 @@ change.**
           `--board esp32s3 --variant psram`, a new CLI concept. Run on the Freenove board
           2026-10-23 (docs/verification-report.md §25): matches the host trace, takes its
           wiring from `[board.esp32s3.roles]` and grows linear memory past 4 pages
+        - **Quad PSRAM modules.** A second board on hand is an N8R2 (2 MiB of quad PSRAM,
+          docs/verification-report.md §25): `esp32s3-psram` halts on it as designed, and
+          the plain `esp32s3` firmware runs. Open: whether such modules get a profile of
+          their own (quad mode, an arena under 2 MiB, about 24 pages) or stay on
+          `esp32s3`. Quad PSRAM does not use GPIO33..=37, so the reservation in the
+          `esp32s3` profile costs these modules five pins they could use
         - **Page limit.** **112 pages (7 MiB) for now** (2026-10-23, provisional; the 1 MiB
           left in the 8 MiB arena holds the copied app, the decoded module and `Exec`).
           Better settled after measuring DOOM; Wi-Fi buffers in PSRAM would need the arena

@@ -1465,3 +1465,30 @@ slot (re-deployed with `--board esp32s3`, again identical to host over 978 lines
 - Run from the repository root, `deploy` found no `wasmicon.toml` and wrote an empty wiring table
   without stopping. That is the known gap in docs/TODO.md ("stop `deploy` when no manifest is found"),
   not something this profile adds
+
+### A second board: ESP32-S3-WROOM with 2 MiB of quad PSRAM
+
+A board marked only "ESP32-S3-WROOM" (rev v0.2, 8 MB flash, MAC `d8:3b:da:78:32:94`), firmware and
+CLI built from `9f059b2`:
+
+| Check | Result |
+|---|---|
+| `esp32s3-psram` firmware | identity `pages=112`, then `wasmicon: psram missing or smaller than the arena, halt`: the halt path works |
+| The throwaway probe of §21 with `PsramMode::OctalSpi` | `size=0`: octal init failed, nothing mapped |
+| The same probe with `PsramMode::QuadSpi` | **2 MiB mapped**; a pattern over all 524,288 words read back with 0 errors; 1 MiB sequential read 6.5x and random reads 19x slower than SRAM |
+| Plain `esp32s3` firmware, `apps/rgb-led-rs` | **identical in full to host, 978 lines** |
+
+So the module is an N8R2 (quad PSRAM). The `esp32s3-psram` firmware cannot use it: it asks for octal
+mode and 8 MiB.
+
+Getting there:
+
+- Over the board's USB-serial bridge (WCH, the same kind as on the Freenove board), short commands
+  worked but every command carrying a data block failed with `Other (0x1)` (`MemData` for the stub,
+  `FlashData` without it). Flashing went through the native USB port (USB-Serial-JTAG) instead, and the
+  bridge was used only to read UART0
+- Opening the bridge with DTR/RTS asserted, or resetting through the native USB port while the bridge
+  was open, booted the chip into download mode (`boot:0x0`). A reader that opens the bridge with
+  DTR/RTS deasserted (pyserial) caused a power-on reset and a normal boot, which was enough to capture
+  each run
+- The firmware that came on the board was overwritten without a backup
