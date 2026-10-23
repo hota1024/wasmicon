@@ -494,7 +494,7 @@ fn iface_of(module: &str) -> Option<&str> {
 ///
 /// The host uses the mock's table (`profile::HOST.roles`). Hardware boards
 /// have no default table, so only the roles given a number in
-/// `[board.<name>.roles]` of `wasmicon.toml` count (`deploy` writes them to
+/// `[board.<wiring>.roles]` of `wasmicon.toml` count (`deploy` writes them to
 /// the config slot; docs/app-workflow.md §3.9).
 #[must_use]
 pub fn provided_roles(p: &Profile, manifest: Option<&Manifest>) -> Vec<String> {
@@ -502,7 +502,7 @@ pub fn provided_roles(p: &Profile, manifest: Option<&Manifest>) -> Vec<String> {
         return p.roles.iter().map(|(n, _)| (*n).to_string()).collect();
     }
     manifest
-        .and_then(|m| m.board_roles.get(p.name))
+        .and_then(|m| m.board_roles.get(p.wiring))
         .map(|t| {
             t.iter()
                 .filter(|(_, pin)| pin.is_some())
@@ -694,7 +694,7 @@ fn print_verdict(
             row(
                 "roles",
                 &declared.join(", "),
-                &format!("in the {} wiring table", p.name),
+                &format!("in the {} wiring table", p.wiring),
             );
         } else {
             row(
@@ -702,9 +702,9 @@ fn print_verdict(
                 &declared.join(", "),
                 &format!(
                     "not in the {} wiring table: {}  <- fails (add to [board.{}.roles])",
-                    p.name,
+                    p.wiring,
                     v.missing_declared_roles.join(", "),
-                    p.name
+                    p.wiring
                 ),
             );
         }

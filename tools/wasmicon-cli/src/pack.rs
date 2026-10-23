@@ -83,7 +83,7 @@ pub fn run(opts: &Options) -> Result<bool> {
 /// Prints the flasher command that writes `image` to `sl`. Shared by `pack`
 /// (the app slot) and `assets pack` (the assets slot).
 pub fn flash_hint(sl: profile::Slot, image: &std::path::Path) {
-    if sl.flasher == Flasher::Espflash {
+    if matches!(sl.flasher, Flasher::Espflash { .. }) {
         // espflash takes a flash offset. It does `--after hard-reset` by
         // default, so no separate reset is needed.
         println!(

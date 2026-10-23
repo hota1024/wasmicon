@@ -77,7 +77,7 @@ impl Mode {
     pub fn of(opts: &Options, flasher: Flasher) -> Self {
         // A board with a shared port leaves the capture to the same tool
         // (docs/verification-report.md §10).
-        let shared_port = flasher == Flasher::Espflash;
+        let shared_port = matches!(flasher, Flasher::Espflash { .. });
         let hand_off = opts.monitor && !opts.no_run && shared_port;
         Mode {
             // `--no-run` must not run the app either. `espflash write-bin`
@@ -190,7 +190,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         Some(r) => println!("  wiring: {r}"),
         None => println!(
             "  wiring: none (no roles handed out; see [board.{}.roles] in wasmicon.toml)",
-            plan.board.name
+            plan.board.wiring
         ),
     }
 
@@ -207,12 +207,13 @@ pub fn run(opts: &Options) -> Result<bool> {
         return Ok(true);
     }
 
-    if mode.hand_off {
+    // Only espflash hands off, so the chip name is there.
+    if let (true, Flasher::Espflash { chip }) = (mode.hand_off, plan.slot.flasher) {
         // `espflash monitor` resets through DTR/RTS and then reads. The port
         // is not opened here (an open port makes espflash fail with
         // `Resource busy`).
         println!("-> handing reset and capture to espflash monitor:");
-        let mut args = vec!["monitor", "-c", plan.board.name, "--non-interactive"];
+        let mut args = vec!["monitor", "-c", chip, "--non-interactive"];
         let p;
         if let Some(dev) = opts.port.as_deref() {
             p = dev.to_string_lossy().into_owned();
@@ -311,7 +312,7 @@ pub fn write_at(
     match flasher {
         // ESP32-S3 enters the ROM bootloader through DTR/RTS, so no button is
         // needed. `write-bin` takes a flash offset.
-        Flasher::Espflash => {
+        Flasher::Espflash { .. } => {
             // `write-bin` takes a flash offset (unlike picotool's `-o`, which
             // is an address). It does `--after hard-reset` by default, so
             // reset is not called separately: `espflash reset` never exits,

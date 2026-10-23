@@ -54,8 +54,15 @@ impl Interfaces {
 
 /// Profile of one board.
 pub struct Profile {
-    /// Name used with `--board`. Matches the port's directory name.
+    /// Name used with `--board` and printed in the firmware identity line.
     pub name: &'static str,
+    /// Board whose wiring table (`[board.<wiring>.roles]` in `wasmicon.toml`)
+    /// this profile reads. Equal to `name`, except for a firmware variant of
+    /// the same circuit board: `esp32s3-psram` runs on the board `esp32s3`
+    /// describes, so the pins are the same and a second table would only
+    /// let the two copies drift apart. `tests/profiles.rs` checks that a
+    /// variant agrees with its board on every pin constraint and every slot.
+    pub wiring: &'static str,
     /// Runtime limits.
     pub config: Config,
     /// Implemented interfaces.
@@ -143,7 +150,11 @@ pub enum Flasher {
     Picotool,
     /// `espflash write-bin <offset>`. Resets through DTR/RTS, so no button is
     /// needed, but writing and tracing share one port.
-    Espflash,
+    Espflash {
+        /// Chip name for `espflash monitor -c`. Not the board name: a
+        /// firmware variant (`esp32s3-psram`) runs on the same chip.
+        chip: &'static str,
+    },
 }
 
 /// Limits shared by the microcontrollers. Only `max_memory_pages` differs.
@@ -230,6 +241,7 @@ const PICO_SLOT: Slot = Slot {
 /// Raspberry Pi Pico WH.
 pub const RP2040: Profile = Profile {
     name: "rp2040",
+    wiring: "rp2040",
     // 264 KB of SRAM. Linear memory is limited to 2 pages (128 KiB).
     config: Config {
         max_memory_pages: 2,
@@ -258,6 +270,7 @@ pub const RP2040: Profile = Profile {
 /// Raspberry Pi Pico 2 / Pico 2 W.
 pub const RP2350: Profile = Profile {
     name: "rp2350",
+    wiring: "rp2350",
     config: MCU,
     interfaces: Interfaces::ALL,
     roles: &[],
@@ -279,6 +292,7 @@ pub const RP2350: Profile = Profile {
 /// Freenove ESP32-S3-WROOM board.
 pub const ESP32S3: Profile = Profile {
     name: "esp32s3",
+    wiring: "esp32s3",
     config: MCU,
     interfaces: Interfaces::ALL,
     roles: &[],
@@ -305,12 +319,38 @@ const ESP32S3_SLOT: Slot = Slot {
     offset: 1 << 20,
     len: 64 * 1024,
     read: SlotRead::Copy,
-    flasher: Flasher::Espflash,
+    flasher: Flasher::Espflash { chip: "esp32s3" },
+};
+
+/// The same Freenove board with its 8 MiB of octal PSRAM in use
+/// (`ports/esp32s3` built with the `psram` feature).
+///
+/// A separate profile, not detected at run time: `check --board` needs a
+/// static page limit, and a module without PSRAM has nothing to map. The
+/// whole arena lives in PSRAM; the interpreter's state there costs under
+/// 0.1% (docs/verification-report.md §23).
+pub const ESP32S3_PSRAM: Profile = Profile {
+    name: "esp32s3-psram",
+    wiring: "esp32s3",
+    // 112 pages (7 MiB) leave 1 MiB of the arena for the copied app, the
+    // decoded module and `Exec`. Provisional until the owner settles the
+    // limit (docs/TODO.md §5-10).
+    config: Config {
+        max_memory_pages: 112,
+        ..MCU
+    },
+    // All of the mapped PSRAM (docs/verification-report.md §21).
+    arena: 8 << 20,
+    // The rest is the board's: pins, the scratch area (kept in SRAM) and the
+    // slots. An app slot of another size would need `deploy` to check the
+    // firmware on the device first (docs/TODO.md §5).
+    ..ESP32S3
 };
 
 /// ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT with the ESP32-C5-WROOM-1 module).
 pub const ESP32C5: Profile = Profile {
     name: "esp32c5",
+    wiring: "esp32c5",
     config: MCU,
     interfaces: Interfaces::ALL,
     roles: &[],
@@ -336,12 +376,13 @@ const ESP32C5_SLOT: Slot = Slot {
     offset: 1 << 20,
     len: 64 * 1024,
     read: SlotRead::Copy,
-    flasher: Flasher::Espflash,
+    flasher: Flasher::Espflash { chip: "esp32c5" },
 };
 
 /// The PC mock. Looser than every board, so passing here does not mean passing on a board.
 pub const HOST: Profile = Profile {
     name: "host",
+    wiring: "host",
     config: Config::DEFAULT,
     interfaces: Interfaces::ALL,
     roles: HOST_ROLES,
@@ -358,7 +399,7 @@ pub const HOST: Profile = Profile {
 };
 
 /// Lookup table by name. Used by the CLI and `info` (docs/app-workflow.md §3.8).
-pub const PROFILES: &[&Profile] = &[&RP2040, &RP2350, &ESP32S3, &ESP32C5, &HOST];
+pub const PROFILES: &[&Profile] = &[&RP2040, &RP2350, &ESP32S3, &ESP32S3_PSRAM, &ESP32C5, &HOST];
 
 /// Resolves `--board <name>`.
 #[must_use]

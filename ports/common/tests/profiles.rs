@@ -265,3 +265,54 @@ fn by_name_resolves_every_profile_and_nothing_else() {
     );
     assert!(profile::by_name("esp32p4").is_none());
 }
+
+#[test]
+fn the_psram_variant_is_the_esp32s3_with_a_larger_arena() {
+    // Provisional limit (docs/TODO.md §5-10). The arena is the whole mapped
+    // PSRAM (docs/verification-report.md §21).
+    let p = &profile::ESP32S3_PSRAM;
+    assert_eq!(p.name, "esp32s3-psram");
+    assert_eq!(p.wiring, "esp32s3");
+    assert_mcu_limits(p, 112);
+    assert_eq!(p.arena, 8 << 20);
+    assert!(p.roles.is_empty());
+    let i = p.interfaces;
+    assert!(i.gpio && i.i2c && i.spi && i.time && i.log && i.board && i.assets);
+}
+
+/// The slot fields that decide where `deploy` and `assets write` write.
+fn layout(s: Option<profile::Slot>) -> Option<(u32, u32, bool, profile::Flasher)> {
+    s.map(|s| {
+        (
+            s.offset,
+            s.len,
+            s.read == profile::SlotRead::Copy,
+            s.flasher,
+        )
+    })
+}
+
+#[test]
+fn a_variant_shares_its_boards_pins_and_slots() {
+    // A variant reads its board's wiring table (`wiring`), so the table must
+    // pass the same pin checks on both. The slots must match too: `deploy`
+    // does not ask the device which firmware it runs (docs/TODO.md §5), so a
+    // wrong `--board` between the two would otherwise write at another offset.
+    let mut variants = 0;
+    for p in profile::PROFILES {
+        let board = profile::by_name(p.wiring)
+            .unwrap_or_else(|| panic!("{}: wiring names an unknown board", p.name));
+        assert_eq!(board.wiring, board.name, "{}: wiring is one level", p.name);
+        if p.wiring == p.name {
+            continue;
+        }
+        variants += 1;
+        assert_eq!(p.gpio_count, board.gpio_count, "{}", p.name);
+        assert_eq!(p.reserved, board.reserved, "{}", p.name);
+        assert_eq!(p.bus_pins, board.bus_pins, "{}", p.name);
+        assert!(layout(p.slot) == layout(board.slot), "{}", p.name);
+        assert!(layout(p.role_slot) == layout(board.role_slot), "{}", p.name);
+        assert!(layout(p.assets) == layout(board.assets), "{}", p.name);
+    }
+    assert_eq!(variants, 1, "only esp32s3-psram is a variant today");
+}

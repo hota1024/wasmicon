@@ -146,6 +146,25 @@ fn memory_limit_is_per_board() {
 }
 
 #[test]
+fn the_psram_variant_takes_what_the_plain_esp32s3_refuses() {
+    // Same circuit board, two firmwares (docs/app-workflow.md §4.3). An app
+    // that has to run on both stays within the plain board's 4 pages.
+    let wasm = wat_memory_pages(64);
+    let f = facts_of(&wasm);
+    assert!(
+        check::judge(&wasm, &profile::ESP32S3, &f, None, &[])
+            .validate
+            .is_err(),
+        "esp32s3 allows up to 4 pages"
+    );
+    let psram = check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[]);
+    assert!(psram.is_ok(), "esp32s3-psram fits 64 pages");
+
+    // The wiring comes from the board's table for both.
+    assert_eq!(profile::ESP32S3_PSRAM.wiring, profile::ESP32S3.name);
+}
+
+#[test]
 fn the_arena_is_part_of_the_judgement() {
     // validate alone is not enough. Linear memory takes the rest of the
     // arena, so even within max_memory_pages the min_pages * 64 KiB may not
@@ -157,6 +176,7 @@ fn the_arena_is_part_of_the_judgement() {
     let wasm = wat_memory_pages(2);
     let tight = Profile {
         name: "tight",
+        wiring: "tight",
         config: profile::RP2040.config,
         interfaces: Interfaces::ALL,
         roles: &[],

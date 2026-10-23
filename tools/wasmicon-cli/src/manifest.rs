@@ -132,13 +132,15 @@ pub struct Manifest {
 impl Manifest {
     /// The board's wiring table in the form written to the config slot.
     ///
-    /// An empty table (no roles handed out) when the board has none.
+    /// A firmware variant reads its board's table (`Profile::wiring`;
+    /// `esp32s3-psram` reads `[board.esp32s3.roles]`). An empty table (no
+    /// roles handed out) when the board has none.
     ///
     /// # Errors
     /// When the table violates the board's constraints (already checked by
     /// `load`, so in practice only after a profile change).
     pub fn role_map(&self, board: &'static Profile) -> Result<RoleMap> {
-        match self.board_roles.get(board.name) {
+        match self.board_roles.get(board.wiring) {
             Some(table) => build_map(table, board),
             None => Ok(RoleMap::EMPTY),
         }
@@ -155,7 +157,7 @@ fn build_map(table: &BTreeMap<String, Option<u32>>, board: &'static Profile) -> 
             map.insert(role.as_bytes(), pin, &limits).map_err(|e| {
                 anyhow::anyhow!(
                     "[board.{}.roles] {role} = {pin}: {}",
-                    board.name,
+                    board.wiring,
                     e.reason()
                 )
             })?;
@@ -230,6 +232,17 @@ pub fn load(path: &Path) -> Result<Manifest> {
                 path.display()
             );
         };
+        // A variant has no table of its own. Accepting one would leave two
+        // tables for one circuit board, and only one of them would be used.
+        if p.wiring != p.name {
+            bail!(
+                "`{}`: [board.{board}] is a firmware variant of {}; write its wiring in \
+                 [board.{}.roles]",
+                path.display(),
+                p.wiring,
+                p.wiring
+            );
+        }
         let mut map = BTreeMap::new();
         for (role, value) in b.roles {
             valid_role(&role)
@@ -503,5 +516,38 @@ version = 1
         }
         let e = parse("nine-assets", &text).expect_err("nine do not fit");
         assert!(format!("{e:#}").contains("more than the 8"), "{e:#}");
+    }
+
+    #[test]
+    fn a_firmware_variant_uses_its_boards_wiring() {
+        // `esp32s3-psram` runs on the same circuit board as `esp32s3`, so one
+        // table serves both (docs/app-workflow.md §4.7).
+        let m = parse(
+            "variant-wiring",
+            "version = 1\n[board.esp32s3.roles]\nled = 2\nbuzzer = \"none\"\n",
+        )
+        .expect("loads");
+        let plain = m.role_map(&profile::ESP32S3).expect("valid");
+        let psram = m.role_map(&profile::ESP32S3_PSRAM).expect("valid");
+        assert_eq!(
+            crate::pack::describe_roles(&plain).as_deref(),
+            Some("led=2")
+        );
+        assert_eq!(
+            crate::pack::describe_roles(&psram),
+            crate::pack::describe_roles(&plain)
+        );
+    }
+
+    #[test]
+    fn a_table_for_a_firmware_variant_is_rejected() {
+        // It would never be read; say where the wiring goes instead.
+        let e = parse(
+            "variant-table",
+            "version = 1\n[board.esp32s3-psram.roles]\nled = 2\n",
+        )
+        .expect_err("a variant has no table of its own");
+        let msg = format!("{e:#}");
+        assert!(msg.contains("[board.esp32s3.roles]"), "{msg}");
     }
 }

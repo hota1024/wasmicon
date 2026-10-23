@@ -161,7 +161,10 @@ fn no_run_keeps_an_espflash_board_halted() {
     // `--no-run`, and "written; runs on the next reset" would be a lie.
     // Nobody wants that before attaching a probe or on a board wired to a
     // motor.
-    let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Espflash);
+    let m = deploy::Mode::of(
+        &mode_opts(true, false),
+        Flasher::Espflash { chip: "esp32s3" },
+    );
     assert!(m.keep_halted, "resets despite --no-run");
     assert!(!m.hand_off);
 
@@ -176,7 +179,10 @@ fn monitor_hands_the_port_over_only_when_it_is_shared() {
 
     // A board with a shared port is not run by the flash step; the reset is
     // left to espflash.
-    let m = deploy::Mode::of(&mode_opts(false, true), Flasher::Espflash);
+    let m = deploy::Mode::of(
+        &mode_opts(false, true),
+        Flasher::Espflash { chip: "esp32s3" },
+    );
     assert!(m.hand_off && m.keep_halted && m.shared_port);
 
     // With separate ports, open the port ourselves and reset ourselves.
@@ -185,7 +191,10 @@ fn monitor_hands_the_port_over_only_when_it_is_shared() {
 
     // With `--no-run` there is no capture (nothing runs, so nothing comes
     // out).
-    let m = deploy::Mode::of(&mode_opts(true, true), Flasher::Espflash);
+    let m = deploy::Mode::of(
+        &mode_opts(true, true),
+        Flasher::Espflash { chip: "esp32s3" },
+    );
     assert!(!m.hand_off, "tries to capture although nothing runs");
     assert!(m.keep_halted);
 }
