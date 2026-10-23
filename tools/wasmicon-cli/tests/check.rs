@@ -2,7 +2,7 @@
 //!
 //! Two points:
 //!
-//! - `blink-rs` passes on all four boards (it uses only gpio / time / log /
+//! - `blink-rs` passes on every board (it uses only gpio / time / log /
 //!   board, so it runs even on rp2040, which has no SPI / I2C).
 //! - `sensor-display-rs` fails only on rp2040 (I2C and SPI not implemented).
 //!   That is why `check --board` exists, and a host run cannot show it.

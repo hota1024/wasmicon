@@ -388,7 +388,7 @@ Seen from the app there are five independent axes.
 | Axis | Where it is today | What happens on mismatch |
 |---|---|---|
 | ABI version `wasmicon:hal@0.1.0` | The import module name (exact match, docs/abi-spec.md §3.1) | Every app fails with `unknown import` |
-| Board profile (`Config` + **implemented interfaces**) | Each `main.rs` (RP2040 = 2 pages, others = 4) and each `board.rs` (RP2040 has no SPI / I2C) | A large app fails validate / `unsupported` on hardware |
+| Board profile (`Config` + **implemented interfaces**) | Each `main.rs` (RP2040 = 2 pages, others = 4; `esp32s3-psram` = 112 since 2026-10-23) and each `board.rs` (RP2040 has no SPI / I2C) | A large app fails validate / `unsupported` on hardware |
 | Role names (free-form since 2026-10-07) | The app's `wasmicon.toml` -> the device's config slot (§3.9) | `pin-by-role` returns `unsupported` |
 | Protocol version | The frame's `ver u8` (§3.6) | The CLI cannot talk |
 | Slot format version | The slot header (§3.4, = 1) | An old firmware reads a new slot |
@@ -768,7 +768,7 @@ shrinking `max_memory_pages` (the right fix is a bigger arena).
 
 **Host execution is looser than every board.** `ports/host` runs with
 `Config::default()` (`max_memory_pages` = 65536), while hardware is RP2040 = 2 /
-RP2350 = 4 / ESP32-S3 = 4. **You can write an app that passes `wasmicon run` and
+RP2350 = 4 / ESP32-S3 = 4 / ESP32-S3 with PSRAM = 112. **You can write an app that passes `wasmicon run` and
 fails validate on hardware.** That is why `check --board` exists.
 
 **Board profiles were gathered into `profile` in `ports/common`** (2026-10-04). The
