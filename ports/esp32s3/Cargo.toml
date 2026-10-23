@@ -18,6 +18,10 @@ trace = []
 # Hardware diagnosis: drives the port layer directly before the guest runs and
 # reads the ILI9341 ID (src/probe.rs). Diagnosis only, so off by default.
 hw-probe = []
+# Firmware for the `esp32s3-psram` profile: the arena lives in the module's
+# octal PSRAM, so the page limit is far higher. Needs a module with PSRAM
+# (N8R8 and the like); without one it prints the reason and halts.
+psram = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }

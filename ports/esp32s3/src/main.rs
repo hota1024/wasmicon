@@ -26,6 +26,7 @@ use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
+use wasmicon_port::profile::{Profile, Slot};
 use wasmicon_port::roles::{self, Limits, RoleMap};
 use wasmicon_port::{idle, slot, Hal};
 
@@ -37,43 +38,51 @@ use board::{EspBoard, Serial};
 // counterpart of `IMAGE_DEF` on the RP2350).
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// The profile this firmware is built for. With the `psram` feature the arena
+/// lives in the module's octal PSRAM and the page limit is that of
+/// `esp32s3-psram`; pins and slots are the same board's either way.
+#[cfg(not(feature = "psram"))]
+const PROFILE: &Profile = &wasmicon_port::profile::ESP32S3;
+#[cfg(feature = "psram")]
+const PROFILE: &Profile = &wasmicon_port::profile::ESP32S3_PSRAM;
+
 /// Config slot (wiring table, docs/app-workflow.md §3.9), right after the app slot.
-const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.role_slot {
+const ROLE_SLOT: Slot = match PROFILE.role_slot {
     Some(s) => s,
     None => panic!("the ESP32-S3 profile has no config slot"),
 };
 
 /// Assets slot (docs/app-workflow.md §3.10), right after the config slot, to
 /// the end of flash.
-const ASSETS_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.assets {
+const ASSETS_SLOT: Slot = match PROFILE.assets {
     Some(s) => s,
     None => panic!("the ESP32-S3 profile has no assets slot"),
 };
 
 /// Limits on the GPIOs the wiring table may assign.
-const LIMITS: Limits<'static> = Limits::of(&wasmicon_port::profile::ESP32S3);
+const LIMITS: Limits<'static> = Limits::of(PROFILE);
 
-/// App slot (`profile::ESP32S3` in `ports/common`).
-const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32S3.slot {
+/// App slot (`PROFILE` in `ports/common`).
+const SLOT: Slot = match PROFILE.slot {
     Some(s) => s,
     None => panic!("the ESP32-S3 profile has no app slot"),
 };
 
 /// Runtime arena; whatever is left becomes linear memory (`Arena::alloc_rest`).
-/// The ESP32-S3 has 512 KB of SRAM and the port does not use PSRAM, so the
-/// size fits four pages of linear memory (256 KB).
-static mut ARENA: [u8; wasmicon_port::profile::ESP32S3.arena] =
-    [0; wasmicon_port::profile::ESP32S3.arena];
+/// Without PSRAM it comes out of the 512 KB of SRAM and fits four pages of
+/// linear memory (256 KB). The `psram` build has no static arena; it maps
+/// one from PSRAM at boot (`psram_arena`).
+#[cfg(not(feature = "psram"))]
+static mut ARENA: [u8; PROFILE.arena] = [0; PROFILE.arena];
 
 /// Scratch space used only during validation. Sized for the `MCU_CONFIG` limits.
-static mut SCRATCH: [u8; wasmicon_port::profile::ESP32S3.scratch] =
-    [0; wasmicon_port::profile::ESP32S3.scratch];
+static mut SCRATCH: [u8; PROFILE.scratch] = [0; PROFILE.scratch];
 
-/// Limits for the microcontroller. The source of truth is
-/// `profile::ESP32S3.config` in `ports/common`; the CLI reads the same table
-/// (docs/app-workflow.md §4.3). With the host defaults the scratch space would
-/// be too small.
-const MCU_CONFIG: Config = wasmicon_port::profile::ESP32S3.config;
+/// Limits for the microcontroller. The source of truth is `PROFILE.config`
+/// in `ports/common`; the CLI reads the same table
+/// (docs/app-workflow.md §4.3). With the host defaults the scratch space
+/// would be too small.
+const MCU_CONFIG: Config = PROFILE.config;
 
 /// Output to UART0.
 struct SerialPort<'a>(Uart<'a, esp_hal::Blocking>);
@@ -111,7 +120,9 @@ fn main() -> ! {
         .with_tx(p.GPIO43)
         .with_rx(p.GPIO44);
     let mut serial = SerialPort(uart);
-    serial.write(b"wasmicon esp32s3\r\n");
+    serial.write(b"wasmicon ");
+    serial.write(PROFILE.name.as_bytes());
+    serial.write(b"\r\n");
     // Identify this firmware in one line (docs/app-workflow.md §3.8): version,
     // git, ABI and configuration, so a captured trace records which build
     // produced it.
@@ -120,7 +131,7 @@ fn main() -> ! {
         let mut out = Buf::new(&mut line);
         identity::describe(
             &Identity {
-                profile: &wasmicon_port::profile::ESP32S3,
+                profile: PROFILE,
                 fw: env!("CARGO_PKG_VERSION"),
                 git: env!("WASMICON_GIT"),
                 trace: cfg!(feature = "trace"),
@@ -130,6 +141,16 @@ fn main() -> ! {
         serial.write(out.as_bytes());
         serial.write(b"\r\n");
     }
+
+    // Mapped right after the identity line, so a board without PSRAM says
+    // why it stops instead of failing later in a way that looks like a bad app.
+    #[cfg(feature = "psram")]
+    let Some(arena_buf) = psram_arena(p.PSRAM) else {
+        serial.write(b"wasmicon: psram missing or smaller than the arena, halt\r\n");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
 
     // The app slot, the config slot and the assets are all read through it.
     // The board owns it: the guest's asset reads happen while the app runs.
@@ -164,6 +185,7 @@ fn main() -> ! {
 
     // SAFETY: only one task ever touches ARENA, so this is the only place
     // that creates a reference to it, and it runs once.
+    #[cfg(not(feature = "psram"))]
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     // SAFETY: only one task ever touches SCRATCH, so this is the only place
     // that creates a reference to it, and it runs once.
@@ -365,6 +387,34 @@ fn read_assets(storage: &mut FlashStorage<'_>) -> Result<Directory, assets::Asse
         return Err(assets::AssetsError::Empty);
     }
     assets::parse(&dir, ASSETS_SLOT.len)
+}
+
+/// Maps the octal PSRAM and returns the first `PROFILE.arena` bytes of it as
+/// the arena (docs/verification-report.md §21, §23).
+///
+/// `None` when less than that is mapped. esp-hal maps nothing when it cannot
+/// initialise PSRAM (`raw_parts` is then empty), which is what a module
+/// without PSRAM gives.
+#[cfg(feature = "psram")]
+fn psram_arena(peri: esp_hal::peripherals::PSRAM<'static>) -> Option<&'static mut [u8]> {
+    let psram = esp_hal::psram::Psram::new(
+        peri,
+        esp_hal::psram::PsramConfig {
+            mode: esp_hal::psram::PsramMode::OctalSpi,
+            ..Default::default()
+        },
+    );
+    let (ptr, len) = psram.raw_parts();
+    if ptr.is_null() || len < PROFILE.arena {
+        return None;
+    }
+    // SAFETY: `Psram::new` mapped `len` bytes of PSRAM at `ptr` into the data
+    // bus, and the mapping outlives `psram` (it has no `Drop`; esp-hal keeps
+    // the range in a static). Nothing else in this firmware uses PSRAM: there
+    // is no allocator, and this function runs once, before the arena is
+    // created, so the slice is the only reference to the range.
+    // `PROFILE.arena <= len` was checked above.
+    Some(unsafe { core::slice::from_raw_parts_mut(ptr, PROFILE.arena) })
 }
 
 /// From reading the slot to the `run` call.
