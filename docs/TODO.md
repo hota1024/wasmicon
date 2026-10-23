@@ -609,6 +609,25 @@ change.**
         (sequential / cache miss). Still to settle:
         - Built as its own profile and firmware (a PSRAM-less module has no PSRAM to map,
           and `check --board` needs a static limit), not detected at run time
+        - **Board name and wiring table.** Options: (a) a separate board `esp32s3-psram`
+          with its own `[board.esp32s3-psram.roles]`, which means writing the same board's
+          wiring twice; (b) `--board esp32s3 --variant psram`, which adds a variant concept
+          to the CLI; (c) a separate profile `esp32s3-psram` that reads the wiring table of
+          `esp32s3` (one new `Profile` field naming the table). Recommendation: (c), the
+          smallest change. With (c) one `.wasm` and one `wasmicon.toml` serve both
+          boards: `check` without `--board` prints one more row, an app that must run on
+          both stays within the 4 pages of `esp32s3`, and `deploy` picks the board with
+          `--board` (`[defaults] board` holds only one name)
+        - **Page limit.** 8 MiB is 128 pages; 96 to 112 leaves room for Wi-Fi buffers.
+          Better settled after measuring DOOM. The other `Config` limits (value stack,
+          call depth, table size) may need the same review
+        - **App slot size.** The 64 KiB app slot cannot hold a DOOM-sized `.wasm`, so the
+          larger linear memory alone does not make room for one. A larger slot moves the
+          config and assets slots, so decide whether only this profile gets the new layout
+          (two layouts to maintain) or every ESP32-S3 profile does. A layout that differs
+          per profile needs the `deploy` cross-check in "Implementation" below first
+        - **Flash size.** 16 MB modules (N16R8) exist and the assets slot runs to the end
+          of flash. Starting with the 8 MB board on hand is enough
         - ~~Linear memory only in PSRAM~~ -> **not needed so far** (measured 2026-10-22,
           docs/verification-report.md §23): with the whole arena in PSRAM, `bench-rs` is
           unchanged and random reads over 4 MiB of linear memory are 6.7% slower; keeping
@@ -962,6 +981,17 @@ change.**
         current directory)
       - stop `deploy` when no manifest is found, unless a flag such as `--no-roles` says
         an empty table is intended
+- [ ] **`deploy` does not check that `--board` matches the firmware on the device**
+      (noted 2026-10-23). `firmware_identity()` is only used by `trace diff`; `deploy`
+      trusts `--board` / `[defaults] board`. Today a wrong name either fails at flashing
+      (a different flasher) or writes an app the firmware can run. With a PSRAM profile
+      (§5-10) it gets worse: an app over 4 pages deployed with `--board esp32s3-psram` to
+      a PSRAM-less firmware passes `check` and fails at instantiate, and if the profiles'
+      slot layouts differ, the image lands at the wrong offset and can overwrite the
+      config or assets slot. The planned fix is the cross-check before `deploy` through
+      `info` (docs/app-workflow.md §3.8, stage 2). Until then `deploy` could reset the
+      board and read the identity line, at the cost of a slower `deploy`; that would also
+      let `deploy` choose the board when `--board` is omitted
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
       over USB, trace over UART0**
