@@ -614,7 +614,9 @@ change.**
           `Profile::wiring`; `[board.esp32s3-psram]` is rejected
           (docs/app-workflow.md §4.7). The options that were weighed: (a) a separate
           board with its own table, the same wiring written twice; (b)
-          `--board esp32s3 --variant psram`, a new CLI concept. Not yet run on hardware
+          `--board esp32s3 --variant psram`, a new CLI concept. Run on the Freenove board
+          2026-10-23 (docs/verification-report.md §25): matches the host trace, takes its
+          wiring from `[board.esp32s3.roles]` and grows linear memory past 4 pages
         - **Page limit.** **112 pages (7 MiB) for now** (2026-10-23, provisional; the 1 MiB
           left in the 8 MiB arena holds the copied app, the decoded module and `Exec`).
           Better settled after measuring DOOM; Wi-Fi buffers in PSRAM would need the arena

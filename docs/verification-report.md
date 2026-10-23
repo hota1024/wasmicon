@@ -1432,3 +1432,36 @@ board with a throwaway firmware outside the repository (esp-hal 1.2.1, octal PSR
 - Reads were made with nothing else using PSRAM concurrently; the port is single-threaded, so that is
   the case that matters, but an interrupt handler touching PSRAM during a read was not tried
 - The SRAM row's time includes the CRC, so it is not a read speed and is not compared
+
+## 25. The `esp32s3-psram` firmware on hardware (2026-10-23)
+
+Question (docs/TODO.md §5-10): does the `esp32s3-psram` profile (option (c), docs/app-workflow.md §4.7)
+run on the Freenove board, with the arena in PSRAM, the wiring read from `[board.esp32s3.roles]` and
+`deploy --monitor` handing over to `espflash monitor -c esp32s3`?
+
+Firmware built from `b04c675`, `trace=on`, flashed with `espflash flash --after no-reset`. Apps were
+flashed with `wasmicon deploy` built from the same commit.
+
+| Check | Result |
+|---|---|
+| Boot with `--features psram` | banner `wasmicon esp32s3-psram`, identity `... pages=112 ... slot=v1/65536 roles=v1/4096 assets=v1/7270400`; PSRAM mapped, no halt |
+| `apps/rgb-led-rs` (1247 B, crc32 `52991a6d`), `deploy --board esp32s3-psram --monitor` | the hand-off to `espflash monitor` worked; **identical in full to host, 978 lines** |
+| `apps/blink-rs` (759 B), `deploy --board esp32s3-psram` from the app's directory | `deploy` printed `wiring: led=2` and the board printed `roles led=2`, the table from `[board.esp32s3.roles]` |
+| The throwaway guest of §23 (2,294 B), `esp32s3-psram` | grew to 4 MiB (65 pages) and finished; times equal to §23's `psram-all` row within 0.001% |
+| The same guest on the plain `esp32s3` firmware | identity `pages=4`; stopped with `cannot grow to size=524288` after the 128 KiB row, as expected |
+
+The membench numbers (microseconds, 4 MiB region): write 2,817,120, sequential read 2,998,353, random
+read 3,649,594.
+
+The board was left with the plain `esp32s3` firmware built from `b04c675` and `apps/rgb-led-rs` in the
+slot (re-deployed with `--board esp32s3`, again identical to host over 978 lines).
+
+### What this measurement does not say
+
+- The halt path (a module without PSRAM, or one with less than 8 MiB) was not exercised; the board on
+  hand has 8 MiB
+- The 112-page limit itself was not reached: the guest stopped at 65 pages by design
+- No app larger than a few KB of bytecode ran from the PSRAM arena (the open question in §23 stays)
+- Run from the repository root, `deploy` found no `wasmicon.toml` and wrote an empty wiring table
+  without stopping. That is the known gap in docs/TODO.md ("stop `deploy` when no manifest is found"),
+  not something this profile adds
