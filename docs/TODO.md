@@ -626,8 +626,17 @@ change.**
         - **Page limit.** **112 pages (7 MiB) for now** (2026-10-23, provisional; the 1 MiB
           left in the 8 MiB arena holds the copied app, the decoded module and `Exec`).
           Better settled after measuring DOOM; Wi-Fi buffers in PSRAM would need the arena
-          to shrink. The other `Config` limits (value stack, call depth, table size) may
-          need the same review
+          to shrink
+        - ~~The other `Config` limits~~ -> **raised for `esp32s3-psram`** (2026-10-26, owner
+          go-ahead): control depth 64 -> 256, call depth 32 -> 128, operand stack 1024 ->
+          4096 slots, scratch 8 -> 16 KiB. Reported from a host run of DOOM (415 KB
+          `.wasm`): control depth 74 fails validate under 64, and the title demos reach a
+          call depth of 47, which `check` cannot see and the board traps on. Both are
+          common to compiled C (a large `switch` nests one block per case). The cost is
+          about 34 KiB of the PSRAM arena. Value stack, locals and table size stay the
+          MCU's. Not raised on the SRAM boards: there the operand stack alone would take
+          32 KiB of a 300 KiB arena; control depth costs only scratch and could be raised
+          on its own if a C app needs it
         - **App slot size.** The 64 KiB app slot cannot hold a DOOM-sized `.wasm`, so the
           larger linear memory alone does not make room for one. A larger slot moves the
           config and assets slots, so decide whether only this profile gets the new layout

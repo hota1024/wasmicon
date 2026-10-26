@@ -1154,6 +1154,10 @@ module without PSRAM has nothing to map:
 | `esp32s3` | `build.sh build --release` | 300 KiB of SRAM | 4 |
 | `esp32s3-psram` | `build.sh build --release --features psram` | 8 MiB of PSRAM | 112 (provisional; docs/TODO.md §5-10) |
 
+`esp32s3-psram` also allows deeper code than the other MCUs: control depth 256
+(64 elsewhere), call depth 128 (32) and 4096 operand stack slots (1024), for compiled C
+of the size the profile exists for (docs/TODO.md §5-10).
+
 Everything else is the board's: pins, reserved pins, bus pins, the app, config and
 assets slots, and the wiring table (`Profile::wiring` names `esp32s3`).
 `ports/common/tests/profiles.rs` fails if the two profiles ever disagree on a pin or

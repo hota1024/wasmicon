@@ -335,15 +335,29 @@ pub const ESP32S3_PSRAM: Profile = Profile {
     // 112 pages (7 MiB) leave 1 MiB of the arena for the copied app, the
     // decoded module and `Exec`. Provisional until the owner settles the
     // limit (docs/TODO.md §5-10).
+    //
+    // The control and call limits are the MCU's 64 / 32 raised for compiled C
+    // of the size this profile exists for: a large `switch` lowers to
+    // `br_table` inside one nested block per case, and recursion is common.
+    // With the arena in PSRAM they cost little: the call frames and the
+    // operand stack take about 34 KiB of the arena, the control stack only
+    // scratch.
     config: Config {
         max_memory_pages: 112,
+        max_control_depth: 256,
+        max_call_depth: 128,
+        operand_stack_slots: 4096,
         ..MCU
     },
     // All of the mapped PSRAM (docs/verification-report.md §21).
     arena: 8 << 20,
-    // The rest is the board's: pins, the scratch area (kept in SRAM) and the
-    // slots. An app slot of another size would need `deploy` to check the
-    // firmware on the device first (docs/TODO.md §5).
+    // The validator's control stack grows with `max_control_depth`. The
+    // scratch area stays in SRAM, which this firmware has to spare: its
+    // arena is not there.
+    scratch: 16 * 1024,
+    // The rest is the board's: pins and the slots. An app slot of another
+    // size would need `deploy` to check the firmware on the device first
+    // (docs/TODO.md §5).
     ..ESP32S3
 };
 

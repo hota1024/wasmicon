@@ -165,6 +165,39 @@ fn the_psram_variant_takes_what_the_plain_esp32s3_refuses() {
 }
 
 #[test]
+fn the_psram_variant_validates_deeply_nested_blocks() {
+    // A large C `switch` nests one block per case. 200 levels are over the
+    // MCU limit of 64 and within the 256 of esp32s3-psram. The check runs
+    // the validator with the profile's own scratch size, so this also shows
+    // that 16 KiB holds the control stack (on a 64-bit host, where it is
+    // larger than on the board).
+    let wasm = wat_nested_blocks(200);
+    let f = facts_of(&wasm);
+    assert!(
+        check::judge(&wasm, &profile::ESP32S3, &f, None, &[])
+            .validate
+            .is_err(),
+        "esp32s3 allows a control depth of 64"
+    );
+    assert!(
+        check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[]).is_ok(),
+        "esp32s3-psram allows a control depth of 256"
+    );
+    // The full 256 levels (the function body is one of them) fit as well.
+    let wasm = wat_nested_blocks(255);
+    let f = facts_of(&wasm);
+    assert!(check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[]).is_ok());
+    let wasm = wat_nested_blocks(256);
+    let f = facts_of(&wasm);
+    assert!(
+        check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[])
+            .validate
+            .is_err(),
+        "one level over the limit"
+    );
+}
+
+#[test]
 fn the_arena_is_part_of_the_judgement() {
     // validate alone is not enough. Linear memory takes the rest of the
     // arena, so even within max_memory_pages the min_pages * 64 KiB may not
@@ -384,4 +417,36 @@ fn wat_memory_pages(pages: u8) -> Vec<u8> {
     // code: an empty body
     w.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
     w
+}
+
+/// The module of `wat_memory_pages(1)` with `run` holding `depth` nested
+/// empty `block`s, the shape a large C `switch` lowers to.
+fn wat_nested_blocks(depth: usize) -> Vec<u8> {
+    let mut w = wat_memory_pages(1);
+    // Drop the empty code section and write one with the nested body.
+    w.truncate(w.len() - 6);
+    let mut body = vec![0x00]; // no locals
+    for _ in 0..depth {
+        body.extend_from_slice(&[0x02, 0x40]); // block (empty type)
+    }
+    body.extend(std::iter::repeat_n(0x0b, depth + 1)); // the blocks' and the body's `end`
+    let mut code = vec![0x01]; // one body
+    leb128(&mut code, body.len());
+    code.extend_from_slice(&body);
+    w.push(0x0a);
+    leb128(&mut w, code.len());
+    w.extend_from_slice(&code);
+    w
+}
+
+fn leb128(out: &mut Vec<u8>, mut v: usize) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
 }

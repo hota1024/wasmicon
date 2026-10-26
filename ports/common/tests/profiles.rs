@@ -43,7 +43,12 @@ fn arenas_are_what_the_ports_had() {
     assert_eq!(profile::ESP32S3.arena, 300 * 1024);
     assert_eq!(profile::ESP32C5.arena, 288 * 1024);
     for p in profile::PROFILES {
-        assert_eq!(p.scratch, if p.name == "host" { 4 << 20 } else { 8 * 1024 });
+        let scratch = match p.name {
+            "host" => 4 << 20,
+            "esp32s3-psram" => 16 * 1024,
+            _ => 8 * 1024,
+        };
+        assert_eq!(p.scratch, scratch, "{}", p.name);
     }
 }
 
@@ -273,8 +278,17 @@ fn the_psram_variant_is_the_esp32s3_with_a_larger_arena() {
     let p = &profile::ESP32S3_PSRAM;
     assert_eq!(p.name, "esp32s3-psram");
     assert_eq!(p.wiring, "esp32s3");
-    assert_mcu_limits(p, 112);
+    // Raised for compiled C; the rest stays the MCU's.
+    let c = p.config;
+    assert_eq!(c.max_memory_pages, 112);
+    assert_eq!(c.max_control_depth, 256);
+    assert_eq!(c.max_call_depth, 128);
+    assert_eq!(c.operand_stack_slots, 4096);
+    assert_eq!(c.max_value_stack, 512);
+    assert_eq!(c.max_locals, 256);
+    assert_eq!(c.max_table_elems, 256);
     assert_eq!(p.arena, 8 << 20);
+    assert_eq!(p.scratch, 16 * 1024);
     assert!(p.roles.is_empty());
     let i = p.interfaces;
     assert!(i.gpio && i.i2c && i.spi && i.time && i.log && i.board && i.assets);
