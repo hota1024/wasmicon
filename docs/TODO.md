@@ -636,7 +636,10 @@ change.**
           about 34 KiB of the PSRAM arena. Value stack, locals and table size stay the
           MCU's. Not raised on the SRAM boards: there the operand stack alone would take
           32 KiB of a 300 KiB arena; control depth costs only scratch and could be raised
-          on its own if a C app needs it
+          on its own if a C app needs it. **Not yet run on hardware**: flash the psram
+          build, check the identity line and that an app's trace still matches the host
+          (the larger `static SCRATCH` and `Exec` are the change), then record it in
+          docs/verification-report.md
         - **App slot size.** The 64 KiB app slot cannot hold a DOOM-sized `.wasm`, so the
           larger linear memory alone does not make room for one. A larger slot moves the
           config and assets slots, so decide whether only this profile gets the new layout
