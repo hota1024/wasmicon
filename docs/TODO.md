@@ -636,10 +636,10 @@ change.**
           about 34 KiB of the PSRAM arena. Value stack, locals and table size stay the
           MCU's. Not raised on the SRAM boards: there the operand stack alone would take
           32 KiB of a 300 KiB arena; control depth costs only scratch and could be raised
-          on its own if a C app needs it. **Not yet run on hardware**: flash the psram
-          build, check the identity line and that an app's trace still matches the host
-          (the larger `static SCRATCH` and `Exec` are the change), then record it in
-          docs/verification-report.md
+          on its own if a C app needs it. Run on the Freenove board 2026-10-26
+          (docs/verification-report.md §26): apps match the host, a guest with 200 nested
+          blocks and a 120-call recursion finishes, and 200 calls trap with
+          `call stack exhausted`
         - ~~App slot size~~ -> **1 MiB on both ESP32-S3 profiles** (2026-10-26, owner
           decision): app `0x100000`, config `0x200000`, assets `0x201000` to the end of
           flash (6,287,360 B, 983,040 B less than before). One layout for both firmwares,
@@ -652,9 +652,12 @@ change.**
             firmware prints `assets empty`); rewrite it with `assets write`
           - `deploy` writes the app and config slots as one image padded with `0xff`
             (`pack::with_roles`), so every deploy now erases and writes 1 MiB + 4 KiB
-            instead of 68 KiB. Not measured; if it is slow, write the two slots
-            separately or stop padding past the app
-          - Not yet run on hardware
+            instead of 68 KiB. Measured 2026-10-26 (docs/verification-report.md §26):
+            about 1.6 s more per deploy (3.1 s against 1.5 s for the write alone). If
+            that is too slow, write the two slots separately or stop padding past the app
+          - Run on the Freenove board 2026-10-26 (docs/verification-report.md §26): both
+            firmwares report the new layout, apps match the host, and the assets
+            rewritten with `assets write` are found
         - **Flash size.** 16 MB modules (N16R8) exist and the assets slot runs to the end
           of flash. Starting with the 8 MB board on hand is enough
         - ~~Linear memory only in PSRAM~~ -> **not needed so far** (measured 2026-10-22,

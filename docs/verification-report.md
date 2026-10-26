@@ -1492,3 +1492,48 @@ Getting there:
   DTR/RTS deasserted (pyserial) caused a power-on reset and a normal boot, which was enough to capture
   each run
 - The firmware that came on the board was overwritten without a backup
+
+## 26. The 1 MiB app slot and the raised `esp32s3-psram` limits on hardware (2026-10-26)
+
+Question (docs/TODO.md §5-10): with the app slot at 1 MiB on both ESP32-S3 profiles, the config slot
+at `0x200000` and assets at `0x201000`, and the `esp32s3-psram` limits raised (control depth 256, call
+depth 128, operand stack 4096 slots, scratch 16 KiB), do both firmwares still run apps as on the host,
+does the deeper limit hold on the board, and what does the larger slot cost `deploy`?
+
+Freenove board (MAC `3c:0f:02:f5:04:6c`), both firmwares and the CLI built from `36a4ddd`, `trace=on`,
+flashed with `espflash flash`. Apps were flashed with `wasmicon deploy` from their own directory.
+
+| Check | Result |
+|---|---|
+| Boot, `esp32s3-psram` | identity `... pages=112 ... slot=v1/1048576 roles=v1/4096 assets=v1/6287360` |
+| Assets written under the old layout (at `0x111000`) | `wasmicon: assets empty, no assets`, as expected |
+| `apps/rgb-led-rs` (1247 B, crc32 `52991a6d`), `esp32s3-psram` | **identical in full to host, 978 lines** |
+| `wasmicon assets write --board esp32s3-psram` in `apps/assets-rs` | 16,384 B to `+0x201000` in 1.6 s; the board printed `assets hello.txt=27 pattern.bin=4100` |
+| `apps/assets-rs` (2422 B), `esp32s3-psram` | **identical in full to host, 30 lines**; the blob reads land in linear memory in PSRAM, so they went through the 256-byte stack window |
+| A throwaway guest: 200 nested `block`s in one function, then a recursion 120 calls deep with 29 locals per frame (about 3,500 operand slots), `esp32s3-psram` | `wasmicon check --board esp32s3` fails it (`control stack overflow`), `--board esp32s3-psram` passes; on the board it **logged `deep ok`** (the recursion's sum checked by the guest) |
+| The same guest with the recursion 200 calls deep | `wasmicon: call stack exhausted [exhausted]`, a trap and not a crash |
+| Boot, plain `esp32s3` | identity `... pages=4 ... slot=v1/1048576 roles=v1/4096 assets=v1/6287360` |
+| `apps/assets-rs` and `apps/rgb-led-rs`, plain `esp32s3` | identical in full to host, 30 and 978 lines; the assets written above were found |
+
+What the larger slot costs `deploy` (`espflash write-bin` to `0x100000`, the 1263-byte packed app padded
+with `0xff`, wall time including the connection, two runs each):
+
+| Image | Time |
+|---|---|
+| Padded to 64 KiB (the old slot) | 1.48 s, 1.49 s |
+| Padded to 1 MiB (the new slot) | 3.09 s, 3.07 s |
+| `wasmicon deploy --no-run --board esp32s3-psram` (1 MiB + 4 KiB, through the CLI) | 7.90 s |
+
+So the 1 MiB slot adds about 1.6 s to every deploy. The rest of the 7.9 s is the CLI's own espflash run
+(connect, stub, check), not the slot size.
+
+The board was left with the plain `esp32s3` firmware built from `36a4ddd`, `apps/rgb-led-rs` in the app
+slot and the `apps/assets-rs` assets in the assets slot.
+
+### What this measurement does not say
+
+- `read_nor` straight into PSRAM was not tried; the `psram` build still always uses the window
+- No app larger than a few KB of bytecode ran, so the 1 MiB slot was not filled and the copy of a large
+  app into the PSRAM arena was not timed
+- The 16 KiB scratch was exercised only by the 200-block guest, not by a module with many large functions
+- The N8R2 board of §25 was not re-flashed with the new layout
