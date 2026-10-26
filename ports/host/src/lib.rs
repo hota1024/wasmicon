@@ -6,7 +6,8 @@
 pub mod assets;
 pub mod hal;
 
-use wasmicon_core::{Arena, Error, Exec, decode, instantiate, invoke, validate};
+use wasmicon_core::validate::Validated;
+use wasmicon_core::{Arena, Config, Error, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::Hal;
 
 /// Arena size. The remainder becomes linear memory. `profile::HOST` is the source of truth.
@@ -18,6 +19,62 @@ pub const SCRATCH: usize = wasmicon_port::profile::HOST.scratch;
 pub struct Outcome {
     /// Trace in the docs/abi-spec.md §9 format.
     pub trace: String,
+    /// What the guest needed of each `Config` limit. `None` when decode or
+    /// validate failed. Includes the calls up to a trap.
+    pub usage: Option<Usage>,
+}
+
+/// The most of each stack-like `Config` limit a module or run needed. Fields
+/// are named after the `Config` field they size, so a board fits when every
+/// field is at most that board's value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Deepest block nesting in any function (validate).
+    pub max_control_depth: u32,
+    /// Highest operand stack in any function (validate).
+    pub max_value_stack: u32,
+    /// Most parameters plus locals in any function (validate).
+    pub max_locals: u32,
+    /// Deepest call chain (run time; 0 until something is invoked).
+    pub max_call_depth: u32,
+    /// Most operand slots reserved at once (run time).
+    pub operand_stack_slots: u32,
+}
+
+impl Usage {
+    /// The validate-time fields; the run-time ones stay 0.
+    #[must_use]
+    pub fn of_module(v: &Validated<'_>) -> Self {
+        Usage {
+            max_control_depth: v.max_control,
+            max_value_stack: v.funcs.iter().map(|f| f.max_stack).max().unwrap_or(0),
+            max_locals: v.funcs.iter().map(|f| f.frame_slots).max().unwrap_or(0),
+            ..Usage::default()
+        }
+    }
+
+    /// The limits of `cfg` this usage is over, as `(field, needed, limit)`.
+    #[must_use]
+    pub fn over(&self, cfg: &Config) -> Vec<(&'static str, u32, usize)> {
+        [
+            (
+                "max_control_depth",
+                self.max_control_depth,
+                cfg.max_control_depth,
+            ),
+            ("max_value_stack", self.max_value_stack, cfg.max_value_stack),
+            ("max_locals", self.max_locals, cfg.max_locals),
+            ("max_call_depth", self.max_call_depth, cfg.max_call_depth),
+            (
+                "operand_stack_slots",
+                self.operand_stack_slots,
+                cfg.operand_stack_slots,
+            ),
+        ]
+        .into_iter()
+        .filter(|&(_, need, limit)| need as usize > limit)
+        .collect()
+    }
 }
 
 /// Loads recorded I2C responses.
@@ -157,6 +214,7 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
     // A failure before the guest starts (decode / validate / Exec / instantiate)
     // leaves the trace empty; a failure afterwards leaves every line so far in
     // hal. One block folds both into the same shape.
+    let mut usage = None;
     let result: Result<(), Error> = 'guest: {
         let m = match decode::decode(wasm, &mut arena) {
             Ok(m) => m,
@@ -166,6 +224,7 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
             Ok(v) => v,
             Err(e) => break 'guest Err(e),
         };
+        usage = Some(Usage::of_module(&v));
         // Exec must be allocated before linear memory (the rest of the arena).
         let mut exec = match Exec::new(&cfg, &mut arena) {
             Ok(e) => e,
@@ -194,11 +253,17 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
         // every remaining handle. Called at the same point as on the board ports.
         // No trace line is added (`Hal::release_all`).
         hal.release_all();
+        if let Some(u) = usage.as_mut() {
+            let peak = exec.peak();
+            u.max_call_depth = peak.call_depth;
+            u.operand_stack_slots = peak.operand_slots;
+        }
         ran
     };
 
     let outcome = Outcome {
         trace: hal.board_mut().trace_output().to_string(),
+        usage,
     };
     (outcome, result)
 }

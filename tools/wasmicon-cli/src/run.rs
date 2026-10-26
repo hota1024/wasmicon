@@ -10,6 +10,8 @@
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use wasmicon_host::Usage;
+use wasmicon_port::profile::{self, Profile};
 
 pub struct Options {
     pub path: PathBuf,
@@ -70,6 +72,17 @@ pub fn run(opts: &Options) -> Result<bool> {
     if opts.trace {
         print!("{}", out.trace);
     }
+    // stderr, so stdout stays the trace that `trace diff` compares.
+    if let Some(u) = &out.usage {
+        for line in usage_report(u, profile::PROFILES) {
+            eprintln!("{line}");
+        }
+        if let Err(wasmicon_core::Error::Exhausted("call stack exhausted")) = &result {
+            // The run stopped at the host's own limit, so the depth it would
+            // have needed is not known.
+            eprintln!("  max_call_depth is the host's limit: the run needed more");
+        }
+    }
     match result {
         Ok(()) => Ok(true),
         Err(e) => {
@@ -82,4 +95,37 @@ pub fn run(opts: &Options) -> Result<bool> {
             Ok(false)
         }
     }
+}
+
+/// What the run needed against every board's `Config`.
+///
+/// `check` can judge the validate-time limits, but call depth and the operand
+/// stack depend on the path a run takes, so a module that passes `check` can
+/// still trap on a board. A board run with other input (a sensor, a button)
+/// can go deeper than this host run.
+#[must_use]
+pub fn usage_report(u: &Usage, boards: &[&Profile]) -> Vec<String> {
+    let mut lines = vec![format!(
+        "usage: max_control_depth {}, max_value_stack {}, max_locals {}, \
+         max_call_depth {}, operand_stack_slots {}",
+        u.max_control_depth,
+        u.max_value_stack,
+        u.max_locals,
+        u.max_call_depth,
+        u.operand_stack_slots
+    )];
+    for p in boards.iter().filter(|p| p.name != profile::HOST.name) {
+        let over: Vec<String> = u
+            .over(&p.config)
+            .into_iter()
+            .map(|(field, need, limit)| format!("{field} {need} > {limit}"))
+            .collect();
+        if !over.is_empty() {
+            lines.push(format!("  over {}: {}", p.name, over.join(", ")));
+        }
+    }
+    if lines.len() == 1 {
+        lines.push("  within every board's limits".to_string());
+    }
+    lines
 }

@@ -26,6 +26,22 @@ struct Frame {
 pub struct Exec<'a> {
     stack: &'a mut [u64],
     frames: &'a mut [Frame],
+    peak: Peak,
+}
+
+/// The most of `Exec` that the calls so far needed, in the units of `Config`.
+///
+/// Recorded once per function entry, not per instruction, so it costs nothing
+/// in the opcode loop.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Peak {
+    /// Deepest call chain, the exported function counting as 1: the smallest
+    /// `max_call_depth` these calls fit in.
+    pub call_depth: u32,
+    /// Most operand stack slots reserved at once (each frame reserves its
+    /// locals and its validated maximum height on entry): the smallest
+    /// `operand_stack_slots` these calls fit in.
+    pub operand_slots: u32,
 }
 
 impl<'a> Exec<'a> {
@@ -34,7 +50,14 @@ impl<'a> Exec<'a> {
         Ok(Exec {
             stack: arena.alloc(cfg.operand_stack_slots, 0u64)?,
             frames: arena.alloc(cfg.max_call_depth, Frame::default())?,
+            peak: Peak::default(),
         })
+    }
+
+    /// The peak over every `invoke` since `new`, trapped calls included.
+    #[must_use]
+    pub fn peak(&self) -> Peak {
+        self.peak
     }
 }
 
@@ -253,6 +276,7 @@ pub fn invoke(
 
     let stack = &mut *exec.stack;
     let frames = &mut *exec.frames;
+    let peak = &mut exec.peak;
     if args.len() > stack.len() {
         return Err(Error::Exhausted("operand stack overflow"));
     }
@@ -283,6 +307,7 @@ pub fn invoke(
         ty.result_count(),
         &mut nframes,
         frames,
+        peak,
     )?;
 
     run(
@@ -293,6 +318,7 @@ pub fn invoke(
         &mut sp,
         &mut nframes,
         &mut cur,
+        peak,
     )?;
 
     let n = ty.result_count();
@@ -325,6 +351,7 @@ fn enter<'m>(
     nresults: usize,
     nframes: &mut usize,
     frames: &mut [Frame],
+    peak: &mut Peak,
 ) -> Result<Cursor<'m>> {
     if *nframes >= frames.len() {
         return Err(Error::Exhausted("call stack exhausted"));
@@ -345,7 +372,13 @@ fn enter<'m>(
     let slots = info.frame_slots as usize;
     // Check up front that the most this frame can push fits. Once past this
     // point, every push and local write stays in bounds.
-    if locals + slots + info.max_stack as usize > stack.len() {
+    let reserved = locals + slots + info.max_stack as usize;
+    // Before the check below, so an operand stack overflow still reports the
+    // size it needed. A call past `max_call_depth` stops before getting here
+    // and leaves `call_depth` at the limit.
+    peak.call_depth = peak.call_depth.max(*nframes as u32 + 1);
+    peak.operand_slots = peak.operand_slots.max(reserved as u32);
+    if reserved > stack.len() {
         return Err(Error::Exhausted("operand stack overflow"));
     }
     // Declared locals start as 0.
@@ -364,7 +397,11 @@ fn enter<'m>(
     })
 }
 
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::too_many_arguments
+)]
 fn run<'m>(
     inst: &mut Instance<'m, '_>,
     resolver: &mut dyn Resolver,
@@ -373,6 +410,7 @@ fn run<'m>(
     sp_out: &mut usize,
     nframes: &mut usize,
     cur_out: &mut Cursor<'m>,
+    peak: &mut Peak,
 ) -> Result<()> {
     let mut sp = *sp_out;
     let mut cur = *cur_out;
@@ -479,7 +517,9 @@ fn run<'m>(
             }
             0x10 => {
                 let f = leb_u32(cur.body, &mut cur.pc);
-                call(inst, resolver, stack, &mut sp, frames, nframes, &mut cur, f)?;
+                call(
+                    inst, resolver, stack, &mut sp, frames, nframes, &mut cur, f, peak,
+                )?;
             }
             0x11 => {
                 let t = leb_u32(cur.body, &mut cur.pc);
@@ -505,7 +545,7 @@ fn run<'m>(
                     return Err(Error::Trap(Trap::IndirectCallTypeMismatch));
                 }
                 call(
-                    inst, resolver, stack, &mut sp, frames, nframes, &mut cur, slot,
+                    inst, resolver, stack, &mut sp, frames, nframes, &mut cur, slot, peak,
                 )?;
             }
 
@@ -870,6 +910,7 @@ fn call<'m>(
     nframes: &mut usize,
     cur: &mut Cursor<'m>,
     f: u32,
+    peak: &mut Peak,
 ) -> Result<()> {
     let ty = inst
         .module
@@ -907,7 +948,7 @@ fn call<'m>(
         ret: cur.ret as u32,
     };
     *nframes += 1;
-    *cur = enter(inst, stack, sp, f, nparams, nresults, nframes, frames)?;
+    *cur = enter(inst, stack, sp, f, nparams, nresults, nframes, frames, peak)?;
     Ok(())
 }
 

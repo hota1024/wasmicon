@@ -631,7 +631,8 @@ change.**
           go-ahead): control depth 64 -> 256, call depth 32 -> 128, operand stack 1024 ->
           4096 slots, scratch 8 -> 16 KiB. Reported from a host run of DOOM (415 KB
           `.wasm`): control depth 74 fails validate under 64, and the title demos reach a
-          call depth of 47, which `check` cannot see and the board traps on. Both are
+          call depth of 47, which `check` cannot see and the board traps on (`wasmicon run`
+          reports it since 2026-10-26, docs/app-workflow.md §4.3). Both are
           common to compiled C (a large `switch` nests one block per case). The cost is
           about 34 KiB of the PSRAM arena. Value stack, locals and table size stay the
           MCU's. Not raised on the SRAM boards: there the operand stack alone would take

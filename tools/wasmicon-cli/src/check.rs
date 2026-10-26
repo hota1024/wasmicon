@@ -36,6 +36,7 @@ use crate::manifest::Manifest;
 use crate::pack;
 use wasmicon_core::module::{ExportDesc, ImportDesc};
 use wasmicon_core::{Arena, Exec, decode, generated, instantiate, validate};
+use wasmicon_host::Usage;
 use wasmicon_port::Hal;
 use wasmicon_port::assets::Directory;
 use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
@@ -96,6 +97,10 @@ pub struct Facts {
     pub has_memory_export: bool,
     pub mem_pages: Option<u32>,
     pub table_elems: Option<u32>,
+    /// The validate-time stack limits the module needs, measured under the
+    /// host's looser `Config` so that a board's failure can say by how much.
+    /// `None` when even the host refuses it (the board sections say why).
+    pub needs: Option<Usage>,
 }
 
 impl Facts {
@@ -296,6 +301,12 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
     let mut arena = Arena::new(&mut buf);
     let m = decode::decode(wasm, &mut arena).map_err(|e| anyhow::anyhow!(reason(e)))?;
 
+    let mut scratch_buf = vec![0u8; profile::HOST.scratch];
+    let mut scratch = Arena::new(&mut scratch_buf);
+    let needs = validate::validate(&m, &profile::HOST.config, &mut arena, &mut scratch)
+        .ok()
+        .map(|v| Usage::of_module(&v));
+
     let mut imports = Vec::new();
     let mut per_iface = BTreeMap::new();
     for imp in m.imports {
@@ -350,6 +361,7 @@ pub fn facts(wasm: &[u8]) -> Result<Facts> {
         has_memory_export,
         mem_pages: m.mems.first().map(|l| l.min),
         table_elems: m.tables.first().map(|l| l.min),
+        needs,
     })
 }
 
@@ -611,6 +623,16 @@ fn print_module(
         Some(n) => row("table", &format!("{n} elements"), ""),
         None => row("table", "none", ""),
     }
+    if let Some(u) = &f.needs {
+        row(
+            "stacks",
+            &format!(
+                "control {}, values {}, locals {}",
+                u.max_control_depth, u.max_value_stack, u.max_locals
+            ),
+            "call depth and operand slots: see `wasmicon run`",
+        );
+    }
 
     match declared {
         Some(roles) => row("roles", &roles.join(", "), "declared in wasmicon.toml"),
@@ -678,7 +700,26 @@ fn print_verdict(
             &format!("initial {pages} pages <= {limit}"),
             "ok",
         ),
-        (Err(e), _) => row(&v.stage_label(), e, "<- fails"),
+        (Err(e), _) => {
+            // Under a board's limit the validator stops at that limit; the
+            // host measurement says what the module needs.
+            let over: Vec<String> = f
+                .needs
+                .map(|u| u.over(&p.config))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(field, need, limit)| format!("{field} {need} > {limit}"))
+                .collect();
+            if over.is_empty() {
+                row(&v.stage_label(), e, "<- fails");
+            } else {
+                row(
+                    &v.stage_label(),
+                    e,
+                    &format!("<- fails (needs {})", over.join(", ")),
+                );
+            }
+        }
     }
 
     for iface in &v.unimplemented {

@@ -46,6 +46,9 @@ pub struct FuncInfo {
 pub struct Validated<'a> {
     pub funcs: &'a [FuncInfo],
     pub branches: &'a [Branch],
+    /// Deepest block nesting any function reached, the function's own block
+    /// included: the smallest `max_control_depth` that accepts the module.
+    pub max_control: u32,
 }
 
 impl Validated<'_> {
@@ -149,6 +152,8 @@ struct Validator<'m, 's> {
     nctrls: usize,
     nlocals: usize,
     max_stack: u32,
+    /// Over the whole module; `max_stack` is per function.
+    max_ctrls: u32,
 }
 
 /// Validates a module.
@@ -175,6 +180,7 @@ where
         nctrls: 0,
         nlocals: 0,
         max_stack: 0,
+        max_ctrls: 0,
     };
 
     // First pass: count the branch entries.
@@ -215,7 +221,11 @@ where
         }
     }
 
-    Ok(Validated { funcs, branches })
+    Ok(Validated {
+        funcs,
+        branches,
+        max_control: v.max_ctrls,
+    })
 }
 
 // ---------------------------------------------------------------- whole module
@@ -446,6 +456,7 @@ impl<'m> Validator<'m, '_> {
             saw_else: false,
         };
         self.nctrls += 1;
+        self.max_ctrls = self.max_ctrls.max(self.nctrls as u32);
         for i in 0..ty.param_count() {
             self.push(ty.param(i).ok_or(TYPE_MISMATCH)?)?;
         }
@@ -620,6 +631,7 @@ impl<'m> Validator<'m, '_> {
             saw_else: false,
         };
         self.nctrls = 1;
+        self.max_ctrls = self.max_ctrls.max(1);
 
         let body = code.body;
         let mut r = Reader::new(body);

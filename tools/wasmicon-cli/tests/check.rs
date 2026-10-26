@@ -198,6 +198,20 @@ fn the_psram_variant_validates_deeply_nested_blocks() {
 }
 
 #[test]
+fn the_module_section_reports_the_control_depth_a_board_must_allow() {
+    // Measured under the host's limits, so a board that refuses the module
+    // can say how deep it has to go (its own validator stops at its limit).
+    let f = facts_of(&wat_nested_blocks(200));
+    let needs = f.needs.expect("the host validates it");
+    assert_eq!(needs.max_control_depth, 201, "the body's own block counts");
+    assert_eq!(
+        needs.over(&profile::ESP32S3.config),
+        vec![("max_control_depth", 201, 64)]
+    );
+    assert!(needs.over(&profile::ESP32S3_PSRAM.config).is_empty());
+}
+
+#[test]
 fn the_arena_is_part_of_the_judgement() {
     // validate alone is not enough. Linear memory takes the rest of the
     // arena, so even within max_memory_pages the min_pages * 64 KiB may not

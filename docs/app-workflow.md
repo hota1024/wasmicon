@@ -702,7 +702,7 @@ existing thing that does the job today.
 | `new <name> --lang rust\|as` | Scaffold. Fills in the ABI-conformant build flags (§4.4) | Nothing |
 | ~~`build`~~ | **Not built.** It would be a thin wrapper that picks `cargo build --release` / `npm run build` by language; the flags live in the files `new` wrote (§4.4), so there is nothing to add | - |
 | `check <app.wasm> --board X` | Runs decode / validate / `Exec` / instantiate **on the real runtime**, **with that board's actual arena size** (§4.3) | Nothing (`wasm-tools validate` sees neither the import table nor the board limits) |
-| `run <app.wasm> [--trace] [--i2c-replay f] [--asset n=f]` | Runs on the host port. `--i2c-replay` corresponds to the existing env var `WASMICON_I2C_REPLAY`. The `[assets]` table of `wasmicon.toml` is served from its files; `--asset` adds or replaces one (§3.10) | `cargo run -p wasmicon-host` (the crate stays, used as a lib) |
+| `run <app.wasm> [--trace] [--i2c-replay f] [--asset n=f]` | Runs on the host port. `--i2c-replay` corresponds to the existing env var `WASMICON_I2C_REPLAY`. The `[assets]` table of `wasmicon.toml` is served from its files; `--asset` adds or replaces one (§3.10). After the run, prints on stderr how deep the stacks went and which boards that is over (§4.3) | `cargo run -p wasmicon-host` (the crate stays, used as a lib) |
 | `deploy <app.wasm>` | Sends the app over USB / HTTP. `--persist` for the flash slot. Never touches the assets slot | Nothing |
 | `assets pack [--board X] [-o f]` | Builds the assets slot image from `[assets]` (§3.10). With a board, checks that it fits the slot and prints the flash command | Nothing |
 | `assets write --board X` | `assets pack`, then flashes the image to the board's assets slot through the same flasher as `deploy`. Per device, not per app: the last write wins | Nothing |
@@ -774,6 +774,35 @@ shrinking `max_memory_pages` (the right fix is a bigger arena).
 `Config::default()` (`max_memory_pages` = 65536), while hardware is RP2040 = 2 /
 RP2350 = 4 / ESP32-S3 = 4 / ESP32-S3 with PSRAM = 112. **You can write an app that passes `wasmicon run` and
 fails validate on hardware.** That is why `check --board` exists.
+
+**The stack limits: `check` sees half of them, `run` the other half.** `Config` has
+five limits that grow with the code rather than with its data:
+
+| `Config` field | Known from | Shown by |
+|---|---|---|
+| `max_control_depth` (block nesting) | validate | `check`: the `stacks` row, and a failing board's `needs ... > ...` |
+| `max_value_stack` (operand height in one function) | validate | `check` |
+| `max_locals` (parameters + locals of one function) | validate | `check` |
+| `max_call_depth` | the path a run takes | `run`, on stderr |
+| `operand_stack_slots` (every live frame's reservation) | the path a run takes | `run`, on stderr |
+
+`check` validates once under the host's limits to measure what the module needs, so a
+board whose validator stops at its own limit can still say by how much it is short
+(a large C `switch` nests one block per case; a C port of DOOM reported needing 74
+against the MCU's 64).
+The two run-time figures exist only after running: an app can pass `check` and trap
+on the board with `call stack exhausted`. `run` records them once per function entry
+(`Exec::peak`, nothing in the opcode loop) and ends with
+
+```
+usage: max_control_depth 18, max_value_stack 6, max_locals 16, max_call_depth 25, operand_stack_slots 67
+  within every board's limits
+```
+
+or one `over <board>: <field> <needed> > <limit>` line per board it does not fit.
+The figures are this host run's: a board run that takes another path (a sensor value,
+a button, more frames of a game) can go deeper, so leave headroom. The output is on
+stderr so that stdout stays the trace `trace diff` compares.
 
 **Board profiles were gathered into `profile` in `ports/common`** (2026-10-04). The
 scattered `Config` (three `main.rs`), the role assignments (`ROLES` in each
