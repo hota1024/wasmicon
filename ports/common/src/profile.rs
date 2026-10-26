@@ -314,10 +314,18 @@ pub const ESP32S3: Profile = Profile {
     assets: Some(assets_after(role_slot_after(ESP32S3_SLOT), ESP32S3_FLASH)),
 };
 
-/// App slot of the ESP32-S3.
+/// App slot of the ESP32-S3, shared by `esp32s3` and `esp32s3-psram`.
+///
+/// 1 MiB, not the 64 KiB of the other boards: the PSRAM firmware runs
+/// compiled C of several hundred KB (a 415 KB `.wasm` was the first). The
+/// plain firmware copies an app into its 300 KiB arena, so it cannot use
+/// the extra room, but one layout for both firmwares means a wrong `--board`
+/// never writes the image over the config or assets slot (`deploy` does not
+/// ask the device which firmware it runs yet; docs/TODO.md §5). The cost is
+/// the assets slot, which shrinks by the same 960 KiB on both.
 const ESP32S3_SLOT: Slot = Slot {
     offset: 1 << 20,
-    len: 64 * 1024,
+    len: 1 << 20,
     read: SlotRead::Copy,
     flasher: Flasher::Espflash { chip: "esp32s3" },
 };

@@ -640,11 +640,21 @@ change.**
           build, check the identity line and that an app's trace still matches the host
           (the larger `static SCRATCH` and `Exec` are the change), then record it in
           docs/verification-report.md
-        - **App slot size.** The 64 KiB app slot cannot hold a DOOM-sized `.wasm`, so the
-          larger linear memory alone does not make room for one. A larger slot moves the
-          config and assets slots, so decide whether only this profile gets the new layout
-          (two layouts to maintain) or every ESP32-S3 profile does. A layout that differs
-          per profile needs the `deploy` cross-check in "Implementation" below first
+        - ~~App slot size~~ -> **1 MiB on both ESP32-S3 profiles** (2026-10-26, owner
+          decision): app `0x100000`, config `0x200000`, assets `0x201000` to the end of
+          flash (6,287,360 B, 983,040 B less than before). One layout for both firmwares,
+          so a wrong `--board` cannot write over the config or assets slot, and the
+          `deploy` cross-check is not a precondition. The plain firmware copies an app
+          into its 300 KiB arena and gains nothing; the assets it loses is the price of
+          the single layout. The other boards keep 64 KiB; the ESP32-C5 was left as is.
+          Follow-ups:
+          - An assets slot written under the old layout is not found any more (the
+            firmware prints `assets empty`); rewrite it with `assets write`
+          - `deploy` writes the app and config slots as one image padded with `0xff`
+            (`pack::with_roles`), so every deploy now erases and writes 1 MiB + 4 KiB
+            instead of 68 KiB. Not measured; if it is slow, write the two slots
+            separately or stop padding past the app
+          - Not yet run on hardware
         - **Flash size.** 16 MB modules (N16R8) exist and the assets slot runs to the end
           of flash. Starting with the 8 MB board on hand is enough
         - ~~Linear memory only in PSRAM~~ -> **not needed so far** (measured 2026-10-22,
@@ -848,7 +858,7 @@ change.**
         (docs/verification-report.md §10)
       - **`partitions.csv` was not needed** (measured: `espflash flash` erases only the
         app's sectors, so the marker at the 7 MB point survived). The location matches the
-        Pico family: 64 KiB from `0x100000`
+        Pico family: 64 KiB from `0x100000` (1 MiB since 2026-10-26, §5-10)
       - **On the ESP32-S3, flashing and the trace share one port.** `monitor` only applies
         `stty`, so it cannot reset the board itself, and the ordering deadlocks. Solved by
         **handing the whole port to `espflash monitor`** (`--before default-reset --after

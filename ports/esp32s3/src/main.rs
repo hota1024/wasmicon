@@ -229,8 +229,8 @@ fn main() -> ! {
 /// (docs/app-workflow.md §3.3). The ESP32-S3 cannot assume an arbitrary
 /// flash offset is mapped into XIP, so unlike the Pico ports
 /// (`slot::read_xip`) the app is copied to RAM. Only the length in the header
-/// is copied: the slot is 64 KiB but an app is a few KB, and DRAM is nearly
-/// full (docs/TODO.md §1.4). The copy comes from the arena, so no static
+/// is copied: the slot is 1 MiB (sized for the PSRAM firmware) but an app is
+/// usually a few KB, and DRAM is nearly full (docs/TODO.md §1.4). The copy comes from the arena, so no static
 /// region grows.
 fn pick_guest<'a>(
     storage: &mut FlashStorage<'_>,

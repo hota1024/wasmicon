@@ -164,12 +164,15 @@ Two places, and **both are needed**.
 | SRAM | 264 KB (`ARENA` 160 KB) | 520 KB (`ARENA` 320 KB) | 512 KB (`ARENA` 300 KB; almost no DRAM left. docs/TODO.md §1.4) |
 | How the RAM slot is taken | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` | Cut off the head of `ARENA` with `split_at_mut` |
 | Flash write | `rom_data` (same family as RP2350) | `rom_data::connect_internal_flash` / `flash_exit_xip` / `flash_range_erase` / `flash_range_program` / `flash_flush_cache` (rp235x-hal 0.4.0) | `FlashStorage` from `esp-storage` 0.10 (`SECTOR_SIZE` = 4096) |
-| Running from flash | **Implemented 2026-10-04** (the XIP slice is passed as is; no RAM copy) | **Implemented 2026-10-04**, the XIP slice passed as is (64 KiB from `0x10100000`; verified on hardware on 2026-10-04, docs/verification-report.md §9; RP2040 never flashed) | **Copied to RAM.** No assumption that an arbitrary offset is XIP-mapped (MMU / DROM) |
-| Assets slot (§3.10) | `0x111000` to the end of flash (978,944 B), read in place | `0x111000` to the end of flash (3,076,096 B), read in place | `0x111000` to the end of flash (7,270,400 B), read by range through `esp-storage` |
+| Running from flash | **Implemented 2026-10-04** (the XIP slice is passed as is; no RAM copy) | **Implemented 2026-10-04**, the XIP slice passed as is (64 KiB from `0x10100000`; verified on hardware on 2026-10-04, docs/verification-report.md §9; RP2040 never flashed) | **Copied to RAM** (1 MiB slot from `0x100000`, only the app's length is copied). No assumption that an arbitrary offset is XIP-mapped (MMU / DROM) |
+| Assets slot (§3.10) | `0x111000` to the end of flash (978,944 B), read in place | `0x111000` to the end of flash (3,076,096 B), read in place | `0x201000` to the end of flash (6,287,360 B), read by range through `esp-storage` |
 
 - Apps are currently 775 B to 5.3 KB (`blink_rs` 775 B / `lcd_demo_rs` 4.0 KB /
   `sensor_display_as` 5.3 KB), so even a 64 KiB slot is under 1/5 of `ARENA` on
-  RP2350 / ESP32-S3. **RP2040 is tight on SRAM, so keep it small** (16 KiB or so)
+  RP2350. **RP2040 is tight on SRAM, so keep it small** (16 KiB or so)
+- The ESP32-S3 slot is 1 MiB for the PSRAM firmware's large apps (docs/TODO.md
+  §5-10). Only the app's length is copied, so the plain firmware's arena does not
+  shrink, but an app over roughly 250 KB does not fit that arena
 - On RP2350, **code executing from XIP cannot run while erasing or programming**.
   The write routine has to be placed in RAM (`#[link_section = ".data"]`) and called
   with interrupts off (**to be confirmed** -> §5-6)
@@ -403,7 +406,7 @@ At boot, the line after the banner is a one-line identity (`identity` in
 `ports/common`):
 
 ```
-wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets slot=v1/65536 roles=v1/4096 assets=v1/7270400
+wasmicon id esp32s3 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets slot=v1/1048576 roles=v1/4096 assets=v1/6287360
 ```
 
 - `git` is `git describe --always --dirty` at build time (each port's `build.rs`
@@ -522,8 +525,9 @@ from that board's wiring table (no device connection needed).
 #### Where it lives
 
 **4 KiB right after the app slot** (`profile::<board>.role_slot`; currently
-`0x110000` on all three boards). The lifetimes differ, but **`deploy` writes the app
-slot (64 KiB) and the config slot as one image in one go** (`pack::with_roles`), so
+`0x110000`, and `0x200000` on the ESP32-S3). The lifetimes differ, but **`deploy`
+writes the app slot (64 KiB; 1 MiB on the ESP32-S3) and the config slot as one image
+in one go** (`pack::with_roles`), so
 flashing takes no extra step. The space after the app is filled with `0xff` to the
 end of the slot.
 
@@ -633,8 +637,8 @@ range; a body is never copied to RAM as a whole.
 
 | | RP2040 | RP2350 | ESP32-S3 | ESP32-C5 |
 |---|---|---|---|---|
-| Offset | `0x111000` | `0x111000` | `0x111000` | `0x111000` |
-| Size | 978,944 B | 3,076,096 B | 7,270,400 B | 15,659,008 B |
+| Offset | `0x111000` | `0x111000` | `0x201000` | `0x111000` |
+| Size | 978,944 B | 3,076,096 B | 6,287,360 B | 15,659,008 B |
 | Read | XIP slice, in place | XIP slice, in place | `esp-storage`, by range | `esp-storage`, by range |
 
 The shareware IWAD (4,196,020 B) fits only the ESP boards; `check --board` says so

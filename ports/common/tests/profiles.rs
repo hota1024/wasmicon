@@ -99,14 +99,16 @@ fn host_promises_more_pages_than_its_arena_can_hold() {
 
 #[test]
 fn every_board_has_a_decided_slot() {
-    // All four ports use the same location (64 KiB at 1 MiB). Only the read
-    // method differs (an XIP slice on the Pico family, a copy to RAM on
-    // ESP32-S3 / C5).
-    for (p, flash) in [
-        (&profile::RP2040, 2usize << 20),
-        (&profile::RP2350, 4usize << 20),
-        (&profile::ESP32S3, 8usize << 20),
-        (&profile::ESP32C5, 16usize << 20),
+    // Every port starts the slot at 1 MiB. It is 64 KiB except on the
+    // ESP32-S3, whose PSRAM firmware runs apps of several hundred KB (1 MiB,
+    // shared by both of its firmwares). The read method differs too (an XIP
+    // slice on the Pico family, a copy to RAM on ESP32-S3 / C5).
+    for (p, flash, len) in [
+        (&profile::RP2040, 2usize << 20, 64 * 1024),
+        (&profile::RP2350, 4usize << 20, 64 * 1024),
+        (&profile::ESP32S3, 8usize << 20, 1 << 20),
+        (&profile::ESP32S3_PSRAM, 8usize << 20, 1 << 20),
+        (&profile::ESP32C5, 16usize << 20, 64 * 1024),
     ] {
         let sl = p
             .slot
@@ -117,7 +119,7 @@ fn every_board_has_a_decided_slot() {
             "{}: the first 1 MiB is kept for the firmware",
             p.name
         );
-        assert_eq!(sl.len, 64 * 1024, "{}", p.name);
+        assert_eq!(sl.len, len, "{}", p.name);
         assert!(
             (sl.offset + sl.len) as usize <= flash,
             "{}: does not fit in {flash} B of flash",
@@ -236,12 +238,14 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
 fn every_board_has_an_assets_slot_to_the_end_of_flash() {
     // Right after the config slot (docs/app-workflow.md §3.10), so it never
     // moves when the app is replaced, and as large as the flash allows. The
-    // flash sizes are the boards' (docs/TODO.md §5-2).
-    for (p, flash) in [
-        (&profile::RP2040, 2u32 << 20),
-        (&profile::RP2350, 4 << 20),
-        (&profile::ESP32S3, 8 << 20),
-        (&profile::ESP32C5, 16 << 20),
+    // flash sizes are the boards' (docs/TODO.md §5-2). The ESP32-S3 starts
+    // later because its app slot is 1 MiB.
+    for (p, flash, start) in [
+        (&profile::RP2040, 2u32 << 20, 0x11_1000),
+        (&profile::RP2350, 4 << 20, 0x11_1000),
+        (&profile::ESP32S3, 8 << 20, 0x20_1000),
+        (&profile::ESP32S3_PSRAM, 8 << 20, 0x20_1000),
+        (&profile::ESP32C5, 16 << 20, 0x11_1000),
     ] {
         let r = p
             .role_slot
@@ -250,7 +254,7 @@ fn every_board_has_an_assets_slot_to_the_end_of_flash() {
             .assets
             .unwrap_or_else(|| panic!("{} has an assets slot", p.name));
         assert_eq!(a.offset, r.offset + r.len, "{}", p.name);
-        assert_eq!(a.offset, 0x11_1000, "{}", p.name);
+        assert_eq!(a.offset, start, "{}", p.name);
         assert_eq!(a.offset % 4096, 0, "{}: erase-unit aligned", p.name);
         assert_eq!(a.offset + a.len, flash, "{}: runs to the end", p.name);
         assert!(a.read == r.read && a.flasher == r.flasher, "{}", p.name);

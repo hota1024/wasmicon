@@ -37,7 +37,7 @@ esp-bootloader-esp-idf = { version = "0.6", default-features = false, features =
 # Reads the app slot from flash (docs/app-workflow.md §3.3). The ESP32-S3
 # cannot assume an arbitrary offset is mapped into XIP, so unlike the Pico
 # ports the app is copied to RAM, and only the length in the header (the slot
-# is 64 KiB, an app a few KB, and DRAM is nearly full).
+# is 1 MiB, an app usually a few KB, and DRAM is nearly full).
 esp-storage = { version = "0.10", features = ["esp32s3"] }
 # Output goes through our own UART, so esp-println / esp-backtrace are not used.
 # The panic handler is our own (docs/decisions.md A-04: log and halt, no restart).
