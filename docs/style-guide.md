@@ -99,7 +99,7 @@ Not verified: ESP32-S3 build (no Xtensa toolchain on this machine)
 
 Types in use: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `ci`, `chore`.
 Scopes in use: `runtime`, `gen`, `cli`, `ports`, `rp2040`, `rp2350`, `esp32s3`,
-`esp32c5`, `apps`, `bindings`, `differential`, `agents`. Translation and rename
+`esp32c5`, `esp32p4`, `apps`, `bindings`, `differential`, `agents`. Translation and rename
 commits never change behavior; a behavior change gets its own commit. If you
 proceed on an adopted default while an owner question is open, say so in the body.
 

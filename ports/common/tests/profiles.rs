@@ -32,6 +32,7 @@ fn mcu_configs_are_what_the_ports_had() {
     assert_mcu_limits(&profile::RP2350, 4);
     assert_mcu_limits(&profile::ESP32S3, 4);
     assert_mcu_limits(&profile::ESP32C5, 4);
+    assert_mcu_limits(&profile::ESP32P4, 4);
 }
 
 #[test]
@@ -42,6 +43,7 @@ fn arenas_are_what_the_ports_had() {
     assert_eq!(profile::RP2350.arena, 320 * 1024);
     assert_eq!(profile::ESP32S3.arena, 300 * 1024);
     assert_eq!(profile::ESP32C5.arena, 288 * 1024);
+    assert_eq!(profile::ESP32P4.arena, 300 * 1024);
     for p in profile::PROFILES {
         let scratch = match p.name {
             "host" => 4 << 20,
@@ -102,13 +104,14 @@ fn every_board_has_a_decided_slot() {
     // Every port starts the slot at 1 MiB. It is 64 KiB except on the
     // ESP32-S3, whose PSRAM firmware runs apps of several hundred KB (1 MiB,
     // shared by both of its firmwares). The read method differs too (an XIP
-    // slice on the Pico family, a copy to RAM on ESP32-S3 / C5).
+    // slice on the Pico family, a copy to RAM on ESP32-S3 / C5 / P4).
     for (p, flash, len) in [
         (&profile::RP2040, 2usize << 20, 64 * 1024),
         (&profile::RP2350, 4usize << 20, 64 * 1024),
         (&profile::ESP32S3, 8usize << 20, 1 << 20),
         (&profile::ESP32S3_PSRAM, 8usize << 20, 1 << 20),
         (&profile::ESP32C5, 16usize << 20, 64 * 1024),
+        (&profile::ESP32P4, 16usize << 20, 64 * 1024),
     ] {
         let sl = p
             .slot
@@ -176,6 +179,7 @@ fn only_the_host_mock_has_a_role_table() {
         &profile::RP2350,
         &profile::ESP32S3,
         &profile::ESP32C5,
+        &profile::ESP32P4,
     ] {
         assert!(p.roles.is_empty(), "{} must have no default table", p.name);
     }
@@ -208,6 +212,9 @@ fn gpio_limits_are_what_the_ports_have() {
         [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
     );
     assert_eq!(profile::ESP32C5.bus_pins, [5, 8, 9, 23, 24, 27]);
+    assert_eq!(profile::ESP32P4.gpio_count, 55);
+    assert_eq!(profile::ESP32P4.reserved, [24, 25, 37, 38]);
+    assert_eq!(profile::ESP32P4.bus_pins, [5, 18, 19, 53, 54]);
 }
 
 #[test]
@@ -223,6 +230,7 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
         &profile::RP2350,
         &profile::ESP32S3,
         &profile::ESP32C5,
+        &profile::ESP32P4,
         &profile::HOST,
     ] {
         let i = p.interfaces;
@@ -246,6 +254,7 @@ fn every_board_has_an_assets_slot_to_the_end_of_flash() {
         (&profile::ESP32S3, 8 << 20, 0x20_1000),
         (&profile::ESP32S3_PSRAM, 8 << 20, 0x20_1000),
         (&profile::ESP32C5, 16 << 20, 0x11_1000),
+        (&profile::ESP32P4, 16 << 20, 0x11_1000),
     ] {
         let r = p
             .role_slot
@@ -272,7 +281,7 @@ fn by_name_resolves_every_profile_and_nothing_else() {
         profile::by_name("rp2350 ").is_none(),
         "lookup is an exact match"
     );
-    assert!(profile::by_name("esp32p4").is_none());
+    assert!(profile::by_name("esp32h2").is_none());
 }
 
 #[test]

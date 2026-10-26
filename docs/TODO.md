@@ -187,6 +187,61 @@ hardware and committed separately.
     did not help. After `espflash reset` the output stops in the middle of the ROM's first
     line; the RESET button boots normally
 
+### 1.3.2 ESP32-P4 support (restarted 2026-10-26. Checked on the M5Stack Tab5)
+
+`ports/esp32p4` is built like `ports/esp32c5`. It is not tied to one board: it reserves only
+the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/abi-spec.md
+§8). It replaces an earlier attempt (branch `worktree-feat-esp32p4`, last commit 9698c38,
+2026-09-22) that was dropped and redone from `main`; the facts below were measured there.
+
+- [x] **(0) Builds, clippy and fmt pass** (2026-10-26; CI has a build job, `esp32p4`)
+- [ ] **(1) The firmware boots on the Tab5 and announces itself** (`wasmicon id esp32p4 ...`)
+- [ ] **(2) `deploy` runs blink-rs from the slot** (`led`=GPIO16, external) and the trace matches the host
+- [ ] **(3) SPI: lcd-demo-rs draws on the ILI9341** and the trace matches the host
+- [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 on PORT.A** and the trace matches the host
+- **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
+  esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). Four workarounds,
+  each to be deleted once upstream lets the build pick the revision (no upstream report yet):
+  - `ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"` in `.cargo/config.toml`. Without it the
+    second-stage bootloader refuses the image (`chip revision check failed. Required >= v3.0`)
+  - `vendor/esp-sync` drops the `mintthresh` (CSR 0x347) write, an illegal instruction on v1.0
+    that made `esp_hal::init` reset forever (its README)
+  - `pre-v3.x` reads the pre-ECO5 ROM function tables and points `memcpy` / `memmove` /
+    `memset` / `memcmp` at `src/mem.rs`. With the ECO5 tables `__ashldi3` was off by 12 bytes
+    and LEB128 decoding returned wrong values without crashing. Checked on the linked ELF
+    (2026-10-26): all 533 ROM symbols that the pre-ECO5 tables define carry the pre-ECO5
+    address. Eight names are defined only by the ECO5 tables or `rom/additional.ld`; the linker's `--trace-symbol` shows
+    the firmware references just one, `syscall_table_ptr`, which `esp_hal::init` writes once
+    (0x4FFBFFE4, inside the non-RAM top on v1.0). Nothing in the firmware calls the ROM C
+    library that reads it, and the earlier attempt ran with the same write; a v1.0 address
+    for it has not been looked up
+  - `pre-v3.x` lowers the stack top to 0x4FFA0000. L2 memory from there up is cache, not RAM, on
+    the v1.0 chip, and a stack there lost its contents once `instantiate` evicted the cache
+    (measured: a value at 0x4FF9E000 survives an eviction, one at 0x4FFA0000 does not).
+    For the same reason nothing goes in `ram(reclaimed)` (it starts at 0x4FFADFC0)
+- **RAM.** The link puts the statics at 0x4FF40000 (esp-hal's default 256 KB L2 cache) and
+  `.bss` ends near 0x4FF8ECA0 with the 300 KiB arena, so the native stack gets about 70 KiB.
+  The usable top (0x4FFA0000) was measured on one Tab5; another revision may differ.
+  The firmware image is 140,192 B (`espflash save-image`, 2026-10-26), far below the app
+  slot at 1 MiB
+- **Trace capture on the Tab5.** UART0 (GPIO37 = TX) reaches only M5-Bus pin 14 (GND on pin 1);
+  a 3.3 V USB serial adapter takes it at 115200 8N1. Pin 12 next to it is 3V3. The Tab5's own
+  USB-C gave no output through USB-Serial-JTAG or USB-OTG in the earlier attempt. On macOS,
+  set the baud rate on the open descriptor: closing a `cu.*` device resets termios to 9600
+- **Reset on the Tab5.** With the USB-C cable plugged into a PC, a reset from espflash always
+  lands in download mode (`boot:0x204 DOWNLOAD`). The power button (double press off, single
+  press on) boots normally
+- **Owner questions:**
+  - Which of GPIO53/54 is SDA on PORT.A. The Tab5 pin map gives only the colors (yellow = G53,
+    white = G54); the port follows the usual M5Stack order (white = SDA), but a second-hand
+    source says the opposite. Settle it on hardware
+  - The Tab5 wires many pins to its own parts (GPIO8..=15 the ESP32-C6, 31/32 the internal I2C
+    that also controls power, 39..=44 the SD card, 22 the backlight, among others). They are
+    not reserved, so a wrong wiring table can fight them. Reserve them in a Tab5 profile, or
+    leave the chip-level profile as it is?
+  - The internal I2C carries a PI4IOE5V6408 at 0x44, the SHT31 default. The SHT40 (0x44) on
+    PORT.A is on another bus, so it does not collide
+
 ### 1.4 What to suspect first on hardware
 
 **RP2350 and ESP32-S3 are verified on hardware** (both on 2026-09-26). `lcd-demo-rs` ran on the

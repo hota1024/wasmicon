@@ -110,7 +110,7 @@ pub fn run() -> Result<bool> {
         Some(v) => line("espflash", &strip_name("espflash", v), true),
         None => line(
             "espflash",
-            "missing (needed to flash esp32s3 / esp32c5)",
+            "missing (needed to flash esp32s3 / esp32c5 / esp32p4)",
             false,
         ),
     }
@@ -129,6 +129,7 @@ pub fn run() -> Result<bool> {
         boards.push("esp32s3");
         boards.push("esp32s3-psram");
         boards.push("esp32c5");
+        boards.push("esp32p4");
     }
     if boards.is_empty() {
         println!("-> no board can be flashed from here; apps can still be built, checked and run");

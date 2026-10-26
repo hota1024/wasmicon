@@ -20,5 +20,9 @@ led = 2
 # pin is an input).
 led = 4
 
+[board.esp32p4.roles]
+# Pins free on the M5Stack Tab5 (M5-Bus); the LED is external.
+led = 16
+
 [board.rp2040.roles]
 led = 15

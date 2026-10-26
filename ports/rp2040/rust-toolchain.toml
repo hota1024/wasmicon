@@ -1,5 +1,5 @@
 [toolchain]
-# Pinned so that all five rust-toolchain.toml files agree; see README.md "Toolchain".
+# Pinned so that all six rust-toolchain.toml files agree; see README.md "Toolchain".
 channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 targets = ["thumbv6m-none-eabi"]

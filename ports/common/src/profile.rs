@@ -115,7 +115,7 @@ pub struct Profile {
 ///
 /// The read and flash methods live here too. Branching on the board name
 /// string would let a new port fall into the default branch without a compile
-/// error (adding esp32p4 would try to flash with `picotool`, for example).
+/// error (adding esp32h2 would try to flash with `picotool`, for example).
 /// The one place that declares a board must state them.
 #[derive(Clone, Copy)]
 pub struct Slot {
@@ -201,6 +201,17 @@ const ESP32C5_RESERVED: &[u32] = &[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 2
 /// is driven).
 const ESP32C5_BUS_PINS: &[u32] = &[5, 8, 9, 23, 24, 27];
 
+/// Reserved pins of the ESP32-P4. 24/25 are the USB-Serial-JTAG pads, 37/38
+/// the trace UART0. Flash and the in-package PSRAM have pins of their own
+/// (outside GPIO 0..=54), so they take no number here. Only the chip's own
+/// uses are listed; what a board wires to the other pins is the wiring's
+/// business (docs/abi-spec.md §8).
+const ESP32P4_RESERVED: &[u32] = &[24, 25, 37, 38];
+
+/// Bus pins of the ESP32-P4. I2C0 = GPIO54 (SDA) / 53 (SCL), SPI2 = GPIO5
+/// (SCK) / 18 (MOSI) / 19 (MISO). There is no `spi.bus` index 1.
+const ESP32P4_BUS_PINS: &[u32] = &[5, 18, 19, 53, 54];
+
 /// The config slot placed right after the app slot.
 const fn role_slot_after(app: Slot) -> Slot {
     Slot {
@@ -229,6 +240,7 @@ const RP2040_FLASH: u32 = 2 << 20;
 const RP2350_FLASH: u32 = 4 << 20;
 const ESP32S3_FLASH: u32 = 8 << 20;
 const ESP32C5_FLASH: u32 = 16 << 20;
+const ESP32P4_FLASH: u32 = 16 << 20;
 
 /// App slot of the Pico family (same location on RP2040 and RP2350).
 const PICO_SLOT: Slot = Slot {
@@ -401,6 +413,37 @@ const ESP32C5_SLOT: Slot = Slot {
     flasher: Flasher::Espflash { chip: "esp32c5" },
 };
 
+/// ESP32-P4. Not tied to one board; the pins are free on the M5Stack Tab5,
+/// the board it is checked on (docs/abi-spec.md §8).
+pub const ESP32P4: Profile = Profile {
+    name: "esp32p4",
+    wiring: "esp32p4",
+    config: MCU,
+    interfaces: Interfaces::ALL,
+    roles: &[],
+    gpio_count: 55,
+    reserved: ESP32P4_RESERVED,
+    bus_pins: ESP32P4_BUS_PINS,
+    // Same as the ESP32-S3. The RAM that is really there on a v1.0 chip is
+    // 0x4FF40000..0x4FFA0000 (384 KiB; `pre-v3.x` in the port), and the
+    // native stack takes what the statics leave.
+    arena: 300 * 1024,
+    scratch: 8 * 1024,
+    // 16 MB of flash (the Tab5, and most P4 modules). Starts at 1 MiB like
+    // the other ports.
+    slot: Some(ESP32P4_SLOT),
+    role_slot: Some(role_slot_after(ESP32P4_SLOT)),
+    assets: Some(assets_after(role_slot_after(ESP32P4_SLOT), ESP32P4_FLASH)),
+};
+
+/// App slot of the ESP32-P4. Copied to RAM like on the S3 and C5.
+const ESP32P4_SLOT: Slot = Slot {
+    offset: 1 << 20,
+    len: 64 * 1024,
+    read: SlotRead::Copy,
+    flasher: Flasher::Espflash { chip: "esp32p4" },
+};
+
 /// The PC mock. Looser than every board, so passing here does not mean passing on a board.
 pub const HOST: Profile = Profile {
     name: "host",
@@ -421,7 +464,15 @@ pub const HOST: Profile = Profile {
 };
 
 /// Lookup table by name. Used by the CLI and `info` (docs/app-workflow.md §3.8).
-pub const PROFILES: &[&Profile] = &[&RP2040, &RP2350, &ESP32S3, &ESP32S3_PSRAM, &ESP32C5, &HOST];
+pub const PROFILES: &[&Profile] = &[
+    &RP2040,
+    &RP2350,
+    &ESP32S3,
+    &ESP32S3_PSRAM,
+    &ESP32C5,
+    &ESP32P4,
+    &HOST,
+];
 
 /// Resolves `--board <name>`.
 #[must_use]

@@ -1,4 +1,4 @@
-# CI: six jobs, one per Cargo workspace that can be built on a stock Linux runner.
+# CI: seven jobs, one per Cargo workspace that can be built on a stock Linux runner.
 #
 #   root          runtime core, generator, host port (fmt, clippy, tests, generated-file
 #                 and signature checks, trace-diff self-test)
@@ -6,6 +6,7 @@
 #   rp2040        ports/rp2040 builds for thumbv6m (build-only; no hardware in CI)
 #   rp2350        ports/rp2350 builds for thumbv8m (build-only)
 #   esp32c5       ports/esp32c5 builds for riscv32imac (build-only)
+#   esp32p4       ports/esp32p4 builds for riscv32imafc (build-only)
 #   differential  wasmicon-core vs. wasmtime on the same .wasm
 #
 # ESP32-S3 has no job: it needs the Xtensa toolchain that espup installs, which is not
@@ -120,6 +121,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup target add riscv32imac-unknown-none-elf
+      # The firmware contains no app (docs/app-workflow.md §3.3), so apps/ need not be
+      # built first.
+      - run: cargo fmt --check
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo build --release
+
+  # ESP32-P4 port. RISC-V like the C5; the build also links in pre-v3.x and
+  # the local esp-sync copy, so a change upstream that breaks them shows here.
+  # Only checks that the riscv32imafc build passes (no hardware in CI).
+  esp32p4:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ports/esp32p4
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup target add riscv32imafc-unknown-none-elf
       # The firmware contains no app (docs/app-workflow.md §3.3), so apps/ need not be
       # built first.
       - run: cargo fmt --check

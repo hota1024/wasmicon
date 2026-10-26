@@ -1,5 +1,5 @@
 [toolchain]
-# Pinned so that all five rust-toolchain.toml files agree; see README.md "Toolchain".
+# Pinned so that all six rust-toolchain.toml files agree; see README.md "Toolchain".
 # Upstream Rust builds the RISC-V ESP32-C5; no espup (docs/decisions.md P-10).
 channel = "1.99.0"
 components = ["rustfmt", "clippy"]
