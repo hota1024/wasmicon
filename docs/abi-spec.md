@@ -316,14 +316,14 @@ No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
 
 How `index` is interpreted, and which pins carry SDA/SCL/SCK/MOSI/MISO, is decided by the port layer's board configuration. The guest sees only `index`. Initial assignment for the target app:
 
-| Purpose | WIT designation | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
-|---|---|---|---|---|---|
-| I2C bus (SHT4x) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | I2C0: SDA=GPIO8, SCL=GPIO9 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
-| SPI bus (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | SPI2: SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
-| ILI9341 CS | `gpio.pin` | GPIO10 | GPIO10 | GP17 | GP17 |
-| ILI9341 DC | `gpio.pin` | GPIO14 | GPIO0 | GP20 | GP20 |
-| ILI9341 RST | `gpio.pin` | GPIO15 | GPIO1 | GP21 | GP21 |
-| On-board RGB LED (WS2812B) | `spi.bus` index 1 | SPI2: MOSI=GPIO48 only (SCK / MISO are not routed) | SPI2: MOSI=GPIO27 only (SCK / MISO are not routed) | none | none |
+| Purpose | WIT designation | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | ESP32-P4 (pins free on the M5Stack Tab5) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
+|---|---|---|---|---|---|---|
+| I2C bus (SHT4x) | `i2c.bus` index 0 | I2C0: SDA=GPIO8, SCL=GPIO9 | I2C0: SDA=GPIO8, SCL=GPIO9 | I2C0: SDA=GPIO54, SCL=GPIO53 | i2c0: SDA=GP4, SCL=GP5 | i2c0: SDA=GP4, SCL=GP5 |
+| SPI bus (ILI9341) | `spi.bus` index 0 | SPI2: SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13 | SPI2: SCK=GPIO24, MOSI=GPIO23, MISO=GPIO5 | SPI2: SCK=GPIO5, MOSI=GPIO18, MISO=GPIO19 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 | spi0: SCK=GP18, MOSI=GP19, MISO=GP16 |
+| ILI9341 CS | `gpio.pin` | GPIO10 | GPIO10 | GPIO48 | GP17 | GP17 |
+| ILI9341 DC | `gpio.pin` | GPIO14 | GPIO0 | GPIO47 | GP20 | GP20 |
+| ILI9341 RST | `gpio.pin` | GPIO15 | GPIO1 | GPIO45 | GP21 | GP21 |
+| On-board RGB LED (WS2812B) | `spi.bus` index 1 | SPI2: MOSI=GPIO48 only (SCK / MISO are not routed) | SPI2: MOSI=GPIO27 only (SCK / MISO are not routed) | none | none | none |
 
 The Pico 2 / Pico 2 W header has the same pinout as the Pico / Pico WH, so the GP numbers are kept the same.
 
@@ -332,6 +332,14 @@ The ESP32-C5 assignment was taken from the schematic of the Waveshare ESP32-C5-W
 (WS2812), GPIO28 is the BOOT button, and GPIO2/3/7/25/26 are strapping pins, so they were avoided.
 GPIO11/12 are the trace UART0 (CH343), 13/14 are native USB, and 15..=22 are flash /
 PSRAM; none of these are exposed to the guest.
+
+The ESP32-P4 port is not tied to one board (2026-10-26). It reserves only the chip's own pins:
+GPIO24/25 (the USB-Serial-JTAG pads) and GPIO37/38 (the trace UART0, the chip's default UART0
+pads). Flash and the in-package PSRAM have dedicated pins outside GPIO0..=54. The bus pins
+were chosen among the pins the M5Stack Tab5 brings out unused, the board the port is checked on:
+I2C0 on PORT.A (GPIO53/54) and SPI2 on the M5-Bus (GPIO5/18/19). Which of GPIO53/54 is SDA on
+PORT.A is not settled (docs/TODO.md §1.3.2). GPIO32..=38 are strapping pins and were avoided.
+On another P4 board the same firmware runs, but the bus pins may land on something the board uses.
 
 On the ESP32-S3, 26..=32 are flash / PSRAM, **33..=37 are the octal PSRAM's extra lines** and 43/44 are the
 trace UART0; none of these are exposed to the guest either. The Freenove ESP32-S3-WROOM board has octal PSRAM
@@ -365,12 +373,12 @@ docs/app-workflow.md §3.9).
 
 The wiring used by the evaluation setup (SHT40 + ILI9341) is in `apps/*/wasmicon.toml`:
 
-| Role name | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | Raspberry Pi Pico 2 W | Apps that use it |
-|---|---|---|---|---|
-| `lcd-cs` | GPIO10 | GPIO10 | GP17 | lcd-demo / sensor-display |
-| `lcd-dc` | GPIO14 | GPIO0 | GP20 | lcd-demo / sensor-display |
-| `lcd-rst` | GPIO15 | GPIO1 | GP21 | lcd-demo / sensor-display |
-| `led` | GPIO2 (external) | GPIO4 (external; 10 kΩ pull-up on the board) | GP15 (external) | blink |
+| Role name | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | ESP32-P4 (M5Stack Tab5) | Raspberry Pi Pico 2 W | Apps that use it |
+|---|---|---|---|---|---|
+| `lcd-cs` | GPIO10 | GPIO10 | GPIO48 | GP17 | lcd-demo / sensor-display |
+| `lcd-dc` | GPIO14 | GPIO0 | GPIO47 | GP20 | lcd-demo / sensor-display |
+| `lcd-rst` | GPIO15 | GPIO1 | GPIO45 | GP21 | lcd-demo / sensor-display |
+| `led` | GPIO2 (external) | GPIO4 (external; 10 kΩ pull-up on the board) | GPIO16 (external) | GP15 (external) | blink |
 
 `led` is just one of the names blink looks up (nothing special to the firmware).
 No board has an on-board LED on a plain GPIO, so an external LED is used

@@ -1,0 +1,22 @@
+# cargo reads .cargo/config.toml relative to the current directory, so the
+# target lives here and the port is built from ports/esp32p4.
+#
+# The HP core of the ESP32-P4 is RV32IMAFC. Upstream Rust ships a prebuilt
+# core for it, so no build-std as for the ESP32-S3.
+[build]
+target = "riscv32imafc-unknown-none-elf"
+
+[target.riscv32imafc-unknown-none-elf]
+runner = "espflash flash --monitor"
+# pre-v3.x is read after linkall.x on purpose: a later symbol assignment wins,
+# so it replaces esp-hal's ROM addresses and stack top (see the file).
+rustflags = ["-Clink-arg=-Tlinkall.x", "-Clink-arg=-Tpre-v3.x"]
+
+[env]
+# Oldest silicon the image accepts (major * 100 + minor). esp-hal defaults to
+# 300 (v3.0) on the P4; the M5Stack Tab5 has v1.0, and the second-stage
+# bootloader refuses to start an image whose minimum is above the chip
+# ("chip revision check failed"). This is esp-hal's `min-chip-revision`
+# option, the counterpart of ESP-IDF's CONFIG_ESP32P4_REV_MIN_100; espflash
+# copies it from the ELF into the image header.
+ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"

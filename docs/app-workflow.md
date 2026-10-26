@@ -635,11 +635,11 @@ third slot, right after the config slot, that runs to the end of flash
 by name through `wasmicon:hal/assets@0.1.0` (docs/abi-spec.md §7) and reads it by
 range; a body is never copied to RAM as a whole.
 
-| | RP2040 | RP2350 | ESP32-S3 | ESP32-C5 |
-|---|---|---|---|---|
-| Offset | `0x111000` | `0x111000` | `0x201000` | `0x111000` |
-| Size | 978,944 B | 3,076,096 B | 6,287,360 B | 15,659,008 B |
-| Read | XIP slice, in place | XIP slice, in place | `esp-storage`, by range | `esp-storage`, by range |
+| | RP2040 | RP2350 | ESP32-S3 | ESP32-C5 | ESP32-P4 |
+|---|---|---|---|---|---|
+| Offset | `0x111000` | `0x111000` | `0x201000` | `0x111000` | `0x111000` |
+| Size | 978,944 B | 3,076,096 B | 6,287,360 B | 15,659,008 B | 15,659,008 B |
+| Read | XIP slice, in place | XIP slice, in place | `esp-storage`, by range | `esp-storage`, by range | `esp-storage`, by range |
 
 The shareware IWAD (4,196,020 B) fits only the ESP boards; `check --board` says so
 before anything is flashed.

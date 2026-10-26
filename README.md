@@ -2,6 +2,7 @@
 
 A WebAssembly runtime for microcontrollers. Evaluation boards: ESP32-S3 and RP2350 (Pico 2 W).
 ESP32-C5 is a port in progress (boots and blinks on hardware; status in docs/TODO.md §1.3.1).
+ESP32-P4 is a port in progress (builds; not yet run on hardware; status in docs/TODO.md §1.3.2).
 RP2040 has a port but is build-only; it was dropped from evaluation on 2026-10-07.
 
 - **Runtime**: a from-scratch Core Wasm interpreter. `no_std`, zero dependency crates, no `alloc`
@@ -64,6 +65,8 @@ ports/rp2040/         Raspberry Pi Pico WH (separate workspace; build-only, not 
 ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W (separate workspace, Cortex-M33)
 ports/esp32s3/        Freenove ESP32-S3-WROOM board (separate workspace, esp toolchain)
 ports/esp32c5/        ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT; separate workspace, RISC-V; hardware bring-up in progress)
+ports/esp32p4/        ESP32-P4 (no particular board; pins free on the M5Stack Tab5; separate workspace, RISC-V;
+                      runs on silicon before v3.0 too; hardware bring-up not started)
 bindings/rust/        Rust bindings for guests
 bindings/assemblyscript/  AssemblyScript bindings for guests
 bindings/c/           C bindings for guests (header + build.sh; built with clang's wasm32 target)
@@ -79,7 +82,8 @@ verify/               Verification tools: differential test against wasmtime, tr
 docs/                 Spec, design, verification report, remaining work
 ```
 
-`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `ports/esp32c5` / `apps` / `verify/differential`
+`ports/rp2040` / `ports/rp2350` / `ports/esp32s3` / `ports/esp32c5` / `ports/esp32p4` / `apps` /
+`verify/differential`
 are **separate workspaces** because their targets, toolchains and profiles all differ.
 
 ## Build and verify
@@ -120,6 +124,7 @@ sh ports/esp32s3/build.sh build --release   # sources ~/export-esp.sh, then call
 # needs a module with 8 MiB of PSRAM, docs/app-workflow.md §4.7)
 sh ports/esp32s3/build.sh build --release --features psram
 (cd ports/esp32c5 && cargo build --release)  # RISC-V; upstream Rust is enough
+(cd ports/esp32p4 && cargo build --release)  # RISC-V as well
 
 # Differential test against wasmtime (interpreter correctness)
 (cd verify/differential && cargo test)
@@ -130,8 +135,8 @@ sh verify/diff-traces.sh pico.log esp32s3.log
 
 ### Toolchain
 
-Five `rust-toolchain.toml` files (root, `apps`, `ports/rp2040`, `ports/rp2350`,
-`ports/esp32c5`) pin the same stable version, 1.99.0 (pinned 2026-10-08), so that they do
+Six `rust-toolchain.toml` files (root, `apps`, `ports/rp2040`, `ports/rp2350`,
+`ports/esp32c5`, `ports/esp32p4`) pin the same stable version, 1.99.0 (pinned 2026-10-08), so that they do
 not drift from each other or from CI; bump them together. `ports/esp32s3` uses the espup
 fork (`channel = "esp"`) because upstream Rust has no Xtensa target (docs/decisions.md P-10).
 
@@ -191,6 +196,7 @@ wasm-tools validate --features=mvp,sign-extension,saturating-float-to-int,bulk-m
 rustup target add thumbv6m-none-eabi                       # RP2040
 rustup target add thumbv8m.main-none-eabihf                # RP2350
 rustup target add riscv32imac-unknown-none-elf             # ESP32-C5
+rustup target add riscv32imafc-unknown-none-elf            # ESP32-P4
 espup install                                              # ESP32-S3 (Xtensa fork)
 sh tools/measure-size.sh                                   # core code size
 ```

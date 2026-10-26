@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned so that all six rust-toolchain.toml files agree; see README.md "Toolchain".
+# Upstream Rust builds the RISC-V ESP32-C5 and ESP32-P4; no espup (docs/decisions.md P-10).
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+targets = ["riscv32imafc-unknown-none-elf"]

@@ -1,0 +1,51 @@
+# Port for the ESP32-P4. No particular board: the pins are the chip's, chosen
+# so that they are free on the M5Stack Tab5 (docs/abi-spec.md §8).
+# The P4 is RISC-V, so upstream Rust's riscv32imafc-unknown-none-elf builds it.
+# Its own workspace: target and profile differ from the root workspace.
+[workspace]
+# The local copy of esp-sync is a dependency, not a member: `cargo fmt` and
+# `cargo clippy` leave the upstream code as it is.
+exclude = ["vendor/esp-sync"]
+
+[package]
+name = "wasmicon-esp32p4"
+description = "Wasmicon port for the ESP32-P4"
+version = "0.1.0"
+edition = "2021"
+# esp-hal 1.2 and esp-bootloader-esp-idf 0.6 both require 1.95.
+rust-version = "1.95"
+
+[features]
+# Build that writes the trace. On by default.
+default = ["trace"]
+trace = []
+
+[dependencies]
+wasmicon-core = { path = "../../runtime" }
+wasmicon-port = { path = "../common" }
+# The esp32p4 feature exists from esp-hal 1.2 on.
+esp-hal = { version = "1.2", features = ["esp32p4", "unstable"] }
+# For the app descriptor (`esp_app_desc!`) that the ESP-IDF second-stage
+# bootloader requires; without it espflash 4.5 refuses to flash
+# ("App Descriptor missing").
+esp-bootloader-esp-idf = { version = "0.6", default-features = false, features = [
+    "esp32p4",
+] }
+# Reads the app slot and the config slot from flash (docs/app-workflow.md §3.3).
+# As on the ESP32-S3 / C5 the app is copied to RAM (an arbitrary offset cannot
+# be assumed to be mapped into XIP).
+esp-storage = { version = "0.10", features = ["esp32p4"] }
+# Output goes through our own UART, so esp-println / esp-backtrace are not used.
+# The panic handler is our own (docs/decisions.md A-04: log and halt, no restart).
+
+# esp-sync 0.3.0 writes a CSR that P4 silicon before v3.0 does not have, so
+# `esp_hal::init` never returns there. The local copy drops that one branch;
+# vendor/esp-sync/README.md says what and when to delete it.
+[patch.crates-io]
+esp-sync = { path = "vendor/esp-sync" }
+
+[profile.release]
+# Speed over size, like the other ports (docs/TODO.md §4).
+opt-level = 3
+lto = "fat"
+codegen-units = 1

@@ -37,7 +37,7 @@ on them. Open questions that still wait for the owner live in docs/TODO.md §2.
 | A-05 | `log` does not validate UTF-8. | In force. |
 | A-06 | `spi.transfer` stays in v0.1. | In force. |
 | A-07 | Who implements the core. | Decided: see D-12. |
-| A-08 | The port layer is all Rust: host = `std`, rp2040 / rp2350 = `rp-hal` + `cortex-m-rt`, esp32s3 / esp32c5 = `esp-hal` (`no_std`). ESP-IDF and the Pico SDK are not used. | Approved 2026-09-10. |
+| A-08 | The port layer is all Rust: host = `std`, rp2040 / rp2350 = `rp-hal` + `cortex-m-rt`, esp32s3 / esp32c5 / esp32p4 = `esp-hal` (`no_std`). ESP-IDF and the Pico SDK are not used. | Approved 2026-09-10. |
 | A-09 | One Cargo workspace per target: root = `runtime` + `tools/*` + `ports/common` + `ports/host`; guest root = `apps` (includes `bindings/rust`); each `ports/<board>` and `verify/differential` are separate. `.cargo/config.toml` is looked up from the current directory, so build guests with `cd apps && cargo build --release`. | Approved 2026-09-10. |
 | A-10 | Read-only assets (a WAD, fonts, images) are a third flash slot right after the config slot, running to the end of flash, written only by `wasmicon assets write` and read by the guest through `wasmicon:hal/assets@0.1.0` (`blob.open` / `len` / `read` by range, at most four open; docs/abi-spec.md §7, docs/app-workflow.md §3.10). Names are 1 to 32 bytes of `a-z` / `0-9` / `-` / `_` / `.`, the table is flat (no directories), the directory's CRC is checked at boot and a body's CRC once at its first `open`. `error-code` gained `not-found` for it. A read-write store (`storage`) is a separate, later interface. | Approved 2026-10-22. |
 
@@ -66,7 +66,7 @@ on them. Open questions that still wait for the owner live in docs/TODO.md §2.
 
 | ID | Pitfall |
 |---|---|
-| P-10 | Xtensa is not supported by upstream Rust. ESP32-S3 needs the espup fork (`channel = "esp"`). RP2040, RP2350 and ESP32-C5 only need `rustup target add`. |
+| P-10 | Xtensa is not supported by upstream Rust. ESP32-S3 needs the espup fork (`channel = "esp"`). RP2040, RP2350, ESP32-C5 and ESP32-P4 only need `rustup target add`. |
 
 ### Common
 
