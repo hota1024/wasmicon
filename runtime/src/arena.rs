@@ -6,6 +6,9 @@
 
 use crate::error::{Error, Result};
 
+/// Alignment of the region `Arena::alloc_rest` hands out (linear memory).
+pub const REST_ALIGN: usize = 16;
+
 /// Bump allocator that only grows forward.
 pub struct Arena<'a> {
     buf: &'a mut [u8],
@@ -87,14 +90,29 @@ impl<'a> Arena<'a> {
     /// The bytes are not zeroed here because touching the whole arena would
     /// materialize pages that are never used. `instantiate` and `Memory::grow`
     /// zero only the pages that are actually used.
+    ///
+    /// The region starts on a `REST_ALIGN` boundary (absolute address), so a
+    /// guest buffer aligned within linear memory is aligned in the port's
+    /// address space too. Ports read flash straight into guest memory only at
+    /// word-aligned addresses; without this, the last small allocation before
+    /// linear memory (one byte per data segment) decides whether every guest
+    /// read takes the fast path. At most `REST_ALIGN - 1` bytes are skipped;
+    /// if not even that much is left, the region is empty.
     pub fn alloc_rest(&mut self) -> &'a mut [u8] {
-        let n = self.buf.len() - self.used;
-        // SAFETY: [used, len) has not been handed out to anyone and lies inside
-        // `buf`. `used` is advanced to the end, so the region is never handed
-        // out again. `u8` needs no alignment.
-        let slice =
-            unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr().add(self.used), n) };
-        self.used = self.buf.len();
+        let len = self.buf.len();
+        let start = (self.buf.as_ptr() as usize)
+            .checked_add(self.used)
+            .and_then(|a| a.checked_next_multiple_of(REST_ALIGN))
+            .map_or(len, |a| a - self.buf.as_ptr() as usize)
+            .min(len);
+        // SAFETY: `used <= start <= len`, so [start, len) lies inside `buf`, and
+        // nothing at or after `used` has been handed out. `used` is advanced to
+        // the end, so the region is never handed out again. `u8` needs no
+        // alignment.
+        let slice = unsafe {
+            core::slice::from_raw_parts_mut(self.buf.as_mut_ptr().add(start), len - start)
+        };
+        self.used = len;
         slice
     }
 }

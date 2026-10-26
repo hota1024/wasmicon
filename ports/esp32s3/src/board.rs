@@ -249,12 +249,20 @@ struct Window([u8; 256]);
 /// straight into a word-aligned destination, so an aligned request goes
 /// straight into the guest's memory and anything else goes through a
 /// 256-byte window.
+///
+/// The `psram` build never reads straight into the guest's memory, because
+/// that memory is in PSRAM. `read_nor` hands the destination to the ROM
+/// routine, which stores into it while it drives the flash, and flash and
+/// PSRAM share the MSPI bus and the cache; ESP-IDF never lets a flash read
+/// land in PSRAM directly. Only the copy out of an SRAM buffer was tried on
+/// hardware (docs/verification-report.md §24), so that build always goes
+/// through the window, which is on the stack.
 fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> BoardResult<()> {
     const WORD: u32 = 4;
     const MASK: usize = WORD as usize - 1;
     let aligned =
         (at as usize) & MASK == 0 && buf.len() & MASK == 0 && (buf.as_ptr() as usize) & MASK == 0;
-    if aligned {
+    if aligned && cfg!(not(feature = "psram")) {
         return storage.read_nor(at, buf).map_err(|_| ErrorCode::Io);
     }
     let cap = u32::try_from(storage.capacity()).unwrap_or(u32::MAX);

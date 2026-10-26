@@ -670,6 +670,15 @@ change.**
           docs/verification-report.md §24): it reads through a stack buffer in SRAM and then
           copies, so 4 MiB into PSRAM matched the SRAM read and left the rest of PSRAM intact
           (about 5.4 MB/s)
+        - **`read_nor` straight into PSRAM is not used** (2026-10-26). Linear memory now
+          starts 16-byte aligned (`arena::REST_ALIGN`; before, one byte per data segment
+          left it at 4n + 2 and every guest read missed the port's direct path). On the
+          ESP32-S3 the direct path hands the guest's buffer to the ROM flash routine, so
+          in the `psram` build it would store into PSRAM while the flash is being driven
+          over the shared MSPI bus, which ESP-IDF never does. The `psram` build therefore
+          always reads through the 256-byte stack window. To lift that, run the §24
+          checks with `read_nor` into PSRAM (CRC, unaligned edges, a guard pattern) and
+          compare the speed with the window
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost
