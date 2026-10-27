@@ -1598,6 +1598,8 @@ Faults found on the way, each tested on the panel:
 | Momentary full-screen cyan | The bridge fills an underrun with `dpi_rsv_dpi_data`, reset value `0x3fff` (cyan in RGB565) | set to 0: the flashes turned black |
 | The flash came once a second | With IOC_BlkTfr set, the VDMA held each frame until the block-done status was cleared, and the CPU missed it while it logged and read the expanders | without IOC: no flash; the bridge FIFO's minimum rose from 0 to `0x2ff` words per second, over 64 s |
 | The screen stuck cyan after about 2 min | The probe returned after its 120 s loop and dropped its drivers | a loop that never returns: the picture stayed for 361 s and longer |
+| A dark haze over a faint old picture for a moment at power-on | The backlight came on before the PSRAM test, the DSI bring-up and the panel init, so the unfed panel was lit | the backlight held low until 50 ms after video starts: the haze is gone |
+| A small pop from the speaker at power-on | M5GFX's expander table sets output bit 1 of 0x43, the speaker amplifier (M5Unified switches it on only after configuring the ES8388 codec) | the bit kept low: no pop |
 | A shimmer on the last ~40 rows of the bright grays (a phone video, frame by frame) | **Not fully found.** Not PSRAM (same at 125 MHz), not a D-PHY set up twice (same after one bring-up in shutdown). The D-PHY LDO: esp-hal writes `ext_ldo_p0_0p2a_ana` = `0x93000000` (dref 9, mul 6, uncalibrated); ESP-IDF leaves `0xe5800000` (dref 14, mul 3, detector on, from eFuse) | writing `0xe5800000`: the owner saw the shimmer much reduced. Also setting `lp_vact_en` and `bta_en` as ESP-IDF does: no visible change |
 
 M5GFX drew the same picture with no flicker at all. A register dump of both firmwares (DSI host, bridge,
@@ -1616,4 +1618,4 @@ two other LDOs (`ext_ldo_p0_0p1a` bypassed to the rail there; `ext_ldo_p1_0p1a` 
 - The frame rate rests on the block-done count taken while IOC was set (64 or 65 a second, as the timing
   gives 64.3). The bridge's raw underrun and vsync flags stayed 0 throughout and count nothing here
 - The touch panel, the backlight level (GPIO22 is driven high; M5GFX uses PWM) and the expanders'
-  other outputs were not examined
+  other outputs were not examined. The speaker amplifier stays off, so nothing was played

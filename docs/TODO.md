@@ -1241,7 +1241,8 @@ recommended option.** §6-8 is open. Implementation status is under Implementati
       and the M5GFX register state was diffed. What the backend must keep from the probe:
       PSRAM before DSI; the D-PHY PLL retuned from 20 MHz to 1040 Mbps; the D-PHY LDO at the
       eFuse-calibrated setting (today the value read from this unit's M5GFX run, not
-      computed); VDMA in reload mode without IOC; the probe never dropping its drivers.
+      computed); VDMA in reload mode without IOC; the probe never dropping its drivers; the backlight
+      on only once video runs; the speaker amplifier (0x43 output bit 1) off.
       **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
       the LDO value computed from eFuse as ESP-IDF does; PSRAM at 250 MHz with these changes
       (the last runs were at 125 MHz); §6-8
