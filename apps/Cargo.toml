@@ -4,7 +4,7 @@
 # directory: build apps from `apps/`.
 [workspace]
 resolver = "3"
-members = ["blink-rs", "sensor-display-rs", "lcd-demo-rs", "life-rs", "bench-rs", "rgb-led-rs", "assets-rs", "../bindings/rust"]
+members = ["blink-rs", "sensor-display-rs", "lcd-demo-rs", "display-demo-rs", "life-rs", "bench-rs", "rgb-led-rs", "assets-rs", "../bindings/rust"]
 
 [workspace.package]
 version = "0.1.0"

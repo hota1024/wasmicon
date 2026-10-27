@@ -547,6 +547,8 @@ fn sensor_display_agrees_when_spi_is_unsupported() {
         i2c_replay: sht4x_replay(),
         spi_unsupported: true,
         assets: Vec::new(),
+        no_display: false,
+        display_size: None,
     };
     let go = |wasm: &[u8], label: &str| -> String {
         match wasmicon_host::run_wasm_opts(wasm, opts()) {
@@ -740,4 +742,76 @@ fn assets_versions_agree_without_the_assets() {
     let c = run(&build_c_app("assets-c", "assets_c.wasm"), "assets-c");
     assert_traces_equal(&rs, &as_);
     assert_traces_equal(&rs, &c);
+}
+
+/// Runs `display-demo-rs` on the mock display of the given size and returns
+/// the trace and the visible picture.
+fn run_display_demo(wasm: &[u8], size: (u32, u32)) -> (String, wasmicon_host::hal::Frame) {
+    let opts = wasmicon_host::Options {
+        trace: true,
+        display_size: Some(size),
+        ..Default::default()
+    };
+    match wasmicon_host::run_wasm_opts(wasm, opts) {
+        Ok(out) => (out.trace, out.frame.expect("the host has a display")),
+        Err(e) => panic!(
+            "display-demo-rs execution failed: {} [{}]",
+            e.reason(),
+            e.kind().name()
+        ),
+    }
+}
+
+/// Checks that every display call that returns a status succeeded. `width`,
+/// `height` and `format` trace their value instead, so `assert_no_host_errors`
+/// does not apply.
+fn assert_display_calls_succeed(trace: &str, label: &str) {
+    let lines: Vec<&str> = trace.lines().collect();
+    for pair in lines.chunks(2) {
+        let [call, result] = pair else { continue };
+        let status_call = ["screen.open", "fill-rect", "write-rect", "present"]
+            .iter()
+            .any(|f| call.contains(f));
+        if status_call {
+            assert!(
+                *result == "< 0" || result.starts_with("< 0 ["),
+                "{label}: {call} failed: {result}"
+            );
+        }
+    }
+}
+
+/// `display-demo-rs` (docs/device-layer.md §4) runs to the end on the host's
+/// 320x240 mock and on a 720x1280 one (the Tab5 panel's size): the layout
+/// comes from `width` / `height`, so neither size may leave the screen.
+#[test]
+fn display_demo_rs_runs_on_host_at_two_sizes() {
+    let wasm = build_rust_app("display-demo-rs");
+    assert_within_feature_set(&wasm, "display-demo-rs");
+
+    for (w, h) in [(320u32, 240u32), (720, 1280)] {
+        let label = format!("display-demo-rs {w}x{h}");
+        let (trace, frame) = run_display_demo(&wasm, (w, h));
+        assert_display_calls_succeed(&trace, &label);
+        assert!(
+            trace.contains(r#"log(2, "display-demo done")"#),
+            "{label} did not run to the end:\n{trace}"
+        );
+        // No pins and no buses: the host owns the panel.
+        assert!(!trace.contains("wasmicon:hal/gpio"), "{label} touches gpio");
+        assert!(!trace.contains("wasmicon:hal/spi"), "{label} touches spi");
+
+        // The picture: the 1 px frame is white at all four corners, and the
+        // eight bar colors are on one row (color order, RGB565 packing).
+        let at = |x: u32, y: u32| frame.pixels[(y * frame.width + x) as usize];
+        for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+            assert_eq!(at(x, y), 0xffff, "{label}: frame corner ({x}, {y})");
+        }
+        let bars = [
+            0xF800, 0xFD20, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xFFFF,
+        ];
+        let has_bar_row =
+            (0..h).any(|y| (0..8).all(|i| at(i * (w / 8) + w / 16, y) == bars[i as usize]));
+        assert!(has_bar_row, "{label}: no row shows the eight bars in order");
+    }
 }

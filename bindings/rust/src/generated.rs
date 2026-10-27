@@ -420,21 +420,23 @@ pub mod display {
         #[link_name = "[static]screen.open"]
         pub fn screen_open(index: u32, out: *mut u32) -> u32;
 
-        /// Width in pixels, after the configured orientation.
+        /// Width in pixels, after the configured orientation. 0 for an invalid handle.
         #[link_name = "[method]screen.width"]
         pub fn screen_width(this: u32) -> u32;
 
-        /// Height in pixels, after the configured orientation.
+        /// Height in pixels, after the configured orientation. 0 for an invalid handle.
         #[link_name = "[method]screen.height"]
         pub fn screen_height(this: u32) -> u32;
 
-        /// The pixel format that `write-rect` and `fill-rect` take.
+        /// The pixel format that `write-rect` and `fill-rect` take. `rgb565` (0) for an
+        /// invalid handle.
         #[link_name = "[method]screen.format"]
         pub fn screen_format(this: u32) -> u32;
 
-        /// Fills a rectangle with one color, given in the pixel format in the low bits.
-        /// Returns `invalid-argument` if the rectangle is empty or leaves the screen;
-        /// nothing is drawn then.
+        /// Fills a rectangle with one color in the pixel format: for `rgb565`, a value
+        /// up to 0xffff.
+        /// Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
+        /// if `color` does not fit the format; nothing is drawn then.
         #[link_name = "[method]screen.fill-rect"]
         pub fn screen_fill_rect(this: u32, x: u32, y: u32, w: u32, h: u32, color: u32) -> u32;
 

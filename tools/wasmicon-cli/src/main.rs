@@ -78,6 +78,7 @@ Options for run:
     --trace                  print every host call in the docs/abi-spec.md §9 format
     --i2c-replay <file>      recorded I2C responses (the host has no sensor)
     --asset <name>=<file>    serve <file> as the asset <name> (repeatable; on top of [assets])
+    --display-out <file>     write the mock display's picture (after the last present) as a PNG
 
 Common:
     -h, --help               this help
@@ -222,6 +223,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     let mut trace_on = false;
     let mut i2c_replay: Option<PathBuf> = None;
     let mut overrides: Vec<(String, PathBuf)> = Vec::new();
+    let mut display_out: Option<PathBuf> = None;
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
@@ -230,6 +232,10 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
             "--i2c-replay" => {
                 let v = args.next().context("--i2c-replay needs a value")?;
                 i2c_replay = Some(PathBuf::from(v));
+            }
+            "--display-out" => {
+                let v = args.next().context("--display-out needs a file")?;
+                display_out = Some(PathBuf::from(v));
             }
             "--asset" => {
                 let v = args.next().context("--asset needs <name>=<file>")?;
@@ -288,6 +294,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         trace: trace_on,
         i2c_replay,
         assets: assets.into_iter().collect(),
+        display_out,
     })
 }
 

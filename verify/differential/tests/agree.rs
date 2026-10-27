@@ -1,7 +1,8 @@
 //! Locks in that our interpreter and wasmtime produce the same trace.
 //!
 //! The guests are the four apps the trace-equality tests use: blink and sensor-display,
-//! Rust and AS versions, plus assets-rs for `wasmicon:hal/assets@0.1.0`. This verifies
+//! Rust and AS versions, plus assets-rs for `wasmicon:hal/assets@0.1.0` and
+//! display-demo-rs for `wasmicon:device/display@0.1.0`. This verifies
 //! the interpreter against an external reference implementation, independently of any
 //! hardware (docs/verification-report.md §2).
 
@@ -163,5 +164,17 @@ fn assets_as_agrees_with_wasmtime() {
             ..Default::default()
         },
         "assets-as",
+    );
+}
+
+#[test]
+fn display_demo_rs_agrees_with_wasmtime() {
+    assert_agrees_with(
+        &build_rust_app("display-demo-rs"),
+        wasmicon_host::Options {
+            trace: true,
+            ..Default::default()
+        },
+        "display-demo-rs",
     );
 }

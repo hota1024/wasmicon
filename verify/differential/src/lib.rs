@@ -179,10 +179,10 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
 
     let mut linker: Linker<State> = Linker::new(&engine);
     for desc in &wasmicon_core::generated::IMPORTS {
-        // ports/common refuses device imports at instantiate (no port
-        // implements one yet); leaving them undefined keeps wasmtime's link
+        // Without the mock display ports/common refuses the display imports
+        // at instantiate; leaving them undefined keeps wasmtime's link
         // verdict the same (docs/device-layer.md §6).
-        if desc.module.starts_with("wasmicon:device/") {
+        if opts.no_display && desc.module.starts_with("wasmicon:device/display@") {
             continue;
         }
         define(
@@ -216,6 +216,11 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
     let board = HostBoard::new()
         .with_i2c_replay(opts.i2c_replay)
         .with_spi_unsupported(opts.spi_unsupported)
+        .with_display(!opts.no_display)
+        .with_display_size(
+            opts.display_size
+                .unwrap_or(wasmicon_host::hal::MOCK_DISPLAY),
+        )
         .with_assets(image);
     let mut store = Store::new(
         &engine,

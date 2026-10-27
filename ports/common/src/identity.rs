@@ -59,6 +59,7 @@ pub fn describe(id: &Identity<'_>, out: &mut Buf<'_>) {
         (i.log, "log"),
         (i.board, "board"),
         (i.assets, "assets"),
+        (i.display, "display"),
     ] {
         if on {
             if !first {

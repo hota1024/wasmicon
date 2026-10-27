@@ -1,0 +1,12 @@
+[package]
+name = "display-demo-rs"
+description = "Demo screen drawn through wasmicon:device/display. Any board with a display"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasmicon-hal.workspace = true

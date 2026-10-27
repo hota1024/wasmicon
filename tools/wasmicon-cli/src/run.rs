@@ -24,6 +24,9 @@ pub struct Options {
     /// `wasmicon.toml` with `--asset` applied on top
     /// (docs/app-workflow.md §3.10).
     pub assets: Vec<(String, PathBuf)>,
+    /// Where to write the mock display's visible picture as a PNG after the
+    /// run (docs/device-layer.md §5.3).
+    pub display_out: Option<PathBuf>,
 }
 
 /// Runs the app. `true` when it finishes without a trap.
@@ -63,6 +66,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         i2c_replay,
         spi_unsupported: false,
         assets,
+        no_display: false,
+        display_size: None,
     };
 
     // The entry point that returns the trace even on failure. A trap is
@@ -71,6 +76,16 @@ pub fn run(opts: &Options) -> Result<bool> {
     let (out, result) = wasmicon_host::run_wasm_capture(&wasm, host_opts);
     if opts.trace {
         print!("{}", out.trace);
+    }
+    if let (Some(path), Some(frame)) = (&opts.display_out, &out.frame) {
+        std::fs::write(path, crate::png::encode(frame))
+            .with_context(|| format!("cannot write `{}`", path.display()))?;
+        eprintln!(
+            "display: {}x{} -> {}",
+            frame.width,
+            frame.height,
+            path.display()
+        );
     }
     // stderr, so stdout stays the trace that `trace diff` compares.
     if let Some(u) = &out.usage {

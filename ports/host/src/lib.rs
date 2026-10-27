@@ -22,6 +22,9 @@ pub struct Outcome {
     /// What the guest needed of each `Config` limit. `None` when decode or
     /// validate failed. Includes the calls up to a trap.
     pub usage: Option<Usage>,
+    /// The mock display's visible picture after the run (`None` with
+    /// `Options::no_display`).
+    pub frame: Option<hal::Frame>,
 }
 
 /// The most of each stack-like `Config` limit a module or run needed. Fields
@@ -139,6 +142,11 @@ pub struct Options {
     /// Assets the guest may open, as `(name, body)`: the files behind the
     /// `[assets]` table of `wasmicon.toml` (docs/app-workflow.md §3.10).
     pub assets: Vec<(String, Vec<u8>)>,
+    /// Removes the mock display, as on a firmware without one, so the display
+    /// imports do not link (docs/device-layer.md §6).
+    pub no_display: bool,
+    /// Size of the mock display; `None` is `hal::MOCK_DISPLAY` (320x240).
+    pub display_size: Option<(u32, u32)>,
 }
 
 /// Runs with explicit recorded I2C responses.
@@ -153,6 +161,8 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
             i2c_replay,
             spi_unsupported: false,
             assets: Vec::new(),
+            no_display: false,
+            display_size: None,
         },
     )
 }
@@ -205,6 +215,8 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
         hal::HostBoard::new()
             .with_i2c_replay(i2c_replay)
             .with_spi_unsupported(spi_unsupported)
+            .with_display(!opts.no_display)
+            .with_display_size(opts.display_size.unwrap_or(hal::MOCK_DISPLAY))
             .with_assets(image),
         trace,
     )
@@ -264,6 +276,7 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
     let outcome = Outcome {
         trace: hal.board_mut().trace_output().to_string(),
         usage,
+        frame: hal.board_mut().frame().cloned(),
     };
     (outcome, result)
 }

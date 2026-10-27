@@ -23,11 +23,12 @@
 
 use wasmicon_core::Config;
 
-/// The HAL interfaces this port implements (docs/abi-spec.md §7).
+/// The HAL and device interfaces this port implements (docs/abi-spec.md §7).
 ///
-/// Unimplemented ones return `unsupported`. Without this, the static check for
-/// `ports/rp2040` would pass, since SPI / I2C return `unsupported` only at run
-/// time.
+/// Unimplemented HAL interfaces return `unsupported`. Without this, the static
+/// check for `ports/rp2040` would pass, since SPI / I2C return `unsupported`
+/// only at run time. An unimplemented device interface does not link at all
+/// (docs/device-layer.md §6).
 #[derive(Clone, Copy)]
 pub struct Interfaces {
     pub gpio: bool,
@@ -37,10 +38,12 @@ pub struct Interfaces {
     pub log: bool,
     pub board: bool,
     pub assets: bool,
+    /// `wasmicon:device/display`.
+    pub display: bool,
 }
 
 impl Interfaces {
-    /// Everything implemented.
+    /// Every HAL interface, and no device interface.
     pub const ALL: Interfaces = Interfaces {
         gpio: true,
         i2c: true,
@@ -49,6 +52,7 @@ impl Interfaces {
         log: true,
         board: true,
         assets: true,
+        display: false,
     };
 }
 
@@ -449,7 +453,11 @@ pub const HOST: Profile = Profile {
     name: "host",
     wiring: "host",
     config: Config::DEFAULT,
-    interfaces: Interfaces::ALL,
+    // The mock display (docs/device-layer.md §5.3).
+    interfaces: Interfaces {
+        display: true,
+        ..Interfaces::ALL
+    },
     roles: HOST_ROLES,
     gpio_count: 48,
     reserved: &[],

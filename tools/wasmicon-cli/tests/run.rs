@@ -53,6 +53,8 @@ fn the_host_run_fills_in_the_run_time_fields() {
         i2c_replay: Vec::new(),
         spi_unsupported: false,
         assets: Vec::new(),
+        no_display: false,
+        display_size: None,
     };
     let (out, result) = run_wasm_capture(wasm, opts);
     assert!(result.is_ok());

@@ -22,6 +22,7 @@ pub mod roles;
 pub mod slot;
 
 use wasmicon_core::error::{Error, Result, Trap};
+use wasmicon_core::generated::display::PixelFormat;
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
@@ -38,6 +39,7 @@ pub const MAX_PINS: usize = 16;
 pub const MAX_I2C: usize = 2;
 pub const MAX_SPI: usize = 2;
 pub const MAX_BLOBS: usize = 4;
+pub const MAX_SCREENS: usize = 1;
 
 /// Chunk size of the default `Board::assets_crc32`: how much of an asset's
 /// body sits on the stack at a time while its CRC-32 is checked. The ESP
@@ -70,6 +72,16 @@ const LINE: usize = 160;
 
 /// Result of a board operation. The board never traps, so it returns `ErrorCode` directly.
 pub type BoardResult<T> = core::result::Result<T, ErrorCode>;
+
+/// A non-empty rectangle inside a display, in pixels after orientation. `Hal`
+/// builds it only after checking it against `Board::display_size`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
 
 /// Board-specific operations. A port implements only these.
 ///
@@ -150,6 +162,41 @@ pub trait Board {
         }
         Ok(crc32_end(crc))
     }
+
+    /// Whether this firmware implements `wasmicon:device/display`. Without it
+    /// the display imports do not link, so an app that needs a display is
+    /// refused before `run` (docs/device-layer.md §6).
+    fn display_supported(&self) -> bool {
+        false
+    }
+
+    /// Size of display `index` after orientation, as `(width, height)`, or
+    /// `None` if the board has no display there. Both are at least 1.
+    fn display_size(&self, _index: u32) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Fills `rect` with one RGB565 color. `Hal` has checked `rect` against
+    /// `display_size`.
+    fn display_fill_rect(&mut self, _index: u32, _rect: Rect, _color: u16) -> BoardResult<()> {
+        Err(ErrorCode::Unsupported)
+    }
+
+    /// Writes `rect.w * rect.h` RGB565 pixels, row by row, two bytes each,
+    /// high byte first (docs/device-layer.md §4). `Hal` has checked `rect`
+    /// and that `pixels` has exactly that length.
+    fn display_write_rect(&mut self, _index: u32, _rect: Rect, _pixels: &[u8]) -> BoardResult<()> {
+        Err(ErrorCode::Unsupported)
+    }
+
+    /// Makes everything drawn so far visible. A backend that draws straight
+    /// to the panel keeps the default.
+    fn display_present(&mut self, _index: u32) -> BoardResult<()> {
+        Ok(())
+    }
+
+    /// The guest released display `index`. The picture stays.
+    fn display_release(&mut self, _index: u32) {}
 }
 
 /// Verdict of an asset's body CRC, taken at its first `open`
@@ -199,6 +246,7 @@ pub struct Hal<B: Board> {
     /// so it is read once, not on every `open`.
     verified: [Verified; MAX_ENTRIES],
     blobs: [BlobSlot; MAX_BLOBS],
+    screens: [BusSlot; MAX_SCREENS],
 }
 
 impl<B: Board> Hal<B> {
@@ -218,6 +266,7 @@ impl<B: Board> Hal<B> {
             assets: Directory::EMPTY,
             verified: [Verified::Unchecked; MAX_ENTRIES],
             blobs: [BlobSlot::default(); MAX_BLOBS],
+            screens: [BusSlot::default(); MAX_SCREENS],
         }
     }
 
@@ -262,9 +311,9 @@ impl<B: Board> Hal<B> {
     /// here would change the recorded traces (docs/verification-report.md §6, §7).
     ///
     /// The release order is fixed: ascending handle, gpio then i2c then spi,
-    /// then the blobs (which hold no peripheral, so the board is not told). A
-    /// per-port order would create a difference between boards that the trace
-    /// does not show.
+    /// then the blobs (which hold no peripheral, so the board is not told),
+    /// then the screens. A per-port order would create a difference between
+    /// boards that the trace does not show.
     ///
     /// The record of handed-out roles (`handed`) is not cleared here. It is
     /// not a handle but state for the docs/abi-spec.md §9 normalization, and
@@ -299,6 +348,41 @@ impl<B: Board> Hal<B> {
         // the slot, not a handle.
         for slot in &mut self.blobs {
             *slot = BlobSlot::default();
+        }
+        for slot in &mut self.screens {
+            if slot.open {
+                board.display_release(slot.index);
+                *slot = BusSlot::default();
+            }
+        }
+    }
+
+    /// The open display behind a screen handle.
+    fn screen(&self, handle: u64) -> core::result::Result<u32, u32> {
+        let i = slot_of(handle, MAX_SCREENS)?;
+        if self.screens[i].open {
+            Ok(self.screens[i].index)
+        } else {
+            Err(ErrorCode::InvalidHandle.status())
+        }
+    }
+
+    /// Checks `x, y, w, h` against display `index`: non-empty and inside.
+    fn rect(&self, index: u32, args: &[u64]) -> core::result::Result<Rect, u32> {
+        let bad = ErrorCode::InvalidArgument.status();
+        let (width, height) = self.board.display_size(index).ok_or(bad)?;
+        let r = Rect {
+            x: args[0] as u32,
+            y: args[1] as u32,
+            w: args[2] as u32,
+            h: args[3] as u32,
+        };
+        let fits =
+            |at: u32, len: u32, max: u32| len > 0 && at.checked_add(len).is_some_and(|e| e <= max);
+        if fits(r.x, r.w, width) && fits(r.y, r.h, height) {
+            Ok(r)
+        } else {
+            Err(bad)
         }
     }
 
@@ -455,10 +539,10 @@ impl<B: Board> Resolver for Hal<B> {
         if !ft.sig_matches(desc.sig) {
             return None;
         }
-        // No port implements a device interface yet, so a device import is a
-        // link error: the app is refused at instantiate instead of running
-        // half-way (docs/device-layer.md §6).
-        if desc.module.starts_with("wasmicon:device/") {
+        // A device interface the firmware lacks is a link error: the app is
+        // refused at instantiate instead of running half-way
+        // (docs/device-layer.md §6).
+        if desc.module.starts_with("wasmicon:device/display@") && !self.board.display_supported() {
             return None;
         }
         Some(Extern::Func(u32::from(desc.host_fn.index())))
@@ -487,16 +571,104 @@ impl<B: Board> Resolver for Hal<B> {
         let mut result64: u64 = 0;
 
         match f {
-            // Never linked (`resolve` refuses them).
-            HostFn::DisplayScreenOpen
-            | HostFn::DisplayScreenWidth
-            | HostFn::DisplayScreenHeight
-            | HostFn::DisplayScreenFormat
-            | HostFn::DisplayScreenFillRect
-            | HostFn::DisplayScreenWriteRect
-            | HostFn::DisplayScreenPresent
-            | HostFn::DisplayScreenDrop => {
-                return Err(Error::Unlinkable("device interface not implemented"));
+            HostFn::DisplayScreenOpen => {
+                let index = args[0] as u32;
+                a.u32(index);
+                let have =
+                    (index as usize) < MAX_SCREENS && self.board.display_size(index).is_some();
+                status = if !have {
+                    ErrorCode::Unsupported.status()
+                } else if self.screens[index as usize].open {
+                    ErrorCode::Busy.status()
+                } else {
+                    self.screens[index as usize] = BusSlot { open: true, index };
+                    let handle = index + 1;
+                    put_u32(mem, args[1], handle)?;
+                    o.u32(handle);
+                    0
+                };
+            }
+            // No `result`, so no error path: an invalid handle reads as 0
+            // (wit-device/display.wit). The value is traced as the status.
+            HostFn::DisplayScreenWidth | HostFn::DisplayScreenHeight => {
+                a.u64(args[0]);
+                let size = self
+                    .screen(args[0])
+                    .ok()
+                    .and_then(|i| self.board.display_size(i));
+                status = match (size, f) {
+                    (Some((w, _)), HostFn::DisplayScreenWidth) => w,
+                    (Some((_, h)), _) => h,
+                    (None, _) => 0,
+                };
+            }
+            HostFn::DisplayScreenFormat => {
+                a.u64(args[0]);
+                // `rgb565` is the only format; an invalid handle reads as it too.
+                status = PixelFormat::Rgb565 as u32;
+            }
+            HostFn::DisplayScreenFillRect => {
+                a.u64(args[0]);
+                for v in &args[1..6] {
+                    a.str(", ");
+                    a.u64(*v);
+                }
+                let color = args[5] as u32;
+                status = match self.screen(args[0]) {
+                    Err(e) => e,
+                    Ok(index) => match self.rect(index, &args[1..5]) {
+                        Err(e) => e,
+                        Ok(_) if color > 0xffff => ErrorCode::InvalidArgument.status(),
+                        Ok(r) => match self.board.display_fill_rect(index, r, color as u16) {
+                            Ok(()) => 0,
+                            Err(e) => e.status(),
+                        },
+                    },
+                };
+            }
+            HostFn::DisplayScreenWriteRect => {
+                let pixels = guest_slice(mem, args[5], args[6])?;
+                // docs/abi-spec.md §9: the pixels are traced as a CRC-32 only,
+                // as for spi.write.
+                a.u64(args[0]);
+                for v in &args[1..5] {
+                    a.str(", ");
+                    a.u64(*v);
+                }
+                a.str(", crc32=");
+                if a.is_on() {
+                    a.hex(crc32(pixels), 8);
+                }
+                status = match self.screen(args[0]) {
+                    Err(e) => e,
+                    Ok(index) => match self.rect(index, &args[1..5]) {
+                        Err(e) => e,
+                        Ok(r) if (r.w as usize) * (r.h as usize) * 2 != pixels.len() => {
+                            ErrorCode::InvalidArgument.status()
+                        }
+                        Ok(r) => match self.board.display_write_rect(index, r, pixels) {
+                            Ok(()) => 0,
+                            Err(e) => e.status(),
+                        },
+                    },
+                };
+            }
+            HostFn::DisplayScreenPresent => {
+                a.u64(args[0]);
+                status = match self.screen(args[0]) {
+                    Err(e) => e,
+                    Ok(index) => match self.board.display_present(index) {
+                        Ok(()) => 0,
+                        Err(e) => e.status(),
+                    },
+                };
+            }
+            HostFn::DisplayScreenDrop => {
+                a.u64(args[0]);
+                if let Ok(index) = self.screen(args[0]) {
+                    self.board.display_release(index);
+                    self.screens[index as usize] = BusSlot::default();
+                }
             }
 
             HostFn::BoardPinByRole => {
