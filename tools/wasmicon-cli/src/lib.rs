@@ -12,5 +12,6 @@ pub mod manifest;
 pub mod monitor;
 pub mod new;
 pub mod pack;
+pub mod png;
 pub mod run;
 pub mod trace;

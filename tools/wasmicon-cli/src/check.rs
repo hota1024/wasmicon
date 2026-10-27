@@ -447,8 +447,11 @@ pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (St
     // Exec is allocated before linear memory (which takes the rest of the
     // arena), in the same order as the port.
     let _exec = Exec::new(&p.config, &mut arena).map_err(|e| (Stage::Instantiate, reason(e)))?;
-    let mut hal = Hal::new(wasmicon_host::hal::HostBoard::new(), false)
-        .with_roles(wasmicon_host::hal::host_roles());
+    // The mock board stands in for `p`, so it has a display only if `p` does:
+    // a device interface the firmware lacks fails to link here as on the
+    // board (docs/device-layer.md §6).
+    let board = wasmicon_host::hal::HostBoard::new().with_display(p.interfaces.display);
+    let mut hal = Hal::new(board, false).with_roles(wasmicon_host::hal::host_roles());
     // Linear memory is taken from the rest of the arena here. If it does not
     // fit, this fails the same way hardware does (which is the point).
     let _inst = instantiate(m, v, &p.config, &mut arena, &mut hal)
@@ -535,9 +538,7 @@ fn implemented(i: &Interfaces, iface: &str) -> Option<bool> {
         "log" => Some(i.log),
         "board" => Some(i.board),
         "assets" => Some(i.assets),
-        // No port implements a device interface yet; the firmware refuses
-        // the import at instantiate (docs/TODO.md §6).
-        "display" => Some(false),
+        "display" => Some(i.display),
         // types has no functions, so it never appears as an import
         // (docs/abi-spec.md §7).
         _ => None,
@@ -883,6 +884,7 @@ mod tests {
     fn iface_names_come_from_the_module_name() {
         assert_eq!(iface_of("wasmicon:hal/gpio@0.1.0"), Some("gpio"));
         assert_eq!(iface_of("wasmicon:hal/i2c@0.1.0"), Some("i2c"));
+        assert_eq!(iface_of("wasmicon:device/display@0.1.0"), Some("display"));
         // docs/abi-spec.md §3.1 requires the version and an exact match, so
         // other shapes are not picked up.
         assert_eq!(iface_of("env"), None);
@@ -896,6 +898,11 @@ mod tests {
         assert_eq!(implemented(&i, "spi"), Some(false));
         assert_eq!(implemented(&i, "gpio"), Some(true));
         assert_eq!(implemented(&i, "assets"), Some(true));
+        assert_eq!(implemented(&i, "display"), Some(false));
+        assert_eq!(
+            implemented(&profile::HOST.interfaces, "display"),
+            Some(true)
+        );
         // types has no functions, so it never appears as an import.
         assert_eq!(implemented(&i, "types"), None);
     }

@@ -184,7 +184,7 @@ A resource handle is an `i32` (interpreted as an unsigned u32). The meaning of t
 
 ### 5.3 Handle limits
 
-The host guarantees at least this many simultaneous handles per type: `gpio.pin` 16, `i2c.bus` 2, `spi.bus` 2, `assets.blob` 4. Beyond that: `out-of-memory`.
+The host guarantees at least this many simultaneous handles per type: `gpio.pin` 16, `i2c.bus` 2, `spi.bus` 2, `assets.blob` 4. Beyond that: `out-of-memory`. `display.screen` is one per display `index`; a second `open` of the same index is `busy`.
 
 ---
 
@@ -313,7 +313,7 @@ No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
 
 ### `wasmicon:device/display@0.1.0`
 
-The device layer (docs/device-layer.md §4). No port implements it yet: a firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
+The device layer (docs/device-layer.md §4). The host port implements it with a 320x240 mock display; no board port does yet. A firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
 
 | Import name | Core Wasm type | Notes |
 |---|---|---|
@@ -326,7 +326,7 @@ The device layer (docs/device-layer.md §4). No port implements it yet: a firmwa
 | `[method]screen.present` | `(param i32) (result i32)` | `(self) -> ec` |
 | `[resource-drop]screen` | `(param i32)` | `(self)` |
 
-`pixel-format` has one case, `rgb565` = 0: two bytes per pixel, high byte first. `write-rect` takes exactly `w * h * 2` bytes.
+`pixel-format` has one case, `rgb565` = 0: two bytes per pixel, high byte first. `write-rect` takes exactly `w * h * 2` bytes. A rectangle is valid when `w > 0`, `h > 0`, `x + w <= width` and `y + h <= height`; otherwise `invalid-argument`, as is a `fill-rect` color above 0xffff. `width`, `height` and `format` have no error path: an invalid handle reads as 0. `open` of an index without a display is `unsupported`.
 
 ---
 
@@ -427,7 +427,9 @@ When the port layer is built with `WASMICON_TRACE` enabled, it writes every host
   (`wasmicon trace replay` extracts it in the `--i2c-replay` format). The value is decided by the external
   device, so **if the sensor reading differs, a mismatch here** is correct.
 - Calls to the `time` interface are **not included** in the trace (they depend on real time).
-- For `spi.write`, `data` is the CRC-32 only (to check that pixel data matches).
+- For `spi.write`, `data` is the CRC-32 only (to check that pixel data matches). The same holds for the `pixels` of `display.screen.write-rect`.
+- `display.screen.width` / `height` / `format` return a value without a `result`; the trace prints that value where a status would be (`< 320`).
+- **Work a device backend does inside the host is not traced.** The SPI and GPIO traffic of a display backend is not a guest host call; only the `display` calls are. A display app therefore traces the same on every backend of the same size (docs/device-layer.md §7).
 - **A GPIO number that `board.pin-by-role` returned is written as the role name.** The numbers differ per
   board, so writing them as is would make the traces of the same binary differ.
   The port remembers which numbers it handed out through `pin-by-role` and for which role, and writes the

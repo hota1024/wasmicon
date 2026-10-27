@@ -422,27 +422,29 @@ WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[static]screen.open")
 uint32_t wasmicon_display_screen_open(uint32_t index, uint32_t *out);
 
 /**
- * Width in pixels, after the configured orientation.
+ * Width in pixels, after the configured orientation. 0 for an invalid handle.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.width")
 uint32_t wasmicon_display_screen_width(uint32_t self);
 
 /**
- * Height in pixels, after the configured orientation.
+ * Height in pixels, after the configured orientation. 0 for an invalid handle.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.height")
 uint32_t wasmicon_display_screen_height(uint32_t self);
 
 /**
- * The pixel format that `write-rect` and `fill-rect` take.
+ * The pixel format that `write-rect` and `fill-rect` take. `rgb565` (0) for an
+ * invalid handle.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.format")
 uint32_t wasmicon_display_screen_format(uint32_t self);
 
 /**
- * Fills a rectangle with one color, given in the pixel format in the low bits.
- * Returns `invalid-argument` if the rectangle is empty or leaves the screen;
- * nothing is drawn then.
+ * Fills a rectangle with one color in the pixel format: for `rgb565`, a value
+ * up to 0xffff.
+ * Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
+ * if `color` does not fit the format; nothing is drawn then.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.fill-rect")
 uint32_t wasmicon_display_screen_fill_rect(uint32_t self, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);

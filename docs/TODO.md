@@ -1206,7 +1206,16 @@ recommended option. Nothing is implemented yet.**
       `display not implemented by this port (link error)`. The Rust, AS and C apps built before
       and after are byte-identical. The identity line does not name the device package yet
       (it comes with the first port that implements it)
-- [ ] (2) Host `mock` backend, trace rules, early refusal in `check` / `deploy`, a demo app
+- [x] (2) Host `mock` backend, trace rules, early refusal in `check` / `deploy`, a demo app
+      (2026-10-27). `Board` gained `display_*` methods (default: no display); `Hal` keeps the
+      screen handle, checks rectangles and lengths, and traces. The host mock is 320x240, keeps
+      what was drawn apart from what is visible, and shows only what `present` copied (so a
+      guest that forgets `present` fails on the host first). `profile::HOST` has `display`;
+      boards do not, so `check` / `deploy` refuse a display app for them and the firmware
+      refuses it at instantiate. `wasmicon run --display-out <png>` writes the picture.
+      `apps/display-demo-rs` lays itself out from `width` / `height`; the host test runs it at
+      320x240 and 720x1280. **Moved to (3):** `[board.<name>.display]` in `wasmicon.toml` and
+      config slot v2 (§6-5); they matter only once a board has a backend
 - [ ] (3) `ili9341` backend; the demo trace on ESP32-S3 and Pico 2 W equals the host mock
 - [ ] (4) `tab5` backend on the ESP32-P4. Risks: interrupts on v1.0 silicon (esp-hal DPI
       re-arms VDMA in an interrupt) and PSRAM not yet tried (§1.3.2)

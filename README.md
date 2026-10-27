@@ -75,6 +75,7 @@ apps/                 Guests (separate workspace). Rust and AS versions of blink
                       blink-c is the C version of blink (checks bindings/c)
                       lcd-demo-rs is a demo that uses only the ILI9341 (no sensor needed)
                       life-rs keeps drawing Conway's Life on the ILI9341 (with an FPS readout)
+                      display-demo-rs draws a demo screen through wasmicon:device/display (host mock today)
                       bench-rs measures interpreter and host-call speed (same .wasm on host and hardware)
                       rgb-led-rs drives the on-board RGB LED (esp32c5 GPIO27, esp32s3 GPIO48)
                       assets-rs reads two assets from the assets slot and checks every byte

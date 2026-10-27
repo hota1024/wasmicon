@@ -1,0 +1,11 @@
+# App manifest (docs/app-workflow.md §4.7).
+# The app looks up no roles: the display and its wiring belong to the host
+# (docs/device-layer.md §5). It runs only where the board has a display;
+# `wasmicon check` refuses the others before flashing.
+version = 1
+
+[requirements]
+pin-roles = []
+
+[defaults]
+board = "host"
