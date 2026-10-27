@@ -1537,3 +1537,34 @@ slot and the `apps/assets-rs` assets in the assets slot.
   app into the PSRAM arena was not timed
 - The 16 KiB scratch was exercised only by the 200-block guest, not by a module with many large functions
 - The N8R2 board of §25 was not re-flashed with the new layout
+
+## 27. `display-demo-rs` through the ILI9341 display backend on the ESP32-S3 (2026-10-27)
+
+Question: does the `wasmicon:device/display` ILI9341 backend (docs/device-layer.md §5.3) drive a panel
+on hardware, and does the guest's trace stay equal to the host mock's, with the backend's own SPI and
+GPIO traffic out of it (docs/device-layer.md §7)?
+
+ESP32-S3 (chip revision v0.2, 8 MB flash, MAC `28:84:85:a4:24:9c`) with an ILI9341 wired as for
+`apps/lcd-demo-rs` (CS=GPIO10 / DC=GPIO14 / RST=GPIO15, SCK=GPIO12 / MOSI=GPIO11). Firmware and CLI built
+from `31516b9`, `trace=on`, flashed with `espflash flash --after no-reset`. The app was flashed with
+`wasmicon deploy --board esp32s3 --monitor` from `apps/display-demo-rs`, which wrote config slot version 2
+with the display entry of its `wasmicon.toml`.
+
+| Check | Result |
+|---|---|
+| Identity line | `... abi=wasmicon:hal@0.1.0 device=wasmicon:device@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets,display slot=v1/1048576 roles=v2/4096 assets=v1/6287360` |
+| Config slot banner | `wasmicon: roles none display=ili9341 spi=0 cs=10 dc=14 rst=15 rotation=90` |
+| `apps/display-demo-rs` (3496 B, crc32 `4b1fdcec`) | ran to `display-demo done`; **identical in full to `wasmicon run --trace` on the 320x240 host mock, 1,164 lines** (`wasmicon trace diff` and `verify/diff-traces.sh`). No line of the panel's init sequence or pixel traffic is in the trace |
+| The panel | the demo screen appeared (observed by the owner) |
+
+The board was left with this firmware, `apps/display-demo-rs` in the app slot, and the assets slot as it
+was (`doom1.wad`).
+
+### What this measurement does not say
+
+- Only that the picture appeared was reported. The color order of the bars, the gray ramp, the moving
+  square and whether the picture stays after the run (the floating `RESET` of docs/TODO.md §2, which the
+  backend should avoid by never releasing the line) were not reported one by one
+- Only rotation 90 ran; 0, 180 and 270 have never driven a panel
+- The Pico 2 W, the ESP32-C5 and the ESP32-P4 were not run with the backend
+- The time the demo takes was not measured
