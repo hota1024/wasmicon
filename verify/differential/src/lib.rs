@@ -179,6 +179,12 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
 
     let mut linker: Linker<State> = Linker::new(&engine);
     for desc in &wasmicon_core::generated::IMPORTS {
+        // ports/common refuses device imports at instantiate (no port
+        // implements one yet); leaving them undefined keeps wasmtime's link
+        // verdict the same (docs/device-layer.md §6).
+        if desc.module.starts_with("wasmicon:device/") {
+            continue;
+        }
         define(
             &mut linker,
             &engine,
