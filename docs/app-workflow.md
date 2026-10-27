@@ -554,6 +554,20 @@ Binary (`[role_id u8, gpio u8]`) would be smaller, but text was chosen.
 - Parsing works in `no_std` (split on `=`, read a decimal). The body is at most 256 bytes
 - `"none"` in `wasmicon.toml` means "do not hand out" and is not written to the table
 
+**Format version 2 adds the display entry** (docs/device-layer.md §5.2, docs/TODO.md
+§6-5). One more line, last, from `[board.<name>.display]`:
+
+```
+@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90
+```
+
+`@` cannot start a role name, so the two never collide. `deploy` writes version 2
+only when the app has a display entry for that board, and version 1 otherwise: a
+firmware that reads only version 1 discards a table it cannot read, roles included,
+and every app without a display keeps running on it. The display pins get the role
+checks below and may not be shared with a role; the guest cannot open them, and the
+display's SPI bus is `busy` for it. The boot banner adds ` display=ili9341 ...`.
+
 #### Checked twice (CLI and firmware)
 
 The same check (`roles::RoleMap::insert`) runs **in the CLI before flashing** (when
@@ -1119,6 +1133,14 @@ lcd-rst = 21
 lcd-cs = 10
 lcd-dc = 14
 lcd-rst = 15
+
+# The board's display backend (docs/device-layer.md §5.2). deploy writes it to the
+# config slot with the roles. spi defaults to 0, rotation to 90 (320x240)
+[board.esp32s3.display]
+driver = "ili9341"
+cs = 10
+dc = 14
+rst = 15
 
 # Read-only data the app opens through assets.blob (§3.10). Asset name -> file.
 # run serves the files; assets write puts them in the device's assets slot

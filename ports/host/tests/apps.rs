@@ -549,6 +549,8 @@ fn sensor_display_agrees_when_spi_is_unsupported() {
         assets: Vec::new(),
         no_display: false,
         display_size: None,
+        display: None,
+        bus_log: false,
     };
     let go = |wasm: &[u8], label: &str| -> String {
         match wasmicon_host::run_wasm_opts(wasm, opts()) {

@@ -7,10 +7,13 @@ fixes the drawing details so that they do. Change both when you change one.
 The check is `ports/host/tests/apps.rs`. It cross-checks the two traces, so a
 difference in the CRC-32 of any `spi.write` fails it.
 
-## 0. The ILI9341 driver exists in three places
+## 0. The ILI9341 driver exists in four places
 
-There are three copies of `ili9341.rs` / `ili9341.ts`. When you fix one, look
-at the other two.
+There are three copies of `ili9341.rs` / `ili9341.ts` in the apps and a fourth,
+the display backend `ports/common/src/ili9341.rs` (docs/device-layer.md §5.3).
+When you fix one, look at the others. The backend follows the init sequence and
+the send order of §2; `ports/host/tests/ili9341.rs` decodes what it sends and
+compares the picture with the host mock.
 
 | File | Check |
 |---|---|

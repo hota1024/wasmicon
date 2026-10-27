@@ -68,6 +68,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         assets,
         no_display: false,
         display_size: None,
+        display: None,
+        bus_log: false,
     };
 
     // The entry point that returns the trace even on failure. A trap is

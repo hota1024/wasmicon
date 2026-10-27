@@ -83,3 +83,28 @@ fn every_asset_in_a_manifest_exists() {
     }
     assert!(assets > 0, "no app ships an asset; apps/assets-rs should");
 }
+
+#[test]
+fn a_display_entry_covers_both_evaluation_boards() {
+    // An app that sets up a display for one evaluation board but not the
+    // other would pass `check` on one and fail on the other
+    // (docs/device-layer.md §6). The demo must have one.
+    let mut seen = 0;
+    for dir in app_dirs() {
+        let path = dir.join(manifest::FILE_NAME);
+        let m = manifest::load(&path).unwrap_or_else(|e| panic!("{e:#}"));
+        if m.board_display.is_empty() {
+            continue;
+        }
+        seen += 1;
+        for board in [&profile::RP2350, &profile::ESP32S3] {
+            assert!(
+                m.display(board).is_some(),
+                "{}: no [board.{}.display]",
+                path.display(),
+                board.name
+            );
+        }
+    }
+    assert!(seen >= 1, "apps/display-demo-rs has display entries");
+}

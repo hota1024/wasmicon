@@ -17,6 +17,7 @@ pub mod assets;
 pub mod fmt;
 pub mod identity;
 pub mod idle;
+pub mod ili9341;
 pub mod profile;
 pub mod roles;
 pub mod slot;
@@ -32,7 +33,8 @@ use wasmicon_core::instance::{Extern, ExternType, Resolver};
 
 use assets::{Directory, MAX_ENTRIES};
 use fmt::Buf;
-use roles::{MAX_ROLES, RoleMap};
+use ili9341::Ili9341;
+use roles::{DisplayConfig, MAX_ROLES, RoleMap};
 
 /// Number of simultaneous handles docs/abi-spec.md §5.3 guarantees.
 pub const MAX_PINS: usize = 16;
@@ -247,6 +249,11 @@ pub struct Hal<B: Board> {
     verified: [Verified; MAX_ENTRIES],
     blobs: [BlobSlot; MAX_BLOBS],
     screens: [BusSlot; MAX_SCREENS],
+    /// The display entry of the config slot (docs/device-layer.md §5.2). Its
+    /// bus and pins belong to the backend, not the guest.
+    display: Option<DisplayConfig>,
+    /// The backend when the entry is an ILI9341; otherwise the board's own.
+    ili9341: Option<Ili9341>,
 }
 
 impl<B: Board> Hal<B> {
@@ -267,7 +274,29 @@ impl<B: Board> Hal<B> {
             verified: [Verified::Unchecked; MAX_ENTRIES],
             blobs: [BlobSlot::default(); MAX_BLOBS],
             screens: [BusSlot::default(); MAX_SCREENS],
+            display: None,
+            ili9341: None,
         }
+    }
+
+    /// Sets the display entry: on a board what the firmware read from the
+    /// config slot (docs/device-layer.md §5.2). An ILI9341 entry selects the
+    /// backend in `ili9341`; any other entry, or none, leaves the display to
+    /// the board (the host mock, the Tab5 panel).
+    #[must_use]
+    pub fn with_display(mut self, display: Option<DisplayConfig>) -> Self {
+        self.display = display;
+        self.ili9341 = match display {
+            Some(DisplayConfig::Ili9341 {
+                spi,
+                cs,
+                dc,
+                rst,
+                rotation,
+            }) => Some(Ili9341::new(spi, cs, dc, rst, rotation)),
+            _ => None,
+        };
+        self
     }
 
     /// Sets the wiring table: on a board what the firmware read from the config
@@ -351,7 +380,10 @@ impl<B: Board> Hal<B> {
         }
         for slot in &mut self.screens {
             if slot.open {
-                board.display_release(slot.index);
+                // The ILI9341 backend keeps its bus and pins for the next app.
+                if self.ili9341.is_none() {
+                    board.display_release(slot.index);
+                }
                 *slot = BusSlot::default();
             }
         }
@@ -367,10 +399,24 @@ impl<B: Board> Hal<B> {
         }
     }
 
+    /// Size of display `index`, from the ILI9341 backend or the board.
+    fn display_size(&self, index: u32) -> Option<(u32, u32)> {
+        match &self.ili9341 {
+            Some(d) if index == 0 => Some(d.size()),
+            Some(_) => None,
+            None => self.board.display_size(index),
+        }
+    }
+
+    /// Whether the display backend owns GPIO `index`: the guest may not open it.
+    fn display_pin(&self, index: u32) -> bool {
+        self.display.is_some_and(|d| d.pins().contains(&index))
+    }
+
     /// Checks `x, y, w, h` against display `index`: non-empty and inside.
     fn rect(&self, index: u32, args: &[u64]) -> core::result::Result<Rect, u32> {
         let bad = ErrorCode::InvalidArgument.status();
-        let (width, height) = self.board.display_size(index).ok_or(bad)?;
+        let (width, height) = self.display_size(index).ok_or(bad)?;
         let r = Rect {
             x: args[0] as u32,
             y: args[1] as u32,
@@ -574,12 +620,19 @@ impl<B: Board> Resolver for Hal<B> {
             HostFn::DisplayScreenOpen => {
                 let index = args[0] as u32;
                 a.u32(index);
-                let have =
-                    (index as usize) < MAX_SCREENS && self.board.display_size(index).is_some();
+                let have = (index as usize) < MAX_SCREENS && self.display_size(index).is_some();
+                // The panel is brought up at the first open, not at boot: a
+                // firmware that runs no display app leaves the bus alone.
+                let up = match &mut self.ili9341 {
+                    Some(d) if have => d.init(&mut self.board),
+                    _ => Ok(()),
+                };
                 status = if !have {
                     ErrorCode::Unsupported.status()
                 } else if self.screens[index as usize].open {
                     ErrorCode::Busy.status()
+                } else if let Err(e) = up {
+                    e.status()
                 } else {
                     self.screens[index as usize] = BusSlot { open: true, index };
                     let handle = index + 1;
@@ -592,10 +645,7 @@ impl<B: Board> Resolver for Hal<B> {
             // (wit-device/display.wit). The value is traced as the status.
             HostFn::DisplayScreenWidth | HostFn::DisplayScreenHeight => {
                 a.u64(args[0]);
-                let size = self
-                    .screen(args[0])
-                    .ok()
-                    .and_then(|i| self.board.display_size(i));
+                let size = self.screen(args[0]).ok().and_then(|i| self.display_size(i));
                 status = match (size, f) {
                     (Some((w, _)), HostFn::DisplayScreenWidth) => w,
                     (Some((_, h)), _) => h,
@@ -619,7 +669,10 @@ impl<B: Board> Resolver for Hal<B> {
                     Ok(index) => match self.rect(index, &args[1..5]) {
                         Err(e) => e,
                         Ok(_) if color > 0xffff => ErrorCode::InvalidArgument.status(),
-                        Ok(r) => match self.board.display_fill_rect(index, r, color as u16) {
+                        Ok(r) => match match &mut self.ili9341 {
+                            Some(d) => d.fill_rect(&mut self.board, r, color as u16),
+                            None => self.board.display_fill_rect(index, r, color as u16),
+                        } {
                             Ok(()) => 0,
                             Err(e) => e.status(),
                         },
@@ -646,7 +699,10 @@ impl<B: Board> Resolver for Hal<B> {
                         Ok(r) if (r.w as usize) * (r.h as usize) * 2 != pixels.len() => {
                             ErrorCode::InvalidArgument.status()
                         }
-                        Ok(r) => match self.board.display_write_rect(index, r, pixels) {
+                        Ok(r) => match match &mut self.ili9341 {
+                            Some(d) => d.write_rect(&mut self.board, r, pixels),
+                            None => self.board.display_write_rect(index, r, pixels),
+                        } {
                             Ok(()) => 0,
                             Err(e) => e.status(),
                         },
@@ -657,6 +713,8 @@ impl<B: Board> Resolver for Hal<B> {
                 a.u64(args[0]);
                 status = match self.screen(args[0]) {
                     Err(e) => e,
+                    // The ILI9341 draws straight to the panel.
+                    Ok(_) if self.ili9341.is_some() => 0,
                     Ok(index) => match self.board.display_present(index) {
                         Ok(()) => 0,
                         Err(e) => e.status(),
@@ -666,7 +724,9 @@ impl<B: Board> Resolver for Hal<B> {
             HostFn::DisplayScreenDrop => {
                 a.u64(args[0]);
                 if let Ok(index) = self.screen(args[0]) {
-                    self.board.display_release(index);
+                    if self.ili9341.is_none() {
+                        self.board.display_release(index);
+                    }
                     self.screens[index as usize] = BusSlot::default();
                 }
             }
@@ -698,6 +758,7 @@ impl<B: Board> Resolver for Hal<B> {
                 status = if index >= self.board.gpio_count()
                     || mode >= PinMode::COUNT
                     || self.board.gpio_reserved(index)
+                    || self.display_pin(index)
                 {
                     ErrorCode::InvalidArgument.status()
                 } else if taken {
@@ -972,7 +1033,10 @@ impl<B: Board> Resolver for Hal<B> {
                 a.u32(mode);
                 status = if index as usize >= MAX_SPI || mode >= SpiMode::COUNT {
                     ErrorCode::InvalidArgument.status()
-                } else if self.spi[index as usize].open {
+                } else if self.spi[index as usize].open
+                    || self.display.and_then(|d| d.spi()) == Some(index)
+                {
+                    // The display backend holds that bus (docs/device-layer.md §5.2).
                     ErrorCode::Busy.status()
                 } else {
                     let m = SpiMode::from_u32(mode).ok_or(Error::Invalid("bad mode"))?;

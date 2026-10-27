@@ -30,10 +30,10 @@ pub struct Identity<'a> {
 }
 
 /// Builds the line (without a newline). `out` of 256 bytes is enough (the
-/// line is under 192 bytes; the rest is headroom for a long `git describe`).
+/// line is under 232 bytes; the rest is headroom for a long `git describe`).
 ///
 /// ```text
-/// wasmicon id rp2350 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets slot=v1/65536 roles=v1/4096 assets=v1/3076096
+/// wasmicon id rp2350 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 device=wasmicon:device@0.1.0 trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets,display slot=v1/65536 roles=v2/4096 assets=v1/3076096
 /// ```
 pub fn describe(id: &Identity<'_>, out: &mut Buf<'_>) {
     let p = id.profile;

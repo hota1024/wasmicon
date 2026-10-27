@@ -27,7 +27,7 @@ use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
-use wasmicon_port::roles::{self, Limits, RoleMap};
+use wasmicon_port::roles::{self, Limits, Wiring};
 use wasmicon_port::{idle, slot, Hal};
 
 use board::{EspBoard, Serial};
@@ -160,8 +160,9 @@ fn main() -> ! {
     // default table: an empty or corrupt slot hands out no roles at all
     // (docs/app-workflow.md §3.9).
     let (storage, serial) = hal.board_mut().parts();
-    let map = pick_roles(storage, serial);
-    let mut hal = hal.with_roles(map);
+    let wiring = pick_roles(storage, serial);
+    // The display entry selects the display backend (docs/device-layer.md §5.2).
+    let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
     // bodies stay in flash; the guest's reads go through `esp-storage` by range.
     let (storage, serial) = hal.board_mut().parts();
@@ -326,17 +327,17 @@ fn pick_guest<'a>(
 ///
 /// The body is at most `roles::MAX_BODY` (256 bytes), so it is read onto the
 /// stack.
-fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> RoleMap {
+fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> Wiring {
     let result = read_roles(storage);
-    let mut line = [0u8; 192];
+    let mut line = [0u8; 256];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
     serial.write(out.as_bytes());
     serial.write(b"\r\n");
-    result.unwrap_or(RoleMap::EMPTY)
+    result.unwrap_or(Wiring::EMPTY)
 }
 
-fn read_roles(storage: &mut FlashStorage<'_>) -> Result<RoleMap, roles::RolesError> {
+fn read_roles(storage: &mut FlashStorage<'_>) -> Result<Wiring, roles::RolesError> {
     let mut head = [0u8; roles::HEADER_LEN];
     if storage.read(ROLE_SLOT.offset, &mut head).is_err() {
         // Unreadable counts as empty: fail toward handing out no roles.

@@ -19,7 +19,7 @@ use wasmicon_port::profile::{Flasher, Profile, Slot};
 
 use crate::manifest::Manifest;
 use crate::{check, monitor, pack};
-use wasmicon_port::roles::RoleMap;
+use wasmicon_port::roles::Wiring;
 
 pub struct Options {
     pub path: PathBuf,
@@ -55,6 +55,9 @@ pub struct Plan {
     /// The wiring table written alongside (`lcd-cs=17 ...`). `None` = no
     /// roles handed out.
     pub roles: Option<String>,
+    /// The display entry written alongside (`ili9341 spi=0 ...`), if any
+    /// (docs/device-layer.md §5.2).
+    pub display: Option<String>,
 }
 
 /// How to flash. Decided by the flasher, not by the board name.
@@ -127,7 +130,8 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
             opts.path.display()
         );
     }
-    let verdict = check::judge(&wasm, board, &facts, declared, &provided);
+    let display = opts.manifest.as_ref().and_then(|m| m.display(board));
+    let verdict = check::judge(&wasm, board, &facts, declared, &provided, display);
     if !verdict.is_ok() {
         bail!(
             "check failed ({} failures on {}); see `wasmicon check {} --board {}`",
@@ -142,11 +146,11 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
     let slot = pack::fits(board, app.len())?;
     // The wiring table (docs/app-workflow.md §3.9). The firmware has no
     // default table, so it is written every time.
-    let roles = match &opts.manifest {
-        Some(m) => m.role_map(board)?,
-        None => RoleMap::EMPTY,
+    let wiring = match &opts.manifest {
+        Some(m) => m.wiring(board)?,
+        None => Wiring::EMPTY,
     };
-    let image = pack::with_roles(&app, board, &roles)?;
+    let image = pack::with_wiring(&app, board, &wiring)?;
 
     // The image goes next to the app (same name as `pack` uses). It is kept
     // so the same image can be flashed again and its CRC cross-checked
@@ -162,7 +166,8 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         wasm_len: wasm.len(),
         image_len: app.len(),
         crc: pack::crc_of(&image),
-        roles: pack::describe_roles(&roles),
+        roles: pack::describe_roles(&wiring.roles),
+        display: pack::describe_display(&wiring),
     })
 }
 
@@ -192,6 +197,9 @@ pub fn run(opts: &Options) -> Result<bool> {
             "  wiring: none (no roles handed out; see [board.{}.roles] in wasmicon.toml)",
             plan.board.wiring
         ),
+    }
+    if let Some(d) = &plan.display {
+        println!("  display: {d}");
     }
 
     let mode = Mode::of(opts, plan.slot.flasher);

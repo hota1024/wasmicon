@@ -300,6 +300,12 @@ fn bank(index: u32) -> (bool, u32) {
 }
 
 impl<S: Serial> Board for EspBoard<S> {
+    fn display_supported(&self) -> bool {
+        // The ILI9341 backend in ports/common runs on this port's SPI
+        // (docs/device-layer.md §5.3); the profile says whether there is one.
+        wasmicon_port::profile::ESP32S3.interfaces.display
+    }
+
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }
