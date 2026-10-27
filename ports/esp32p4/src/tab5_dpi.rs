@@ -1,5 +1,5 @@
-//! Step 6 of the Tab5 probe: the ILI9881C in video mode from a PSRAM frame
-//! buffer, with no interrupt.
+//! The DSI side of the `tab5` backend (`tab5`): the ILI9881C in video mode
+//! from a PSRAM frame buffer, with no interrupt.
 //!
 //! - esp-hal's `DsiDpi` keeps the frame running by re-arming DMA link-list
 //!   items in an interrupt, and an interrupt faults on this silicon
@@ -47,12 +47,12 @@ const CTL1: u32 = (1 << 6) | (16 << 7) | (1 << 15) | (16 << 16);
 /// One init list: `(command, params)` pairs.
 pub type List = &'static [(u8, &'static [u8])];
 
-/// The init lists in order, with the wait after each.
-pub const INIT: [(&str, List, u32); 4] = [
-    ("lanes", init::LANES, 0),
-    ("sleep out", init::AFTER_SLEEP_OUT, 120),
-    ("gip", init::GIP, 0),
-    ("power gamma on", init::POWER_GAMMA_ON, 0),
+/// The init lists in order, with the wait in milliseconds after each.
+pub const INIT: [(List, u32); 4] = [
+    (init::LANES, 0),
+    (init::AFTER_SLEEP_OUT, 120),
+    (init::GIP, 0),
+    (init::POWER_GAMMA_ON, 0),
 ];
 
 /// Sends one init list in command mode; stops at the first stalled packet.
@@ -252,9 +252,6 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
         ch.block_ts0().write(|w| w.bits((FB_BYTES / 8) as u32 - 1));
         ch.ctl0().write(|w| w.bits(CTL0));
         ch.ctl1().write(|w| w.bits(CTL1));
-        // Status only (no signal): lets the probe count frames.
-        ch.intstatus_enable0()
-            .write(|w| w.ch1_enable_block_tfr_done_intstat().set_bit());
         dma.chen0().write(|w| w.bits(0x0101)); // channel 0 enable + write enable
 
         // Video mode on.
@@ -266,85 +263,6 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
             .write(|w| w.dpi_config_update().set_bit());
     }
     (real_mhz * 1000.0) as u32
-}
-
-/// One second of link health: DSI host errors (`int_st1`, read clears),
-/// bridge underrun and vsync flags (cleared after), VDMA channel status.
-pub fn health() -> [u32; 4] {
-    let host = MIPI_DSI_HOST::regs();
-    let bridge = MIPI_DSI_BRIDGE::regs();
-    let ch = VDMA::regs().ch(0);
-    let st1 = host.int_st1().read().bits();
-    let brg = bridge.int_raw().read().bits();
-    // SAFETY: writing 1s clears the bridge's raw underrun and vsync flags only.
-    bridge.int_clr().write(|w| unsafe { w.bits(0b11) });
-    [
-        st1,
-        brg,
-        ch.status0().read().bits(),
-        ch.intstatus0().read().bits(),
-    ]
-}
-
-/// Bridge flags since the last call: (vsync, underrun); clears both.
-pub fn bridge_flags() -> (bool, bool) {
-    let bridge = MIPI_DSI_BRIDGE::regs();
-    let raw = bridge.int_raw().read().bits();
-    if raw & 0b11 != 0 {
-        // SAFETY: writing 1s clears the bridge's raw underrun and vsync flags only.
-        bridge.int_clr().write(|w| unsafe { w.bits(raw & 0b11) });
-    }
-    (raw & 0b10 != 0, raw & 0b01 != 0)
-}
-
-/// Words in the bridge's pixel FIFO now.
-pub fn fifo_depth() -> u32 {
-    MIPI_DSI_BRIDGE::regs().fifo_flow_status().read().bits() & 0x3FFF
-}
-
-/// VDMA channel 0 enabled, as the controller reports it.
-#[allow(dead_code)]
-pub fn dma_running() -> bool {
-    VDMA::regs().chen0().read().bits() & 1 != 0
-}
-
-/// Fills a portrait test picture: eight horizontal color bars, a 16-step
-/// gray ramp at the bottom and a white frame.
-pub fn test_picture(fb: &mut [u16]) {
-    let w = WIDTH as usize;
-    for (i, p) in fb.iter_mut().enumerate() {
-        *p = test_pixel(i % w, i / w);
-    }
-}
-
-/// Pixels of the frame buffer that no longer match the test picture.
-#[allow(dead_code)]
-pub fn damaged(fb: &[u16]) -> u32 {
-    let w = WIDTH as usize;
-    let mut bad = 0;
-    for (i, p) in fb.iter().enumerate() {
-        // SAFETY: `p` is a valid reference; the volatile read keeps the
-        // compiler from assuming the buffer is unchanged since it was written.
-        let v = unsafe { core::ptr::read_volatile(p) };
-        bad += u32::from(v != test_pixel(i % w, i / w));
-    }
-    bad
-}
-
-fn test_pixel(x: usize, y: usize) -> u16 {
-    const BARS: [u16; 8] = [
-        0xF800, 0xFD20, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xFFFF,
-    ];
-    let (w, h) = (WIDTH as usize, HEIGHT as usize);
-    const EDGE: usize = 8;
-    if x < EDGE || y < EDGE || x >= w - EDGE || y >= h - EDGE || x == w / 2 {
-        0xFFFF
-    } else if y < h * 3 / 4 {
-        BARS[y * 8 / (h * 3 / 4)]
-    } else {
-        let s = (x * 16 / w) as u16;
-        ((s * 31 / 15) << 11) | ((s * 63 / 15) << 5) | (s * 31 / 15)
-    }
 }
 
 /// DSI command-mode packets with bounded waits.
@@ -362,30 +280,10 @@ pub mod dbi {
     const DCS_SHORT_WRITE_0: u8 = 0x05;
     const DCS_SHORT_WRITE_1: u8 = 0x15;
     const DCS_LONG_WRITE: u8 = 0x39;
-    #[allow(dead_code)]
-    const DCS_READ_0: u8 = 0x06;
-    #[allow(dead_code)]
-    const SET_MAX_RETURN_PKT: u8 = 0x37;
 
-    /// Where a packet stalled, with the host's status registers then.
-    #[derive(Clone, Copy)]
-    pub struct Stall {
-        pub at: &'static str,
-        pub pkt_status: u32,
-        pub int_st0: u32,
-        pub int_st1: u32,
-    }
-
-    fn stall(at: &'static str) -> Stall {
-        let h = MIPI_DSI_HOST::regs();
-        Stall {
-            at,
-            pkt_status: h.cmd_pkt_status().read().bits(),
-            // Reading clears them; that is fine for a diagnosis.
-            int_st0: h.int_st0().read().bits(),
-            int_st1: h.int_st1().read().bits(),
-        }
-    }
+    /// Which wait a packet stalled in.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Stall(pub &'static str);
 
     /// Waits until `ok` holds, at most `WAIT_US`.
     fn wait(at: &'static str, ok: impl Fn() -> bool) -> Result<(), Stall> {
@@ -396,7 +294,7 @@ pub mod dbi {
             }
             delay.delay_micros(1);
         }
-        Err(stall(at))
+        Err(Stall(at))
     }
 
     /// Command mode set up as esp-hal does, but with no acknowledgement
@@ -470,47 +368,17 @@ pub mod dbi {
             }
         }
     }
-
-    /// Reads `out.len()` bytes of a DCS register.
-    #[allow(dead_code)]
-    pub fn read(cmd: u8, out: &mut [u8]) -> Result<usize, Stall> {
-        let h = MIPI_DSI_HOST::regs();
-        header(SET_MAX_RETURN_PKT, out.len() as u8, 0)?;
-        h.mode_cfg().modify(|_, w| w.cmd_video_mode().set_bit());
-        h.pckhdl_cfg().modify(|_, w| w.bta_en().set_bit());
-        // SAFETY: virtual channel 0 fits the 2-bit field.
-        h.gen_vcid().modify(|_, w| unsafe { w.rx().bits(0) });
-        header(DCS_READ_0, cmd, 0)?;
-        wait("read busy", || {
-            h.cmd_pkt_status().read().gen_rd_cmd_busy().bit_is_clear()
-        })?;
-        wait("no read data", || {
-            h.cmd_pkt_status().read().gen_pld_r_empty().bit_is_clear()
-        })?;
-        let mut n = 0;
-        while h.cmd_pkt_status().read().gen_pld_r_empty().bit_is_clear() {
-            let word = h.gen_pld_data().read().bits().to_le_bytes();
-            for b in word {
-                if n < out.len() {
-                    out[n] = b;
-                    n += 1;
-                }
-            }
-        }
-        Ok(n)
-    }
 }
 
 /// D-PHY PLL reference on silicon before v3.0: PLL_F20M, shared with the PHY
 /// configuration clock (ESP-IDF v6.0.1 `mipi_dsi_ll.h`, the legacy branch).
 /// esp-hal 1.2.2 computes M/N for a 40 MHz XTAL reference, which these chips
 /// cannot select, so every rate it programs comes out at half.
-#[allow(dead_code)]
 pub const PLL_REF_MHZ: u32 = 20;
 
 /// Lane rate this module programs: 20 MHz x 52 / 1 (ESP-IDF's limits:
 /// 5 MHz <= ref / N <= 40 MHz, M even).
-pub const LANE_MBPS: u32 = 1040;
+pub const LANE_MBPS: u32 = PLL_REF_MHZ * PLL_M / PLL_N;
 const PLL_M: u32 = 52;
 const PLL_N: u32 = 1;
 /// `hsfreqrange` for 1000..1050 Mbps (ESP-IDF `mipi_dsi_periph.c`).
@@ -536,39 +404,19 @@ fn phy_write(addr: u32, val: u32) {
     }
 }
 
-/// Reads one D-PHY test register back.
-pub fn phy_read(addr: u32) -> u32 {
-    let h = MIPI_DSI_HOST::regs();
-    // SAFETY: the same test-interface protocol as `phy_write`, ending with
-    // TESTEN low so TESTDOUT (PHY_TST_CTRL1 bits 15:8) shows the register.
-    unsafe {
-        h.phy_tst_ctrl0().write(|w| w.bits(0));
-        h.phy_tst_ctrl1()
-            .write(|w| w.bits((1 << 16) | (addr & 0xFF)));
-        h.phy_tst_ctrl0().write(|w| w.bits(1 << 1));
-        h.phy_tst_ctrl0().write(|w| w.bits(0));
-        h.phy_tst_ctrl1().write(|w| w.bits(0));
-    }
-    (h.phy_tst_ctrl1().read().bits() >> 8) & 0xFF
-}
-
 /// Brings the D-PHY up again for `LANE_MBPS` from the 20 MHz reference:
 /// held in shutdown and reset while the PLL and the HS range are written,
 /// then released, so nothing of esp-hal's first setup (for half the rate)
-/// stays in effect. Call right after `MipiDsi::new`. Returns whether the PLL
-/// locked and the lanes reached stop state.
-pub fn retune_pll(delay: &esp_hal::delay::Delay) -> bool {
+/// stays in effect; the D-PHY supply is set to `ldo` meanwhile. Call right
+/// after `MipiDsi::new`. Returns whether the PLL locked and the lanes reached
+/// stop state.
+pub fn retune_pll(delay: &esp_hal::delay::Delay, ldo: Ldo) -> bool {
     let h = MIPI_DSI_HOST::regs();
     h.phy_rstz().modify(|_, w| {
         w.phy_rstz().clear_bit();
         w.phy_shutdownz().clear_bit()
     });
-    // The D-PHY supply (LDO VO3, `ext_ldo_p0_0p2a_ana`) as ESP-IDF leaves it
-    // on this unit for 2.5 V: dref 14, mul 3, voltage detect on, chosen from
-    // the eFuse calibration. esp-hal's uncalibrated dref 9 / mul 6 is lower.
-    // SAFETY: PMU_EXT_LDO_P0_0P2A_ANA_REG (ESP-IDF pmu_reg.h); the value sets
-    // only that LDO's reference, multiplier and detector.
-    unsafe { (0x5011_51C4 as *mut u32).write_volatile(0xE580_0000) };
+    ldo.apply();
     delay.delay_micros(1000);
     phy_write(0x44, HS_FREQ_RANGE << 1);
     phy_write(0x19, 0x30); // use the N and M written below
@@ -597,4 +445,108 @@ pub fn retune_pll(delay: &esp_hal::delay::Delay) -> bool {
         delay.delay_micros(1);
     }
     false
+}
+
+/// A setting of the LDO that supplies the D-PHY (VO3, `ext_ldo_p0_0p2a`).
+#[derive(Clone, Copy, Debug)]
+pub struct Ldo {
+    pub dref: u8,
+    pub mul: u8,
+}
+
+/// eFuse BLOCK1 words (ESP-IDF `efuse_reg.h`): `RD_MAC_SYS_2` holds the
+/// block version, `RD_MAC_SYS_3` the VO3 calibration.
+const EFUSE_RD_MAC_SYS_2: u32 = 0x5012_D04C;
+const EFUSE_RD_MAC_SYS_3: u32 = 0x5012_D050;
+/// `PMU_EXT_LDO_P0_0P2A_ANA_REG` (ESP-IDF `pmu_reg.h`): `mul` in bits 25:23,
+/// `en_vdet` in bit 26, `dref` in bits 31:28.
+const PMU_EXT_LDO_P0_0P2A_ANA: u32 = 0x5011_51C4;
+
+impl Ldo {
+    /// The setting for 2.5 V, as ESP-IDF v6.0.1 computes it
+    /// (`ldo_ll_voltage_to_dref_mul`, unit 2): from the chip's eFuse
+    /// calibration when the block version is at least 1, else uncalibrated.
+    /// esp-hal 1.2.2 writes the uncalibrated dref 9 / mul 6, which on the Tab5
+    /// came out low enough to garble bright pixels
+    /// (docs/verification-report.md §28).
+    #[must_use]
+    pub fn for_2v5() -> Ldo {
+        // SAFETY: two eFuse read registers of this chip; reading has no side
+        // effect.
+        let (sys2, sys3) = unsafe {
+            (
+                (EFUSE_RD_MAC_SYS_2 as *const u32).read_volatile(),
+                (EFUSE_RD_MAC_SYS_3 as *const u32).read_volatile(),
+            )
+        };
+        let blk_version = ((sys2 >> 11) & 0x3) * 100 + ((sys2 >> 8) & 0x7);
+        let fuses = (blk_version >= 1).then_some((
+            ((sys3 >> 6) & 0xFF) as i32,
+            ((sys3 >> 14) & 0x3F) as i32,
+            ((sys3 >> 20) & 0x3F) as i32,
+        ));
+        Ldo::for_mv(2500, fuses)
+    }
+
+    /// The `(dref, mul)` whose output is nearest `mv`, for the calibration
+    /// fuses `(k, vos, c)` (signed as ESP-IDF reads them; 0 = not burnt).
+    fn for_mv(mv: i32, fuses: Option<(i32, i32, i32)>) -> Ldo {
+        let (mut k, mut vos, mut c) = (1000, 0, 1000);
+        if let Some((fk, fvos, fc)) = fuses {
+            if fk != 0 {
+                k = if fk & 0x80 != 0 {
+                    975 - (fk & 0x7F)
+                } else {
+                    975 + fk
+                };
+            }
+            if fvos != 0 {
+                vos = if fvos & 0x20 != 0 {
+                    -(fvos & 0x1F) - 3
+                } else {
+                    fvos - 3
+                };
+            }
+            if fc != 0 {
+                c = if fc & 0x20 != 0 {
+                    990 - (fc & 0x1F)
+                } else {
+                    990 + fc
+                };
+            }
+        }
+        // Vout = (Vref * K + Vos) * (1 + 0.25 * mul * C), in units that keep
+        // it integral: Vref * 20, K, Vos and C times 1000.
+        let mut best = (i32::MAX, Ldo { dref: 0, mul: 0 });
+        for dref in 0..16u8 {
+            let vref_20 = if dref < 9 {
+                10 + i32::from(dref)
+            } else {
+                20 + (i32::from(dref) - 9) * 2
+            };
+            for mul in 0..8u8 {
+                let vout = (vref_20 * k + 20 * vos) * (4000 + i32::from(mul) * c);
+                let diff = (mv * 80_000 - vout).abs();
+                if diff < best.0 {
+                    best = (diff, Ldo { dref, mul });
+                }
+            }
+        }
+        best.1
+    }
+
+    /// Writes the setting, with ripple suppression on (`en_vdet`), as
+    /// ESP-IDF's `esp_ldo_acquire_channel` leaves it.
+    fn apply(self) {
+        let reg = PMU_EXT_LDO_P0_0P2A_ANA as *mut u32;
+        const FIELDS: u32 = (0xF << 28) | (1 << 26) | (0x7 << 23);
+        // SAFETY: the LDO analog register of the D-PHY supply; only its dref,
+        // en_vdet and mul fields change, each within its width (4, 1, 3 bits).
+        unsafe {
+            let v = reg.read_volatile() & !FIELDS;
+            reg.write_volatile(
+                v | (u32::from(self.dref) << 28) | (1 << 26) | (u32::from(self.mul) << 23),
+            );
+        }
+    }
 }

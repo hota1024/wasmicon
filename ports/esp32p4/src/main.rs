@@ -21,12 +21,9 @@
 
 mod board;
 mod mem;
-#[cfg(feature = "tab5-probe")]
+mod tab5;
 mod tab5_dpi;
-#[cfg(feature = "tab5-probe")]
 mod tab5_ili9881c;
-#[cfg(feature = "tab5-probe")]
-mod tab5_probe;
 
 use esp_hal::clock::CpuClock;
 use esp_hal::uart::{Config as UartConfig, Uart};
@@ -35,7 +32,7 @@ use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
-use wasmicon_port::roles::{self, Limits, Wiring};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, Wiring};
 use wasmicon_port::{idle, slot, Hal};
 
 use board::{EspBoard, Serial};
@@ -111,8 +108,6 @@ impl Serial for SerialPort<'_> {
 }
 
 #[esp_hal::main]
-// The probe build halts after the probe, so the loader below is unreachable there.
-#[cfg_attr(feature = "tab5-probe", allow(unreachable_code))]
 fn main() -> ! {
     // Not `CpuClock::max()`: that is 400 MHz, the v3.x maximum. ESP-IDF caps
     // silicon before v3.0 at 360 MHz unless the chips passed extra
@@ -168,26 +163,16 @@ fn main() -> ! {
         serial.write(b"\r\n");
     }
 
-    #[cfg(feature = "tab5-probe")]
-    {
-        tab5_probe::run(
-            &mut serial,
-            tab5_probe::Parts {
-                i2c: p.I2C1,
-                sda: p.GPIO31,
-                scl: p.GPIO32,
-                tp_int: p.GPIO23,
-                backlight: p.GPIO22,
-                dsi: p.MIPI_DSI,
-                vdma: p.VDMA_CH0,
-                psram: p.PSRAM,
-            },
-        );
-        serial.write(b"tab5: probe done, halt\r\n");
-        loop {
-            core::hint::spin_loop();
-        }
-    }
+    // The Tab5 panel's parts, taken only if the config slot names it.
+    let tab5_parts = tab5::Parts {
+        i2c: p.I2C1,
+        sda: p.GPIO31,
+        scl: p.GPIO32,
+        backlight: p.GPIO22,
+        dsi: p.MIPI_DSI,
+        vdma: p.VDMA_CH0,
+        psram: p.PSRAM,
+    };
 
     // The app slot, the config slot and the assets are all read through it.
     // The board owns it: the guest's asset reads happen while the app runs.
@@ -207,6 +192,9 @@ fn main() -> ! {
     let wiring = pick_roles(storage, serial);
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
+    if wiring.display == Some(DisplayConfig::Tab5) {
+        bring_up_tab5(hal.board_mut(), tab5_parts);
+    }
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
     // bodies stay in flash; the guest's reads go through `esp-storage` by range.
     let (storage, serial) = hal.board_mut().parts();
@@ -250,6 +238,38 @@ fn main() -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// Brings the Tab5 panel up before the app runs and says how it went. On
+/// failure the board has no display, so the app's `open` returns
+/// `unsupported`.
+fn bring_up_tab5(board: &mut EspBoard<SerialPort<'static>>, parts: tab5::Parts) {
+    let mut line = [0u8; 128];
+    let mut out = Buf::new(&mut line);
+    out.str("wasmicon: display tab5 ");
+    match tab5::Tab5::up(parts) {
+        Ok((panel, ldo)) => {
+            board.attach_tab5(panel);
+            out.str("up, d-phy ldo dref=");
+            out.u32(u32::from(ldo.dref));
+            out.str(" mul=");
+            out.u32(u32::from(ldo.mul));
+        }
+        Err(e) => {
+            out.str("failed: ");
+            out.str(e.reason());
+            if let tab5::UpError::Init(cmd, at) = e {
+                out.str(" (command ");
+                out.u32(u32::from(cmd));
+                out.str(", ");
+                out.str(at);
+                out.str(")");
+            }
+        }
+    }
+    let s = board.serial();
+    s.write(out.as_bytes());
+    s.write(b"\r\n");
 }
 
 /// Picks the app to run from the slot.

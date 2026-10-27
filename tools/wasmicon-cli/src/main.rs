@@ -79,6 +79,7 @@ Options for run:
     --i2c-replay <file>      recorded I2C responses (the host has no sensor)
     --asset <name>=<file>    serve <file> as the asset <name> (repeatable; on top of [assets])
     --display-out <file>     write the mock display's picture (after the last present) as a PNG
+    --display-size <W>x<H>   size of the mock display (default 320x240; the Tab5 panel is 720x1280)
 
 Common:
     -h, --help               this help
@@ -224,6 +225,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     let mut i2c_replay: Option<PathBuf> = None;
     let mut overrides: Vec<(String, PathBuf)> = Vec::new();
     let mut display_out: Option<PathBuf> = None;
+    let mut display_size: Option<(u32, u32)> = None;
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
@@ -236,6 +238,10 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
             "--display-out" => {
                 let v = args.next().context("--display-out needs a file")?;
                 display_out = Some(PathBuf::from(v));
+            }
+            "--display-size" => {
+                let v = args.next().context("--display-size needs <W>x<H>")?;
+                display_size = Some(parse_display_size(&v)?);
             }
             "--asset" => {
                 let v = args.next().context("--asset needs <name>=<file>")?;
@@ -295,7 +301,20 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         i2c_replay,
         assets: assets.into_iter().collect(),
         display_out,
+        display_size,
     })
+}
+
+/// `<W>x<H>`, each 1 to 4096: the mock keeps two RGB565 buffers of that size.
+fn parse_display_size(v: &str) -> Result<(u32, u32)> {
+    let parse = |s: &str| s.parse::<u32>().ok().filter(|n| (1..=4096).contains(n));
+    match v.split_once('x') {
+        Some((w, h)) => match (parse(w), parse(h)) {
+            (Some(w), Some(h)) => Ok((w, h)),
+            _ => bail!("--display-size takes <W>x<H>, each 1 to 4096, got `{v}`"),
+        },
+        None => bail!("--display-size takes <W>x<H>, got `{v}`"),
+    }
 }
 
 fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
@@ -518,4 +537,20 @@ fn parse_assets(mut args: impl Iterator<Item = String>) -> Result<AssetsCmd> {
 fn help() -> ! {
     print!("{USAGE}");
     std::process::exit(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_display_size;
+
+    #[test]
+    fn display_size_takes_width_x_height_in_range() {
+        assert_eq!(parse_display_size("720x1280").unwrap(), (720, 1280));
+        assert_eq!(parse_display_size("1x4096").unwrap(), (1, 4096));
+        for bad in [
+            "720", "0x240", "320x4097", "320x", "x240", "320X240", "-1x2",
+        ] {
+            assert!(parse_display_size(bad).is_err(), "{bad}");
+        }
+    }
 }

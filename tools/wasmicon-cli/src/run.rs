@@ -27,6 +27,8 @@ pub struct Options {
     /// Where to write the mock display's visible picture as a PNG after the
     /// run (docs/device-layer.md §5.3).
     pub display_out: Option<PathBuf>,
+    /// Size of the mock display; `None` is the 320x240 default.
+    pub display_size: Option<(u32, u32)>,
 }
 
 /// Runs the app. `true` when it finishes without a trap.
@@ -67,7 +69,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         spi_unsupported: false,
         assets,
         no_display: false,
-        display_size: None,
+        display_size: opts.display_size,
         display: None,
         bus_log: false,
     };

@@ -263,6 +263,15 @@ pub enum DisplayConfig {
 }
 
 impl DisplayConfig {
+    /// The driver's name, as `@display=` and `[board.<name>.display]` spell it.
+    #[must_use]
+    pub fn driver(&self) -> &'static str {
+        match *self {
+            DisplayConfig::Ili9341 { .. } => "ili9341",
+            DisplayConfig::Tab5 => "tab5",
+        }
+    }
+
     /// GPIOs the backend drives. The guest may not open them and no role may
     /// name them (docs/TODO.md §6-6 for the Tab5).
     #[must_use]

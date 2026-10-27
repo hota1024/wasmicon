@@ -416,11 +416,14 @@ pub fn judge(
                 "none for this board  <- fails (add [board.{}.display] to wasmicon.toml)",
                 p.wiring
             )),
-            // No firmware has the Tab5 panel's backend yet: on the board
-            // `open` would return `unsupported` (docs/TODO.md §6).
-            Some(DisplayConfig::Tab5) => {
-                Err("tab5  <- fails (no firmware has this backend yet)".to_string())
-            }
+            // The firmware would read the entry and have no such driver:
+            // `open` would return `unsupported` (docs/device-layer.md §5.3).
+            Some(d) if !p.interfaces.display_drivers.contains(&d.driver()) => Err(format!(
+                "{}  <- fails (the {} firmware has no {} driver)",
+                d.driver(),
+                p.name,
+                d.driver()
+            )),
             Some(d) => Ok(pack::describe_display(&Wiring {
                 roles: wasmicon_port::roles::RoleMap::EMPTY,
                 display: Some(d),

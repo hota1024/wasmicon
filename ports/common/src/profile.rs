@@ -40,6 +40,11 @@ pub struct Interfaces {
     pub assets: bool,
     /// `wasmicon:device/display`.
     pub display: bool,
+    /// The display drivers a config slot entry may name on this firmware, as
+    /// `roles::DisplayConfig::driver` spells them (docs/device-layer.md §5.3).
+    /// Empty exactly when `display` is false; the host's built-in mock is not
+    /// listed, since it needs no entry.
+    pub display_drivers: &'static [&'static str],
 }
 
 impl Interfaces {
@@ -53,12 +58,14 @@ impl Interfaces {
         board: true,
         assets: true,
         display: false,
+        display_drivers: &[],
     };
 
     /// Every HAL interface and the display: the ILI9341 backend in
     /// `ports/common` runs on any port with SPI (docs/device-layer.md §5.3).
     pub const WITH_DISPLAY: Interfaces = Interfaces {
         display: true,
+        display_drivers: &["ili9341"],
         ..Interfaces::ALL
     };
 }
@@ -430,7 +437,11 @@ pub const ESP32P4: Profile = Profile {
     name: "esp32p4",
     wiring: "esp32p4",
     config: MCU,
-    interfaces: Interfaces::WITH_DISPLAY,
+    // The ILI9341 on SPI, and the Tab5's own panel (`ports/esp32p4/src/tab5.rs`).
+    interfaces: Interfaces {
+        display_drivers: &["ili9341", "tab5"],
+        ..Interfaces::WITH_DISPLAY
+    },
     roles: &[],
     gpio_count: 55,
     reserved: ESP32P4_RESERVED,
@@ -460,11 +471,9 @@ pub const HOST: Profile = Profile {
     name: "host",
     wiring: "host",
     config: Config::DEFAULT,
-    // The mock display (docs/device-layer.md §5.3).
-    interfaces: Interfaces {
-        display: true,
-        ..Interfaces::ALL
-    },
+    // The mock display (docs/device-layer.md §5.3), and the ILI9341 backend
+    // over the mock SPI (`wasmicon_host::Options::display`).
+    interfaces: Interfaces::WITH_DISPLAY,
     roles: HOST_ROLES,
     gpio_count: 48,
     reserved: &[],

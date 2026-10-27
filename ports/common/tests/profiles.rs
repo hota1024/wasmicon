@@ -343,3 +343,29 @@ fn a_variant_shares_its_boards_pins_and_slots() {
     }
     assert_eq!(variants, 1, "only esp32s3-psram is a variant today");
 }
+
+/// A firmware with the display lists its drivers, and only such a firmware:
+/// `check` refuses an entry whose driver is not listed (docs/device-layer.md §6).
+#[test]
+fn display_drivers_are_listed_exactly_where_there_is_a_display() {
+    for p in profile::PROFILES {
+        let i = p.interfaces;
+        assert_eq!(
+            i.display,
+            !i.display_drivers.is_empty(),
+            "{}: display and display_drivers disagree",
+            p.name
+        );
+        for d in i.display_drivers {
+            assert!(
+                matches!(*d, "ili9341" | "tab5"),
+                "{}: unknown driver `{d}`",
+                p.name
+            );
+        }
+    }
+    assert_eq!(
+        profile::ESP32P4.interfaces.display_drivers,
+        ["ili9341", "tab5"]
+    );
+}

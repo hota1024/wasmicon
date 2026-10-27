@@ -27,9 +27,6 @@ dc = 0
 rst = 1
 
 [board.esp32p4.display]
-# The ILI9341 on the M5-Bus. The Tab5's own panel (driver = "tab5") comes
-# with stage 4 of docs/device-layer.md §10.
-driver = "ili9341"
-cs = 48
-dc = 47
-rst = 45
+# The Tab5's own 720x1280 panel. An ILI9341 on the M5-Bus works too:
+# driver = "ili9341" with cs = 48, dc = 47, rst = 45.
+driver = "tab5"
