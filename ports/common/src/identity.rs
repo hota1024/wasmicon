@@ -45,6 +45,12 @@ pub fn describe(id: &Identity<'_>, out: &mut Buf<'_>) {
     out.str(id.git);
     out.str(" abi=");
     out.str(wasmicon_core::generated::PACKAGE);
+    // The device layer moves independently of the HAL (docs/decisions.md D-05),
+    // so a port that implements a device interface names its version too.
+    if p.interfaces.display {
+        out.str(" device=");
+        out.str(wasmicon_core::generated::DEVICE_PACKAGE);
+    }
     out.str(if id.trace { " trace=on" } else { " trace=off" });
     out.str(" pages=");
     out.u32(p.config.max_memory_pages);

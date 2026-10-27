@@ -1204,8 +1204,8 @@ recommended option. Nothing is implemented yet.**
       device imports after the HAL ones; Rust / AS / C wrappers; `check-sigs.sh` covers both
       packages. Every port refuses device imports at instantiate for now, and `check` reports
       `display not implemented by this port (link error)`. The Rust, AS and C apps built before
-      and after are byte-identical. The identity line does not name the device package yet
-      (it comes with the first port that implements it)
+      and after are byte-identical. A port with a display names the device package in its
+      identity line (`device=wasmicon:device@0.1.0`, after `abi=`; today only the host)
 - [x] (2) Host `mock` backend, trace rules, early refusal in `check` / `deploy`, a demo app
       (2026-10-27). `Board` gained `display_*` methods (default: no display); `Hal` keeps the
       screen handle, checks rectangles and lengths, and traces. The host mock is 320x240, keeps

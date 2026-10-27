@@ -58,7 +58,7 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&crc.to_be_bytes());
 }
 
-/// A zlib stream (RFC 1950) of stored deflate blocks (RFC 1951 §3.2.4).
+/// A zlib stream (RFC 1950) of stored deflate blocks (RFC 1951, section 3.2.4).
 fn zlib_stored(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x78, 0x01];
     let blocks = data.chunks(STORED_MAX).collect::<Vec<_>>();

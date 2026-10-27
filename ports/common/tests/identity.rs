@@ -53,3 +53,19 @@ fn the_longest_line_fits_the_ports_buffer() {
         assert!(l.starts_with(identity::PREFIX));
     }
 }
+
+#[test]
+fn a_port_with_a_display_names_the_device_package() {
+    // Only the host has a display backend today; the boards' lines stay as
+    // they were (every_axis_is_named).
+    let l = line(&profile::HOST, true);
+    assert!(
+        l.contains(" abi=wasmicon:hal@0.1.0 device=wasmicon:device@0.1.0 "),
+        "{l}"
+    );
+    assert!(
+        l.contains(" if=gpio,i2c,spi,time,log,board,assets,display"),
+        "{l}"
+    );
+    assert!(!line(&profile::RP2350, true).contains("device="));
+}

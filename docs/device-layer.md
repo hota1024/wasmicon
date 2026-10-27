@@ -1,10 +1,11 @@
 # Device layer design (`wasmicon:device`)
 
 Created: 2026-10-27
-Status: **approved, not implemented.** The owner agreed on the direction on 2026-10-27
-(a separate package above the HAL, named `wasmicon:device`, with `display` as its
-first interface) and settled docs/TODO.md §6-1 ... §6-7 the same day. The stages and
-their status are in docs/TODO.md §6.
+Status: **approved; stages 1 and 2 of §10 are implemented** (the WIT, the bindings and
+the host mock display). The owner agreed on the direction on 2026-10-27 (a separate
+package above the HAL, named `wasmicon:device`, with `display` as its first interface)
+and settled docs/TODO.md §6-1 ... §6-7 the same day. The stages and their status are in
+docs/TODO.md §6.
 Related: docs/abi-spec.md, docs/app-workflow.md §3.9, §4.7, docs/decisions.md D-03, D-05, D-09
 
 ---
