@@ -54,6 +54,7 @@ fn cli_says_match(a: &Path, b: &Path) -> Result<bool, String> {
     trace::diff(&trace::Options {
         a: a.to_path_buf(),
         b: b.to_path_buf(),
+        ignore: Vec::new(),
     })
     .map_err(|e| format!("{e:#}"))
 }
@@ -213,4 +214,38 @@ fn line_counts_exclude_banners() {
     let bytes = std::fs::read(&a).expect("cannot read");
     // 4 lines without the banner and the log line.
     assert_eq!(trace::normalize(&bytes).lines.len(), 4);
+}
+
+#[test]
+fn ignore_drops_the_lines_that_differ_by_design() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("trace-ignore");
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("host.log");
+    let b = dir.join("board.log");
+    let log = |ms: u32| {
+        format!(
+            "> wasmicon:hal/log@0.1.0/log(2, \"start\")\n<\n\
+             > wasmicon:hal/log@0.1.0/log(2, \"frame ms={ms}\")\n<\n\
+             > wasmicon:hal/log@0.1.0/log(2, \"done\")\n<\n"
+        )
+    };
+    std::fs::write(&a, log(180)).unwrap();
+    std::fs::write(&b, log(990)).unwrap();
+    let diff = |ignore: &[&str]| {
+        trace::diff(&trace::Options {
+            a: a.clone(),
+            b: b.clone(),
+            ignore: ignore.iter().map(|s| (*s).to_string()).collect(),
+        })
+        .map_err(|e| format!("{e:#}"))
+    };
+
+    assert_eq!(diff(&[]), Ok(false), "the timing differs");
+    assert_eq!(diff(&["frame ms="]), Ok(true));
+    // A line that differs elsewhere is still caught.
+    std::fs::write(&b, log(990).replace("done", "dome")).unwrap();
+    assert_eq!(diff(&["frame ms="]), Ok(false));
+    // Dropping everything is not a match.
+    let e = diff(&["wasmicon:hal", "<"]).expect_err("nothing left");
+    assert!(e.contains("nothing is left"), "{e}");
 }

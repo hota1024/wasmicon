@@ -717,15 +717,15 @@ existing thing that does the job today.
 | ~~`build`~~ | **Not built.** It would be a thin wrapper that picks `cargo build --release` / `npm run build` by language; the flags live in the files `new` wrote (§4.4), so there is nothing to add | - |
 | `check <app.wasm> --board X` | Runs decode / validate / `Exec` / instantiate **on the real runtime**, **with that board's actual arena size** (§4.3) | Nothing (`wasm-tools validate` sees neither the import table nor the board limits) |
 | `run <app.wasm> [--trace] [--i2c-replay f] [--asset n=f]` | Runs on the host port. `--i2c-replay` corresponds to the existing env var `WASMICON_I2C_REPLAY`. The `[assets]` table of `wasmicon.toml` is served from its files; `--asset` adds or replaces one (§3.10). After the run, prints on stderr how deep the stacks went and which boards that is over (§4.3) | `cargo run -p wasmicon-host` (the crate stays, used as a lib) |
-| `deploy <app.wasm>` | Sends the app over USB / HTTP. `--persist` for the flash slot. Never touches the assets slot | Nothing |
+| `deploy <app.wasm>` | Sends the app over USB / HTTP. `--persist` for the flash slot. Never touches the assets slot. On espflash boards `--flash-baud n` raises the flashing speed (115200 otherwise); `--monitor --idle s` waits longer for a quiet app | Nothing |
 | `assets pack [--board X] [-o f]` | Builds the assets slot image from `[assets]` (§3.10). With a board, checks that it fits the slot and prints the flash command | Nothing |
-| `assets write --board X` | `assets pack`, then flashes the image to the board's assets slot through the same flasher as `deploy`. Per device, not per app: the last write wins | Nothing |
+| `assets write --board X` | `assets pack`, then flashes the image to the board's assets slot through the same flasher as `deploy` (`--flash-baud` too). Per device, not per app: the last write wins | Nothing |
 | `flash --board X [--fw v]` | Flashes **the firmware** (once). The version comes from the manifest (§3.8) | The written procedure (`apps/lcd-demo-rs/README.md`) |
 | `fw list` | Lists the versions on hand and the version on the device (§3.8) | Nothing |
 | `pack <app.wasm>` | Builds the slot image (§3.4). In stage 1, the input for an external flasher | Nothing |
 | `config show` / `set` / `apply` / `reset` | View / write / push from `wasmicon.toml` / erase the role map (§3.9 / §4.7) | Nothing (today: reflash the firmware) |
 | `monitor` | Opens the serial port and captures the trace. Enumerates `/dev/cu.usb*` and **records the identity at the head** (§3.8) | `cat /dev/cu.usbmodemXXXX \| tee` |
-| `trace diff a.log b.log` | Normalizes and cross-checks. **Prints the first mismatching line** (traces are append-only, so that is closest to the cause) | `verify/diff-traces.sh` (**kept**; a test cross-checks that the CLI gives the same verdict) |
+| `trace diff a.log b.log [--ignore text]` | Normalizes and cross-checks. **Prints the first mismatching line** (traces are append-only, so that is closest to the cause). `--ignore` drops the lines containing the text from both sides first, for log lines that differ by design (timings) | `verify/diff-traces.sh` (**kept**; a test cross-checks that the CLI gives the same verdict) |
 | `size [target]` | Core code size | `tools/measure-size.sh` |
 | `doctor` | Toolchain check | Nothing |
 

@@ -30,6 +30,8 @@ pub struct WriteOptions {
     pub board: Option<String>,
     /// Serial port for espflash (`None` = let it pick).
     pub port: Option<PathBuf>,
+    /// `--flash-baud`: the speed espflash flashes at (`None` = 115200).
+    pub flash_baud: Option<u32>,
 }
 
 /// Reads every file of the `[assets]` table, in table order.
@@ -131,6 +133,7 @@ pub fn write(opts: &WriteOptions) -> Result<bool> {
     let entries = load(&opts.manifest)?;
     let image = image(&entries)?;
     let sl = fits(p, image.len())?;
+    deploy::check_flash_baud(opts.flash_baud, sl.flasher)?;
 
     let out = opts.manifest.dir.join("assets.bin");
     std::fs::write(&out, &image).with_context(|| format!("cannot write `{}`", out.display()))?;
@@ -143,7 +146,14 @@ pub fn write(opts: &WriteOptions) -> Result<bool> {
         entries.len(),
         describe(&entries)
     );
-    if !deploy::write_at(sl.flasher, sl.offset, &out, opts.port.as_deref(), false)? {
+    if !deploy::write_at(
+        sl.flasher,
+        sl.offset,
+        &out,
+        opts.port.as_deref(),
+        false,
+        opts.flash_baud,
+    )? {
         return Ok(false);
     }
     // The app slot is not touched, so the board comes back in whatever app

@@ -23,6 +23,12 @@
 //! `verify/diff-traces.sh`). This says up front whether "same `.wasm`,
 //! different trace" might come from different firmware.
 //!
+//! `--ignore <text>` is the one addition the script does not have: it drops
+//! the trace lines containing the text from both sides after normalizing,
+//! for an app that logs timings (docs/verification-report.md §27). Without
+//! it the verdict is the script's, and `tests/trace.rs` cross-checks only
+//! that case.
+//!
 //! Zero trace lines is a failure. Two empty traces compare equal as strings,
 //! but that is "nothing was compared", not "identical". This verdict is used
 //! as a completion criterion, so a silent success is the worst way to break.
@@ -33,6 +39,8 @@ use std::path::{Path, PathBuf};
 pub struct Options {
     pub a: PathBuf,
     pub b: PathBuf,
+    /// `--ignore`: drop the lines containing any of these from both traces.
+    pub ignore: Vec<String>,
 }
 
 pub struct ReplayOptions {
@@ -70,6 +78,22 @@ pub fn normalize(bytes: &[u8]) -> Trace {
     Trace { lines }
 }
 
+/// Drops the lines containing any of `ignore`. Returns how many were dropped.
+///
+/// A plain byte substring, not a pattern: what differs by design is usually
+/// a fixed label in the guest's log text (`"frame ms="`), and a regex would
+/// be the CLI's first dependency for it.
+pub fn drop_lines(t: &mut Trace, ignore: &[String]) -> usize {
+    let before = t.lines.len();
+    t.lines.retain(|l| {
+        !ignore
+            .iter()
+            .filter(|text| !text.is_empty())
+            .any(|text| l.windows(text.len()).any(|w| w == text.as_bytes()))
+    });
+    before - t.lines.len()
+}
+
 /// The first position (0-based) where the traces differ. `None` when
 /// identical.
 #[must_use]
@@ -91,9 +115,27 @@ pub fn first_divergence(a: &Trace, b: &Trace) -> Option<usize> {
 /// # Errors
 /// When a file cannot be read, or one of them yields no trace line.
 pub fn diff(opts: &Options) -> Result<bool> {
-    let a = read(&opts.a)?;
-    let b = read(&opts.b)?;
+    let mut a = read(&opts.a)?;
+    let mut b = read(&opts.b)?;
     warn_on_firmware_mismatch(opts)?;
+
+    if !opts.ignore.is_empty() {
+        let (da, db) = (
+            drop_lines(&mut a, &opts.ignore),
+            drop_lines(&mut b, &opts.ignore),
+        );
+        // Printed even when equal: a count that differs is itself a finding
+        // (one side logged more timings), and the line numbers below are
+        // of what is left.
+        eprintln!(
+            "ignored: {da} lines of {}, {db} lines of {}",
+            short(&opts.a),
+            short(&opts.b)
+        );
+        if a.lines.is_empty() || b.lines.is_empty() {
+            bail!("--ignore dropped every trace line of one log; nothing is left to compare");
+        }
+    }
 
     match first_divergence(&a, &b) {
         None => {
@@ -115,7 +157,11 @@ pub fn diff(opts: &Options) -> Result<bool> {
             );
             // A trace is append-only, so the first divergence is closest to
             // the cause.
-            eprintln!("  first divergence: line {}", i + 1);
+            if opts.ignore.is_empty() {
+                eprintln!("  first divergence: line {}", i + 1);
+            } else {
+                eprintln!("  first divergence: line {} (of the lines left)", i + 1);
+            }
             eprintln!("    {}  {}", short(&opts.a), at(&a, i));
             eprintln!("    {}  {}", short(&opts.b), at(&b, i));
             Ok(false)

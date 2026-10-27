@@ -121,6 +121,7 @@ fn write_needs_a_board() {
         manifest: m,
         board: None,
         port: None,
+        flash_baud: None,
     })
     .expect_err("no board, nothing to write to");
     assert!(format!("{e:#}").contains("no target board"), "{e:#}");

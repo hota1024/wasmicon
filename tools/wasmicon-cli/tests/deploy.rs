@@ -72,6 +72,8 @@ fn opts(path: PathBuf, board: Option<&str>) -> deploy::Options {
         monitor: false,
         out: None,
         port: None,
+        flash_baud: None,
+        idle: None,
     }
 }
 
@@ -149,6 +151,8 @@ fn mode_opts(no_run: bool, monitor: bool) -> deploy::Options {
         monitor,
         out: None,
         port: None,
+        flash_baud: None,
+        idle: None,
     }
 }
 
@@ -197,4 +201,44 @@ fn monitor_hands_the_port_over_only_when_it_is_shared() {
     );
     assert!(!m.hand_off, "tries to capture although nothing runs");
     assert!(m.keep_halted);
+}
+
+#[test]
+fn flash_baud_reaches_espflash_and_only_espflash() {
+    use std::path::Path;
+    use wasmicon_port::profile::Flasher;
+
+    // A 4.2 MB assets image took 202 s at espflash's default 115200
+    // (docs/verification-report.md §27).
+    let args = deploy::espflash_write_args(
+        0x10_0000,
+        "app.bin",
+        Some(Path::new("/dev/cu.usbmodem1")),
+        true,
+        Some(921_600),
+    );
+    assert_eq!(
+        args,
+        [
+            "write-bin",
+            "--port",
+            "/dev/cu.usbmodem1",
+            "--baud",
+            "921600",
+            "--after",
+            "no-reset",
+            "0x100000",
+            "app.bin"
+        ]
+    );
+    // Without it the command is what it was.
+    assert_eq!(
+        deploy::espflash_write_args(0x20_1000, "assets.bin", None, false, None),
+        ["write-bin", "0x201000", "assets.bin"]
+    );
+
+    // picotool has no speed; accepting one silently would hide that.
+    assert!(deploy::check_flash_baud(Some(921_600), Flasher::Picotool).is_err());
+    assert!(deploy::check_flash_baud(None, Flasher::Picotool).is_ok());
+    assert!(deploy::check_flash_baud(Some(921_600), Flasher::Espflash { chip: "esp32s3" }).is_ok());
 }

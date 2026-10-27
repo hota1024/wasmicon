@@ -37,6 +37,12 @@ pub struct Options {
     pub out: Option<PathBuf>,
     /// Serial port for `--monitor` (`None` = pick from `/dev/cu.usb*`).
     pub port: Option<PathBuf>,
+    /// `--flash-baud`: the speed espflash flashes at (`None` = espflash's
+    /// default, 115200). Not the firmware's UART speed, which `--monitor`
+    /// always reads at `monitor::DEFAULT_BAUD`.
+    pub flash_baud: Option<u32>,
+    /// `--idle`: silence that ends the `--monitor` capture (`None` = never).
+    pub idle: Option<std::time::Duration>,
 }
 
 /// Everything decided before flashing. The only side effect is writing the
@@ -178,6 +184,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 /// error).
 pub fn run(opts: &Options) -> Result<bool> {
     let plan = prepare(opts)?;
+    check_flash_baud(opts.flash_baud, plan.slot.flasher)?;
 
     // The summary shows the slot offset. The absolute address picotool
     // takes (`write_at` derives it) means nothing on ESP32-S3, which flashes
@@ -206,7 +213,12 @@ pub fn run(opts: &Options) -> Result<bool> {
 
     // Stage 1 uses an external flasher (docs/app-workflow.md §3.5). The tool
     // differs per board.
-    if !write_slot(&plan, opts.port.as_deref(), mode.keep_halted)? {
+    if !write_slot(
+        &plan,
+        opts.port.as_deref(),
+        mode.keep_halted,
+        opts.flash_baud,
+    )? {
         return Ok(false);
     }
 
@@ -234,7 +246,7 @@ pub fn run(opts: &Options) -> Result<bool> {
                 port: None,
                 baud: monitor::DEFAULT_BAUD,
                 out: opts.out.clone(),
-                idle: Some(monitor::DEFAULT_IDLE),
+                idle: opts.idle,
                 timeout: None,
             },
         );
@@ -283,21 +295,71 @@ pub fn run(opts: &Options) -> Result<bool> {
             port: None,
             baud: monitor::DEFAULT_BAUD,
             out: opts.out.clone(),
-            idle: Some(monitor::DEFAULT_IDLE),
+            idle: opts.idle,
             timeout: None,
         },
     )
 }
 
 /// Writes the slot. The tool differs per board.
-fn write_slot(plan: &Plan, port: Option<&Path>, keep_halted: bool) -> Result<bool> {
+fn write_slot(
+    plan: &Plan,
+    port: Option<&Path>,
+    keep_halted: bool,
+    flash_baud: Option<u32>,
+) -> Result<bool> {
     write_at(
         plan.slot.flasher,
         plan.slot.offset,
         &plan.image,
         port,
         keep_halted,
+        flash_baud,
     )
+}
+
+/// Refuses `--flash-baud` for a flasher that has no such setting, before
+/// anything is written. picotool talks USB, so a speed would be silently
+/// ignored and the next slow flash would look like a bug.
+///
+/// # Errors
+/// When a speed is given for a picotool board.
+pub fn check_flash_baud(flash_baud: Option<u32>, flasher: Flasher) -> Result<()> {
+    if flash_baud.is_some() && flasher == Flasher::Picotool {
+        bail!("--flash-baud is for boards flashed with espflash; picotool has no speed to set");
+    }
+    Ok(())
+}
+
+/// The arguments of `espflash write-bin` for one image.
+///
+/// `--baud` raises only the flashing speed: espflash switches the ROM
+/// loader to it after connecting at 115200, and the native USB port of an
+/// ESP32-S3 ignores it. A 4.2 MB assets image took 202 s at 115200
+/// (docs/verification-report.md §27).
+#[must_use]
+pub fn espflash_write_args(
+    offset: u32,
+    image: &str,
+    port: Option<&Path>,
+    keep_halted: bool,
+    flash_baud: Option<u32>,
+) -> Vec<String> {
+    let mut args = vec!["write-bin".to_string()];
+    if let Some(dev) = port {
+        args.extend(["--port".to_string(), dev.to_string_lossy().into_owned()]);
+    }
+    if let Some(b) = flash_baud {
+        args.extend(["--baud".to_string(), b.to_string()]);
+    }
+    // With `--monitor` the board is not reset here. If it ran now, the output
+    // would be over before the port is opened
+    // (docs/verification-report.md §10). `espflash monitor` does the reset.
+    if keep_halted {
+        args.extend(["--after".to_string(), "no-reset".to_string()]);
+    }
+    args.extend([format!("{offset:#x}"), image.to_string()]);
+    args
 }
 
 /// Writes `image` at `offset` of flash with the board's flasher. `deploy`
@@ -313,6 +375,7 @@ pub fn write_at(
     image: &Path,
     port: Option<&Path>,
     keep_halted: bool,
+    flash_baud: Option<u32>,
 ) -> Result<bool> {
     let image = image.to_string_lossy().into_owned();
     // Never branch on the board name string. The profile carries the tool, so
@@ -326,21 +389,8 @@ pub fn write_at(
             // reset is not called separately: `espflash reset` never exits,
             // keeps DTR/RTS asserted and leaves the board parked in download
             // mode (seen on hardware; docs/verification-report.md §10).
-            let offset = format!("{offset:#x}");
-            let mut args = vec!["write-bin"];
-            let p;
-            if let Some(dev) = port {
-                p = dev.to_string_lossy().into_owned();
-                args.extend_from_slice(&["--port", &p]);
-            }
-            // With `--monitor` the board is not reset here. If it ran now,
-            // the output would be over before the port is opened
-            // (docs/verification-report.md §10). `espflash monitor` does the
-            // reset.
-            if keep_halted {
-                args.extend_from_slice(&["--after", "no-reset"]);
-            }
-            args.extend_from_slice(&[&offset, &image]);
+            let args = espflash_write_args(offset, &image, port, keep_halted, flash_baud);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let ok = spawn("espflash", &args)?;
             if !ok {
                 eprintln!("  if several serial ports exist, pick one with --port");

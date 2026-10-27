@@ -1135,19 +1135,24 @@ change.**
       `info` (docs/app-workflow.md §3.8, stage 2). Until then `deploy` could reset the
       board and read the identity line, at the cost of a slower `deploy`; that would also
       let `deploy` choose the board when `--board` is omitted
-- [ ] **`deploy` and `assets write` flash at 115200 baud** (reported 2026-10-27,
+- [x] **`deploy` and `assets write` flash at 115200 baud** (reported 2026-10-27,
       docs/verification-report.md §30). espflash is never given a speed, so a 415 KB app
-      took 23 s and a 4.2 MB assets image 202 s. Pass `--flash-baud <n>` through to
-      `espflash write-bin --baud`; a separate name from `monitor --baud`, which is the
-      firmware's UART speed and stays 115200
-- [ ] **`deploy --monitor` stops after 3 s of silence** (reported 2026-10-27,
+      took 23 s and a 4.2 MB assets image 202 s. -> **`--flash-baud <n>`** (2026-10-27)
+      goes to `espflash write-bin --baud`; a separate name from `monitor --baud`, which is
+      the firmware's UART speed and stays 115200. Refused for picotool boards. **Not yet
+      run on hardware**: which speeds the CH343 bridge holds, and the time it saves
+- [x] **`deploy --monitor` stops after 3 s of silence** (reported 2026-10-27,
       docs/verification-report.md §30). An app that is quiet while it loads (DOOM: 1.65 s of
-      asset CRC, then level loading) loses its trace. Give `deploy` the `--idle <secs>` of
-      `monitor`, rather than a default that changes with the image size
-- [ ] **`trace diff` cannot skip lines that differ by design** (reported 2026-10-27,
+      asset CRC, then level loading) loses its trace. -> **`deploy --idle <secs>`**
+      (2026-10-27), the same option and default as `monitor` (0 disables), rather than a
+      default that changes with the image size. Refused without `--monitor`. Not yet run
+      on hardware
+- [x] **`trace diff` cannot skip lines that differ by design** (reported 2026-10-27,
       docs/verification-report.md §30). An app that logs timings stops the comparison at the
-      first one. An `--ignore <text>` (repeatable) that drops the lines containing the text
-      from both sides; without it the verdict stays the same as `verify/diff-traces.sh`
+      first one. -> **`trace diff --ignore <text>`** (2026-10-27, repeatable) drops the
+      lines containing the text from both sides and prints how many it dropped from each;
+      without it the verdict stays the same as `verify/diff-traces.sh`, which has no such
+      option
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
       over USB, trace over UART0**

@@ -55,6 +55,8 @@ Options for deploy:
     --monitor                flash, reset and capture the trace
     -o <file>                where --monitor writes the capture
     --port <dev>             serial port (default: pick from /dev/cu.usb*)
+    --flash-baud <n>         flashing speed for espflash boards (default: 115200)
+    --idle <secs>            --monitor stops after this much silence (default: 3; 0 disables)
 
 Options for assets pack:
     -o <file>                output path (default: assets.bin next to wasmicon.toml)
@@ -63,6 +65,7 @@ Options for assets pack:
 Options for assets write:
     --board <name>           target board (default: [defaults] board in wasmicon.toml)
     --port <dev>             serial port (default: pick from /dev/cu.usb*)
+    --flash-baud <n>         flashing speed for espflash boards (default: 115200)
 
 Options for monitor:
     --port <dev>             serial port (default: pick from /dev/cu.usb*)
@@ -70,6 +73,10 @@ Options for monitor:
     -o <file>                also write to this file besides stdout
     --idle <secs>            stop after this much silence (default: 3; 0 disables)
     --timeout <secs>         overall limit (default: none)
+
+Options for trace diff:
+    --ignore <text>          drop the trace lines containing <text> from both logs
+                             before comparing (repeatable; for timings and the like)
 
 Options for trace replay:
     -o <file>                output path (default: stdout), in the form run --i2c-replay reads
@@ -331,10 +338,20 @@ fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
     let mut monitor = false;
     let mut out: Option<PathBuf> = None;
     let mut port: Option<PathBuf> = None;
+    let mut flash_baud = None;
+    let mut idle = None;
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--flash-baud" => flash_baud = Some(parse_flash_baud(args.next())?),
+            "--idle" => {
+                let v = args.next().context("--idle needs a value")?;
+                let secs: u64 = v
+                    .parse()
+                    .with_context(|| format!("--idle is not a number: `{v}`"))?;
+                idle = Some(secs);
+            }
             "--board" => board = Some(args.next().context("--board needs a value")?),
             "--no-run" => no_run = true,
             "--monitor" => monitor = true,
@@ -352,6 +369,11 @@ fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
     }
 
     let path = path.context("pass the .wasm to deploy\n\n".to_string() + USAGE)?;
+    // Accepting it silently would let someone wait for a capture that never
+    // starts.
+    if idle.is_some() && (!monitor || no_run) {
+        bail!("--idle sets when the --monitor capture stops; it needs --monitor without --no-run");
+    }
     Ok(deploy::Options {
         path,
         board,
@@ -360,7 +382,24 @@ fn parse_deploy(args: impl Iterator<Item = String>) -> Result<deploy::Options> {
         monitor,
         out,
         port,
+        flash_baud,
+        // 0 means "never stop on silence", as in `monitor`.
+        idle: match idle {
+            None => Some(monitor::DEFAULT_IDLE),
+            Some(0) => None,
+            Some(s) => Some(std::time::Duration::from_secs(s)),
+        },
     })
+}
+
+/// `--flash-baud`'s value. 0 is refused: espflash would fail after
+/// connecting, with a message about the ROM loader.
+fn parse_flash_baud(v: Option<String>) -> Result<u32> {
+    let v = v.context("--flash-baud needs a value")?;
+    match v.parse::<u32>() {
+        Ok(0) | Err(_) => bail!("--flash-baud is not a positive number: `{v}`"),
+        Ok(b) => Ok(b),
+    }
 }
 
 fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
@@ -460,9 +499,18 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
     }
     let mut files: Vec<PathBuf> = Vec::new();
     let mut out: Option<PathBuf> = None;
+    let mut ignore: Vec<String> = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => help(),
+            "--ignore" if sub == "diff" => {
+                let t = args.next().context("--ignore needs a text")?;
+                // An empty text is in every line and would drop the whole trace.
+                if t.is_empty() {
+                    bail!("--ignore needs a non-empty text");
+                }
+                ignore.push(t);
+            }
             "-o" if sub == "replay" => {
                 out = Some(PathBuf::from(args.next().context("-o needs a file")?));
             }
@@ -485,6 +533,7 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
     Ok(TraceCmd::Diff(trace::Options {
         a: a.clone(),
         b: b.clone(),
+        ignore,
     }))
 }
 
@@ -506,9 +555,11 @@ fn parse_assets(mut args: impl Iterator<Item = String>) -> Result<AssetsCmd> {
     let mut board: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut port: Option<PathBuf> = None;
+    let mut flash_baud = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => help(),
+            "--flash-baud" if sub == "write" => flash_baud = Some(parse_flash_baud(args.next())?),
             "--board" => board = Some(args.next().context("--board needs a value")?),
             "-o" if sub == "pack" => {
                 out = Some(PathBuf::from(args.next().context("-o needs a value")?));
@@ -537,6 +588,7 @@ fn parse_assets(mut args: impl Iterator<Item = String>) -> Result<AssetsCmd> {
             manifest,
             board,
             port,
+            flash_baud,
         })
     })
 }
