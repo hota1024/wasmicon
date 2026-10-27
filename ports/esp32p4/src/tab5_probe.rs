@@ -37,9 +37,11 @@ const PI4IO1: u8 = 0x43;
 const PI4IO2: u8 = 0x44;
 
 /// Register writes for the expanders, as `(register, value)`, in M5GFX order.
-/// Reset outputs are preloaded low before they become outputs.
+/// Reset outputs are preloaded low before they become outputs. Output bit 1
+/// of 0x43 is the speaker amplifier (M5Unified's "AMP on"); M5GFX sets it,
+/// but it stays off here: enabled over an unconfigured ES8388 codec, it pops.
 const IO1_FIRST: &[(u8, u8)] = &[
-    (0x05, 0b0100_0110), // output: LCD reset and touch reset low
+    (0x05, 0b0100_0100), // output: LCD reset, touch reset and amplifier low
     (0x03, 0b0111_1111), // direction
     (0x07, 0b0000_0000), // output high impedance
     (0x0D, 0b0111_1111), // pull select
@@ -56,7 +58,7 @@ const IO2: &[(u8, u8)] = &[
 ];
 /// After 10 ms: the LCD reset becomes an input (its pull-up releases the
 /// panel) and the touch reset goes high.
-const IO1_SECOND: &[(u8, u8)] = &[(0x03, 0b0110_1111), (0x05, 0b0111_0110)];
+const IO1_SECOND: &[(u8, u8)] = &[(0x03, 0b0110_1111), (0x05, 0b0111_0100)];
 
 /// Touch controllers that tell the panel apart.
 const ST_TOUCH: u8 = 0x55;
@@ -168,9 +170,10 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
     }
     say(serial, panel.name(), &[]);
 
-    say(serial, "step 3 backlight on (gpio22 high)", &[]);
-    // `Output` has no `Drop`: the pin stays high after the value is gone.
-    let _backlight = Output::new(p.backlight, Level::High, OutputConfig::default());
+    say(serial, "step 3 backlight off until video runs", &[]);
+    // Lit before video, the panel shows a dark haze over a faint old picture
+    // for as long as the PSRAM test, the DSI bring-up and the init take.
+    let mut backlight = Output::new(p.backlight, Level::Low, OutputConfig::default());
 
     say(serial, "step 4 psram hex at 125 mhz", &[]);
     let psram = Psram::new(
@@ -295,6 +298,9 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
         // ours; `start` resets the channel before reprogramming it.
         let khz = unsafe { tab5_dpi::start(base, tab5_dpi::LANE_MBPS as f32, pixel_mhz) };
         say(serial, "video on", &[("dpi khz", khz)]);
+        // A few frames first, so the panel has a whole picture to show.
+        delay.delay_millis(50);
+        backlight.set_high();
         let _ = tab5_dpi::health();
         // Never returns: dropping the drivers here would change what the
         // stream depends on, and the picture must outlive the probe.
