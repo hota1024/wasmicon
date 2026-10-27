@@ -38,11 +38,14 @@ pub struct Options {
     /// Serial port for `--monitor` (`None` = pick from `/dev/cu.usb*`).
     pub port: Option<PathBuf>,
     /// `--flash-baud`: the speed espflash flashes at (`None` = espflash's
-    /// default, 115200). Not the firmware's UART speed, which `--monitor`
-    /// always reads at `monitor::DEFAULT_BAUD`.
+    /// own choice: `ESPFLASH_BAUD` when set, otherwise 115200). Not the
+    /// firmware's UART speed, which `--monitor` always reads at
+    /// `monitor::DEFAULT_BAUD`.
     pub flash_baud: Option<u32>,
     /// `--idle`: silence that ends the `--monitor` capture (`None` = never).
     pub idle: Option<std::time::Duration>,
+    /// `--timeout`: overall limit of the `--monitor` capture (`None` = none).
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// Everything decided before flashing. The only side effect is writing the
@@ -150,6 +153,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 
     let app = pack::build(&wasm);
     let slot = pack::fits(board, app.len())?;
+    check_flash_baud(opts.flash_baud, slot.flasher)?;
     // The wiring table (docs/app-workflow.md §3.9). The firmware has no
     // default table, so it is written every time.
     let wiring = match &opts.manifest {
@@ -184,7 +188,6 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 /// error).
 pub fn run(opts: &Options) -> Result<bool> {
     let plan = prepare(opts)?;
-    check_flash_baud(opts.flash_baud, plan.slot.flasher)?;
 
     // The summary shows the slot offset. The absolute address picotool
     // takes (`write_at` derives it) means nothing on ESP32-S3, which flashes
@@ -247,7 +250,7 @@ pub fn run(opts: &Options) -> Result<bool> {
                 baud: monitor::DEFAULT_BAUD,
                 out: opts.out.clone(),
                 idle: opts.idle,
-                timeout: None,
+                timeout: opts.timeout,
             },
         );
         if taken.is_err() {
@@ -296,7 +299,7 @@ pub fn run(opts: &Options) -> Result<bool> {
             baud: monitor::DEFAULT_BAUD,
             out: opts.out.clone(),
             idle: opts.idle,
-            timeout: None,
+            timeout: opts.timeout,
         },
     )
 }
@@ -325,10 +328,13 @@ fn write_slot(
 /// # Errors
 /// When a speed is given for a picotool board.
 pub fn check_flash_baud(flash_baud: Option<u32>, flasher: Flasher) -> Result<()> {
-    if flash_baud.is_some() && flasher == Flasher::Picotool {
-        bail!("--flash-baud is for boards flashed with espflash; picotool has no speed to set");
+    // A `match`, so that a new flasher has to decide.
+    match (flash_baud, flasher) {
+        (None, _) | (Some(_), Flasher::Espflash { .. }) => Ok(()),
+        (Some(_), Flasher::Picotool) => {
+            bail!("--flash-baud is for boards flashed with espflash; picotool has no speed to set")
+        }
     }
-    Ok(())
 }
 
 /// The arguments of `espflash write-bin` for one image.
@@ -336,7 +342,7 @@ pub fn check_flash_baud(flash_baud: Option<u32>, flasher: Flasher) -> Result<()>
 /// `--baud` raises only the flashing speed: espflash switches the ROM
 /// loader to it after connecting at 115200, and the native USB port of an
 /// ESP32-S3 ignores it. A 4.2 MB assets image took 202 s at 115200
-/// (docs/verification-report.md §27).
+/// (docs/verification-report.md §30).
 #[must_use]
 pub fn espflash_write_args(
     offset: u32,
@@ -394,6 +400,12 @@ pub fn write_at(
             let ok = spawn("espflash", &args)?;
             if !ok {
                 eprintln!("  if several serial ports exist, pick one with --port");
+                if let Some(b) = flash_baud {
+                    eprintln!(
+                        "  if it failed partway, the USB-serial bridge may not hold {b} baud; \
+                         try a lower --flash-baud"
+                    );
+                }
             }
             Ok(ok)
         }

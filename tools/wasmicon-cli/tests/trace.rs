@@ -216,36 +216,80 @@ fn line_counts_exclude_banners() {
     assert_eq!(trace::normalize(&bytes).lines.len(), 4);
 }
 
-#[test]
-fn ignore_drops_the_lines_that_differ_by_design() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("trace-ignore");
-    std::fs::create_dir_all(&dir).unwrap();
-    let a = dir.join("host.log");
-    let b = dir.join("board.log");
-    let log = |ms: u32| {
-        format!(
-            "> wasmicon:hal/log@0.1.0/log(2, \"start\")\n<\n\
-             > wasmicon:hal/log@0.1.0/log(2, \"frame ms={ms}\")\n<\n\
-             > wasmicon:hal/log@0.1.0/log(2, \"done\")\n<\n"
-        )
-    };
-    std::fs::write(&a, log(180)).unwrap();
-    std::fs::write(&b, log(990)).unwrap();
-    let diff = |ignore: &[&str]| {
-        trace::diff(&trace::Options {
-            a: a.clone(),
-            b: b.clone(),
-            ignore: ignore.iter().map(|s| (*s).to_string()).collect(),
-        })
-        .map_err(|e| format!("{e:#}"))
-    };
+/// A trace with one timing log per frame: `frames` gives each frame's
+/// milliseconds, and `last` is the final log text.
+fn timed(frames: &[u32], last: &str) -> Vec<u8> {
+    let mut t = String::from("> wasmicon:hal/log@0.1.0/log(2, \"start\")\n<\n");
+    for ms in frames {
+        t.push_str(&format!(
+            "> wasmicon:hal/log@0.1.0/log(2, \"frame ms={ms}\")\n<\n"
+        ));
+    }
+    t.push_str(&format!("> wasmicon:hal/log@0.1.0/log(2, \"{last}\")\n<\n"));
+    t.into_bytes()
+}
 
-    assert_eq!(diff(&[]), Ok(false), "the timing differs");
-    assert_eq!(diff(&["frame ms="]), Ok(true));
-    // A line that differs elsewhere is still caught.
-    std::fs::write(&b, log(990).replace("done", "dome")).unwrap();
-    assert_eq!(diff(&["frame ms="]), Ok(false));
+fn diff_ignoring(a: &Path, b: &Path, ignore: &[&str]) -> Result<bool, String> {
+    trace::diff(&trace::Options {
+        a: a.to_path_buf(),
+        b: b.to_path_buf(),
+        ignore: ignore.iter().map(|s| (*s).to_string()).collect(),
+    })
+    .map_err(|e| format!("{e:#}"))
+}
+
+#[test]
+fn ignore_drops_the_calls_that_differ_by_design() {
+    let f = Fixtures::new("ignore");
+    let host = f.write("host.log", &timed(&[180, 175], "done"));
+    let board = f.write("board.log", &timed(&[990, 1010], "done"));
+
+    assert_eq!(
+        diff_ignoring(&host, &board, &[]),
+        Ok(false),
+        "the timings differ"
+    );
+    assert_eq!(diff_ignoring(&host, &board, &["frame ms="]), Ok(true));
+
+    // A difference elsewhere is still caught.
+    let other = f.write("other.log", &timed(&[990, 1010], "dome"));
+    assert_eq!(diff_ignoring(&host, &other, &["frame ms="]), Ok(false));
+
     // Dropping everything is not a match.
-    let e = diff(&["wasmicon:hal", "<"]).expect_err("nothing left");
+    let e = diff_ignoring(&host, &board, &["wasmicon:hal"]).expect_err("nothing left");
     assert!(e.contains("nothing is left"), "{e}");
+}
+
+#[test]
+fn ignore_takes_a_call_and_its_result_together() {
+    let mut t = trace::normalize(&timed(&[180], "done"));
+    let kept = trace::drop_calls(&mut t, &["frame ms=".to_string()]);
+    // The timing call (lines 3 and 4) goes with its `<`; no orphan is left.
+    assert_eq!(kept, [1, 2, 5, 6]);
+    assert!(
+        t.lines
+            .iter()
+            .all(|l| !l.starts_with(b"> wasmicon:hal/log@0.1.0/log(2, \"frame"))
+    );
+    assert_eq!(t.lines.iter().filter(|l| l.as_slice() == b"<").count(), 2);
+
+    // Naming a call drops its result line too, which has no name of its own.
+    let mut t = trace::normalize(
+        b"> wasmicon:hal/assets@0.1.0/[method]blob.read(1, 0, 4)\n< 0 [len=4 data=0x01020304]\n\
+          > wasmicon:hal/log@0.1.0/log(2, \"x\")\n<\n",
+    );
+    assert_eq!(
+        trace::drop_calls(&mut t, &["blob.read".to_string()]),
+        [3, 4]
+    );
+}
+
+#[test]
+fn ignore_does_not_hide_a_call_one_side_made_more_often() {
+    // Three timing logs against two: the rest lines up, but one side made a
+    // call the other did not.
+    let f = Fixtures::new("ignore-count");
+    let a = f.write("a.log", &timed(&[1, 2, 3], "done"));
+    let b = f.write("b.log", &timed(&[1, 2], "done"));
+    assert_eq!(diff_ignoring(&a, &b, &["frame ms="]), Ok(false));
 }

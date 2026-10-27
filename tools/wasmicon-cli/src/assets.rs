@@ -30,7 +30,8 @@ pub struct WriteOptions {
     pub board: Option<String>,
     /// Serial port for espflash (`None` = let it pick).
     pub port: Option<PathBuf>,
-    /// `--flash-baud`: the speed espflash flashes at (`None` = 115200).
+    /// `--flash-baud`: the speed espflash flashes at (`None` = espflash's own
+    /// choice: `ESPFLASH_BAUD` when set, otherwise 115200).
     pub flash_baud: Option<u32>,
 }
 

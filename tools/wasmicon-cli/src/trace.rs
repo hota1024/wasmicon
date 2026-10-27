@@ -23,11 +23,13 @@
 //! `verify/diff-traces.sh`). This says up front whether "same `.wasm`,
 //! different trace" might come from different firmware.
 //!
-//! `--ignore <text>` is the one addition the script does not have: it drops
-//! the trace lines containing the text from both sides after normalizing,
-//! for an app that logs timings (docs/verification-report.md §27). Without
-//! it the verdict is the script's, and `tests/trace.rs` cross-checks only
-//! that case.
+//! `--ignore <text>` is the one addition the script does not have, for an
+//! app that logs timings (docs/verification-report.md §30). After
+//! normalizing, it drops from both sides every host call (the `>` line and
+//! the `<` result lines under it) in which some line contains the text. Two
+//! logs that lose a different number of lines do not match: one side made
+//! calls the other did not. Without `--ignore` the verdict is the script's,
+//! and `tests/trace.rs` cross-checks only that case.
 //!
 //! Zero trace lines is a failure. Two empty traces compare equal as strings,
 //! but that is "nothing was compared", not "identical". This verdict is used
@@ -78,20 +80,46 @@ pub fn normalize(bytes: &[u8]) -> Trace {
     Trace { lines }
 }
 
-/// Drops the lines containing any of `ignore`. Returns how many were dropped.
+/// Drops every host call in which a line contains one of `ignore`.
+///
+/// A call is a `>` line and the `<` lines that follow it
+/// (docs/abi-spec.md §9), so a call and its result go together: dropping
+/// the `>` line of a timing log must not leave its `<` behind, and naming a
+/// call drops its result too. `<` lines before the first `>` count as a
+/// call of their own.
+///
+/// Returns the 1-based line numbers (in the trace before dropping) of the
+/// lines that are left, so that a divergence can be reported where it is in
+/// the log. Empty texts are skipped (they are in every line).
 ///
 /// A plain byte substring, not a pattern: what differs by design is usually
 /// a fixed label in the guest's log text (`"frame ms="`), and a regex would
 /// be the CLI's first dependency for it.
-pub fn drop_lines(t: &mut Trace, ignore: &[String]) -> usize {
-    let before = t.lines.len();
-    t.lines.retain(|l| {
-        !ignore
+pub fn drop_calls(t: &mut Trace, ignore: &[String]) -> Vec<usize> {
+    let hit = |l: &[u8]| {
+        ignore
             .iter()
-            .filter(|text| !text.is_empty())
-            .any(|text| l.windows(text.len()).any(|w| w == text.as_bytes()))
-    });
-    before - t.lines.len()
+            .any(|text| !text.is_empty() && contains(l, text.as_bytes()))
+    };
+    let lines = std::mem::take(&mut t.lines);
+    let mut kept_at = Vec::new();
+    let mut start = 0;
+    while start < lines.len() {
+        let end = start
+            + 1
+            + lines[start + 1..]
+                .iter()
+                .take_while(|l| l.first() != Some(&b'>'))
+                .count();
+        if !lines[start..end].iter().any(|l| hit(l)) {
+            for (i, l) in lines[start..end].iter().enumerate() {
+                t.lines.push(l.clone());
+                kept_at.push(start + i + 1);
+            }
+        }
+        start = end;
+    }
+    kept_at
 }
 
 /// The first position (0-based) where the traces differ. `None` when
@@ -119,21 +147,30 @@ pub fn diff(opts: &Options) -> Result<bool> {
     let mut b = read(&opts.b)?;
     warn_on_firmware_mismatch(opts)?;
 
+    // Where each compared line sits in the trace before `--ignore`, so the
+    // divergence is reported at a line the reader can find.
+    let (mut at_a, mut at_b): (Vec<usize>, Vec<usize>) =
+        ((1..=a.lines.len()).collect(), (1..=b.lines.len()).collect());
     if !opts.ignore.is_empty() {
-        let (da, db) = (
-            drop_lines(&mut a, &opts.ignore),
-            drop_lines(&mut b, &opts.ignore),
-        );
-        // Printed even when equal: a count that differs is itself a finding
-        // (one side logged more timings), and the line numbers below are
-        // of what is left.
+        let (na, nb) = (a.lines.len(), b.lines.len());
+        at_a = drop_calls(&mut a, &opts.ignore);
+        at_b = drop_calls(&mut b, &opts.ignore);
+        let (da, db) = (na - a.lines.len(), nb - b.lines.len());
         eprintln!(
             "ignored: {da} lines of {}, {db} lines of {}",
-            short(&opts.a),
-            short(&opts.b)
+            opts.a.display(),
+            opts.b.display()
         );
         if a.lines.is_empty() || b.lines.is_empty() {
             bail!("--ignore dropped every trace line of one log; nothing is left to compare");
+        }
+        // One side made calls the other did not. What is left may still
+        // line up, so this is checked on its own.
+        if da != db {
+            eprintln!(
+                "mismatch: --ignore dropped {da} lines from the first log and {db} from the second"
+            );
+            return Ok(false);
         }
     }
 
@@ -156,11 +193,19 @@ pub fn diff(opts: &Options) -> Result<bool> {
                 b.lines.len()
             );
             // A trace is append-only, so the first divergence is closest to
-            // the cause.
-            if opts.ignore.is_empty() {
-                eprintln!("  first divergence: line {}", i + 1);
+            // the cause. Numbers are trace lines (the `>` / `<` lines), as
+            // without `--ignore`.
+            // Past the end of the shorter trace: the line after its last.
+            let line = |at: &[usize]| {
+                at.get(i)
+                    .copied()
+                    .unwrap_or_else(|| at.last().map_or(1, |n| n + 1))
+            };
+            let (la, lb) = (line(&at_a), line(&at_b));
+            if la == lb {
+                eprintln!("  first divergence: line {la}");
             } else {
-                eprintln!("  first divergence: line {} (of the lines left)", i + 1);
+                eprintln!("  first divergence: line {la} of the first, line {lb} of the second");
             }
             eprintln!("    {}  {}", short(&opts.a), at(&a, i));
             eprintln!("    {}  {}", short(&opts.b), at(&b, i));

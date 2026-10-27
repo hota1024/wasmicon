@@ -1139,20 +1139,28 @@ change.**
       docs/verification-report.md §30). espflash is never given a speed, so a 415 KB app
       took 23 s and a 4.2 MB assets image 202 s. -> **`--flash-baud <n>`** (2026-10-27)
       goes to `espflash write-bin --baud`; a separate name from `monitor --baud`, which is
-      the firmware's UART speed and stays 115200. Refused for picotool boards. **Not yet
-      run on hardware**: which speeds the CH343 bridge holds, and the time it saves
+      the firmware's UART speed and stays 115200. Refused for picotool boards before
+      anything is written. Hardware check: the open item below
 - [x] **`deploy --monitor` stops after 3 s of silence** (reported 2026-10-27,
       docs/verification-report.md §30). An app that is quiet while it loads (DOOM: 1.65 s of
-      asset CRC, then level loading) loses its trace. -> **`deploy --idle <secs>`**
-      (2026-10-27), the same option and default as `monitor` (0 disables), rather than a
-      default that changes with the image size. Refused without `--monitor`. Not yet run
-      on hardware
+      asset CRC, then level loading) loses its trace. -> **`deploy --idle <secs>` and
+      `--timeout <secs>`** (2026-10-27), the same options and defaults as `monitor` (0 =
+      none), rather than a default that changes with the image size. They, and `-o`, are
+      refused unless there is a capture (`--monitor` without `--no-run`); `-o` used to be
+      accepted and ignored. Hardware check: the open item below
 - [x] **`trace diff` cannot skip lines that differ by design** (reported 2026-10-27,
       docs/verification-report.md §30). An app that logs timings stops the comparison at the
-      first one. -> **`trace diff --ignore <text>`** (2026-10-27, repeatable) drops the
-      lines containing the text from both sides and prints how many it dropped from each;
-      without it the verdict stays the same as `verify/diff-traces.sh`, which has no such
-      option
+      first one. -> **`trace diff --ignore <text>`** (2026-10-27, repeatable) drops from
+      both sides every host call (the `>` line with its `<` result) in which a line
+      contains the text, and prints how many lines it dropped from each. A different count
+      is a mismatch (one side made calls the other did not), and a divergence is reported
+      at its line in the trace before dropping. Without it the verdict stays the same as
+      `verify/diff-traces.sh`, which has no such option
+- [ ] **Run the 2026-10-27 `deploy` / `assets write` options on hardware** (ESP32-S3):
+      the highest `--flash-baud` the CH343 bridge holds and the time it saves on a
+      multi-megabyte `assets write` (202 s at 115200, docs/verification-report.md §30), and
+      a `deploy --monitor --idle 0 --timeout <secs>` capture of an app that is quiet for
+      longer than 3 s
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
       over USB, trace over UART0**

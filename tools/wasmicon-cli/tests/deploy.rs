@@ -74,6 +74,7 @@ fn opts(path: PathBuf, board: Option<&str>) -> deploy::Options {
         port: None,
         flash_baud: None,
         idle: None,
+        timeout: None,
     }
 }
 
@@ -153,6 +154,7 @@ fn mode_opts(no_run: bool, monitor: bool) -> deploy::Options {
         port: None,
         flash_baud: None,
         idle: None,
+        timeout: None,
     }
 }
 
@@ -209,7 +211,7 @@ fn flash_baud_reaches_espflash_and_only_espflash() {
     use wasmicon_port::profile::Flasher;
 
     // A 4.2 MB assets image took 202 s at espflash's default 115200
-    // (docs/verification-report.md §27).
+    // (docs/verification-report.md §30).
     let args = deploy::espflash_write_args(
         0x10_0000,
         "app.bin",
@@ -241,4 +243,20 @@ fn flash_baud_reaches_espflash_and_only_espflash() {
     assert!(deploy::check_flash_baud(Some(921_600), Flasher::Picotool).is_err());
     assert!(deploy::check_flash_baud(None, Flasher::Picotool).is_ok());
     assert!(deploy::check_flash_baud(Some(921_600), Flasher::Espflash { chip: "esp32s3" }).is_ok());
+}
+
+#[test]
+fn a_flashing_speed_for_picotool_is_refused_before_the_image_is_written() {
+    let dir = tmp("flash-baud-pico");
+    let app = dir.join("blink.wasm");
+    std::fs::write(&app, build("blink-rs")).expect("cannot write");
+
+    let mut o = opts(app, Some("rp2350"));
+    o.flash_baud = Some(921_600);
+    let msg = refused(&o, "a refusal of --flash-baud");
+    assert!(msg.contains("picotool has no speed"), "{msg}");
+    assert!(
+        !dir.join("blink.bin").exists(),
+        "the image was written anyway"
+    );
 }
