@@ -201,6 +201,12 @@ the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/
 - [x] **(2) `deploy` runs blink-rs from the slot** (2026-10-27. The wiring table `led`=GPIO16 is
   read and the blink-rs trace is identical to the host over 20 lines. No LED was wired, so the
   pin was not watched)
+- To resume (paused 2026-10-27 after (2)): flash the firmware with `espflash flash` through the
+  Tab5's USB-C, then `wasmicon deploy --board esp32p4 --no-run <app.wasm>` from the app's
+  directory, and power-cycle with the button (a reset from espflash lands in download mode).
+  Capture UART0 with a CP2102N (GND to M5-Bus pin 1, RXD to pin 14) at 115200 and compare with
+  `wasmicon run --trace` through `verify/diff-traces.sh`. (3) needs an ILI9341 on SCK=G5 /
+  MOSI=G18 / MISO=G19 / CS=G48 / DC=G47 / RST=G45; (4) an SHT40 on PORT.A
 - [ ] **(3) SPI: lcd-demo-rs draws on the ILI9341** and the trace matches the host
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 on PORT.A** and the trace matches the host
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
