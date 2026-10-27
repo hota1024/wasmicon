@@ -1,4 +1,4 @@
-//! Writes the generated files from `wit/` by the rules of `docs/abi-spec.md`.
+//! Writes the generated files from `wit/` and `wit-device/` by the rules of `docs/abi-spec.md`.
 //!
 //! Outputs:
 //! - `runtime/src/generated.rs`
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use wasmicon_gen::{lower, outputs, sig_dump};
 
 const USAGE: &str = "\
-wasmicon-gen - writes the generated files of runtime/ and bindings/ from wit/
+wasmicon-gen - writes the generated files of runtime/ and bindings/ from wit/ and wit-device/
 
 Usage:
     cargo run -p wasmicon-gen -- [options]
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
     }
 
     if sigs {
-        let hal = lower::load(&root.join("wit"))?;
+        let hal = lower::load_tree(&root)?;
         print!("{}", sig_dump(&hal));
         return Ok(());
     }

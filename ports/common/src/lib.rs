@@ -455,6 +455,12 @@ impl<B: Board> Resolver for Hal<B> {
         if !ft.sig_matches(desc.sig) {
             return None;
         }
+        // No port implements a device interface yet, so a device import is a
+        // link error: the app is refused at instantiate instead of running
+        // half-way (docs/device-layer.md §6).
+        if desc.module.starts_with("wasmicon:device/") {
+            return None;
+        }
         Some(Extern::Func(u32::from(desc.host_fn.index())))
     }
 
@@ -481,6 +487,18 @@ impl<B: Board> Resolver for Hal<B> {
         let mut result64: u64 = 0;
 
         match f {
+            // Never linked (`resolve` refuses them).
+            HostFn::DisplayScreenOpen
+            | HostFn::DisplayScreenWidth
+            | HostFn::DisplayScreenHeight
+            | HostFn::DisplayScreenFormat
+            | HostFn::DisplayScreenFillRect
+            | HostFn::DisplayScreenWriteRect
+            | HostFn::DisplayScreenPresent
+            | HostFn::DisplayScreenDrop => {
+                return Err(Error::Unlinkable("device interface not implemented"));
+            }
+
             HostFn::BoardPinByRole => {
                 let role = guest_slice(mem, args[0], args[1])?;
                 a.byte(b'"');

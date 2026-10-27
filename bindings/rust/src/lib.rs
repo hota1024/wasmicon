@@ -1,4 +1,4 @@
-//! Guest-side bindings of the Wasmicon HAL.
+//! Guest-side bindings of the Wasmicon HAL and device layer.
 //!
 //! `generated` is the output of `wasmicon-gen`; do not edit it by hand.
 //! `hal` wraps the generated extern declarations in a safe API.
@@ -10,4 +10,4 @@ pub mod generated;
 mod hal;
 
 pub use generated::types::ErrorCode;
-pub use hal::{Result, assets, board, gpio, i2c, log, spi, time};
+pub use hal::{Result, assets, board, display, gpio, i2c, log, spi, time};

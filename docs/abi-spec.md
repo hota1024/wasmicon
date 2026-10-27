@@ -1,7 +1,7 @@
 # Wasmicon ABI specification v0.1 (draft)
 
 Created: 2026-09-10
-Scope: `wasmicon:hal@0.1.0` (the WIT definitions under `wit/`)
+Scope: `wasmicon:hal@0.1.0` (the WIT definitions under `wit/`) and the device layer `wasmicon:device@0.1.0` (under `wit-device/`; docs/device-layer.md)
 Related: `design-notes.md`
 
 This document defines how the Wasmicon HAL, written in WIT, is lowered to the **imports and exports of a Core WebAssembly module**. The Component Model is not used. WIT serves only as the IDL; the rules here drive the mechanical generation of the Rust bindings, the AssemblyScript bindings, the C bindings and the runtime's host function table.
@@ -44,9 +44,10 @@ These were judged unnecessary for v0.1. Lowering rules will be added when one is
 
 ### 2.3 Syntactic constraints
 
-- All interfaces live in the single package `wasmicon:hal@X.Y.Z`.
-- `world app` describes the guest's complete set of imports and exports.
-- Shared types live in `interface types`, and each interface pulls them in with `use types.{...}`.
+- The HAL interfaces live in the package `wasmicon:hal@X.Y.Z` (`wit/`). The device layer lives in the package `wasmicon:device@X.Y.Z` (`wit-device/`), whose version moves independently (docs/decisions.md D-05, D-13).
+- `world app` describes the guest's complete set of imports and exports. The device package's `world app` is `include wasmicon:hal/app@X.Y.Z` plus its own interfaces; `include` is used for nothing else.
+- Shared types live in `interface types` of the HAL. HAL interfaces pull them in with `use types.{...}`; device interfaces with the cross-package form `use wasmicon:hal/types@X.Y.Z.{...}`. There is one `error-code` (docs/decisions.md D-03).
+- `wit-device/` has no `deps/` copy of the HAL. The generator and `tools/check-sigs.sh` load `wit/` first.
 - Doc comments (`///`) are copied verbatim into the comments of the generated files.
 
 ---
@@ -61,7 +62,7 @@ Each WIT interface maps to one Core Wasm import module name. The form is the sam
 <namespace>:<package>/<interface>@<version>
 ```
 
-Examples: `wasmicon:hal/gpio@0.1.0`, `wasmicon:hal/i2c@0.1.0`
+Examples: `wasmicon:hal/gpio@0.1.0`, `wasmicon:hal/i2c@0.1.0`, `wasmicon:device/display@0.1.0`
 
 The version is **always included**. The runtime resolves it by exact match and refuses to instantiate a module that imports an unknown module name or function name (link error).
 
@@ -309,6 +310,23 @@ No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
 | 6 | `unsupported` | 7 |
 | 7 | `out-of-memory` | 8 |
 | 8 | `not-found` | 9 |
+
+### `wasmicon:device/display@0.1.0`
+
+The device layer (docs/device-layer.md §4). No port implements it yet: a firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
+
+| Import name | Core Wasm type | Notes |
+|---|---|---|
+| `[static]screen.open` | `(param i32 i32) (result i32)` | `(index, out-handle) -> ec` |
+| `[method]screen.width` | `(param i32) (result i32)` | `(self) -> width` |
+| `[method]screen.height` | `(param i32) (result i32)` | `(self) -> height` |
+| `[method]screen.format` | `(param i32) (result i32)` | `(self) -> pixel-format` |
+| `[method]screen.fill-rect` | `(param i32 i32 i32 i32 i32 i32) (result i32)` | `(self, x, y, w, h, color) -> ec` |
+| `[method]screen.write-rect` | `(param i32 i32 i32 i32 i32 i32 i32) (result i32)` | `(self, x, y, w, h, pixels-ptr, pixels-len) -> ec` |
+| `[method]screen.present` | `(param i32) (result i32)` | `(self) -> ec` |
+| `[resource-drop]screen` | `(param i32)` | `(self)` |
+
+`pixel-format` has one case, `rgb565` = 0: two bytes per pixel, high byte first. `write-rect` takes exactly `w * h * 2` bytes.
 
 ---
 

@@ -11,6 +11,10 @@ and `runtime/src/generated.rs` is derived from these files.
   sentence, then behavior and error cases.
 - Changing import names, signatures or the error enum changes the ABI
   (docs/abi-spec.md §3, §4, §5). That is an owner decision.
+- `wit-device/` is the device layer, `wasmicon:device` (docs/device-layer.md,
+  docs/decisions.md D-13). It follows the same rules, uses the HAL's
+  `error-code`, and has no `deps/` copy of the HAL; `tools/check-sigs.sh`
+  checks that it resolves. A new device interface needs two backends first.
 - After any edit: `wasm-tools component wit wit/`, then
   `cargo run -p wasmicon-gen`, and commit the four regenerated files in the
   same commit. `cargo run -p wasmicon-gen -- --check` and

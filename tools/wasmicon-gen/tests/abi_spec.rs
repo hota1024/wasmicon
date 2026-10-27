@@ -52,6 +52,50 @@ const SPEC_SECTION_7: &[(&str, &str, &str)] = &[
     ("wasmicon:hal/assets@0.1.0", "[resource-drop]blob", "i:"),
 ];
 
+/// Copied from the `wasmicon:device/display@0.1.0` table of docs/abi-spec.md §7.
+const SPEC_SECTION_7_DEVICE: &[(&str, &str, &str)] = &[
+    (
+        "wasmicon:device/display@0.1.0",
+        "[static]screen.open",
+        "ii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]screen.width",
+        "i:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]screen.height",
+        "i:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]screen.format",
+        "i:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]screen.fill-rect",
+        "iiiiii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]screen.write-rect",
+        "iiiiiii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[method]screen.present",
+        "i:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
+        "[resource-drop]screen",
+        "i:",
+    ),
+];
+
 /// The `error-code` table of docs/abi-spec.md §7. The status value is discriminant + 1.
 const SPEC_ERROR_CODE: &[&str] = &[
     "InvalidArgument",
@@ -119,4 +163,47 @@ fn interfaces_follow_world_import_order() {
         ],
         "does not follow the import order of world app"
     );
+}
+
+#[test]
+fn device_import_table_matches_abi_spec_section_7() {
+    let all =
+        wasmicon_gen::lower::load_tree(&repo_root()).expect("cannot read wit/ and wit-device/");
+
+    let mut expected: Vec<String> = SPEC_SECTION_7
+        .iter()
+        .chain(SPEC_SECTION_7_DEVICE)
+        .map(|(m, n, s)| format!("{m}\t{n}\t{s}"))
+        .collect();
+    expected.sort();
+
+    let actual: Vec<String> = wasmicon_gen::sig_dump(&all)
+        .lines()
+        .map(str::to_string)
+        .collect();
+
+    assert_eq!(
+        expected, actual,
+        "does not match the tables of docs/abi-spec.md §7"
+    );
+}
+
+/// The device interfaces come after the HAL ones, so adding one leaves the HAL
+/// part of the generated files and the host slot numbers unchanged.
+#[test]
+fn device_interfaces_follow_the_hal() {
+    let hal = wasmicon_gen::lower::load(&repo_root().join("wit")).expect("cannot read wit/");
+    let all =
+        wasmicon_gen::lower::load_tree(&repo_root()).expect("cannot read wit/ and wit-device/");
+
+    let hal_slots: Vec<&str> = hal.imports().map(|(_, f)| f.slot.as_str()).collect();
+    let all_slots: Vec<&str> = all.imports().map(|(_, f)| f.slot.as_str()).collect();
+    assert_eq!(&all_slots[..hal_slots.len()], hal_slots.as_slice());
+    assert!(
+        all.imports()
+            .skip(hal_slots.len())
+            .all(|(i, _)| i.module.starts_with("wasmicon:device/")),
+        "a non-device interface follows the HAL"
+    );
+    assert_eq!(all.device_package.as_deref(), Some("wasmicon:device@0.1.0"));
 }

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Reference derivation of the Core Wasm import signatures.
 
-Reads the output of `wasm-tools component wit --json wit/` and derives the
-signature of every import by the rules of docs/abi-spec.md §4. The result must
+Reads the output of `wasm-tools component wit --json` and derives the
+signature of every import by the rules of docs/abi-spec.md §4. The JSON may hold
+both packages (`wasmicon:hal` and `wasmicon:device`); each interface is named
+after its own package. The result must
 match the table of docs/abi-spec.md §7; tools/check-sigs.sh cross-checks it
 against wasmicon-gen.
 
@@ -46,8 +48,13 @@ def outp(t):
         return 'iii'  # buf, cap, len-out
     return 'i'
 
+def module(iface):
+    """`wasmicon:hal/gpio@0.1.0` (docs/abi-spec.md §3.1)."""
+    ns_name, version = d['packages'][iface['package']]['name'].split('@')
+    return f"{ns_name}/{iface['name']}@{version}"
+
 for iface in d['interfaces']:
-    print(f"--- wasmicon:hal/{iface['name']}@0.1.0")
+    print(f"--- {module(iface)}")
     for fname, f in iface['functions'].items():
         sig = ''.join(flat(p['type']) for p in f['params'])
         r = f.get('result')

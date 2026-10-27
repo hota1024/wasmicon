@@ -1,0 +1,9 @@
+package wasmicon:device@0.1.0;
+
+/// The world of an application that uses the device layer.
+/// It is the HAL world plus the device interfaces; an app that imports none of them
+/// is a plain `wasmicon:hal` app.
+world app {
+    include wasmicon:hal/app@0.1.0;
+    import display;
+}

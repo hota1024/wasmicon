@@ -493,10 +493,12 @@ fn run_signature(
     }
 }
 
-/// Extracts `<iface>` from `wasmicon:hal/<iface>@0.1.0` (docs/abi-spec.md §3.1).
+/// Extracts `<iface>` from `wasmicon:hal/<iface>@0.1.0` or
+/// `wasmicon:device/<iface>@<version>` (docs/abi-spec.md §3.1).
 fn iface_of(module: &str) -> Option<&str> {
     module
-        .strip_prefix("wasmicon:hal/")?
+        .strip_prefix("wasmicon:hal/")
+        .or_else(|| module.strip_prefix("wasmicon:device/"))?
         .split('@')
         .next()
         .filter(|s| !s.is_empty())
@@ -533,6 +535,9 @@ fn implemented(i: &Interfaces, iface: &str) -> Option<bool> {
         "log" => Some(i.log),
         "board" => Some(i.board),
         "assets" => Some(i.assets),
+        // No port implements a device interface yet; the firmware refuses
+        // the import at instantiate (docs/TODO.md §6).
+        "display" => Some(false),
         // types has no functions, so it never appears as an import
         // (docs/abi-spec.md §7).
         _ => None,
@@ -562,7 +567,14 @@ fn print_module(
 
     row(
         "abi",
-        "wasmicon:hal@0.1.0",
+        if f.imports
+            .iter()
+            .any(|i| i.module.starts_with("wasmicon:device/"))
+        {
+            "wasmicon:hal@0.1.0 + wasmicon:device@0.1.0"
+        } else {
+            "wasmicon:hal@0.1.0"
+        },
         "enforced through the import names",
     );
 
@@ -723,11 +735,12 @@ fn print_verdict(
     }
 
     for iface in &v.unimplemented {
-        row(
-            iface,
-            "not implemented by this port (unsupported)",
-            "<- fails",
-        );
+        let what = if iface == "display" {
+            "not implemented by this port (link error)"
+        } else {
+            "not implemented by this port (unsupported)"
+        };
+        row(iface, what, "<- fails");
     }
 
     if let Some(declared) = declared {

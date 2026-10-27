@@ -1,0 +1,48 @@
+package wasmicon:device@0.1.0;
+
+/// A pixel display that the host drives (docs/device-layer.md §4).
+/// The host owns the panel: its bus, initialization, orientation and any frame buffer.
+/// The guest only draws rectangles; text and images are drawn by the guest.
+interface display {
+    use wasmicon:hal/types@0.1.0.{error-code};
+
+    /// How pixels are encoded in `write-rect` and `fill-rect`.
+    enum pixel-format {
+        /// 16 bits per pixel, 5-6-5, high byte first.
+        rgb565,
+    }
+
+    /// A display.
+    /// `index` is the board's display number. The backend behind it comes from the
+    /// board configuration in the device's config slot.
+    resource screen {
+        /// Opens the display.
+        /// Returns `unsupported` if the board has no display at `index`, and `busy` if it
+        /// is already open.
+        open: static func(index: u32) -> result<screen, error-code>;
+
+        /// Width in pixels, after the configured orientation.
+        width: func() -> u32;
+
+        /// Height in pixels, after the configured orientation.
+        height: func() -> u32;
+
+        /// The pixel format that `write-rect` and `fill-rect` take.
+        format: func() -> pixel-format;
+
+        /// Fills a rectangle with one color, given in the pixel format in the low bits.
+        /// Returns `invalid-argument` if the rectangle is empty or leaves the screen;
+        /// nothing is drawn then.
+        fill-rect: func(x: u32, y: u32, w: u32, h: u32, color: u32) -> result<_, error-code>;
+
+        /// Writes `w * h` pixels, row by row, into a rectangle.
+        /// Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
+        /// if `pixels` is not exactly `w * h` pixels long; nothing is drawn then.
+        write-rect: func(x: u32, y: u32, w: u32, h: u32, pixels: list<u8>) -> result<_, error-code>;
+
+        /// Makes everything drawn so far visible.
+        /// Call it after drawing: a backend with a frame buffer may show nothing until
+        /// then. A backend that draws straight to the panel returns at once.
+        present: func() -> result<_, error-code>;
+    }
+}

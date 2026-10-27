@@ -1199,7 +1199,13 @@ recommended option. Nothing is implemented yet.**
 
 ### Implementation (stages: docs/device-layer.md §10)
 
-- [ ] (1) WIT, generator and bindings; the recorded HAL app hashes do not move
+- [x] (1) WIT, generator and bindings; the recorded HAL app hashes do not move (2026-10-27).
+      `wit-device/display.wit`; the generator loads `wit/` then `wit-device/` and appends the
+      device imports after the HAL ones; Rust / AS / C wrappers; `check-sigs.sh` covers both
+      packages. Every port refuses device imports at instantiate for now, and `check` reports
+      `display not implemented by this port (link error)`. The Rust, AS and C apps built before
+      and after are byte-identical. The identity line does not name the device package yet
+      (it comes with the first port that implements it)
 - [ ] (2) Host `mock` backend, trace rules, early refusal in `check` / `deploy`, a demo app
 - [ ] (3) `ili9341` backend; the demo trace on ESP32-S3 and Pico 2 W equals the host mock
 - [ ] (4) `tab5` backend on the ESP32-P4. Risks: interrupts on v1.0 silicon (esp-hal DPI
