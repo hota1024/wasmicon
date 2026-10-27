@@ -32,9 +32,10 @@ use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
+use wasmicon_port::fmt::Buf;
 use wasmicon_port::{Board, BoardResult, Rect};
 
-use crate::tab5::Tab5;
+use crate::tab5::{self, Tab5};
 
 /// The ESP32-P4 has GPIO 0..=54.
 const NUM_GPIO: u32 = 55;
@@ -159,16 +160,30 @@ pub struct EspBoard<S: Serial> {
     /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; the
     /// pins are not reset by hand.
     i2c: Option<I2c<'static, Blocking>>,
-    /// The Tab5's own panel, when the config slot names it and it came up
-    /// (`tab5`). Never dropped.
-    tab5: Option<Tab5>,
+    /// The Tab5's own panel (`tab5`), when the config slot names it.
+    tab5: Tab5State,
+}
+
+/// Where the Tab5 panel is: its parts are held from boot and taken at the
+/// guest's first `open`; the panel, once up, is never dropped.
+enum Tab5State {
+    /// Not configured.
+    None,
+    Parts(tab5::Parts),
+    Up(Tab5),
+    /// Bring-up failed (the reason was printed); `open` returns `io`.
+    Failed,
 }
 
 impl<S: Serial> EspBoard<S> {
     /// # Safety
     /// This board must have exclusive use of GPIO / IO_MUX / SPI2 / I2C0 and
     /// of the GPIOs assigned to SPI2 and I2C0 (`SPI2_SCK` / `SPI2_MOSI` /
-    /// `SPI2_MISO` / `I2C0_SDA` / `I2C0_SCL`).
+    /// `SPI2_MISO` / `I2C0_SDA` / `I2C0_SCL`). The one exception is the Tab5
+    /// panel's parts, if `configure_tab5` hands them over: its esp-hal drivers
+    /// then write the GPIO / IO_MUX registers of GPIO22, 31 and 32, which the
+    /// guest cannot open while the display is configured (`Hal` reserves
+    /// `DisplayConfig::pins`).
     #[must_use]
     pub unsafe fn new(serial: S, storage: FlashStorage<'static>, assets_base: u32) -> Self {
         EspBoard {
@@ -177,13 +192,21 @@ impl<S: Serial> EspBoard<S> {
             assets_base,
             spi: None,
             i2c: None,
-            tab5: None,
+            tab5: Tab5State::None,
         }
     }
 
-    /// Hands the running Tab5 panel to the board, display 0.
-    pub fn attach_tab5(&mut self, panel: Tab5) {
-        self.tab5 = Some(panel);
+    /// Makes the Tab5 panel display 0. It comes up at the guest's first
+    /// `open` (`display_open`).
+    pub fn configure_tab5(&mut self, parts: tab5::Parts) {
+        self.tab5 = Tab5State::Parts(parts);
+    }
+
+    fn tab5_up(&mut self) -> BoardResult<&mut Tab5> {
+        match &mut self.tab5 {
+            Tab5State::Up(panel) => Ok(panel),
+            _ => Err(ErrorCode::Unsupported),
+        }
     }
 
     /// The serial port, used to print the reason for a failure.
@@ -300,27 +323,75 @@ impl<S: Serial> Board for EspBoard<S> {
 
     // The Tab5 panel. `Hal` asks the board only when no ILI9341 is configured.
     fn display_size(&self, index: u32) -> Option<(u32, u32)> {
-        self.tab5
-            .as_ref()
-            .filter(|_| index == 0)
-            .map(|_| Tab5::SIZE)
+        match self.tab5 {
+            Tab5State::None => None,
+            _ if index != 0 => None,
+            _ => Some(Tab5::SIZE),
+        }
+    }
+
+    fn display_open(&mut self, _index: u32) -> BoardResult<()> {
+        let parts = match core::mem::replace(&mut self.tab5, Tab5State::Failed) {
+            Tab5State::Parts(parts) => parts,
+            Tab5State::Failed => return Err(ErrorCode::Io),
+            other => {
+                self.tab5 = other;
+                return Ok(());
+            }
+        };
+        // Printed first: a bring-up that hangs inside esp-hal (its D-PHY
+        // waits have no limit) still shows where.
+        self.serial.write(b"wasmicon: display tab5 bring-up\r\n");
+        let mut line = [0u8; 128];
+        let mut out = Buf::new(&mut line);
+        out.str("wasmicon: display tab5 ");
+        let result = match Tab5::up(parts) {
+            Ok((panel, ldo)) => {
+                self.tab5 = Tab5State::Up(panel);
+                out.str("up, d-phy ldo dref=");
+                out.u32(u32::from(ldo.dref));
+                out.str(" mul=");
+                out.u32(u32::from(ldo.mul));
+                Ok(())
+            }
+            Err(e) => {
+                out.str("failed: ");
+                out.str(e.reason());
+                match e {
+                    tab5::UpError::Init(cmd, at) => {
+                        out.str(" (command 0x");
+                        out.hex(u32::from(cmd), 2);
+                        out.str(", ");
+                        out.str(at);
+                        out.str(")");
+                    }
+                    tab5::UpError::Queued(at) => {
+                        out.str(" (");
+                        out.str(at);
+                        out.str(")");
+                    }
+                    _ => {}
+                }
+                Err(ErrorCode::Io)
+            }
+        };
+        self.serial.write(out.as_bytes());
+        self.serial.write(b"\r\n");
+        result
     }
 
     fn display_fill_rect(&mut self, _index: u32, rect: Rect, color: u16) -> BoardResult<()> {
-        let panel = self.tab5.as_mut().ok_or(ErrorCode::Unsupported)?;
-        panel.fill_rect(rect, color);
+        self.tab5_up()?.fill_rect(rect, color);
         Ok(())
     }
 
     fn display_write_rect(&mut self, _index: u32, rect: Rect, pixels: &[u8]) -> BoardResult<()> {
-        let panel = self.tab5.as_mut().ok_or(ErrorCode::Unsupported)?;
-        panel.write_rect(rect, pixels);
+        self.tab5_up()?.write_rect(rect, pixels);
         Ok(())
     }
 
     fn display_present(&mut self, _index: u32) -> BoardResult<()> {
-        let panel = self.tab5.as_mut().ok_or(ErrorCode::Unsupported)?;
-        panel.present();
+        self.tab5_up()?.present();
         Ok(())
     }
 

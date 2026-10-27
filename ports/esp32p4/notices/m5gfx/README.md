@@ -8,5 +8,4 @@ of the same release.
 
 - M5GFX is under the MIT license; its notice is `LICENSE` in this directory.
 - `Panel_ILI9881C.hpp` carries the LovyanGFX header, which names the FreeBSD
-  license (https://github.com/lovyan03/LovyanGFX/blob/master/license.txt). That
-  notice is not copied here yet (docs/TODO.md §6-8).
+  license; that notice is in `../lovyangfx/`.

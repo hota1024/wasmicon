@@ -2,8 +2,9 @@
 //!
 //! Extracted mechanically from `Panel_ILI9881C.hpp` of M5GFX 0.2.32
 //! (`getInitParams` lists 0 to 3, two-lane variant); the notices of that code
-//! are in ports/esp32p4/notices/m5gfx/. The panel takes them in command mode, with
-//! 120 ms after `AFTER_SLEEP_OUT`'s list, before video mode starts.
+//! are in ports/esp32p4/notices/ (`m5gfx/`, `lovyangfx/`). The panel takes
+//! them in command mode, with 120 ms after `AFTER_SLEEP_OUT`'s list, before
+//! video mode starts.
 
 /// Lane count and page select.
 pub const LANES: &[(u8, &[u8])] = &[(0xFF, &[0x98, 0x81, 0x01]), (0xB7, &[0x03])];

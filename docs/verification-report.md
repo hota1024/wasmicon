@@ -1645,6 +1645,19 @@ UART0 was captured at 115200. The reference is
 
 The board was left with the trace-off firmware and `apps/display-demo-rs` in the app slot.
 
+**Repeated after the review of PR #12 (same day).** The panel now comes up at the guest's first `open`
+(`Board::display_open`) instead of at boot, and the bring-up has bounded waits and holds the backlight
+low from its first step. Firmware `trace=on`, built from the uncommitted tree on `1103aeb` (its sources
+are the commit that records this), the slots as above, one power cycle:
+
+| Check | Result |
+|---|---|
+| Boot lines | `... roles none display=tab5`, the slot line, then at the open `wasmicon: display tab5 bring-up` and `wasmicon: display tab5 up, d-phy ldo dref=14 mul=3` |
+| Trace | identical to the host mock at 720x1280, 4,494 lines |
+| The panel (the owner) | the demo screen as before; no haze and no speaker pop at power-on |
+
+The board was left with this trace-on firmware.
+
 ### What this measurement does not say
 
 - How long the trace-off run takes, and where that time goes (interpreter, the panel

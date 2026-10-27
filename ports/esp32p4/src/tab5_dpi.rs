@@ -41,7 +41,7 @@ const DSI_BRG_MEM_BASE: u32 = 0x5010_5000;
 const CTL0: u32 = 1 | (1 << 6) | (3 << 8) | (3 << 11) | (8 << 14) | (7 << 18);
 /// CTL1: AXI read and write burst lengths of 16. No IOC_BlkTfr (bit 26): with
 /// it, the controller holds the next frame until the block-done status is
-/// cleared, and every frame the CPU is late to clear goes out as underrun.
+/// cleared, which nothing here does (docs/verification-report.md §28).
 const CTL1: u32 = (1 << 6) | (16 << 7) | (1 << 15) | (16 << 16);
 
 /// One init list: `(command, params)` pairs.
@@ -83,15 +83,17 @@ pub unsafe fn writeback(addr: u32, len: u32) {
     unsafe { Cache_WriteBack_Addr(L1_DCACHE | L2_CACHE, addr, len) };
 }
 
-/// Starts video mode from the frame buffer at `fb`, at `pixel_mhz` (the
-/// Tab5 panel's own is `PIXEL_MHZ`). Returns the DPI clock
-/// actually set, in kHz.
+/// Starts video mode from the frame buffer at `fb`, at `PIXEL_MHZ`.
+///
+/// # Errors
+/// The VDMA controller did not come out of reset.
 ///
 /// # Safety
 /// `fb` must point to `FB_BYTES` of PSRAM that stays allocated and written
-/// back (`writeback`) while the panel shows it. The DSI host must be up
-/// (`MipiDsi::new`) at `lane_mbps`, and nothing else may use VDMA channel 0.
-pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
+/// back (`writeback`) while the panel shows it. The DSI host must be up at
+/// `LANE_MBPS` (`retune_pll`), and nothing else may use VDMA channel 0.
+pub unsafe fn start(fb: *const u8) -> Result<(), ()> {
+    let (lane_mbps, pixel_mhz) = (LANE_MBPS as f32, PIXEL_MHZ);
     // DPI clock from PLL_F240M, divided to the nearest 80 MHz.
     let real_mhz = ClockTree::with(|clocks| {
         let src_hz = MipiDsiInstance::dpi_clk_config_frequency(
@@ -227,7 +229,15 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
         // the controller with no link list and no interrupt.
         let dma = VDMA::regs();
         dma.reset0().write(|w| w.dmac_rst().set_bit());
-        while dma.reset0().read().dmac_rst().bit_is_set() {}
+        let delay = esp_hal::delay::Delay::new();
+        let mut waited = 0;
+        while dma.reset0().read().dmac_rst().bit_is_set() {
+            if waited == 1000 {
+                return Err(());
+            }
+            delay.delay_micros(1);
+            waited += 1;
+        }
         dma.cfg0().modify(|_, w| w.dmac_en().set_bit());
         let ch = dma.ch(0);
         ch.cfg0().write(|w| {
@@ -241,7 +251,7 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
             w.ch1_dst_per().bits(0);
             w.ch1_ch_prior().bits(1);
             // 16 outstanding reads (esp-hal uses 5): PSRAM latency is long,
-            // and with 5 the bridge FIFO ran dry at 80 MHz.
+            // and the bridge FIFO must not run dry at 80 MHz.
             w.ch1_src_osr_lmt().bits(15);
             w.ch1_dst_osr_lmt().bits(1)
         });
@@ -262,7 +272,7 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
             .dpi_config_update()
             .write(|w| w.dpi_config_update().set_bit());
     }
-    (real_mhz * 1000.0) as u32
+    Ok(())
 }
 
 /// DSI command-mode packets with bounded waits.
@@ -346,6 +356,14 @@ pub mod dbi {
         // SAFETY: the payload FIFO takes any 32-bit word.
         h.gen_pld_data().write(|w| unsafe { w.bits(word) });
         Ok(())
+    }
+
+    /// Waits until every queued command has gone out.
+    pub fn drain() -> Result<(), Stall> {
+        let h = MIPI_DSI_HOST::regs();
+        wait("cmd fifo not empty", || {
+            h.cmd_pkt_status().read().gen_cmd_empty().bit_is_set()
+        })
     }
 
     /// Sends a DCS command with its parameters.
@@ -466,8 +484,7 @@ impl Ldo {
     /// The setting for 2.5 V, as ESP-IDF v6.0.1 computes it
     /// (`ldo_ll_voltage_to_dref_mul`, unit 2): from the chip's eFuse
     /// calibration when the block version is at least 1, else uncalibrated.
-    /// esp-hal 1.2.2 writes the uncalibrated dref 9 / mul 6, which on the Tab5
-    /// came out low enough to garble bright pixels
+    /// esp-hal 1.2.2 writes the uncalibrated dref 9 / mul 6 instead
     /// (docs/verification-report.md §28).
     #[must_use]
     pub fn for_2v5() -> Ldo {

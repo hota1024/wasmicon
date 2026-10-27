@@ -214,8 +214,9 @@ fn build_display(
             }
         }
         "tab5" => {
-            // The Tab5 panel is the ESP32-P4 board's own; its pins are fixed.
-            if board.name != profile::ESP32P4.name {
+            // The Tab5 panel is the board's own; its pins are fixed. Which
+            // firmware has it is the profile's driver list.
+            if !board.interfaces.display_drivers.contains(&"tab5") {
                 bail!("{at}: driver = \"tab5\" is the M5Stack Tab5's panel (board esp32p4)");
             }
             if raw.spi.is_some()

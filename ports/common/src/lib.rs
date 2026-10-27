@@ -178,6 +178,14 @@ pub trait Board {
         None
     }
 
+    /// Brings display `index` up, at the guest's first `open` of it: a
+    /// firmware that runs no display app leaves the panel alone. Called on
+    /// every `open`, so it returns at once when the display is up. Only for a
+    /// board's own display; an ILI9341 entry goes to `ili9341` instead.
+    fn display_open(&mut self, _index: u32) -> BoardResult<()> {
+        Ok(())
+    }
+
     /// Fills `rect` with one RGB565 color. `Hal` has checked `rect` against
     /// `display_size`.
     fn display_fill_rect(&mut self, _index: u32, _rect: Rect, _color: u16) -> BoardResult<()> {
@@ -624,8 +632,9 @@ impl<B: Board> Resolver for Hal<B> {
                 // The panel is brought up at the first open, not at boot: a
                 // firmware that runs no display app leaves the bus alone.
                 let up = match &mut self.ili9341 {
-                    Some(d) if have => d.init(&mut self.board),
-                    _ => Ok(()),
+                    _ if !have => Ok(()),
+                    Some(d) => d.init(&mut self.board),
+                    None => self.board.display_open(index),
                 };
                 status = if !have {
                     ErrorCode::Unsupported.status()
