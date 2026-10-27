@@ -39,6 +39,15 @@ pub struct Frame {
     pub pixels: Vec<u16>,
 }
 
+/// One output on the mock's GPIO or SPI, recorded with `with_bus_log`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BusEvent {
+    /// A GPIO driven to a level (`true` = high).
+    Gpio(u32, bool),
+    /// Bytes written to an SPI bus.
+    Spi(u32, Vec<u8>),
+}
+
 /// The mock display backend (docs/device-layer.md §5.3).
 ///
 /// It keeps what was drawn apart from what is visible, and only `present`
@@ -103,6 +112,8 @@ pub struct HostBoard {
     assets: Vec<u8>,
     /// `None` mirrors a firmware without a display (`with_display(false)`).
     display: Option<MockDisplay>,
+    /// GPIO and SPI output, when recording (`with_bus_log`).
+    bus_log: Option<Vec<BusEvent>>,
 }
 
 impl HostBoard {
@@ -117,7 +128,22 @@ impl HostBoard {
             spi_unsupported: false,
             assets: Vec::new(),
             display: Some(MockDisplay::new(MOCK_DISPLAY)),
+            bus_log: None,
         }
+    }
+
+    /// Records every GPIO write and SPI write, so a test can decode what a
+    /// device backend sent (an ILI9341, for instance).
+    #[must_use]
+    pub fn with_bus_log(mut self, yes: bool) -> Self {
+        self.bus_log = yes.then(Vec::new);
+        self
+    }
+
+    /// The recorded GPIO and SPI output (empty when not recording).
+    #[must_use]
+    pub fn bus_log(&self) -> &[BusEvent] {
+        self.bus_log.as_deref().unwrap_or_default()
     }
 
     /// Removes the display, as on a firmware without one: the display imports
@@ -222,6 +248,9 @@ impl Board for HostBoard {
             return Err(ErrorCode::InvalidArgument);
         }
         p.level = level as u32;
+        if let Some(log) = &mut self.bus_log {
+            log.push(BusEvent::Gpio(index, level == Level::High));
+        }
         Ok(())
     }
 
@@ -286,9 +315,12 @@ impl Board for HostBoard {
         Ok(())
     }
 
-    fn spi_write(&mut self, _index: u32, _data: &[u8]) -> BoardResult<()> {
+    fn spi_write(&mut self, index: u32, data: &[u8]) -> BoardResult<()> {
         if self.spi_unsupported {
             return Err(ErrorCode::Unsupported);
+        }
+        if let Some(log) = &mut self.bus_log {
+            log.push(BusEvent::Spi(index, data.to_vec()));
         }
         Ok(())
     }

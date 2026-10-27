@@ -227,6 +227,7 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
         State {
             hal: Hal::new(board, true)
                 .with_roles(wasmicon_host::hal::host_roles())
+                .with_display(opts.display)
                 .with_assets(dir),
         },
     );

@@ -103,6 +103,12 @@ impl<S: Serial> PicoBoard<S> {
 }
 
 impl<S: Serial> Board for PicoBoard<S> {
+    fn display_supported(&self) -> bool {
+        // The ILI9341 backend in ports/common runs on this port's SPI
+        // (docs/device-layer.md §5.3); the profile says whether there is one.
+        wasmicon_port::profile::RP2040.interfaces.display
+    }
+
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use wasmicon_port::profile;
 use wasmicon_port::profile::Flasher;
-use wasmicon_port::roles::{self, RoleMap};
+use wasmicon_port::roles::{self, RoleMap, Wiring};
 use wasmicon_port::slot;
 
 pub struct Options {
@@ -115,9 +115,10 @@ pub fn build(wasm: &[u8]) -> Vec<u8> {
     image
 }
 
-/// Appends the config slot (wiring table) to the app slot image, making one
-/// image that is flashed in one go (used by `deploy`;
-/// docs/app-workflow.md §3.9).
+/// Appends the config slot (wiring table and display entry) to the app slot
+/// image, making one image that is flashed in one go (used by `deploy`;
+/// docs/app-workflow.md §3.9, docs/device-layer.md §5.2). The slot is format
+/// version 1 unless there is a display entry.
 ///
 /// The space after the app is filled with `0xff` (same as erased flash) up
 /// to the end of the slot. The wiring table is always written, even when
@@ -127,7 +128,7 @@ pub fn build(wasm: &[u8]) -> Vec<u8> {
 /// # Errors
 /// When the config slot does not directly follow the app slot (a profile
 /// error).
-pub fn with_roles(app: &[u8], p: &profile::Profile, map: &RoleMap) -> Result<Vec<u8>> {
+pub fn with_wiring(app: &[u8], p: &profile::Profile, w: &Wiring) -> Result<Vec<u8>> {
     let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
         bail!("{} has no app slot or no config slot", p.name);
     };
@@ -135,10 +136,10 @@ pub fn with_roles(app: &[u8], p: &profile::Profile, map: &RoleMap) -> Result<Vec
         bail!("the config slot of {} does not follow its app slot", p.name);
     }
     let mut body = [0u8; roles::MAX_BODY];
-    let n = roles::encode_body(map, &mut body);
+    let n = roles::encode_body(w, &mut body);
     let mut image = app.to_vec();
     image.resize(sl.len as usize, 0xff);
-    image.extend_from_slice(&roles::header(&body[..n]));
+    image.extend_from_slice(&roles::header(&body[..n], w.version()));
     image.extend_from_slice(&body[..n]);
     Ok(image)
 }
@@ -153,6 +154,18 @@ pub fn describe_roles(map: &RoleMap) -> Option<String> {
         .map(|i| format!("{}={}", String::from_utf8_lossy(map.name(i)), map.pin(i)))
         .collect();
     Some(parts.join(" "))
+}
+
+/// Describes the display entry as the boot banner does
+/// (`ili9341 spi=0 cs=10 dc=14 rst=15 rotation=90`).
+#[must_use]
+pub fn describe_display(w: &Wiring) -> Option<String> {
+    w.display?;
+    let mut line = [0u8; 256];
+    let mut out = wasmicon_port::fmt::Buf::new(&mut line);
+    roles::describe(&Ok(*w), &mut out);
+    let text = String::from_utf8_lossy(out.as_bytes()).into_owned();
+    text.split_once(" display=").map(|(_, d)| d.to_string())
 }
 
 /// The CRC stored in the image header (bytes 12..16, docs/app-workflow.md §3.4).

@@ -40,6 +40,7 @@ use wasmicon_host::Usage;
 use wasmicon_port::Hal;
 use wasmicon_port::assets::Directory;
 use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
+use wasmicon_port::roles::{DisplayConfig, Wiring};
 
 /// Arena for the decode that only extracts facts (board-independent).
 ///
@@ -164,6 +165,11 @@ pub struct Verdict {
     /// Roles declared in `wasmicon.toml` that are missing from this board's
     /// wiring table.
     pub missing_declared_roles: Vec<String>,
+    /// The display the app uses, as this board would run it: `None` when the
+    /// app imports no display or the board cannot have one (`unimplemented`
+    /// says so), else the backend or `Err` when `[board.<name>.display]` is
+    /// missing (docs/device-layer.md §6).
+    pub display: Option<std::result::Result<String, ()>>,
 }
 
 impl Verdict {
@@ -187,6 +193,7 @@ impl Verdict {
     #[must_use]
     pub fn fails(&self) -> usize {
         usize::from(self.validate.is_err())
+            + usize::from(matches!(self.display, Some(Err(()))))
             + self.unimplemented.len()
             + self.missing_declared_roles.len()
     }
@@ -284,7 +291,8 @@ pub fn run(opts: &Options) -> Result<bool> {
     let mut all_ok = common == 0;
     for board in boards {
         let provided = provided_roles(board, opts.manifest.as_ref());
-        let v = judge(&wasm, board, &facts, declared, &provided);
+        let display = opts.manifest.as_ref().and_then(|m| m.display(board));
+        let v = judge(&wasm, board, &facts, declared, &provided, display);
         println!();
         let fit_fails = print_verdict(&v, &facts, common, board, declared, &assets);
         all_ok &= v.is_ok() && fit_fails == 0;
@@ -377,6 +385,7 @@ pub fn judge(
     f: &Facts,
     declared: Option<&[String]>,
     provided: &[String],
+    display: Option<DisplayConfig>,
 ) -> Verdict {
     let (validate, stage) = match instantiate_with(wasm, p) {
         Ok(()) => (Ok(p.config.max_memory_pages), Stage::Instantiate),
@@ -397,12 +406,31 @@ pub fn judge(
         .cloned()
         .collect();
 
+    // A board reads its display backend from the config slot, so a display
+    // app needs `[board.<name>.display]`; the host's mock is built in.
+    let display = (f.per_iface.contains_key("display") && p.interfaces.display).then(|| {
+        if p.role_slot.is_none() {
+            Ok("built-in mock".to_string())
+        } else {
+            display
+                .map(|d| {
+                    pack::describe_display(&Wiring {
+                        roles: wasmicon_port::roles::RoleMap::EMPTY,
+                        display: Some(d),
+                    })
+                    .unwrap_or_default()
+                })
+                .ok_or(())
+        }
+    });
+
     Verdict {
         board: p.name,
         validate,
         stage,
         unimplemented,
         missing_declared_roles,
+        display,
     }
 }
 
@@ -447,10 +475,11 @@ pub fn instantiate_with(wasm: &[u8], p: &Profile) -> std::result::Result<(), (St
     // Exec is allocated before linear memory (which takes the rest of the
     // arena), in the same order as the port.
     let _exec = Exec::new(&p.config, &mut arena).map_err(|e| (Stage::Instantiate, reason(e)))?;
-    // The mock board stands in for `p`, so it has a display only if `p` does:
-    // a device interface the firmware lacks fails to link here as on the
-    // board (docs/device-layer.md §6).
-    let board = wasmicon_host::hal::HostBoard::new().with_display(p.interfaces.display);
+    // The mock always has a display here, so a display app links and the
+    // rest of the module is still judged. Whether `p` has one is the
+    // `unimplemented` row: on the board it is a link error
+    // (docs/device-layer.md §6), and one row says so instead of two.
+    let board = wasmicon_host::hal::HostBoard::new();
     let mut hal = Hal::new(board, false).with_roles(wasmicon_host::hal::host_roles());
     // Linear memory is taken from the rest of the arena here. If it does not
     // fit, this fails the same way hardware does (which is the point).
@@ -742,6 +771,19 @@ fn print_verdict(
             "not implemented by this port (unsupported)"
         };
         row(iface, what, "<- fails");
+    }
+
+    match &v.display {
+        None => {}
+        Some(Ok(backend)) => row("display", backend, "ok"),
+        Some(Err(())) => row(
+            "display",
+            "none for this board",
+            &format!(
+                "<- fails (add [board.{}.display] to wasmicon.toml)",
+                p.wiring
+            ),
+        ),
     }
 
     if let Some(declared) = declared {

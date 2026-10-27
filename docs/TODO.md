@@ -1216,6 +1216,17 @@ recommended option. Nothing is implemented yet.**
       `apps/display-demo-rs` lays itself out from `width` / `height`; the host test runs it at
       320x240 and 720x1280. **Moved to (3):** `[board.<name>.display]` in `wasmicon.toml` and
       config slot v2 (§6-5); they matter only once a board has a backend
-- [ ] (3) `ili9341` backend; the demo trace on ESP32-S3 and Pico 2 W equals the host mock
+- [ ] (3) `ili9341` backend; the demo trace on ESP32-S3 and Pico 2 W equals the host mock.
+      **Implemented 2026-10-27, not yet verified on hardware.** `ports/common/src/ili9341.rs`;
+      config slot v2 with `@display=` (written only with a display entry) and
+      `[board.<name>.display]` in `wasmicon.toml` (§6-5); `check` / `deploy` refuse a display
+      app on a board without an entry, and rp2040 (no SPI) has no display. On the host the
+      backend runs over the mock SPI: the demo's guest trace equals the mock run and the decoded
+      SPI picture equals the mock's (`ports/host/tests/ili9341.rs`). Firmware for every board
+      builds. **To verify on hardware** (ESP32-S3 and Pico 2 W, the lcd-demo-rs wiring): flash
+      the firmware with trace on, build `display-demo-rs`, `wasmicon deploy --board <board>`
+      from `apps/display-demo-rs`, capture the serial trace, and compare it with
+      `wasmicon run --trace` through `sh verify/diff-traces.sh`. Pass = identical traces
+      and the demo picture on the panel
 - [ ] (4) `tab5` backend on the ESP32-P4. Risks: interrupts on v1.0 silicon (esp-hal DPI
       re-arms VDMA in an interrupt) and PSRAM not yet tried (§1.3.2)

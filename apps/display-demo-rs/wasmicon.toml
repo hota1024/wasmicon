@@ -1,11 +1,35 @@
 # App manifest (docs/app-workflow.md §4.7).
-# The app looks up no roles: the display and its wiring belong to the host
-# (docs/device-layer.md §5). It runs only where the board has a display;
-# `wasmicon check` refuses the others before flashing.
+# The app looks up no roles: the display belongs to the host. Each board's
+# display entry goes to the config slot with deploy (docs/device-layer.md §5.2).
+# The ILI9341 pins are those of apps/lcd-demo-rs (its README has the wiring);
+# rotation defaults to 90, the 320x240 landscape the host mock has.
 version = 1
 
 [requirements]
 pin-roles = []
 
-[defaults]
-board = "host"
+[board.rp2350.display]
+driver = "ili9341"
+cs = 17
+dc = 20
+rst = 21
+
+[board.esp32s3.display]
+driver = "ili9341"
+cs = 10
+dc = 14
+rst = 15
+
+[board.esp32c5.display]
+driver = "ili9341"
+cs = 10
+dc = 0
+rst = 1
+
+[board.esp32p4.display]
+# The ILI9341 on the M5-Bus. The Tab5's own panel (driver = "tab5") comes
+# with stage 4 of docs/device-layer.md §10.
+driver = "ili9341"
+cs = 48
+dc = 47
+rst = 45

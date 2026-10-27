@@ -74,7 +74,7 @@ fn blink_rs_passes_on_every_board() {
     assert!(!f.per_iface.contains_key("spi"));
 
     for p in profile::PROFILES {
-        let v = check::judge(&wasm, p, &f, None, &[]);
+        let v = check::judge(&wasm, p, &f, None, &[], None);
         assert!(
             v.is_ok(),
             "fails on {} ({} failures, unimplemented {:?})",
@@ -97,7 +97,7 @@ fn sensor_display_fails_only_on_rp2040() {
         "draws on the ILI9341 over SPI"
     );
 
-    let rp2040 = check::judge(&wasm, &profile::RP2040, &f, None, &[]);
+    let rp2040 = check::judge(&wasm, &profile::RP2040, &f, None, &[], None);
     assert!(
         !rp2040.is_ok(),
         "rp2040 fails because I2C / SPI are not implemented"
@@ -111,7 +111,7 @@ fn sensor_display_fails_only_on_rp2040() {
     );
 
     for p in [&profile::RP2350, &profile::ESP32S3, &profile::HOST] {
-        let v = check::judge(&wasm, p, &f, None, &[]);
+        let v = check::judge(&wasm, p, &f, None, &[], None);
         assert!(v.is_ok(), "passes on {} ({} failures)", p.name, v.fails());
     }
 }
@@ -126,19 +126,19 @@ fn memory_limit_is_per_board() {
 
     assert_eq!(f.mem_pages, Some(4));
     assert!(
-        check::judge(&wasm, &profile::HOST, &f, None, &[])
+        check::judge(&wasm, &profile::HOST, &f, None, &[], None)
             .validate
             .is_ok(),
         "host allows up to 65536 pages"
     );
     assert!(
-        check::judge(&wasm, &profile::RP2350, &f, None, &[])
+        check::judge(&wasm, &profile::RP2350, &f, None, &[], None)
             .validate
             .is_ok(),
         "rp2350 allows up to 4 pages"
     );
     assert!(
-        check::judge(&wasm, &profile::RP2040, &f, None, &[])
+        check::judge(&wasm, &profile::RP2040, &f, None, &[], None)
             .validate
             .is_err(),
         "rp2040 allows up to 2 pages, so validate fails"
@@ -152,12 +152,12 @@ fn the_psram_variant_takes_what_the_plain_esp32s3_refuses() {
     let wasm = wat_memory_pages(64);
     let f = facts_of(&wasm);
     assert!(
-        check::judge(&wasm, &profile::ESP32S3, &f, None, &[])
+        check::judge(&wasm, &profile::ESP32S3, &f, None, &[], None)
             .validate
             .is_err(),
         "esp32s3 allows up to 4 pages"
     );
-    let psram = check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[]);
+    let psram = check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[], None);
     assert!(psram.is_ok(), "esp32s3-psram fits 64 pages");
 
     // The wiring comes from the board's table for both.
@@ -174,23 +174,23 @@ fn the_psram_variant_validates_deeply_nested_blocks() {
     let wasm = wat_nested_blocks(200);
     let f = facts_of(&wasm);
     assert!(
-        check::judge(&wasm, &profile::ESP32S3, &f, None, &[])
+        check::judge(&wasm, &profile::ESP32S3, &f, None, &[], None)
             .validate
             .is_err(),
         "esp32s3 allows a control depth of 64"
     );
     assert!(
-        check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[]).is_ok(),
+        check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[], None).is_ok(),
         "esp32s3-psram allows a control depth of 256"
     );
     // The full 256 levels (the function body is one of them) fit as well.
     let wasm = wat_nested_blocks(255);
     let f = facts_of(&wasm);
-    assert!(check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[]).is_ok());
+    assert!(check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[], None).is_ok());
     let wasm = wat_nested_blocks(256);
     let f = facts_of(&wasm);
     assert!(
-        check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[])
+        check::judge(&wasm, &profile::ESP32S3_PSRAM, &f, None, &[], None)
             .validate
             .is_err(),
         "one level over the limit"
@@ -369,12 +369,19 @@ fn declared_roles_must_be_in_the_boards_wiring() {
     let declared = vec!["status-led".to_string(), "lcd-cs".to_string()];
 
     // Without a declaration, roles never fail the check.
-    let without = check::judge(&wasm, &profile::RP2350, &f, None, &[]);
+    let without = check::judge(&wasm, &profile::RP2350, &f, None, &[], None);
     assert!(without.is_ok(), "no declaration, no role failure");
 
     // When the wiring table has only one of the two, the other one fails.
     let provided = vec!["status-led".to_string()];
-    let with = check::judge(&wasm, &profile::RP2350, &f, Some(&declared), &provided);
+    let with = check::judge(
+        &wasm,
+        &profile::RP2350,
+        &f,
+        Some(&declared),
+        &provided,
+        None,
+    );
     assert_eq!(with.missing_declared_roles, ["lcd-cs"]);
     assert!(!with.is_ok(), "a declared role that is not provided fails");
     assert_eq!(with.fails(), 1);
@@ -463,4 +470,37 @@ fn leb128(out: &mut Vec<u8>, mut v: usize) {
         }
         out.push(byte | 0x80);
     }
+}
+
+/// A display app (docs/device-layer.md §6): rp2040 has no display at all, a
+/// board with one needs its `[board.<name>.display]` entry, and the host's
+/// mock is built in.
+#[test]
+fn display_demo_needs_a_display_entry_on_a_board() {
+    use wasmicon_port::roles::DisplayConfig;
+
+    let wasm = build("display-demo-rs");
+    let f = facts_of(&wasm);
+    let lcd = DisplayConfig::Ili9341 {
+        spi: 0,
+        cs: 17,
+        dc: 20,
+        rst: 21,
+        rotation: 90,
+    };
+
+    let rp2040 = check::judge(&wasm, &profile::RP2040, &f, None, &[], Some(lcd));
+    assert_eq!(rp2040.unimplemented, ["display"]);
+    assert!(rp2040.validate.is_ok(), "only the display row fails");
+    assert_eq!(rp2040.fails(), 1);
+
+    let without = check::judge(&wasm, &profile::RP2350, &f, None, &[], None);
+    assert!(matches!(without.display, Some(Err(()))));
+    assert_eq!(without.fails(), 1);
+
+    let with = check::judge(&wasm, &profile::RP2350, &f, None, &[], Some(lcd));
+    assert!(with.is_ok(), "{} failures", with.fails());
+
+    let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None);
+    assert!(host.is_ok(), "the host mock needs no entry");
 }

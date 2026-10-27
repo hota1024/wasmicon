@@ -55,6 +55,8 @@ fn the_host_run_fills_in_the_run_time_fields() {
         assets: Vec::new(),
         no_display: false,
         display_size: None,
+        display: None,
+        bus_log: false,
     };
     let (out, result) = run_wasm_capture(wasm, opts);
     assert!(result.is_ok());

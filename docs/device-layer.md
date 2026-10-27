@@ -1,8 +1,8 @@
 # Device layer design (`wasmicon:device`)
 
 Created: 2026-10-27
-Status: **approved; stages 1 and 2 of §10 are implemented** (the WIT, the bindings and
-the host mock display). The owner agreed on the direction on 2026-10-27 (a separate
+Status: **approved; stages 1 to 3 of §10 are implemented** (the WIT, the bindings, the
+host mock display and the ILI9341 backend). Stage 3 is not yet verified on hardware. The owner agreed on the direction on 2026-10-27 (a separate
 package above the HAL, named `wasmicon:device`, with `display` as its first interface)
 and settled docs/TODO.md §6-1 ... §6-7 the same day. The stages and their status are in
 docs/TODO.md §6.
@@ -206,7 +206,7 @@ driver = "tab5"  # the Tab5's own MIPI-DSI panel
 | Backend | Boards | What the host does |
 |---|---|---|
 | `mock` | host (`wasmicon run`, tests) | Keeps a frame buffer; `run` can write it to a PNG after `run` returns |
-| `ili9341` | ESP32-S3, Pico 2 W, ESP32-C5, ESP32-P4 | The ILI9341 init and drawing that the apps do today, moved into `ports/common` over the port's SPI and GPIO |
+| `ili9341` | ESP32-S3, Pico 2 W, ESP32-C5, ESP32-P4 | The ILI9341 init and drawing that the apps do today, in `ports/common/src/ili9341.rs` over the port's SPI and GPIO: SPI mode 0 at 16 MHz, the apps/README.md §2 init sequence at the first `open`, writes of at most 640 bytes. The bus and pins stay the backend's for the whole run (the reset line never floats). MADCTL per rotation: 0 = 0x48, 90 = 0x28, 180 = 0x88, 270 = 0xE8; only 90 has run on hardware |
 | `tab5` | ESP32-P4 on the Tab5 | Panel power and reset through the internal I2C IO expanders, backlight on GPIO22, DSI host + DPI video mode, frame buffer in PSRAM. While it is configured, GPIO22, 31 and 32 are reserved: a role on them is refused (docs/TODO.md §6-6) |
 
 The `tab5` backend has known risks on the Tab5's v1.0 silicon (docs/TODO.md

@@ -1,11 +1,12 @@
 //! Locks in the config slot (wiring table) format and checks (docs/app-workflow.md §3.9).
 //!
 //! The writer (CLI) and the reader (firmware) share `roles`, so this is the
-//! contract for both. Bump `FORMAT_VERSION` when the shape changes.
+//! contract for both. Bump `FORMAT_VERSION` when the shape changes. Version 2
+//! adds the display entry (docs/device-layer.md §5.2).
 
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::profile;
-use wasmicon_port::roles::{self, Limits, RoleMap, RolesError};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, RolesError, Wiring};
 
 /// Pico 2 W constraints (GP0/1 are the UART, GP4/5 and 16/18/19 are buses).
 fn pico() -> Limits<'static> {
@@ -14,18 +15,38 @@ fn pico() -> Limits<'static> {
 
 /// Builds the config slot image (header + body) from a table, as the CLI does.
 fn image(map: &RoleMap) -> Vec<u8> {
+    image_of(&Wiring {
+        roles: *map,
+        display: None,
+    })
+}
+
+fn image_of(w: &Wiring) -> Vec<u8> {
     let mut body = [0u8; roles::MAX_BODY];
-    let n = roles::encode_body(map, &mut body);
-    let mut v = roles::header(&body[..n]).to_vec();
+    let n = roles::encode_body(w, &mut body);
+    let mut v = roles::header(&body[..n], w.version()).to_vec();
     v.extend_from_slice(&body[..n]);
     v
 }
+
+/// The ILI9341 of apps/lcd-demo-rs on the Pico 2 W.
+const PICO_LCD: DisplayConfig = DisplayConfig::Ili9341 {
+    spi: 0,
+    cs: 17,
+    dc: 20,
+    rst: 21,
+    rotation: 90,
+};
 
 fn table(entries: &[(&str, u32)]) -> RoleMap {
     roles::from_table(entries, &pico()).unwrap_or_else(|e| panic!("cannot build: {}", e.reason()))
 }
 
 fn parsed(img: &[u8]) -> RoleMap {
+    parsed_wiring(img).roles
+}
+
+fn parsed_wiring(img: &[u8]) -> Wiring {
     roles::parse(img, &pico()).unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()))
 }
 
@@ -96,7 +117,7 @@ fn a_well_formed_but_invalid_entry_drops_the_whole_table() {
         (b"lcd-cs=x\n", RolesError::BadNumber),     // not a number
         (b"lcd-cs=99999999999\n", RolesError::BadNumber), // overflows u32
     ] {
-        let mut img = roles::header(body).to_vec();
+        let mut img = roles::header(body, 1).to_vec();
         img.extend_from_slice(body);
         let got = parse_err(&img, std::str::from_utf8(body).unwrap_or("?"));
         assert!(
@@ -146,16 +167,34 @@ fn at_most_max_roles_entries() {
         let name = format!("abcdefghijklmn{i:02}");
         assert!(big.insert(name.as_bytes(), i + 40, &limits).is_ok());
     }
+    // Even with the longest display entry next to them.
+    let w = Wiring {
+        roles: big,
+        display: Some(DisplayConfig::Ili9341 {
+            spi: 1,
+            cs: 60,
+            dc: 61,
+            rst: 62,
+            rotation: 270,
+        }),
+    };
     let mut body = [0u8; roles::MAX_BODY];
-    let n = roles::encode_body(&big, &mut body);
+    let n = roles::encode_body(&w, &mut body);
     assert!(n < roles::MAX_BODY, "{n} bytes");
-    assert!(roles::parse_body(&body[..n], &limits).is_ok_and(|m| m.len() == roles::MAX_ROLES));
+    let back = roles::parse_body(&body[..n], 2, &limits)
+        .unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()));
+    assert_eq!(back.roles.len(), roles::MAX_ROLES);
+    assert_eq!(back.display, w.display);
 }
 
 #[test]
 fn the_boot_line_lists_the_table_or_the_reason() {
     let describe = |r: Result<RoleMap, RolesError>| {
-        let mut line = [0u8; 192];
+        let r = r.map(|roles| Wiring {
+            roles,
+            display: None,
+        });
+        let mut line = [0u8; 256];
         let mut out = Buf::new(&mut line);
         roles::describe(&r, &mut out);
         String::from_utf8(out.as_bytes().to_vec()).expect("ASCII")
@@ -186,4 +225,138 @@ fn every_profile_puts_the_roles_slot_right_after_the_app_slot() {
         // Boards have no default table (only the host mock has one).
         assert_eq!(p.roles.is_empty(), p.name != "host", "{}", p.name);
     }
+}
+
+#[test]
+fn a_table_without_a_display_stays_version_1() {
+    // A firmware that reads only version 1 keeps reading every app that has
+    // no display entry (docs/TODO.md §6-5).
+    let img = image(&table(&[("lcd-cs", 17)]));
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 1);
+}
+
+#[test]
+fn a_display_entry_reads_back_and_makes_version_2() {
+    let w = Wiring {
+        roles: table(&[("led", 15)]),
+        display: Some(PICO_LCD),
+    };
+    let img = image_of(&w);
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 2);
+    assert_eq!(
+        &img[roles::HEADER_LEN..],
+        b"led=15\n@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90\n"
+    );
+    let back = parsed_wiring(&img);
+    assert_eq!(back.roles.get(b"led"), Some(15));
+    assert_eq!(back.display, Some(PICO_LCD));
+
+    let tab5 = Wiring {
+        roles: RoleMap::EMPTY,
+        display: Some(DisplayConfig::Tab5),
+    };
+    let limits = Limits::of(&profile::ESP32P4);
+    let img = image_of(&tab5);
+    assert_eq!(&img[roles::HEADER_LEN..], b"@display=tab5\n");
+    let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.display, Some(DisplayConfig::Tab5));
+}
+
+#[test]
+fn a_bad_display_entry_drops_the_whole_table() {
+    for (version, body, want) in [
+        // Version 1 has no display entry.
+        (1u16, &b"@display=tab5\n"[..], RolesError::BadDisplay),
+        (2, b"@display=st7789\n", RolesError::BadDisplay),
+        (2, b"@display=tab5\n@display=tab5\n", RolesError::BadDisplay),
+        (2, b"@display=tab5 spi=0\n", RolesError::BadDisplay),
+        // A key missing, unknown, repeated, or out of range.
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=17 dc=20 rst=21\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90 x=1\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=0 spi=0 cs=17 dc=20 rst=21 rotation=90\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=2 cs=17 dc=20 rst=21 rotation=90\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=45\n",
+            RolesError::BadDisplay,
+        ),
+        // The pins get the role checks, and may not be shared with a role
+        // (whichever line comes first).
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=0 dc=20 rst=21 rotation=90\n",
+            RolesError::Reserved,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=18 dc=20 rst=21 rotation=90\n",
+            RolesError::BusPin,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=17 dc=17 rst=21 rotation=90\n",
+            RolesError::DuplicatePin,
+        ),
+        (
+            2,
+            b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90\nled=20\n",
+            RolesError::DuplicatePin,
+        ),
+        (
+            2,
+            b"led=21\n@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90\n",
+            RolesError::DuplicatePin,
+        ),
+    ] {
+        let mut img = roles::header(body, version).to_vec();
+        img.extend_from_slice(body);
+        let got = parse_err(&img, std::str::from_utf8(body).unwrap_or("?"));
+        assert!(
+            got == want,
+            "{:?}: expected {} but got {}",
+            std::str::from_utf8(body),
+            want.reason(),
+            got.reason()
+        );
+    }
+}
+
+#[test]
+fn a_newer_version_is_refused() {
+    let mut img = image(&table(&[("lcd-cs", 17)]));
+    img[4] = 3;
+    assert!(parse_err(&img, "version 3") == RolesError::UnsupportedVersion);
+}
+
+#[test]
+fn the_boot_line_shows_the_display_entry() {
+    let mut line = [0u8; 256];
+    let mut out = Buf::new(&mut line);
+    roles::describe(
+        &Ok(Wiring {
+            roles: RoleMap::EMPTY,
+            display: Some(PICO_LCD),
+        }),
+        &mut out,
+    );
+    assert_eq!(
+        out.as_bytes(),
+        b"wasmicon: roles none display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90"
+    );
 }

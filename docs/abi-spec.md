@@ -313,7 +313,7 @@ No functions. The `error-code` discriminants (the status of §4.4 is `+1`):
 
 ### `wasmicon:device/display@0.1.0`
 
-The device layer (docs/device-layer.md §4). The host port implements it with a 320x240 mock display; no board port does yet. A firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
+The device layer (docs/device-layer.md §4). The host port implements it with a 320x240 mock display; rp2350, esp32s3, esp32c5 and esp32p4 with an ILI9341 named in the config slot (docs/device-layer.md §5.3); rp2040 not at all. A firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
 
 | Import name | Core Wasm type | Notes |
 |---|---|---|

@@ -154,14 +154,24 @@ fn a_flipped_bit_in_the_image_is_caught() {
 #[test]
 fn the_deploy_image_carries_the_app_and_the_wiring() {
     use wasmicon_port::profile;
-    use wasmicon_port::roles::{self, Limits, RoleMap};
+    use wasmicon_port::roles::{self, DisplayConfig, Limits, Wiring};
 
     let p = &profile::RP2350;
     let limits = Limits::of(p);
-    let map = roles::from_table(&[("lcd-cs", 17), ("status-led", 15)], &limits)
-        .unwrap_or_else(|e| panic!("{}", e.reason()));
     let wasm = b"\0asm\x01\0\0\0app";
-    let image = pack::with_roles(&pack::build(wasm), p, &map).expect("builds");
+    let lcd = DisplayConfig::Ili9341 {
+        spi: 0,
+        cs: 17,
+        dc: 20,
+        rst: 21,
+        rotation: 90,
+    };
+    let w = Wiring {
+        roles: roles::from_table(&[("status-led", 15)], &limits)
+            .unwrap_or_else(|e| panic!("{}", e.reason())),
+        display: Some(lcd),
+    };
+    let image = pack::with_wiring(&pack::build(wasm), p, &w).expect("builds");
 
     let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
         panic!("rp2350 has a slot");
@@ -171,12 +181,16 @@ fn the_deploy_image_carries_the_app_and_the_wiring() {
     assert_eq!(app, wasm);
     let at = (rs.offset - sl.offset) as usize;
     let back = roles::parse(&image[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
-    assert_eq!(back.get(b"lcd-cs"), Some(17));
-    assert_eq!(back.get(b"status-led"), Some(15));
+    assert_eq!(back.roles.get(b"status-led"), Some(15));
+    assert_eq!(back.display, Some(lcd));
+    assert_eq!(
+        pack::describe_display(&w).as_deref(),
+        Some("ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90")
+    );
 
     // An empty table is written too (a previously flashed table never
     // survives). It reads back as "no roles".
-    let empty = pack::with_roles(&pack::build(wasm), p, &RoleMap::EMPTY).expect("builds");
+    let empty = pack::with_wiring(&pack::build(wasm), p, &Wiring::EMPTY).expect("builds");
     let back = roles::parse(&empty[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
-    assert!(back.is_empty());
+    assert!(back.roles.is_empty() && back.display.is_none());
 }

@@ -25,6 +25,8 @@ pub struct Outcome {
     /// The mock display's visible picture after the run (`None` with
     /// `Options::no_display`).
     pub frame: Option<hal::Frame>,
+    /// GPIO and SPI output of the run, with `Options::bus_log`.
+    pub bus_log: Vec<hal::BusEvent>,
 }
 
 /// The most of each stack-like `Config` limit a module or run needed. Fields
@@ -147,6 +149,12 @@ pub struct Options {
     pub no_display: bool,
     /// Size of the mock display; `None` is `hal::MOCK_DISPLAY` (320x240).
     pub display_size: Option<(u32, u32)>,
+    /// The config slot's display entry, as a board would read it
+    /// (docs/device-layer.md §5.2). An ILI9341 entry runs that backend over
+    /// the mock SPI and GPIO instead of the mock display.
+    pub display: Option<wasmicon_port::roles::DisplayConfig>,
+    /// Records the GPIO and SPI output (`Outcome::bus_log`).
+    pub bus_log: bool,
 }
 
 /// Runs with explicit recorded I2C responses.
@@ -163,6 +171,8 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
             assets: Vec::new(),
             no_display: false,
             display_size: None,
+            display: None,
+            bus_log: false,
         },
     )
 }
@@ -217,10 +227,12 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
             .with_spi_unsupported(spi_unsupported)
             .with_display(!opts.no_display)
             .with_display_size(opts.display_size.unwrap_or(hal::MOCK_DISPLAY))
+            .with_bus_log(opts.bus_log)
             .with_assets(image),
         trace,
     )
     .with_roles(hal::host_roles())
+    .with_display(opts.display)
     .with_assets(dir);
 
     // A failure before the guest starts (decode / validate / Exec / instantiate)
@@ -277,6 +289,7 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
         trace: hal.board_mut().trace_output().to_string(),
         usage,
         frame: hal.board_mut().frame().cloned(),
+        bus_log: hal.board_mut().bus_log().to_vec(),
     };
     (outcome, result)
 }

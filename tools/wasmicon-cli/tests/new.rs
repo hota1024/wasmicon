@@ -89,7 +89,7 @@ fn the_rust_template_builds_and_passes_check_on_every_board() {
     // Passes on all four boards. The scaffold uses only log, so it must pass
     // even on rp2040, which has no SPI / I2C.
     for p in profile::PROFILES {
-        let verdict = check::judge(&bytes, p, &facts, None, &[]);
+        let verdict = check::judge(&bytes, p, &facts, None, &[], None);
         assert!(
             verdict.is_ok(),
             "the scaffold fails on {} ({} failures)",

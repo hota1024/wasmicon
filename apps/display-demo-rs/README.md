@@ -21,7 +21,7 @@ Top to bottom:
 
 ## Running it
 
-Today only the host has a display (a 320x240 mock):
+On the host (a 320x240 mock):
 
 ```sh
 (cd apps && cargo build --release -p display-demo-rs)
@@ -29,5 +29,13 @@ cd apps/display-demo-rs
 wasmicon run ../target/wasm32-unknown-unknown/release/display_demo_rs.wasm --display-out demo.png
 ```
 
-`wasmicon check` refuses it for every board until a board has a display
-backend (docs/TODO.md §6).
+On a board, an ILI9341 wired as for `apps/lcd-demo-rs` (its README) is the
+display. `wasmicon.toml` names it per board in `[board.<name>.display]`, and
+`deploy` writes it to the config slot:
+
+```sh
+wasmicon deploy ../target/wasm32-unknown-unknown/release/display_demo_rs.wasm --board esp32s3
+```
+
+The firmware prints `wasmicon: roles none display=ili9341 ...` at boot. rp2040
+has no SPI, so `check` refuses the app there.

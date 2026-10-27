@@ -27,8 +27,9 @@ fn every_axis_is_named() {
     assert_eq!(
         line(&profile::RP2350, true),
         "wasmicon id rp2350 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 \
-         trace=on pages=4 if=gpio,i2c,spi,time,log,board,assets slot=v1/65536 \
-         roles=v1/4096 assets=v1/3076096"
+         device=wasmicon:device@0.1.0 trace=on pages=4 \
+         if=gpio,i2c,spi,time,log,board,assets,display slot=v1/65536 \
+         roles=v2/4096 assets=v1/3076096"
     );
 }
 
@@ -45,19 +46,20 @@ fn unimplemented_interfaces_and_trace_off_are_visible() {
 #[test]
 fn the_longest_line_fits_the_ports_buffer() {
     // The port builds the line in a 256-byte buffer; an overflow is silently
-    // truncated. 64 bytes are kept free for a long `git describe`
-    // (`v0.1.0-123-gba2ce81-dirty` is 26 bytes against the 13 used here).
+    // truncated. 24 bytes are kept free for a long `git describe`
+    // (`v0.1.0-123-gba2ce81-dirty` is 26 bytes against the 13 used here, so
+    // 13 more) with room to spare.
     for p in profile::PROFILES {
         let l = line(p, false);
-        assert!(l.len() < 192, "{}: {} bytes", p.name, l.len());
+        assert!(l.len() < 232, "{}: {} bytes", p.name, l.len());
         assert!(l.starts_with(identity::PREFIX));
     }
 }
 
 #[test]
 fn a_port_with_a_display_names_the_device_package() {
-    // Only the host has a display backend today; the boards' lines stay as
-    // they were (every_axis_is_named).
+    // The host has the mock, the SPI boards the ILI9341 backend; rp2040 has
+    // no SPI and so no display.
     let l = line(&profile::HOST, true);
     assert!(
         l.contains(" abi=wasmicon:hal@0.1.0 device=wasmicon:device@0.1.0 "),
@@ -67,5 +69,6 @@ fn a_port_with_a_display_names_the_device_package() {
         l.contains(" if=gpio,i2c,spi,time,log,board,assets,display"),
         "{l}"
     );
-    assert!(!line(&profile::RP2350, true).contains("device="));
+    assert!(line(&profile::RP2350, true).contains(" device=wasmicon:device@0.1.0 "));
+    assert!(!line(&profile::RP2040, true).contains("device="));
 }

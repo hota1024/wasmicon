@@ -54,6 +54,13 @@ impl Interfaces {
         assets: true,
         display: false,
     };
+
+    /// Every HAL interface and the display: the ILI9341 backend in
+    /// `ports/common` runs on any port with SPI (docs/device-layer.md §5.3).
+    pub const WITH_DISPLAY: Interfaces = Interfaces {
+        display: true,
+        ..Interfaces::ALL
+    };
 }
 
 /// Profile of one board.
@@ -288,7 +295,7 @@ pub const RP2350: Profile = Profile {
     name: "rp2350",
     wiring: "rp2350",
     config: MCU,
-    interfaces: Interfaces::ALL,
+    interfaces: Interfaces::WITH_DISPLAY,
     roles: &[],
     gpio_count: 30,
     reserved: PICO_RESERVED,
@@ -310,7 +317,7 @@ pub const ESP32S3: Profile = Profile {
     name: "esp32s3",
     wiring: "esp32s3",
     config: MCU,
-    interfaces: Interfaces::ALL,
+    interfaces: Interfaces::WITH_DISPLAY,
     roles: &[],
     gpio_count: 49,
     reserved: ESP32S3_RESERVED,
@@ -390,7 +397,7 @@ pub const ESP32C5: Profile = Profile {
     name: "esp32c5",
     wiring: "esp32c5",
     config: MCU,
-    interfaces: Interfaces::ALL,
+    interfaces: Interfaces::WITH_DISPLAY,
     roles: &[],
     gpio_count: 29,
     reserved: ESP32C5_RESERVED,
@@ -423,7 +430,7 @@ pub const ESP32P4: Profile = Profile {
     name: "esp32p4",
     wiring: "esp32p4",
     config: MCU,
-    interfaces: Interfaces::ALL,
+    interfaces: Interfaces::WITH_DISPLAY,
     roles: &[],
     gpio_count: 55,
     reserved: ESP32P4_RESERVED,

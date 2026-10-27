@@ -35,7 +35,7 @@ use wasmicon_core::{Arena, Config, Exec, decode, instantiate, invoke, validate};
 use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
-use wasmicon_port::roles::{self, Limits, RoleMap};
+use wasmicon_port::roles::{self, Limits, Wiring};
 use wasmicon_port::{Hal, idle, slot};
 
 use board::{Pico2Board, Serial};
@@ -205,8 +205,9 @@ fn main() -> ! {
     // Roles come only from the table in the config slot. The firmware has no
     // default table: an empty or corrupt slot hands out no roles at all
     // (docs/app-workflow.md §3.9).
-    let map = pick_roles(hal.board_mut().serial());
-    let mut hal = hal.with_roles(map);
+    let wiring = pick_roles(hal.board_mut().serial());
+    // The display entry selects the display backend (docs/device-layer.md §5.2).
+    let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
     // slot is memory-mapped, so the board keeps the slice and the guest's
     // reads copy out of it in place.
@@ -254,7 +255,7 @@ fn main() -> ! {
 
 /// Reads the wiring table from the config slot and prints the table, or the
 /// reason it cannot be read, to the serial port.
-fn pick_roles(serial: &mut impl Serial) -> RoleMap {
+fn pick_roles(serial: &mut impl Serial) -> Wiring {
     // `__flash_binary_end` is a linker symbol; only its address is used, never
     // its contents.
     let fw_end = (&raw const __flash_binary_end) as usize;
@@ -262,12 +263,12 @@ fn pick_roles(serial: &mut impl Serial) -> RoleMap {
     // the app slot) lies inside the flash. Overlap with the firmware is
     // rejected by xip_region using fw_end.
     let result = unsafe { roles::read_xip(XIP_BASE, ROLE_SLOT, fw_end, &LIMITS) };
-    let mut line = [0u8; 192];
+    let mut line = [0u8; 256];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
     serial.write(out.as_bytes());
     serial.write(b"\r\n");
-    result.unwrap_or(RoleMap::EMPTY)
+    result.unwrap_or(Wiring::EMPTY)
 }
 
 /// Reads the assets directory from the assets slot and prints it, or the

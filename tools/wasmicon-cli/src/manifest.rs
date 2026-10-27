@@ -21,6 +21,12 @@
 //! lcd-dc = 20
 //! lcd-rst = 21
 //!
+//! [board.esp32s3.display] # the board's display backend (docs/device-layer.md §5.2)
+//! driver = "ili9341"
+//! cs = 10
+//! dc = 14
+//! rst = 15
+//!
 //! [assets]               # read-only data the app opens; assets write flashes it
 //! "font.psf" = "assets/terminus-12.psf"
 //! ```
@@ -57,7 +63,7 @@ use std::path::{Path, PathBuf};
 
 use wasmicon_port::assets;
 use wasmicon_port::profile::{self, Profile};
-use wasmicon_port::roles::{self, Limits, RoleMap};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, Wiring};
 
 /// The `version` this CLI can read.
 pub const SUPPORTED_VERSION: u32 = 1;
@@ -102,6 +108,23 @@ struct RawBoard {
     /// Role name -> GPIO number, or `"none"`.
     #[serde(default)]
     roles: BTreeMap<String, toml::Value>,
+    /// `[board.<name>.display]`.
+    display: Option<RawDisplay>,
+}
+
+/// `[board.<name>.display]` (docs/device-layer.md §5.2).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct RawDisplay {
+    /// `"ili9341"` or `"tab5"`.
+    driver: String,
+    /// SPI bus index; default 0.
+    spi: Option<u32>,
+    cs: Option<u32>,
+    dc: Option<u32>,
+    rst: Option<u32>,
+    /// 0, 90, 180 or 270; default 90 (320x240 landscape, as the apps draw).
+    rotation: Option<u32>,
 }
 
 /// A loaded `wasmicon.toml`.
@@ -121,6 +144,10 @@ pub struct Manifest {
     /// docs/app-workflow.md §3.9). Checked against the board's constraints
     /// (range, reserved pins, bus pins, duplicates) at load time.
     pub board_roles: BTreeMap<String, BTreeMap<String, Option<u32>>>,
+    /// Per-board display entries, written to the config slot with the roles
+    /// (docs/device-layer.md §5.2). Checked against the board and its roles at
+    /// load time.
+    pub board_display: BTreeMap<String, DisplayConfig>,
     /// Asset name -> file (already resolved against `dir`): what `run` serves
     /// to the guest and `assets write` puts in the board's assets slot
     /// (docs/app-workflow.md §3.10). Names are checked at load time; the
@@ -145,6 +172,67 @@ impl Manifest {
             None => Ok(RoleMap::EMPTY),
         }
     }
+
+    /// The board's display entry, if `[board.<wiring>.display]` exists.
+    #[must_use]
+    pub fn display(&self, board: &'static Profile) -> Option<DisplayConfig> {
+        self.board_display.get(board.wiring).copied()
+    }
+
+    /// What `deploy` writes to the board's config slot: the roles and the
+    /// display entry.
+    ///
+    /// # Errors
+    /// As `role_map`.
+    pub fn wiring(&self, board: &'static Profile) -> Result<Wiring> {
+        Ok(Wiring {
+            roles: self.role_map(board)?,
+            display: self.display(board),
+        })
+    }
+}
+
+/// Turns `[board.<name>.display]` into a `DisplayConfig` and checks it against
+/// the board and its roles, as the firmware does at boot.
+fn build_display(
+    raw: &RawDisplay,
+    board: &'static Profile,
+    roles: &RoleMap,
+) -> Result<DisplayConfig> {
+    let at = format!("[board.{}.display]", board.wiring);
+    let d = match raw.driver.as_str() {
+        "ili9341" => {
+            let pin = |v: Option<u32>, key: &str| {
+                v.with_context(|| format!("{at}: driver = \"ili9341\" needs `{key}`"))
+            };
+            DisplayConfig::Ili9341 {
+                spi: raw.spi.unwrap_or(0),
+                cs: pin(raw.cs, "cs")?,
+                dc: pin(raw.dc, "dc")?,
+                rst: pin(raw.rst, "rst")?,
+                rotation: raw.rotation.unwrap_or(90),
+            }
+        }
+        "tab5" => {
+            // The Tab5 panel is the ESP32-P4 board's own; its pins are fixed.
+            if board.name != profile::ESP32P4.name {
+                bail!("{at}: driver = \"tab5\" is the M5Stack Tab5's panel (board esp32p4)");
+            }
+            if raw.spi.is_some()
+                || raw.cs.is_some()
+                || raw.dc.is_some()
+                || raw.rst.is_some()
+                || raw.rotation.is_some()
+            {
+                bail!("{at}: driver = \"tab5\" takes no other keys");
+            }
+            DisplayConfig::Tab5
+        }
+        other => bail!("{at}: unknown driver `{other}` (known: ili9341, tab5)"),
+    };
+    d.check(&Limits::of(board), roles)
+        .map_err(|e| anyhow::anyhow!("{at}: {}", e.reason()))?;
+    Ok(d)
 }
 
 /// Turns one `[board.<name>.roles]` table into a `RoleMap`. `"none"` entries
@@ -225,6 +313,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
     }
 
     let mut board_roles = BTreeMap::new();
+    let mut board_display = BTreeMap::new();
     for (board, b) in raw.board {
         let Some(p) = profile::by_name(&board) else {
             bail!(
@@ -253,8 +342,13 @@ pub fn load(path: &Path) -> Result<Manifest> {
         // The board's constraints (range, reserved pins, bus pins,
         // duplicates) are checked here. The firmware repeats the check at
         // boot, but stopping before flashing is faster.
-        build_map(&map, p)
+        let role_map = build_map(&map, p)
             .with_context(|| format!("`{}`: invalid wiring table", path.display()))?;
+        if let Some(raw) = &b.display {
+            let d = build_display(raw, p, &role_map)
+                .with_context(|| format!("`{}`: invalid display entry", path.display()))?;
+            board_display.insert(board.clone(), d);
+        }
         board_roles.insert(board, map);
     }
 
@@ -287,6 +381,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
         default_board: raw.defaults.board,
         default_i2c_replay: raw.defaults.i2c_replay.map(|p| dir.join(p)),
         board_roles,
+        board_display,
         assets: assets_table,
     })
 }
@@ -549,5 +644,95 @@ version = 1
         .expect_err("a variant has no table of its own");
         let msg = format!("{e:#}");
         assert!(msg.contains("[board.esp32s3.roles]"), "{msg}");
+    }
+
+    #[test]
+    fn reads_a_display_entry_with_defaults() {
+        let m = parse(
+            "display-ok",
+            r#"
+version = 1
+[board.esp32s3.display]
+driver = "ili9341"
+cs = 10
+dc = 14
+rst = 15
+[board.esp32p4.display]
+driver = "tab5"
+"#,
+        )
+        .expect("loads");
+        assert_eq!(
+            m.display(&profile::ESP32S3),
+            Some(DisplayConfig::Ili9341 {
+                spi: 0,
+                cs: 10,
+                dc: 14,
+                rst: 15,
+                rotation: 90
+            })
+        );
+        // The PSRAM firmware reads its board's entry.
+        assert_eq!(
+            m.display(&profile::ESP32S3_PSRAM),
+            m.display(&profile::ESP32S3)
+        );
+        assert_eq!(m.display(&profile::ESP32P4), Some(DisplayConfig::Tab5));
+        assert_eq!(m.display(&profile::RP2350), None);
+        let w = m.wiring(&profile::ESP32P4).expect("wiring");
+        assert_eq!(w.version(), 2);
+    }
+
+    #[test]
+    fn rejects_a_bad_display_entry() {
+        for (tag, body, want) in [
+            (
+                "no-cs",
+                "driver = \"ili9341\"\ndc = 14\nrst = 15",
+                "needs `cs`",
+            ),
+            ("driver", "driver = \"st7789\"", "unknown driver"),
+            (
+                "unknown-key",
+                "driver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\nmosi = 11",
+                "unknown key",
+            ),
+            (
+                "bus-pin",
+                "driver = \"ili9341\"\ncs = 11\ndc = 14\nrst = 15",
+                "spi / i2c",
+            ),
+            (
+                "rotation",
+                "driver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\nrotation = 45",
+                "malformed",
+            ),
+        ] {
+            let text = format!("version = 1\n[board.esp32s3.display]\n{body}\n");
+            let e = parse(&format!("display-{tag}"), &text).expect_err(tag);
+            let msg = format!("{e:#}");
+            assert!(msg.contains(want), "{tag}: {msg}");
+        }
+        let e = parse(
+            "display-tab5-keys",
+            "version = 1\n[board.esp32p4.display]\ndriver = \"tab5\"\ncs = 1\n",
+        )
+        .expect_err("tab5 with a pin");
+        assert!(format!("{e:#}").contains("takes no other keys"));
+        // The Tab5 panel exists only on the ESP32-P4.
+        let e = parse(
+            "display-tab5-s3",
+            "version = 1\n[board.esp32s3.display]\ndriver = \"tab5\"\n",
+        )
+        .expect_err("tab5 on esp32s3");
+        assert!(format!("{e:#}").contains("board esp32p4"));
+        // A role on a display pin.
+        let e = parse(
+            "display-role",
+            "version = 1\n[board.esp32s3.roles]\nled = 14\n\
+             [board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n",
+        )
+        .expect_err("shared pin");
+        assert!(format!("{e:#}").contains("two roles share one gpio"));
     }
 }

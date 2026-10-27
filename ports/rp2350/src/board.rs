@@ -524,6 +524,12 @@ fn i2c_timing(clk_hz: u32, freq_hz: u32) -> Option<(u16, u16, u8, u16)> {
 }
 
 impl<S: Serial> Board for Pico2Board<S> {
+    fn display_supported(&self) -> bool {
+        // The ILI9341 backend in ports/common runs on this port's SPI
+        // (docs/device-layer.md §5.3); the profile says whether there is one.
+        wasmicon_port::profile::RP2350.interfaces.display
+    }
+
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }
