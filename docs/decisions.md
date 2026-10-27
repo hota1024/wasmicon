@@ -12,16 +12,17 @@ up the reason instead of implementing.
 |---|---|
 | D-01 | The WIT subset is exactly docs/abi-spec.md §2. No `record`, `variant`, `option` or `tuple`. |
 | D-02 | Handles use the WIT `resource` syntax. Import names follow the Canonical ABI: `[static]r.f`, `[method]r.f`, `[resource-drop]r`. |
-| D-03 | One error type for the whole HAL, `types.error-code`. Every function returns a single `i32` status: 0 = success, n > 0 = discriminant + 1. |
+| D-03 | One error type for `wasmicon:hal` and `wasmicon:device`, `wasmicon:hal/types.error-code`. Every function returns a single `i32` status: 0 = success, n > 0 = discriminant + 1. |
 | D-04 | The `T` of `result<T, _>` is returned through a trailing out-pointer. A `list<u8>` return value uses a caller buffer `(buf, cap, len-out)`. There is no `cabi_realloc`. |
-| D-05 | The import module name is `wasmicon:hal/<iface>@0.1.0`. The version is required and must match exactly. |
+| D-05 | The import module name is `wasmicon:hal/<iface>@0.1.0`, or `wasmicon:device/<iface>@<version>` for the device layer, whose version moves independently (owner decision, 2026-10-27). The version is required and must match exactly. |
 | D-06 | The guest exports `run: func()` and `memory`. `_start` and `_initialize` are not used. |
 | D-07 | Supported feature set: MVP + sign-ext + nontrapping-fptoint + bulk-memory (`memory.*` only) + multi-value + mutable-globals. SIMD, threads, exception handling, tail calls, GC and reference types are not supported. |
 | D-08 | The guest drives SPI CS and DC through `gpio`. The SPI interface does not handle CS. |
-| D-09 | The sensor is SHT4x (SHT40 / SHT41 / SHT45) and the display is ILI9341 (owner decision, 2026-09-29). Commands and conversion formulas: apps/README.md §1 is normative. |
+| D-09 | The sensor is SHT4x (SHT40 / SHT41 / SHT45) and the display is ILI9341 (owner decision, 2026-09-29). This is the display of the HAL evaluation apps; through `wasmicon:device/display` the ILI9341 is one backend among several (2026-10-27). Commands and conversion formulas: apps/README.md §1 is normative. |
 | D-10 | Determinism means: the trace of every host call and its result, except `time`, in the docs/abi-spec.md §9 format, is identical on both boards. |
 | D-11 | The runtime is Rust `no_std` with zero dependency crates and no `alloc`. The arena is injected by the port (owner decision, 2026-09-10). |
 | D-12 | The runtime is written from scratch. No code from wasm3, WAMR or wasmi is taken (studying their algorithms is fine). The core is written by Claude Code (owner decision, 2026-09-10). |
+| D-13 | Devices that no HAL interface reaches get the device layer, the package `wasmicon:device` (docs/device-layer.md). The host owns the device and the guest uses it. An interface enters only with at least two backends, counting the host mock, of which one runs on an evaluation board (owner decision, 2026-10-27). |
 
 ## Adopted defaults (A)
 
