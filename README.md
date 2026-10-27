@@ -2,7 +2,7 @@
 
 A WebAssembly runtime for microcontrollers. Evaluation boards: ESP32-S3 and RP2350 (Pico 2 W).
 ESP32-C5 is a port in progress (boots and blinks on hardware; status in docs/TODO.md §1.3.1).
-ESP32-P4 is a port in progress (builds; not yet run on hardware; status in docs/TODO.md §1.3.2).
+ESP32-P4 is a port in progress (boots and blinks on the M5Stack Tab5; status in docs/TODO.md §1.3.2).
 RP2040 has a port but is build-only; it was dropped from evaluation on 2026-10-07.
 
 - **Runtime**: a from-scratch Core Wasm interpreter. `no_std`, zero dependency crates, no `alloc`
@@ -66,7 +66,7 @@ ports/rp2350/         Raspberry Pi Pico 2 / Pico 2 W (separate workspace, Cortex
 ports/esp32s3/        Freenove ESP32-S3-WROOM board (separate workspace, esp toolchain)
 ports/esp32c5/        ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT; separate workspace, RISC-V; hardware bring-up in progress)
 ports/esp32p4/        ESP32-P4 (no particular board; pins free on the M5Stack Tab5; separate workspace, RISC-V;
-                      runs on silicon before v3.0 too; hardware bring-up not started)
+                      for silicon before v3.0; boots and blinks on hardware, SPI / I2C unchecked)
 bindings/rust/        Rust bindings for guests
 bindings/assemblyscript/  AssemblyScript bindings for guests
 bindings/c/           C bindings for guests (header + build.sh; built with clang's wasm32 target)

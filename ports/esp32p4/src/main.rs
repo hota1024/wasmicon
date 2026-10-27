@@ -9,8 +9,9 @@
 //! 115200 8N1. On the M5Stack Tab5 UART0 reaches only the M5-Bus (pins 14 /
 //! 13), so a 3.3 V USB serial adapter takes the trace.
 //!
-//! Runs on silicon before v3.0 as well (the Tab5 has v1.0): `pre-v3.x`,
-//! `src/mem.rs` and `vendor/esp-sync` make up for esp-hal assuming v3.x.
+//! For silicon before v3.0 only (the Tab5 has v1.0): `pre-v3.x`, `src/mem.rs`
+//! and `vendor/esp-sync` make up for esp-hal assuming v3.x, and the build
+//! halts on a v3.x chip.
 //!
 //! Port in progress; status in docs/TODO.md §1.3.2.
 
@@ -105,10 +106,13 @@ impl Serial for SerialPort<'_> {
 
 #[esp_hal::main]
 fn main() -> ! {
-    // The CPU runs at the fastest clock esp-hal offers, to match the ESP32-S3.
-    // `time` is not traced, so the clock does not affect the match with
-    // recorded traces.
-    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
+    // Not `CpuClock::max()`: that is 400 MHz, the v3.x maximum. ESP-IDF caps
+    // silicon before v3.0 at 360 MHz unless the chips passed extra
+    // qualification (`ESP_FORCE_400MHZ_ON_REV_LESS_V3` in
+    // components/esp_system/port/soc/esp32p4/Kconfig.cpu, v5.5.3), and esp-hal
+    // has no 360 MHz preset, so this takes the next one down. `time` is not
+    // traced, so the clock does not affect the match with recorded traces.
+    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_200MHz));
 
     let uart = Uart::new(p.UART0, UartConfig::default())
         .unwrap()
@@ -116,6 +120,27 @@ fn main() -> ! {
         .with_rx(p.GPIO38);
     let mut serial = SerialPort(uart);
     serial.write(b"wasmicon esp32p4\r\n");
+
+    // This build links the pre-ECO5 ROM tables (`pre-v3.x`), so on v3.x
+    // silicon ROM calls would land on the wrong functions and return wrong
+    // values without crashing. The image header already keeps a v3.x chip
+    // from booting it; this catches a bootloader that ignores the maximum.
+    // Log and halt (docs/decisions.md A-04).
+    let rev = esp_hal::efuse::chip_revision();
+    if rev.major >= 3 {
+        let mut line = [0u8; 96];
+        let mut out = Buf::new(&mut line);
+        out.str("wasmicon: this build is for ESP32-P4 before v3.0, the chip is v");
+        out.u32(u32::from(rev.major));
+        out.str(".");
+        out.u32(u32::from(rev.minor));
+        out.str(", halt");
+        serial.write(out.as_bytes());
+        serial.write(b"\r\n");
+        loop {
+            core::hint::spin_loop();
+        }
+    }
     // Identify this firmware in one line (docs/app-workflow.md §3.8): version,
     // git, ABI and configuration, so a captured trace records which build
     // produced it.

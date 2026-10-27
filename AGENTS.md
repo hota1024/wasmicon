@@ -5,8 +5,8 @@ interpreter (`runtime/`), a HAL defined in WIT (`wit/`), generated bindings for
 Rust / AssemblyScript / C (`bindings/`), board ports (`ports/`), sample apps
 (`apps/`) and the `wasmicon` CLI (`tools/`). Evaluation boards: ESP32-S3 and
 RP2350 (Pico 2 W). ESP32-C5 is a port in progress (boots and blinks on hardware;
-status in docs/TODO.md §1.3.1). ESP32-P4 is a port in progress (builds; not yet run
-on hardware; docs/TODO.md §1.3.2). RP2040 builds but is not evaluated.
+status in docs/TODO.md §1.3.1). ESP32-P4 is a port in progress (boots and blinks on
+the M5Stack Tab5; docs/TODO.md §1.3.2). RP2040 builds but is not evaluated.
 
 ## Read first
 

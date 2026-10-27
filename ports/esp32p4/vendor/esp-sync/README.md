@@ -14,6 +14,14 @@ marked `WASMICON LOCAL PATCH`), so the generic `riscv` arm runs. The firmware
 targets `riscv32imafc`, which has no Zcmp, so the workaround has nothing to
 guard against there.
 
+esp-hal 1.2.2 touches the same CSR in its CLIC interrupt code
+(`interrupt/riscv/clic.rs`), which this copy cannot change. The firmware
+enables no interrupt, so that code never runs; docs/TODO.md §1.3.2 records
+the constraint.
+
+`ports/esp32p4/build.rs` fails the build when `Cargo.lock` takes esp-sync
+from crates.io instead of this copy.
+
 Delete this directory and the `[patch.crates-io]` entry once an esp-sync
 release picks the workaround by silicon revision (docs/TODO.md §1.3.2).
 

@@ -20,3 +20,9 @@ rustflags = ["-Clink-arg=-Tlinkall.x", "-Clink-arg=-Tpre-v3.x"]
 # option, the counterpart of ESP-IDF's CONFIG_ESP32P4_REV_MIN_100; espflash
 # copies it from the ELF into the image header.
 ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"
+# The link fails when the native stack (from `.bss` up to the top that
+# pre-v3.x sets) is smaller than this. esp-hal's default is 8 KiB, below what
+# the runtime needs (the S3 port measured about 17 KB, and an `esp-storage`
+# read puts a 4 KiB buffer on top), so growing the arena past what fits would
+# otherwise link and then overwrite `.bss` at run time.
+ESP_HAL_CONFIG_ENSURE_MAIN_STACK_MINIMUM = "32768"
