@@ -195,8 +195,12 @@ the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/
 2026-09-22) that was dropped and redone from `main`; the facts below were measured there.
 
 - [x] **(0) Builds, clippy and fmt pass** (2026-10-26; CI has a build job, `esp32p4`)
-- [ ] **(1) The firmware boots on the Tab5 and announces itself** (`wasmicon id esp32p4 ...`)
-- [ ] **(2) `deploy` runs blink-rs from the slot** (`led`=GPIO16, external) and the trace matches the host
+- [x] **(1) The firmware boots on the Tab5 and announces itself** (2026-10-27, firmware e177581.
+  The chip is ESP32-P4 rev v1.0, 16 MB flash. It prints `wasmicon id esp32p4 ...`; with the slots
+  empty it prints `magic mismatch` and parks)
+- [x] **(2) `deploy` runs blink-rs from the slot** (2026-10-27. The wiring table `led`=GPIO16 is
+  read and the blink-rs trace is identical to the host over 20 lines. No LED was wired, so the
+  pin was not watched)
 - [ ] **(3) SPI: lcd-demo-rs draws on the ILI9341** and the trace matches the host
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 on PORT.A** and the trace matches the host
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
@@ -231,6 +235,13 @@ the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/
 - **Reset on the Tab5.** With the USB-C cable plugged into a PC, a reset from espflash always
   lands in download mode (`boot:0x204 DOWNLOAD`). The power button (double press off, single
   press on) boots normally
+- **The first boot after power-on fails in the second-stage bootloader** (2026-10-27, seen on
+  every power-on). The bootloader espflash 4.5 bundles (ESP-IDF v5.5.3) takes an instruction
+  access fault at 0x4FF2A200, inside its own code loaded at 0x4FF29ED0, before printing
+  anything (or prints nothing and is reset); the watchdog resets the chip
+  (`rst:0x7 HP_SYS_HP_WDT_RESET`) and the second run boots the firmware. The firmware is not
+  involved yet at that point. Not investigated: a bootloader built for pre-v3 silicon may
+  avoid it
 - **Owner questions:**
   - Which of GPIO53/54 is SDA on PORT.A. The Tab5 pin map gives only the colors (yellow = G53,
     white = G54); the port follows the usual M5Stack order (white = SDA), but a second-hand
