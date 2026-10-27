@@ -39,10 +39,10 @@ const DSI_BRG_MEM_BASE: u32 = 0x5010_5000;
 /// VDMA CTL0 for memory -> DSI: source memory, destination DSI, source
 /// increments, destination fixed, 64-bit widths, bursts of 512 / 256 items.
 const CTL0: u32 = 1 | (1 << 6) | (3 << 8) | (3 << 11) | (8 << 14) | (7 << 18);
-/// CTL1: AXI read and write burst lengths of 16, and IOC_BlkTfr (bit 26) so
-/// the block-done status is raised. No interrupt signal is enabled, so it only
-/// sets a status bit the probe polls.
-const CTL1: u32 = (1 << 6) | (16 << 7) | (1 << 15) | (16 << 16) | (1 << 26);
+/// CTL1: AXI read and write burst lengths of 16. No IOC_BlkTfr (bit 26): with
+/// it, the controller holds the next frame until the block-done status is
+/// cleared, and every frame the CPU is late to clear goes out as underrun.
+const CTL1: u32 = (1 << 6) | (16 << 7) | (1 << 15) | (16 << 16);
 
 /// One init list: `(command, params)` pairs.
 pub type List = &'static [(u8, &'static [u8])];
@@ -126,11 +126,14 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
             w.lp_vfp_en().set_bit();
             w.lp_hbp_en().set_bit();
             w.lp_hfp_en().set_bit();
+            w.lp_vact_en().set_bit();
             w.lp_cmd_en().set_bit();
             // A bus turnaround after every frame, so the panel can acknowledge
             // or report errors, as ESP-IDF does (esp-hal leaves it off).
             w.frame_bta_ack_en().set_bit()
         });
+        // The turnaround above needs BTA enabled, as ESP-IDF leaves it.
+        host.pckhdl_cfg().modify(|_, w| w.bta_en().set_bit());
         host.vid_pkt_size()
             .modify(|_, w| w.vid_pkt_size().bits(WIDTH as u16));
         host.vid_num_chunks()
@@ -210,6 +213,11 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
             w.dsi_raw_buf_almost_empty_thrd()
                 .bits(FIFO_EMPTY_THRESHOLD as u16)
         });
+        // What the bridge sends when its FIFO runs dry; black instead of the
+        // reset value 0x3FFF, which shows as cyan.
+        bridge
+            .dpi_rsv_dpi_data()
+            .modify(|_, w| w.dpi_rsv_data().bits(0));
         bridge.en().modify(|_, w| w.dsi_en().set_bit());
         bridge
             .dpi_config_update()
@@ -260,17 +268,6 @@ pub unsafe fn start(fb: *const u8, lane_mbps: f32, pixel_mhz: f32) -> u32 {
     (real_mhz * 1000.0) as u32
 }
 
-/// Whether the VDMA finished a block (a frame) since the last call; clears it.
-pub fn frame_done() -> bool {
-    let ch = VDMA::regs().ch(0);
-    let done = ch.intstatus0().read().bits() & 1 != 0;
-    if done {
-        // SAFETY: writing 1 clears the block-done status bit only.
-        unsafe { ch.intclear0().write(|w| w.bits(1)) };
-    }
-    done
-}
-
 /// One second of link health: DSI host errors (`int_st1`, read clears),
 /// bridge underrun and vsync flags (cleared after), VDMA channel status.
 pub fn health() -> [u32; 4] {
@@ -290,7 +287,6 @@ pub fn health() -> [u32; 4] {
 }
 
 /// Bridge flags since the last call: (vsync, underrun); clears both.
-#[allow(dead_code)]
 pub fn bridge_flags() -> (bool, bool) {
     let bridge = MIPI_DSI_BRIDGE::regs();
     let raw = bridge.int_raw().read().bits();
@@ -340,7 +336,8 @@ fn test_pixel(x: usize, y: usize) -> u16 {
         0xF800, 0xFD20, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xFFFF,
     ];
     let (w, h) = (WIDTH as usize, HEIGHT as usize);
-    if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
+    const EDGE: usize = 8;
+    if x < EDGE || y < EDGE || x >= w - EDGE || y >= h - EDGE || x == w / 2 {
         0xFFFF
     } else if y < h * 3 / 4 {
         BARS[y * 8 / (h * 3 / 4)]
@@ -539,17 +536,58 @@ fn phy_write(addr: u32, val: u32) {
     }
 }
 
-/// Reprograms the D-PHY PLL for `LANE_MBPS` from the 20 MHz reference and
-/// waits for lock. Call right after `MipiDsi::new`. Returns whether it locked.
+/// Reads one D-PHY test register back.
+pub fn phy_read(addr: u32) -> u32 {
+    let h = MIPI_DSI_HOST::regs();
+    // SAFETY: the same test-interface protocol as `phy_write`, ending with
+    // TESTEN low so TESTDOUT (PHY_TST_CTRL1 bits 15:8) shows the register.
+    unsafe {
+        h.phy_tst_ctrl0().write(|w| w.bits(0));
+        h.phy_tst_ctrl1()
+            .write(|w| w.bits((1 << 16) | (addr & 0xFF)));
+        h.phy_tst_ctrl0().write(|w| w.bits(1 << 1));
+        h.phy_tst_ctrl0().write(|w| w.bits(0));
+        h.phy_tst_ctrl1().write(|w| w.bits(0));
+    }
+    (h.phy_tst_ctrl1().read().bits() >> 8) & 0xFF
+}
+
+/// Brings the D-PHY up again for `LANE_MBPS` from the 20 MHz reference:
+/// held in shutdown and reset while the PLL and the HS range are written,
+/// then released, so nothing of esp-hal's first setup (for half the rate)
+/// stays in effect. Call right after `MipiDsi::new`. Returns whether the PLL
+/// locked and the lanes reached stop state.
 pub fn retune_pll(delay: &esp_hal::delay::Delay) -> bool {
+    let h = MIPI_DSI_HOST::regs();
+    h.phy_rstz().modify(|_, w| {
+        w.phy_rstz().clear_bit();
+        w.phy_shutdownz().clear_bit()
+    });
+    // The D-PHY supply (LDO VO3, `ext_ldo_p0_0p2a_ana`) as ESP-IDF leaves it
+    // on this unit for 2.5 V: dref 14, mul 3, voltage detect on, chosen from
+    // the eFuse calibration. esp-hal's uncalibrated dref 9 / mul 6 is lower.
+    // SAFETY: PMU_EXT_LDO_P0_0P2A_ANA_REG (ESP-IDF pmu_reg.h); the value sets
+    // only that LDO's reference, multiplier and detector.
+    unsafe { (0x5011_51C4 as *mut u32).write_volatile(0xE580_0000) };
+    delay.delay_micros(1000);
     phy_write(0x44, HS_FREQ_RANGE << 1);
     phy_write(0x19, 0x30); // use the N and M written below
     phy_write(0x17, PLL_N - 1);
     phy_write(0x18, (PLL_M - 1) & 0x1F);
     phy_write(0x18, 0x80 | (((PLL_M - 1) >> 5) & 0x0F));
+    h.phy_rstz().modify(|_, w| w.phy_shutdownz().set_bit());
+    delay.delay_micros(10);
+    h.phy_rstz().modify(|_, w| {
+        w.phy_rstz().set_bit();
+        w.phy_enableclk().set_bit();
+        w.phy_forcepll().set_bit()
+    });
     let h = MIPI_DSI_HOST::regs();
     for _ in 0..10_000 {
-        if h.phy_status().read().phy_lock().bit_is_set() {
+        // PLL lock, and the clock lane and both data lanes in stop state.
+        const STOPPED: u32 = (1 << 2) | (1 << 4) | (1 << 7);
+        let st = h.phy_status().read();
+        if st.phy_lock().bit_is_set() && st.bits() & STOPPED == STOPPED {
             // SAFETY: both dividers fit their 8-bit fields; the timeout clock
             // divider keeps esp-hal's value.
             h.clkmgr_cfg()

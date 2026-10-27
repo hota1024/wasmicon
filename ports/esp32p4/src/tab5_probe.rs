@@ -172,7 +172,7 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
     // `Output` has no `Drop`: the pin stays high after the value is gone.
     let _backlight = Output::new(p.backlight, Level::High, OutputConfig::default());
 
-    say(serial, "step 4 psram hex at 250 mhz", &[]);
+    say(serial, "step 4 psram hex at 125 mhz", &[]);
     let psram = Psram::new(
         p.psram,
         PsramConfig {
@@ -181,7 +181,7 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
             // esp-hal clocks PSRAM from MPLL at 500 MHz, which 200 MHz does not
             // divide (its init then gives up). At 125 MHz the frame buffer
             // reads topped out near 70 MB/s (38 frames a second at 80 MHz).
-            timing: PsramTimingParams::MHZ_250,
+            timing: PsramTimingParams::MHZ_125,
         },
     );
     let (base, size) = psram.raw_parts();
@@ -233,6 +233,9 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
                 &[
                     ("lane mbps", tab5_dpi::LANE_MBPS),
                     ("locked", u32::from(locked)),
+                    ("phy 44", tab5_dpi::phy_read(0x44)),
+                    ("phy 17", tab5_dpi::phy_read(0x17)),
+                    ("phy 18", tab5_dpi::phy_read(0x18)),
                 ],
             );
             delay.delay_millis(80);
@@ -284,6 +287,8 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
     // If the DPI side outpaces the DSI host, the host drops payload
     // (`int st1` bit 7) and the picture shears; at half the clock it should not.
     // One clock per boot: reprogramming a running stream stalled the DMA.
+    // Leave it running: the D-PHY would power down on drop.
+    core::mem::forget(bus);
     for pixel_mhz in [tab5_dpi::PIXEL_MHZ] {
         // SAFETY: the frame buffer stays allocated (the firmware halts after
         // the probe), the DSI host is up at `lane_mbps`, and VDMA channel 0 is
@@ -291,33 +296,116 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
         let khz = unsafe { tab5_dpi::start(base, tab5_dpi::LANE_MBPS as f32, pixel_mhz) };
         say(serial, "video on", &[("dpi khz", khz)]);
         let _ = tab5_dpi::health();
-        for second in 0..120u32 {
+        // Never returns: dropping the drivers here would change what the
+        // stream depends on, and the picture must outlive the probe.
+        for second in 0..=u32::MAX {
+            if second == 3 {
+                dump_regs(serial);
+            }
             let mut frames = 0u32;
             let mut fifo_min = u32::MAX;
+            let mut underruns = 0u32;
             for _ in 0..2000 {
-                frames += u32::from(tab5_dpi::frame_done());
+                let (vsync, underrun) = tab5_dpi::bridge_flags();
+                frames += u32::from(vsync);
                 fifo_min = fifo_min.min(tab5_dpi::fifo_depth());
+                underruns += u32::from(underrun);
                 delay.delay_micros(500);
             }
             // The frame buffer held (every pixel read back for two minutes);
             // the read-back is left out so it does not compete with the DMA.
             let bad = 0;
-            let [st1, _, _, _] = tab5_dpi::health();
+            let _ = bad;
+            let st1 = esp_hal::peripherals::MIPI_DSI_HOST::regs()
+                .int_st1()
+                .read()
+                .bits();
+            // int_st0: what the panel reported in the turnaround after each
+            // frame (ack_with_err_*), and D-PHY errors.
+            let st0 = esp_hal::peripherals::MIPI_DSI_HOST::regs()
+                .int_st0()
+                .read()
+                .bits();
+            // The expanders that power and reset the panel: output (0x05) and
+            // direction (0x03) registers, as read back now.
+            let mut regs = [0u8; 4];
+            for (i, (addr, reg)) in [
+                (PI4IO1, 0x05),
+                (PI4IO1, 0x03),
+                (PI4IO2, 0x05),
+                (PI4IO2, 0x03),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut b = [0xEEu8; 1];
+                let _ = i2c.write_read(addr, &[reg], &mut b);
+                regs[i] = b[0];
+            }
             say(
                 serial,
                 "health",
                 &[
                     ("s", second),
                     ("dma frames", frames),
+                    ("underruns", underruns),
                     ("fifo min", fifo_min),
-                    ("bad pixels", bad),
+                    ("host int st0", st0),
                     ("host int st1", st1),
+                    ("io1 out dir", u32::from(regs[0]) << 8 | u32::from(regs[1])),
+                    ("io2 out dir", u32::from(regs[2]) << 8 | u32::from(regs[3])),
                 ],
             );
         }
     }
-    // Leave it running: the D-PHY would power down on drop.
-    core::mem::forget(bus);
+}
+
+/// Registers that drive the display, in the format of the M5GFX dump
+/// sketch, so the two firmwares' hardware state can be diffed.
+fn dump_regs(serial: &mut impl Serial) {
+    // Whole blocks where every word reads back; DW-GDMA only by its
+    // readable registers (its write-only ones hang the bus on a read).
+    const REGIONS: [(u32, u32); 5] = [
+        (0x500A_0000, 0x200), // DSI host
+        (0x500A_0800, 0x100), // DSI bridge
+        (0x500E_6000, 0x200), // HP_SYS_CLKRST
+        (0x5011_5180, 0x80),  // PMU external LDOs
+        (0x5008_E000, 0x400), // PSRAM MSPI0
+    ];
+    // Common: ID, version, config, channel enable, interrupt status.
+    const GDMA_COMMON: [u32; 10] = [0x00, 0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x30, 0x34];
+    // Per channel: SAR, DAR, BLOCK_TS, CTL, CFG, LLP, STATUS, INTSTATUS_ENABLE,
+    // INTSTATUS, INTSIGNAL_ENABLE (low and high words).
+    const GDMA_CH: [u32; 20] = [
+        0x00, 0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x80,
+        0x84, 0x88, 0x8C, 0x90, 0x94,
+    ];
+    let read = |serial: &mut _, a: u32| {
+        // SAFETY: every address is a readable peripheral register of this
+        // chip (ESP-IDF's reg_base.h and the DW-GDMA map); a 32-bit read has
+        // no side effect other than clearing read-to-clear status bits, which
+        // the probe does not rely on after this.
+        let v = unsafe { (a as *const u32).read_volatile() };
+        say(serial, "reg", &[("a", a), ("v", v)]);
+    };
+    say(serial, "dump begin", &[]);
+    for a in GDMA_COMMON {
+        read(serial, 0x5008_1000 + a);
+    }
+    for ch in 0..4 {
+        for a in GDMA_CH {
+            read(serial, 0x5008_1100 + ch * 0x100 + a);
+        }
+    }
+    for (base, bytes) in REGIONS {
+        for off in (0..bytes).step_by(4) {
+            read(serial, base + off);
+        }
+    }
+    for a in 0..0x80 {
+        say(serial, "phy", &[("a", a), ("v", tab5_dpi::phy_read(a))]);
+    }
+    say(serial, "dump end", &[]);
 }
 
 /// Reports a DSI packet that did not go through.
