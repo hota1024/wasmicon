@@ -21,6 +21,8 @@
 
 mod board;
 mod mem;
+#[cfg(feature = "tab5-probe")]
+mod tab5_probe;
 
 use esp_hal::clock::CpuClock;
 use esp_hal::uart::{Config as UartConfig, Uart};
@@ -105,6 +107,8 @@ impl Serial for SerialPort<'_> {
 }
 
 #[esp_hal::main]
+// The probe build halts after the probe, so the loader below is unreachable there.
+#[cfg_attr(feature = "tab5-probe", allow(unreachable_code))]
 fn main() -> ! {
     // Not `CpuClock::max()`: that is 400 MHz, the v3.x maximum. ESP-IDF caps
     // silicon before v3.0 at 360 MHz unless the chips passed extra
@@ -158,6 +162,27 @@ fn main() -> ! {
         );
         serial.write(out.as_bytes());
         serial.write(b"\r\n");
+    }
+
+    #[cfg(feature = "tab5-probe")]
+    {
+        tab5_probe::run(
+            &mut serial,
+            tab5_probe::Parts {
+                i2c: p.I2C1,
+                sda: p.GPIO31,
+                scl: p.GPIO32,
+                tp_int: p.GPIO23,
+                backlight: p.GPIO22,
+                dsi: p.MIPI_DSI,
+                vdma: p.VDMA_CH0,
+                psram: p.PSRAM,
+            },
+        );
+        serial.write(b"tab5: probe done, halt\r\n");
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     // The app slot, the config slot and the assets are all read through it.
