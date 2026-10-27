@@ -1568,3 +1568,52 @@ was (`doom1.wad`).
 - Only rotation 90 ran; 0, 180 and 270 have never driven a panel
 - The Pico 2 W, the ESP32-C5 and the ESP32-P4 were not run with the backend
 - The time the demo takes was not measured
+
+## 28. Bring-up of the M5Stack Tab5's own display (ESP32-P4, 2026-10-27)
+
+Question: can `ports/esp32p4` drive the Tab5's MIPI-DSI panel with esp-hal 1.2 on v1.0 silicon, without
+interrupts, so that a `tab5` display backend (docs/device-layer.md §10, stage 4) can be written, and what
+does it take?
+
+M5Stack Tab5: ESP32-P4 rev v1.0, 16 MB flash, 32 MB PSRAM at 0x48000000, MAC `30:ed:a0:e2:9d:0a`. The
+panel answers as an ILI9881C (GT911 touch at I2C 0x14, product ID `911`). Firmware `ports/esp32p4`
+with the `tab5-probe` feature (it runs the probe after the identity line and runs no app), built from the
+uncommitted tree on `4f13ca8`; its sources are the commit that adds this section. UART0 captured at
+115200 with `wasmicon monitor`. The probe draws a fixed portrait test picture (eight color bars, a
+16-step gray ramp, an 8-pixel white frame and a 1-pixel white center line) and logs once a second.
+The owner watched the panel and, for comparison, ran M5GFX 0.2.32 sketches drawing the same picture.
+
+| Step | Result |
+|---|---|
+| IO expanders (PI4IOE5V6408 at 0x43 / 0x44, internal I2C GPIO31/32) | written with M5GFX's values; output / direction read back `0x76`/`0x6f` and `0x89`/`0xb9`, unchanged every second for 142 s |
+| PSRAM (hex mode) | 200 MHz fails (esp-hal clocks it from a 500 MHz MPLL, which 200 does not divide; the size reads 0). 125 and 250 MHz pass an 8 MiB pattern test. Initializing PSRAM after DSI turns the D-PHY LDO off (esp-hal rewrites every external LDO), so PSRAM comes first |
+| D-PHY PLL | esp-hal computes M/N for a 40 MHz reference, but the PLL reference on this revision is PLL_F20M, so every lane rate came out half (a doubled, sheared picture and `int_st1` = `0x80`, payload write error). Rewriting M=52, N=1 (1040 Mbps), hsfreqrange 0x2A and escape divider 7 fixes it; read back `0x44`=`0x54`, `0x18`=`0x13` |
+| Init commands | 197 commands, byte-identical to M5GFX's four lists (compared mechanically), 120 ms after sleep-out; sent with bounded waits, no read (a bus turnaround hung the host) |
+| Video | DPI 80 MHz from PLL_F240M, M5GFX's porches, burst mode; VDMA channel 0 in reload mode (one block is one frame), no interrupt. The panel shows the picture; host `int_st0` and `int_st1` stayed 0 for every logged second |
+
+Faults found on the way, each tested on the panel:
+
+| Symptom | Cause | Test |
+|---|---|---|
+| Momentary full-screen cyan | The bridge fills an underrun with `dpi_rsv_dpi_data`, reset value `0x3fff` (cyan in RGB565) | set to 0: the flashes turned black |
+| The flash came once a second | With IOC_BlkTfr set, the VDMA held each frame until the block-done status was cleared, and the CPU missed it while it logged and read the expanders | without IOC: no flash; the bridge FIFO's minimum rose from 0 to `0x2ff` words per second, over 64 s |
+| The screen stuck cyan after about 2 min | The probe returned after its 120 s loop and dropped its drivers | a loop that never returns: the picture stayed for 361 s and longer |
+| A shimmer on the last ~40 rows of the bright grays (a phone video, frame by frame) | **Not fully found.** Not PSRAM (same at 125 MHz), not a D-PHY set up twice (same after one bring-up in shutdown). The D-PHY LDO: esp-hal writes `ext_ldo_p0_0p2a_ana` = `0x93000000` (dref 9, mul 6, uncalibrated); ESP-IDF leaves `0xe5800000` (dref 14, mul 3, detector on, from eFuse) | writing `0xe5800000`: the owner saw the shimmer much reduced. Also setting `lp_vact_en` and `bta_en` as ESP-IDF does: no visible change |
+
+M5GFX drew the same picture with no flicker at all. A register dump of both firmwares (DSI host, bridge,
+DW-GDMA, HP_SYS_CLKRST, PMU external LDOs, PSRAM MSPI0, D-PHY test registers 0x00 ... 0x7f), taken
+3 s after the picture, differed beyond counters and pointers only in: the DMA mode (linked list there,
+reload here), the two host bits named above, clock gates of other peripherals, the PSRAM MSPI timing and
+two other LDOs (`ext_ldo_p0_0p1a` bypassed to the rail there; `ext_ldo_p1_0p1a` dref / mul).
+
+### What this measurement does not say
+
+- No app ran: there is no `tab5` backend yet, and no trace was compared
+- The D-PHY LDO value is the one this unit's ESP-IDF run left, written as a constant; it is not
+  computed from eFuse, and another unit may need another value
+- The last runs had PSRAM at 125 MHz; 250 MHz was not repeated after the IOC and LDO changes
+- The residual shimmer has no cause; the remaining register differences were not tried one by one
+- The frame rate rests on the block-done count taken while IOC was set (64 or 65 a second, as the timing
+  gives 64.3). The bridge's raw underrun and vsync flags stayed 0 throughout and count nothing here
+- The touch panel, the backlight level (GPIO22 is driven high; M5GFX uses PWM) and the expanders'
+  other outputs were not examined

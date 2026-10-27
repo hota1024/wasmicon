@@ -1166,9 +1166,9 @@ Also agreed that day: refuse an app early when the board lacks the device; sever
 backends per interface selected by board configuration; a small API (screen size,
 `fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
-recommended option. Nothing is implemented yet.**
+recommended option.** §6-8 is open. Implementation status is under Implementation below.
 
-### Open questions (owner decisions; the text cites them as §6-1 ... §6-7)
+### Open questions (owner decisions; the text cites them as §6-1 ... §6-8)
 
 - [x] **§6-1 Changes to frozen decisions and the ABI spec** (owner decision 2026-10-27).
       docs/decisions.md D-03, D-05 and D-09 change wording and D-13 records the layer
@@ -1196,6 +1196,11 @@ recommended option. Nothing is implemented yet.**
 - [x] **§6-7 `present` semantics** (owner decision 2026-10-27). Required for portable
       output, a no-op on the `ili9341` backend, one buffer (no swap). Whether it waits for
       vertical blank is the backend's choice
+- [ ] **§6-8 The LovyanGFX notice for the Tab5 init commands.** `ports/esp32p4/src/tab5_ili9881c.rs`
+      is extracted from M5GFX's `Panel_ILI9881C.hpp`, whose header names LovyanGFX's FreeBSD
+      license. The MIT notice of M5GFX is in `ports/esp32p4/notices/m5gfx/`; the FreeBSD one is
+      not, and the M5GFX release does not ship it as a file. Recommended: copy LovyanGFX's
+      `license.txt` into `ports/esp32p4/notices/lovyangfx/` before the `tab5` backend merges
 
 ### Implementation (stages: docs/device-layer.md §10)
 
@@ -1230,5 +1235,13 @@ recommended option. Nothing is implemented yet.**
       from `apps/display-demo-rs`, capture the serial trace, and compare it with
       `wasmicon run --trace` through `sh verify/diff-traces.sh`. Pass = identical traces
       and the demo picture on the panel
-- [ ] (4) `tab5` backend on the ESP32-P4. Risks: interrupts on v1.0 silicon (esp-hal DPI
-      re-arms VDMA in an interrupt) and PSRAM not yet tried (§1.3.2)
+- [ ] (4) `tab5` backend on the ESP32-P4. **Bring-up done 2026-10-27, backend not written.**
+      The `tab5-probe` feature of `ports/esp32p4` drives the panel from a PSRAM frame buffer
+      with no interrupt (docs/verification-report.md §28): the picture holds, with no underrun,
+      and the M5GFX register state was diffed. What the backend must keep from the probe:
+      PSRAM before DSI; the D-PHY PLL retuned from 20 MHz to 1040 Mbps; the D-PHY LDO at the
+      eFuse-calibrated setting (today the value read from this unit's M5GFX run, not
+      computed); VDMA in reload mode without IOC; the probe never dropping its drivers.
+      **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
+      the LDO value computed from eFuse as ESP-IDF does; PSRAM at 250 MHz with these changes
+      (the last runs were at 125 MHz); §6-8
