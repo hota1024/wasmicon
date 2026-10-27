@@ -10,7 +10,9 @@
 //!   its touch controller as M5GFX 0.2.32 does (`M5GFX.cpp`, board_M5Tab5);
 //! - whether the DSI host and the D-PHY come up on this silicon, by reading
 //!   the panel's ID over DSI with no interrupt and no PSRAM;
-//! - whether PSRAM comes up and holds data.
+//! - whether PSRAM comes up and holds data (hex mode at 125 MHz);
+//! - whether the ILI9881C shows a test picture from a PSRAM frame buffer in
+//!   video mode with no interrupt (`tab5_dpi`), and frames keep coming.
 //!
 //! Each step prints `tab5: step N ...` before it starts, so a step that hangs
 //! or resets the chip still shows where. The expander register values are
@@ -27,6 +29,7 @@ use esp_hal::time::Rate;
 use wasmicon_port::fmt::Buf;
 
 use crate::board::Serial;
+use crate::tab5_dpi;
 
 /// PI4IOE5V6408 addresses: the first drives the LCD reset, the second the
 /// panel power rails.
@@ -78,13 +81,11 @@ impl Panel {
         }
     }
 
-    /// Lane rate M5GFX uses: the ST7121 runs slower.
+    /// Lane rate asked of esp-hal. It assumes a 40 MHz PLL reference this
+    /// silicon does not have, so 520 asked runs at 260; `retune_pll` then sets
+    /// the real `LANE_MBPS`.
     fn lane_mbps(self) -> f32 {
-        if self == Panel::St7121 {
-            900.0
-        } else {
-            1040.0
-        }
+        520.0
     }
 }
 
@@ -167,66 +168,20 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
     }
     say(serial, panel.name(), &[]);
 
-    say(
-        serial,
-        "step 3 dsi host, no dpi",
-        &[("lane mbps", panel.lane_mbps() as u32)],
-    );
-    let config = DsiConfig::default()
-        .with_num_data_lanes(DataLanes::_2)
-        .with_lane_bit_rate_mbps(panel.lane_mbps());
-    match MipiDsi::new(p.dsi, p.vdma, config) {
-        Err(_) => say(serial, "dsi config refused", &[]),
-        Ok(mut bus) => {
-            say(serial, "dsi up", &[]);
-            delay.delay_millis(80);
-            let mut dbi = bus.dbi(0);
-            say(serial, "read st id (0xf4)", &[]);
-            let mut st = [0u8; 2];
-            let n = dbi.read_cmd(0xF4, &mut st).unwrap_or(0);
-            say(
-                serial,
-                "st id",
-                &[
-                    ("n", n as u32),
-                    ("b0", u32::from(st[0])),
-                    ("b1", u32::from(st[1])),
-                ],
-            );
-            say(serial, "read ili id (page 1, 0x00..0x02)", &[]);
-            let _ = dbi.write_cmd(0xFF, &[0x98, 0x81, 0x01]);
-            let mut ili = [0u8; 3];
-            for (i, b) in ili.iter_mut().enumerate() {
-                let mut one = [0u8; 1];
-                let _ = dbi.read_cmd(i as u8, &mut one);
-                *b = one[0];
-            }
-            let _ = dbi.write_cmd(0xFF, &[0x98, 0x81, 0x00]);
-            say(
-                serial,
-                "ili id",
-                &[
-                    ("b0", u32::from(ili[0])),
-                    ("b1", u32::from(ili[1])),
-                    ("b2", u32::from(ili[2])),
-                ],
-            );
-            // The bus would power the D-PHY down on drop; keep it for step 4.
-            core::mem::forget(bus);
-        }
-    }
-
-    say(serial, "step 4 backlight on (gpio22 high)", &[]);
+    say(serial, "step 3 backlight on (gpio22 high)", &[]);
     // `Output` has no `Drop`: the pin stays high after the value is gone.
     let _backlight = Output::new(p.backlight, Level::High, OutputConfig::default());
 
-    say(serial, "step 5 psram hex at 200 mhz", &[]);
+    say(serial, "step 4 psram hex at 250 mhz", &[]);
     let psram = Psram::new(
         p.psram,
         PsramConfig {
             mode: PsramMode::Hex,
             size: PsramSize::AutoDetect,
-            timing: PsramTimingParams::MHZ_200,
+            // esp-hal clocks PSRAM from MPLL at 500 MHz, which 200 MHz does not
+            // divide (its init then gives up). At 125 MHz the frame buffer
+            // reads topped out near 70 MB/s (38 frames a second at 80 MHz).
+            timing: PsramTimingParams::MHZ_250,
         },
     );
     let (base, size) = psram.raw_parts();
@@ -254,6 +209,129 @@ pub fn run(serial: &mut impl Serial, p: Parts) {
         bad += u32::from(v != pattern(i));
     }
     say(serial, "psram checked", &[("bad words", bad)]);
+
+    // DSI after PSRAM: esp-hal's PSRAM init rewrites every external LDO and
+    // leaves the one that powers the D-PHY (LDO 3, `ext_ldo_p0_0p2a`) off.
+    // With DSI brought up first, the host sent nothing after PSRAM init.
+    say(
+        serial,
+        "step 5 dsi host, no dpi",
+        &[("lane mbps", panel.lane_mbps() as u32)],
+    );
+    let config = DsiConfig::default()
+        .with_num_data_lanes(DataLanes::_2)
+        .with_lane_bit_rate_mbps(panel.lane_mbps());
+    let mut dsi_bus = None;
+    match MipiDsi::new(p.dsi, p.vdma, config) {
+        Err(_) => say(serial, "dsi config refused", &[]),
+        Ok(bus) => {
+            say(serial, "dsi up", &[]);
+            let locked = tab5_dpi::retune_pll(&delay);
+            say(
+                serial,
+                "pll retuned",
+                &[
+                    ("lane mbps", tab5_dpi::LANE_MBPS),
+                    ("locked", u32::from(locked)),
+                ],
+            );
+            delay.delay_millis(80);
+            tab5_dpi::dbi::setup();
+            // No ID read here: a read turns the bus around (BTA), and after
+            // one the host sent nothing more on this unit (the ILI9881C ID
+            // 98 81 5C was read in earlier runs; the touch controller already
+            // tells the panel apart).
+            dsi_bus = Some(bus);
+        }
+    }
+
+    let Some(bus) = dsi_bus else { return };
+    if size < tab5_dpi::FB_BYTES {
+        return;
+    }
+    say(serial, "step 6 ili9881c init, then video from psram", &[]);
+    for (name, list, wait_ms) in tab5_dpi::INIT {
+        say(serial, name, &[("commands", list.len() as u32)]);
+        if let Err((cmd, e)) = tab5_dpi::send(list) {
+            stalled(serial, cmd, e);
+            return;
+        }
+        delay.delay_millis(wait_ms);
+    }
+    if let Err((cmd, e)) = tab5_dpi::send(tab5_dpi::PIXEL_FORMAT) {
+        stalled(serial, cmd, e);
+        return;
+    }
+    let h = esp_hal::peripherals::MIPI_DSI_HOST::regs();
+    say(
+        serial,
+        "panel init sent",
+        &[
+            ("pkt status", h.cmd_pkt_status().read().bits()),
+            ("int st0", h.int_st0().read().bits()),
+            ("int st1", h.int_st1().read().bits()),
+        ],
+    );
+    // SAFETY: `base` is 64-byte aligned PSRAM of at least FB_BYTES (checked
+    // above), used by nothing else; the slice ends before `size`.
+    let fb = unsafe { core::slice::from_raw_parts_mut(base.cast::<u16>(), tab5_dpi::FB_BYTES / 2) };
+    tab5_dpi::test_picture(fb);
+    // SAFETY: the same mapped range.
+    unsafe { tab5_dpi::writeback(base as u32, tab5_dpi::FB_BYTES as u32) };
+    say(serial, "picture written back", &[]);
+    // SAFETY: the frame buffer stays allocated (the firmware halts after the
+    // probe), the DSI host is up at `lane_mbps`, and VDMA channel 0 is ours.
+    // If the DPI side outpaces the DSI host, the host drops payload
+    // (`int st1` bit 7) and the picture shears; at half the clock it should not.
+    // One clock per boot: reprogramming a running stream stalled the DMA.
+    for pixel_mhz in [tab5_dpi::PIXEL_MHZ] {
+        // SAFETY: the frame buffer stays allocated (the firmware halts after
+        // the probe), the DSI host is up at `lane_mbps`, and VDMA channel 0 is
+        // ours; `start` resets the channel before reprogramming it.
+        let khz = unsafe { tab5_dpi::start(base, tab5_dpi::LANE_MBPS as f32, pixel_mhz) };
+        say(serial, "video on", &[("dpi khz", khz)]);
+        let _ = tab5_dpi::health();
+        for second in 0..120u32 {
+            let mut frames = 0u32;
+            let mut fifo_min = u32::MAX;
+            for _ in 0..2000 {
+                frames += u32::from(tab5_dpi::frame_done());
+                fifo_min = fifo_min.min(tab5_dpi::fifo_depth());
+                delay.delay_micros(500);
+            }
+            // The frame buffer held (every pixel read back for two minutes);
+            // the read-back is left out so it does not compete with the DMA.
+            let bad = 0;
+            let [st1, _, _, _] = tab5_dpi::health();
+            say(
+                serial,
+                "health",
+                &[
+                    ("s", second),
+                    ("dma frames", frames),
+                    ("fifo min", fifo_min),
+                    ("bad pixels", bad),
+                    ("host int st1", st1),
+                ],
+            );
+        }
+    }
+    // Leave it running: the D-PHY would power down on drop.
+    core::mem::forget(bus);
+}
+
+/// Reports a DSI packet that did not go through.
+fn stalled(serial: &mut impl Serial, cmd: u8, e: tab5_dpi::dbi::Stall) {
+    say(
+        serial,
+        e.at,
+        &[
+            ("cmd", u32::from(cmd)),
+            ("pkt status", e.pkt_status),
+            ("int st0", e.int_st0),
+            ("int st1", e.int_st1),
+        ],
+    );
 }
 
 /// Address-dependent, so a wrong mapping or a stuck line shows.
@@ -271,7 +349,7 @@ fn say(serial: &mut impl Serial, what: &str, values: &[(&str, u32)]) {
         out.byte(b' ');
         out.str(k);
         out.str("=0x");
-        out.hex(*v, 1);
+        out.hex(*v, 8);
     }
     serial.write(out.as_bytes());
     serial.write(b"\r\n");

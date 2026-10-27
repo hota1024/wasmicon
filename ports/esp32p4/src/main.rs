@@ -22,6 +22,10 @@
 mod board;
 mod mem;
 #[cfg(feature = "tab5-probe")]
+mod tab5_dpi;
+#[cfg(feature = "tab5-probe")]
+mod tab5_ili9881c;
+#[cfg(feature = "tab5-probe")]
 mod tab5_probe;
 
 use esp_hal::clock::CpuClock;
