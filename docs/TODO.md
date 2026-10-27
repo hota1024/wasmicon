@@ -200,7 +200,9 @@ the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/
   empty it prints `magic mismatch` and parks)
 - [x] **(2) `deploy` runs blink-rs from the slot** (2026-10-27. The wiring table `led`=GPIO16 is
   read and the blink-rs trace is identical to the host over 20 lines. No LED was wired, so the
-  pin was not watched)
+  pin was not watched. Repeated the same day with the review fixes of 0f32054 (200 MHz,
+  `syscall_table_ptr` moved, revision check): boots, 20 lines identical. That firmware was built
+  from the uncommitted tree, so it names itself `git=223a80a-dirty`; its sources are 0f32054)
 - To resume (paused 2026-10-27 after (2)): flash the firmware with `espflash flash` through the
   Tab5's USB-C, then `wasmicon deploy --board esp32p4 --no-run <app.wasm>` from the app's
   directory, and power-cycle with the button (a reset from espflash lands in download mode).
