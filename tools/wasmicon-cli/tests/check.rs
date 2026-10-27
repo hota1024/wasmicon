@@ -501,8 +501,8 @@ fn display_demo_needs_a_display_entry_on_a_board() {
     let with = check::judge(&wasm, &profile::RP2350, &f, None, &[], Some(lcd));
     assert!(with.is_ok(), "{} failures", with.fails());
 
-    // The Tab5 panel's backend does not exist yet, so naming it fails here
-    // instead of `open` returning `unsupported` on the board.
+    // The Tab5 panel's driver is in the ESP32-P4 firmware only: elsewhere
+    // naming it fails here instead of `open` returning `unsupported`.
     let tab5 = check::judge(
         &wasm,
         &profile::ESP32P4,
@@ -511,8 +511,17 @@ fn display_demo_needs_a_display_entry_on_a_board() {
         &[],
         Some(DisplayConfig::Tab5),
     );
-    assert!(matches!(tab5.display, Some(Err(_))));
-    assert_eq!(tab5.fails(), 1);
+    assert!(tab5.is_ok(), "{} failures", tab5.fails());
+    let tab5_s3 = check::judge(
+        &wasm,
+        &profile::ESP32S3,
+        &f,
+        None,
+        &[],
+        Some(DisplayConfig::Tab5),
+    );
+    assert!(matches!(tab5_s3.display, Some(Err(_))));
+    assert_eq!(tab5_s3.fails(), 1);
 
     let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None);
     assert!(host.is_ok(), "the host mock needs no entry");

@@ -32,7 +32,9 @@ use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
-use wasmicon_port::{Board, BoardResult};
+use wasmicon_port::{Board, BoardResult, Rect};
+
+use crate::tab5::Tab5;
 
 /// The ESP32-P4 has GPIO 0..=54.
 const NUM_GPIO: u32 = 55;
@@ -157,6 +159,9 @@ pub struct EspBoard<S: Serial> {
     /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; the
     /// pins are not reset by hand.
     i2c: Option<I2c<'static, Blocking>>,
+    /// The Tab5's own panel, when the config slot names it and it came up
+    /// (`tab5`). Never dropped.
+    tab5: Option<Tab5>,
 }
 
 impl<S: Serial> EspBoard<S> {
@@ -172,7 +177,13 @@ impl<S: Serial> EspBoard<S> {
             assets_base,
             spi: None,
             i2c: None,
+            tab5: None,
         }
+    }
+
+    /// Hands the running Tab5 panel to the board, display 0.
+    pub fn attach_tab5(&mut self, panel: Tab5) {
+        self.tab5 = Some(panel);
     }
 
     /// The serial port, used to print the reason for a failure.
@@ -281,9 +292,36 @@ const fn bank(index: u32) -> (bool, u32) {
 
 impl<S: Serial> Board for EspBoard<S> {
     fn display_supported(&self) -> bool {
-        // The ILI9341 backend in ports/common runs on this port's SPI
-        // (docs/device-layer.md §5.3); the profile says whether there is one.
+        // The ILI9341 backend in ports/common runs on this port's SPI, and the
+        // Tab5 panel is the board's own (docs/device-layer.md §5.3); the
+        // profile says whether there is either.
         wasmicon_port::profile::ESP32P4.interfaces.display
+    }
+
+    // The Tab5 panel. `Hal` asks the board only when no ILI9341 is configured.
+    fn display_size(&self, index: u32) -> Option<(u32, u32)> {
+        self.tab5
+            .as_ref()
+            .filter(|_| index == 0)
+            .map(|_| Tab5::SIZE)
+    }
+
+    fn display_fill_rect(&mut self, _index: u32, rect: Rect, color: u16) -> BoardResult<()> {
+        let panel = self.tab5.as_mut().ok_or(ErrorCode::Unsupported)?;
+        panel.fill_rect(rect, color);
+        Ok(())
+    }
+
+    fn display_write_rect(&mut self, _index: u32, rect: Rect, pixels: &[u8]) -> BoardResult<()> {
+        let panel = self.tab5.as_mut().ok_or(ErrorCode::Unsupported)?;
+        panel.write_rect(rect, pixels);
+        Ok(())
+    }
+
+    fn display_present(&mut self, _index: u32) -> BoardResult<()> {
+        let panel = self.tab5.as_mut().ok_or(ErrorCode::Unsupported)?;
+        panel.present();
+        Ok(())
     }
 
     fn gpio_count(&self) -> u32 {

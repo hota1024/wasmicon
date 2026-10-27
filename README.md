@@ -2,7 +2,7 @@
 
 A WebAssembly runtime for microcontrollers. Evaluation boards: ESP32-S3 and RP2350 (Pico 2 W).
 ESP32-C5 is a port in progress (boots and blinks on hardware; status in docs/TODO.md §1.3.1).
-ESP32-P4 is a port in progress (boots and blinks on the M5Stack Tab5; status in docs/TODO.md §1.3.2).
+ESP32-P4 is a port in progress (boots, blinks and drives its own display on the M5Stack Tab5; status in docs/TODO.md §1.3.2).
 RP2040 has a port but is build-only; it was dropped from evaluation on 2026-10-07.
 
 - **Runtime**: a from-scratch Core Wasm interpreter. `no_std`, zero dependency crates, no `alloc`

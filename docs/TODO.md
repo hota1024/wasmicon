@@ -214,6 +214,9 @@ not marked with a 2026-10 date were measured there and live on only in these not
   MOSI=G18 / MISO=G19 / CS=G48 / DC=G47 / RST=G45; (4) an SHT40 on PORT.A
 - [ ] **(3) SPI: lcd-demo-rs draws on the ILI9341** and the trace matches the host
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 on PORT.A** and the trace matches the host
+- [x] **(5) The Tab5's own display** (2026-10-28): `display-demo-rs` through the `tab5` backend,
+  the trace identical to the host mock at 720x1280 (§6, stage 4; docs/verification-report.md
+  §28, §29). It uses PSRAM (the frame buffer) and enables no interrupt
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
   esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). The workarounds below
   are each to be deleted once upstream lets the build pick the revision (no upstream report yet).
@@ -1235,14 +1238,13 @@ recommended option.** §6-8 is open. Implementation status is under Implementati
       from `apps/display-demo-rs`, capture the serial trace, and compare it with
       `wasmicon run --trace` through `sh verify/diff-traces.sh`. Pass = identical traces
       and the demo picture on the panel
-- [ ] (4) `tab5` backend on the ESP32-P4. **Bring-up done 2026-10-27, backend not written.**
-      The `tab5-probe` feature of `ports/esp32p4` drives the panel from a PSRAM frame buffer
-      with no interrupt (docs/verification-report.md §28): the picture holds, with no underrun,
-      and the M5GFX register state was diffed. What the backend must keep from the probe:
-      PSRAM before DSI; the D-PHY PLL retuned from 20 MHz to 1040 Mbps; the D-PHY LDO at the
-      eFuse-calibrated setting (today the value read from this unit's M5GFX run, not
-      computed); VDMA in reload mode without IOC; the probe never dropping its drivers; the backlight
-      on only once video runs; the speaker amplifier (0x43 output bit 1) off.
+- [x] (4) `tab5` backend on the ESP32-P4 (2026-10-28; docs/verification-report.md §29).
+      `ports/esp32p4/src/tab5.rs`, brought up at boot when the config slot says
+      `@display=tab5`; the bring-up is docs/verification-report.md §28. The profile lists
+      the drivers each firmware has (`Interfaces::display_drivers`), and `check` refuses
+      an entry whose driver is not listed. `apps/display-demo-rs` names `tab5` for esp32p4;
+      its trace equals the host mock at 720x1280 (`wasmicon run --display-size`), 4,494
+      lines on each of four boots, and the owner saw the picture with the bars in order.
       **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
-      the LDO value computed from eFuse as ESP-IDF does; PSRAM at 250 MHz with these changes
-      (the last runs were at 125 MHz); §6-8
+      PSRAM at 250 MHz (it runs at 125); no rotation; the eFuse calculation has run on one
+      unit only; an ST7121 / ST7123 Tab5 gets no display; §6-8

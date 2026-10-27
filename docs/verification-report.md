@@ -1619,3 +1619,39 @@ two other LDOs (`ext_ldo_p0_0p1a` bypassed to the rail there; `ext_ldo_p1_0p1a` 
   gives 64.3). The bridge's raw underrun and vsync flags stayed 0 throughout and count nothing here
 - The touch panel, the backlight level (GPIO22 is driven high; M5GFX uses PWM) and the expanders'
   other outputs were not examined. The speaker amplifier stays off, so nothing was played
+
+## 29. `display-demo-rs` through the `tab5` display backend on the M5Stack Tab5 (2026-10-28)
+
+Question: does the `tab5` backend (`ports/esp32p4/src/tab5.rs`, docs/device-layer.md §5.3) drive the
+Tab5's own panel for an app, with the guest's trace equal to the host mock's at the panel's size?
+
+The Tab5 of §28 (ESP32-P4 rev v1.0, MAC `30:ed:a0:e2:9d:0a`, ILI9881C panel). Firmware `ports/esp32p4`
+with `trace=on`, built from the uncommitted tree on `c31f9e5` (its sources are the commit that adds this
+section) and flashed with `espflash flash --after no-reset`. `apps/display-demo-rs` (3496 B, crc32
+`4b1fdcec`) went to the slot with `wasmicon deploy --board esp32p4 --no-run`, which wrote config slot
+version 2 with `@display=tab5` from its `wasmicon.toml`. The owner power-cycled the board four times;
+UART0 was captured at 115200. The reference is
+`wasmicon run --trace --display-size 720x1280` on the host.
+
+| Check | Result |
+|---|---|
+| Boot lines | `wasmicon: roles none display=tab5`, then `wasmicon: display tab5 up, d-phy ldo dref=14 mul=3` |
+| D-PHY supply from eFuse | dref 14 / mul 3, the setting ESP-IDF left on this unit (§28); esp-hal's own is dref 9 / mul 6 |
+| `wasmicon check --board esp32p4` | `display tab5 ok`, pass |
+| Trace | **identical to the host mock at 720x1280, 4,494 lines, on each of the four boots** (`verify/diff-traces.sh`, one boot at a time) |
+| The panel (observed by the owner) | the demo screen appeared; the color bars in order (red, orange, yellow, green, cyan, blue, magenta, white); the picture stays after the moving square stops |
+| Time to the picture, trace on | slow: about 213 KB of trace go out before the first `present` (2,048 `write-rect` calls for the gray ramp), about 18 s at 115200 baud. The bars drawn before the ramp appeared part by part as the cache wrote them back |
+| Time to the picture, trace off (`--no-default-features`, same app) | much faster, "still a little slow" (the owner); not measured |
+
+The board was left with the trace-off firmware and `apps/display-demo-rs` in the app slot.
+
+### What this measurement does not say
+
+- How long the trace-off run takes, and where that time goes (interpreter, the panel
+  bring-up at boot, cache write-back) was not measured
+- The faint shimmer on bright grays of §28 was not looked at again
+- PSRAM ran at 125 MHz; 250 MHz was not tried with the backend
+- Only this unit's eFuse was read; the calculation has not met another calibration
+- No rotation exists; a Tab5 with an ST7121 / ST7123 panel was not available (the backend refuses one
+  by its touch controller and leaves the board without a display)
+- `present` does not wait for vertical blank; tearing was not looked for

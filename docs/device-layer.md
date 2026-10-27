@@ -208,12 +208,15 @@ driver = "tab5"  # the Tab5's own MIPI-DSI panel
 |---|---|---|
 | `mock` | host (`wasmicon run`, tests) | Keeps a frame buffer; `run` can write it to a PNG after `run` returns |
 | `ili9341` | ESP32-S3, Pico 2 W, ESP32-C5, ESP32-P4 | The ILI9341 init and drawing that the apps do today, in `ports/common/src/ili9341.rs` over the port's SPI and GPIO: SPI mode 0 at 16 MHz, the apps/README.md §2 init sequence at the first `open`, writes of at most 640 bytes. The bus and pins stay the backend's for the whole run (the reset line never floats). MADCTL per rotation: 0 = 0x48, 90 = 0x28, 180 = 0x88, 270 = 0xE8; only 90 has run on hardware |
-| `tab5` | ESP32-P4 on the Tab5 | Panel power and reset through the internal I2C IO expanders, backlight on GPIO22, DSI host + DPI video mode, frame buffer in PSRAM. While it is configured, GPIO22, 31 and 32 are reserved: a role on them is refused (docs/TODO.md §6-6) |
+| `tab5` | ESP32-P4 on the Tab5 | `ports/esp32p4/src/tab5.rs`. Brought up at boot when the config slot names it: panel power and reset through the internal I2C IO expanders (speaker amplifier left off), PSRAM, DSI host + DPI video mode at 1040 Mbps x 2 lanes and 80 MHz, the backlight on GPIO22 once video runs. 720x1280 portrait, no rotation. The frame buffer is in PSRAM; drawing goes through the CPU cache and `present` writes the rows drawn back, so the picture can tear. While it is configured, GPIO22, 31 and 32 are reserved: a role on them is refused (docs/TODO.md §6-6) |
 
-The `tab5` backend has known risks on the Tab5's v1.0 silicon (docs/TODO.md
-§1.3.2): esp-hal 1.2.2 keeps DPI running through a VDMA interrupt, and this
-silicon faults when an interrupt is enabled; PSRAM has not been tried. It is the
-last backend to build.
+The `tab5` backend works around esp-hal 1.2.2 on the Tab5's v1.0 silicon
+(docs/verification-report.md §28): the VDMA replays one block per frame with no
+interrupt (esp-hal's DPI re-arms in one, and an interrupt faults on this
+silicon); the D-PHY PLL is retuned from its real 20 MHz reference; the D-PHY
+supply is set from the eFuse calibration as ESP-IDF does; PSRAM comes up before
+DSI. Only the ILI9881C panel is driven; a Tab5 with an ST7121 / ST7123 panel
+gets no display.
 
 ## 6. Checking that a board can run an app
 
@@ -288,4 +291,6 @@ describe something that does not exist:
    host trace test.
 3. `ili9341` backend; the demo's trace on ESP32-S3 and Pico 2 W equals the host mock
    at 320x240, and the panel shows the picture (verified on hardware).
-4. `tab5` backend on the ESP32-P4 (verified on hardware, with the risks of §5.3).
+4. `tab5` backend on the ESP32-P4; the demo's trace equals the host mock at
+   720x1280 (`wasmicon run --display-size 720x1280`), and the panel shows the
+   picture (verified on hardware).
