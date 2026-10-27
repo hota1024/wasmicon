@@ -192,17 +192,20 @@ hardware and committed separately.
 `ports/esp32p4` is built like `ports/esp32c5`. It is not tied to one board: it reserves only
 the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/abi-spec.md
 §8). It replaces an earlier attempt (branch `worktree-feat-esp32p4`, last commit 9698c38,
-2026-09-22) that was dropped and redone from `main`; the facts below were measured there.
+2026-09-22) that was dropped, redone from `main`, and deleted on 2026-10-27; the facts below
+not marked with a 2026-10 date were measured there and live on only in these notes.
 
 - [x] **(0) Builds, clippy and fmt pass** (2026-10-26; CI has a build job, `esp32p4`)
-- [x] **(1) The firmware boots on the Tab5 and announces itself** (2026-10-27, firmware e177581.
-  The chip is ESP32-P4 rev v1.0, 16 MB flash. It prints `wasmicon id esp32p4 ...`; with the slots
-  empty it prints `magic mismatch` and parks)
+- [x] **(1) The firmware boots on the Tab5 and announces itself** (2026-10-27, firmware
+  146937c, built as e177581 before the rebase merge. The chip is ESP32-P4 rev v1.0, 16 MB
+  flash. It prints `wasmicon id esp32p4 ...`; with the slots empty it prints `magic mismatch`
+  and parks)
 - [x] **(2) `deploy` runs blink-rs from the slot** (2026-10-27. The wiring table `led`=GPIO16 is
   read and the blink-rs trace is identical to the host over 20 lines. No LED was wired, so the
-  pin was not watched. Repeated the same day with the review fixes of 0f32054 (200 MHz,
+  pin was not watched. Repeated the same day with the review fixes of 322d2b6 (200 MHz,
   `syscall_table_ptr` moved, revision check): boots, 20 lines identical. That firmware was built
-  from the uncommitted tree, so it names itself `git=223a80a-dirty`; its sources are 0f32054)
+  from the uncommitted tree, so it names itself `git=223a80a-dirty` (a pre-merge hash); its
+  sources are 322d2b6)
 - To resume (paused 2026-10-27 after (2)): flash the firmware with `espflash flash` through the
   Tab5's USB-C, then `wasmicon deploy --board esp32p4 --no-run <app.wasm>` from the app's
   directory, and power-cycle with the button (a reset from espflash lands in download mode).
