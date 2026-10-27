@@ -268,6 +268,8 @@ not marked with a 2026-10 date were measured there and live on only in these not
   (`rst:0x7 HP_SYS_HP_WDT_RESET`) and the second run boots the firmware. The firmware is not
   involved yet at that point. Not investigated: a bootloader built for pre-v3 silicon may
   avoid it
+- **The Tab5's own MIPI-DSI screen** is reached through the device layer, not the HAL
+  (§6, §6-6). Item (3) above still checks the external ILI9341 through the HAL
 - **Owner questions:**
   - Which of GPIO53/54 is SDA on PORT.A. The Tab5 pin map gives only the colors (yellow = G53,
     white = G54); the port follows the usual M5Stack order (white = SDA), but a second-hand
@@ -1153,3 +1155,52 @@ change.**
 - [ ] **Distributing the bindings** (crates.io / npm). **`new` landed on 2026-10-04**, but
       dependencies are written as paths (above). Where to publish and how to version are
       not decided yet. Once published, change `new`'s default from a path to a version
+
+## 6. Device layer (`wasmicon:device`)
+
+**The design is owned by `docs/device-layer.md`. Only remaining work and open questions live here.**
+On 2026-10-27 the owner set the direction: devices that the HAL cannot reach (first, the
+M5Stack Tab5's MIPI-DSI panel) get a layer above the HAL, the package `wasmicon:device`,
+with `display` as its first interface. The host owns the panel and the guest only draws.
+Also agreed that day: refuse an app early when the board lacks the device; several
+backends per interface selected by board configuration; a small API (screen size,
+`fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
+for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
+recommended option. Nothing is implemented yet.**
+
+### Open questions (owner decisions; the text cites them as §6-1 ... §6-7)
+
+- [x] **§6-1 Changes to frozen decisions and the ABI spec** (owner decision 2026-10-27).
+      docs/decisions.md D-03, D-05 and D-09 change wording and D-13 records the layer
+      (docs/device-layer.md §8). The HAL itself (`wasmicon:hal@0.1.0`) does not change
+- [x] **§6-2 Derive the device requirement from the imports instead of a `wasmicon.toml` key**
+      (owner decision 2026-10-27). `check` / `deploy` refuse early, as the owner chose, but
+      the declaration is the `wasmicon:device` imports, the same way `check` already reports
+      an unimplemented HAL interface. docs/app-workflow.md §4.7 forbids writing what can be
+      derived. `wasmicon.toml` carries only `[board.<name>.display]` (docs/device-layer.md §6)
+- [x] **§6-3 The `write-rect` byte order is RGB565 high byte first** (owner decision
+      2026-10-27). It matches what the apps send the ILI9341 today; a little-endian frame
+      buffer swaps in the host (docs/device-layer.md §4)
+- [x] **§6-4 The device WIT lives in `wit-device/`** (owner decision 2026-10-27). `wit/`
+      stays the HAL as it is; the generator and the signature check load both, with no
+      `deps/` copy of the HAL (docs/device-layer.md §3)
+- [x] **§6-5 Display configuration in `wasmicon.toml` and the config slot** (owner decision
+      2026-10-27). `[board.<name>.display]` (driver, bus, pin numbers, rotation); the pins
+      are numbers and get the role checks. The config slot gets version 2, written only
+      when the app has a display entry for that board, so older firmware keeps reading the
+      roles of every other app (docs/device-layer.md §5.2)
+- [x] **§6-6 The `tab5` backend reserves its pins only while it is configured** (owner
+      decision 2026-10-27): the internal I2C (GPIO31/32) and the backlight (GPIO22). One
+      ESP32-P4 firmware and profile stay. The wider §1.3.2 question (reserve the Tab5's
+      parts without a display) stays open
+- [x] **§6-7 `present` semantics** (owner decision 2026-10-27). Required for portable
+      output, a no-op on the `ili9341` backend, one buffer (no swap). Whether it waits for
+      vertical blank is the backend's choice
+
+### Implementation (stages: docs/device-layer.md §10)
+
+- [ ] (1) WIT, generator and bindings; the recorded HAL app hashes do not move
+- [ ] (2) Host `mock` backend, trace rules, early refusal in `check` / `deploy`, a demo app
+- [ ] (3) `ili9341` backend; the demo trace on ESP32-S3 and Pico 2 W equals the host mock
+- [ ] (4) `tab5` backend on the ESP32-P4. Risks: interrupts on v1.0 silicon (esp-hal DPI
+      re-arms VDMA in an interrupt) and PSRAM not yet tried (§1.3.2)
