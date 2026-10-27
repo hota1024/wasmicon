@@ -42,7 +42,7 @@ has no SPI, so `check` refuses the app there.
 
 On the M5Stack Tab5 (`--board esp32p4`) the display is the Tab5's own 720x1280
 panel (`driver = "tab5"`); the firmware prints `wasmicon: display tab5 up ...`
-before the app runs. To compare the trace, run the host mock at that size:
+when the app first opens the screen. To compare the trace, run the host mock at that size:
 
 ```sh
 wasmicon run ../target/wasm32-unknown-unknown/release/display_demo_rs.wasm --trace --display-size 720x1280

@@ -1169,7 +1169,7 @@ Also agreed that day: refuse an app early when the board lacks the device; sever
 backends per interface selected by board configuration; a small API (screen size,
 `fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
-recommended option.** §6-8 is open. Implementation status is under Implementation below.
+recommended option**, and §6-8 on 2026-10-28. Implementation status is under Implementation below.
 
 ### Open questions (owner decisions; the text cites them as §6-1 ... §6-8)
 
@@ -1199,11 +1199,10 @@ recommended option.** §6-8 is open. Implementation status is under Implementati
 - [x] **§6-7 `present` semantics** (owner decision 2026-10-27). Required for portable
       output, a no-op on the `ili9341` backend, one buffer (no swap). Whether it waits for
       vertical blank is the backend's choice
-- [ ] **§6-8 The LovyanGFX notice for the Tab5 init commands.** `ports/esp32p4/src/tab5_ili9881c.rs`
-      is extracted from M5GFX's `Panel_ILI9881C.hpp`, whose header names LovyanGFX's FreeBSD
-      license. The MIT notice of M5GFX is in `ports/esp32p4/notices/m5gfx/`; the FreeBSD one is
-      not, and the M5GFX release does not ship it as a file. Recommended: copy LovyanGFX's
-      `license.txt` into `ports/esp32p4/notices/lovyangfx/` before the `tab5` backend merges
+- [x] **§6-8 The LovyanGFX notice for the Tab5 init commands** (owner decision 2026-10-28).
+      `ports/esp32p4/src/tab5_ili9881c.rs` is extracted from M5GFX's `Panel_ILI9881C.hpp`, whose
+      header names LovyanGFX's FreeBSD license. LovyanGFX's `license.txt` is copied unchanged
+      into `ports/esp32p4/notices/lovyangfx/`, next to M5GFX's MIT notice in `../m5gfx/`
 
 ### Implementation (stages: docs/device-layer.md §10)
 
@@ -1239,7 +1238,7 @@ recommended option.** §6-8 is open. Implementation status is under Implementati
       `wasmicon run --trace` through `sh verify/diff-traces.sh`. Pass = identical traces
       and the demo picture on the panel
 - [x] (4) `tab5` backend on the ESP32-P4 (2026-10-28; docs/verification-report.md §29).
-      `ports/esp32p4/src/tab5.rs`, brought up at boot when the config slot says
+      `ports/esp32p4/src/tab5.rs`, brought up at the first `open` when the config slot says
       `@display=tab5`; the bring-up is docs/verification-report.md §28. The profile lists
       the drivers each firmware has (`Interfaces::display_drivers`), and `check` refuses
       an entry whose driver is not listed. `apps/display-demo-rs` names `tab5` for esp32p4;
@@ -1247,4 +1246,4 @@ recommended option.** §6-8 is open. Implementation status is under Implementati
       lines on each of four boots, and the owner saw the picture with the bars in order.
       **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
       PSRAM at 250 MHz (it runs at 125); no rotation; the eFuse calculation has run on one
-      unit only; an ST7121 / ST7123 Tab5 gets no display; §6-8
+      unit only; an ST7121 / ST7123 Tab5 gets no display

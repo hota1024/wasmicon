@@ -163,7 +163,8 @@ fn main() -> ! {
         serial.write(b"\r\n");
     }
 
-    // The Tab5 panel's parts, taken only if the config slot names it.
+    // The Tab5 panel's parts, handed to the board only if the config slot
+    // names the panel.
     let tab5_parts = tab5::Parts {
         i2c: p.I2C1,
         sda: p.GPIO31,
@@ -179,9 +180,11 @@ fn main() -> ! {
     let storage = FlashStorage::new(p.FLASH);
 
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
-    // / I2C0 and of the pins assigned to SPI2 and I2C0. The UART holds
-    // GPIO37/38, which are reserved and overlap neither a role-assignable GPIO
-    // nor the SPI2 pins (GPIO5/18/19) nor the I2C0 pins (GPIO54/53).
+    // / I2C0 and of the pins assigned to SPI2 and I2C0, except GPIO22/31/32
+    // when the Tab5 panel's parts are handed to it below (its `# Safety`).
+    // The UART holds GPIO37/38, which are reserved and overlap neither a
+    // role-assignable GPIO nor the SPI2 pins (GPIO5/18/19) nor the I2C0 pins
+    // (GPIO54/53).
     let board = unsafe { EspBoard::new(serial, storage, ASSETS_SLOT.offset) };
 
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
@@ -192,8 +195,9 @@ fn main() -> ! {
     let wiring = pick_roles(storage, serial);
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
+    // The panel comes up at the guest's first `open`.
     if wiring.display == Some(DisplayConfig::Tab5) {
-        bring_up_tab5(hal.board_mut(), tab5_parts);
+        hal.board_mut().configure_tab5(tab5_parts);
     }
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
     // bodies stay in flash; the guest's reads go through `esp-storage` by range.
@@ -238,38 +242,6 @@ fn main() -> ! {
     loop {
         core::hint::spin_loop();
     }
-}
-
-/// Brings the Tab5 panel up before the app runs and says how it went. On
-/// failure the board has no display, so the app's `open` returns
-/// `unsupported`.
-fn bring_up_tab5(board: &mut EspBoard<SerialPort<'static>>, parts: tab5::Parts) {
-    let mut line = [0u8; 128];
-    let mut out = Buf::new(&mut line);
-    out.str("wasmicon: display tab5 ");
-    match tab5::Tab5::up(parts) {
-        Ok((panel, ldo)) => {
-            board.attach_tab5(panel);
-            out.str("up, d-phy ldo dref=");
-            out.u32(u32::from(ldo.dref));
-            out.str(" mul=");
-            out.u32(u32::from(ldo.mul));
-        }
-        Err(e) => {
-            out.str("failed: ");
-            out.str(e.reason());
-            if let tab5::UpError::Init(cmd, at) = e {
-                out.str(" (command ");
-                out.u32(u32::from(cmd));
-                out.str(", ");
-                out.str(at);
-                out.str(")");
-            }
-        }
-    }
-    let s = board.serial();
-    s.write(out.as_bytes());
-    s.write(b"\r\n");
 }
 
 /// Picks the app to run from the slot.

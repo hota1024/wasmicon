@@ -1,9 +1,10 @@
 //! The M5Stack Tab5's own panel as `wasmicon:device/display`: the `tab5`
 //! backend of docs/device-layer.md §5.3.
 //!
-//! - Brought up once at boot, and only when the config slot names it
-//!   (`@display=tab5`), so a firmware that runs no display app leaves PSRAM,
-//!   the internal I2C and the backlight alone (docs/TODO.md §6-6).
+//! - Brought up at the guest's first `open`, and only when the config slot
+//!   names it (`@display=tab5`), so a firmware that runs no display app leaves
+//!   PSRAM, the internal I2C and the backlight alone (docs/TODO.md §6-6).
+//!   The board holds the parts until then (`board.rs`).
 //! - The order matters on v1.0 silicon: PSRAM before DSI (esp-hal's PSRAM
 //!   init turns the D-PHY supply off), the panel lit only once video runs.
 //!   `tab5_dpi` has the DSI side.
@@ -37,7 +38,8 @@ const PI4IO2: u8 = 0x44;
 /// Register writes for the expanders, as `(register, value)`, in M5GFX order.
 /// Reset outputs are preloaded low before they become outputs. Output bit 1
 /// of 0x43 is the speaker amplifier (M5Unified's "AMP on"); M5GFX sets it,
-/// but it stays off here: enabled over an unconfigured ES8388 codec, it pops.
+/// but it stays off here: M5Unified enables it only after configuring the
+/// ES8388 codec, and nothing here does (docs/verification-report.md §28).
 const IO1_FIRST: &[(u8, u8)] = &[
     (0x05, 0b0100_0100), // output: LCD reset, touch reset and amplifier low
     (0x03, 0b0111_1111), // direction
@@ -96,6 +98,10 @@ pub enum UpError {
     PllLock,
     /// The DCS command that stalled, and the wait it stalled in.
     Init(u8, &'static str),
+    /// The init commands were still queued when video was to start.
+    Queued(&'static str),
+    /// The VDMA controller did not come out of reset.
+    Vdma,
 }
 
 impl UpError {
@@ -110,6 +116,8 @@ impl UpError {
             UpError::Dsi => "DSI host refused",
             UpError::PllLock => "D-PHY PLL did not lock",
             UpError::Init(..) => "panel init command stalled",
+            UpError::Queued(_) => "init commands not sent before video",
+            UpError::Vdma => "VDMA did not reset",
         }
     }
 }
@@ -136,6 +144,10 @@ impl Tab5 {
     /// The step that failed. The parts are consumed either way.
     pub fn up(p: Parts) -> Result<(Tab5, tab5_dpi::Ldo), UpError> {
         let delay = Delay::new();
+        // Held low from the start: the backlight stays off until video runs
+        // (docs/verification-report.md §28), and the pin is not left floating
+        // while the panel powers up.
+        let mut backlight = Output::new(p.backlight, Level::Low, OutputConfig::default());
         let i2c = I2c::new(
             p.i2c,
             I2cConfig::default().with_frequency(Rate::from_khz(100)),
@@ -155,10 +167,6 @@ impl Tab5 {
         }
         delay.delay_millis(100);
         detect(&mut i2c, &delay)?;
-
-        // Lit before video, the panel shows a dark haze over a faint old
-        // picture for as long as the steps below take.
-        let mut backlight = Output::new(p.backlight, Level::Low, OutputConfig::default());
 
         let psram = Psram::new(
             p.psram,
@@ -202,11 +210,14 @@ impl Tab5 {
             delay.delay_millis(wait_ms);
         }
         tab5_dpi::send(tab5_dpi::PIXEL_FORMAT).map_err(|(cmd, e)| UpError::Init(cmd, e.0))?;
+        // Video mode sends queued commands only in blanking, so the last ones
+        // must be out first.
+        tab5_dpi::dbi::drain().map_err(|e| UpError::Queued(e.0))?;
 
         // SAFETY: the frame buffer stays allocated (above), the DSI host is up
         // at LANE_MBPS, and VDMA channel 0 came with the DSI bus, which is
         // never dropped.
-        unsafe { tab5_dpi::start(base, tab5_dpi::LANE_MBPS as f32, tab5_dpi::PIXEL_MHZ) };
+        unsafe { tab5_dpi::start(base) }.map_err(|()| UpError::Vdma)?;
         // A few frames first, so the panel has a whole picture to show.
         delay.delay_millis(50);
         backlight.set_high();
