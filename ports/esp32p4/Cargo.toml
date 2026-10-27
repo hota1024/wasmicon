@@ -19,6 +19,9 @@ rust-version = "1.95"
 # Build that writes the trace. On by default.
 default = ["trace"]
 trace = []
+# Bring-up probe for the Tab5's own display (src/tab5_probe.rs): runs at boot,
+# prints what it finds and halts. Diagnosis only.
+tab5-probe = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }
