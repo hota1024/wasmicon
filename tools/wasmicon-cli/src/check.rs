@@ -167,9 +167,10 @@ pub struct Verdict {
     pub missing_declared_roles: Vec<String>,
     /// The display the app uses, as this board would run it: `None` when the
     /// app imports no display or the board cannot have one (`unimplemented`
-    /// says so), else the backend or `Err` when `[board.<name>.display]` is
-    /// missing (docs/device-layer.md §6).
-    pub display: Option<std::result::Result<String, ()>>,
+    /// says so), else the backend, or `Err` with the reason the board would
+    /// have no display: `[board.<name>.display]` is missing, or names a
+    /// backend this firmware lacks (docs/device-layer.md §6).
+    pub display: Option<std::result::Result<String, String>>,
 }
 
 impl Verdict {
@@ -193,7 +194,7 @@ impl Verdict {
     #[must_use]
     pub fn fails(&self) -> usize {
         usize::from(self.validate.is_err())
-            + usize::from(matches!(self.display, Some(Err(()))))
+            + usize::from(matches!(self.display, Some(Err(_))))
             + self.unimplemented.len()
             + self.missing_declared_roles.len()
     }
@@ -409,18 +410,22 @@ pub fn judge(
     // A board reads its display backend from the config slot, so a display
     // app needs `[board.<name>.display]`; the host's mock is built in.
     let display = (f.per_iface.contains_key("display") && p.interfaces.display).then(|| {
-        if p.role_slot.is_none() {
-            Ok("built-in mock".to_string())
-        } else {
-            display
-                .map(|d| {
-                    pack::describe_display(&Wiring {
-                        roles: wasmicon_port::roles::RoleMap::EMPTY,
-                        display: Some(d),
-                    })
-                    .unwrap_or_default()
-                })
-                .ok_or(())
+        match display {
+            _ if p.role_slot.is_none() => Ok("built-in mock".to_string()),
+            None => Err(format!(
+                "none for this board  <- fails (add [board.{}.display] to wasmicon.toml)",
+                p.wiring
+            )),
+            // No firmware has the Tab5 panel's backend yet: on the board
+            // `open` would return `unsupported` (docs/TODO.md §6).
+            Some(DisplayConfig::Tab5) => {
+                Err("tab5  <- fails (no firmware has this backend yet)".to_string())
+            }
+            Some(d) => Ok(pack::describe_display(&Wiring {
+                roles: wasmicon_port::roles::RoleMap::EMPTY,
+                display: Some(d),
+            })
+            .unwrap_or_default()),
         }
     });
 
@@ -776,14 +781,10 @@ fn print_verdict(
     match &v.display {
         None => {}
         Some(Ok(backend)) => row("display", backend, "ok"),
-        Some(Err(())) => row(
-            "display",
-            "none for this board",
-            &format!(
-                "<- fails (add [board.{}.display] to wasmicon.toml)",
-                p.wiring
-            ),
-        ),
+        Some(Err(why)) => {
+            let (what, note) = why.split_once("  ").unwrap_or((why, ""));
+            row("display", what, note.trim_start());
+        }
     }
 
     if let Some(declared) = declared {
