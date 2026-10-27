@@ -56,7 +56,8 @@ thumbv8m.main-none-eabihf (RP2350) (`sh tools/measure-size.sh [target]`).
 
 ```
 wit/                  HAL definition. Source of truth; never edit the generated files by hand
-tools/wasmicon-gen/   Generator that emits the four generated files from wit/
+wit-device/           Device layer above the HAL (wasmicon:device; docs/device-layer.md)
+tools/wasmicon-gen/   Generator that emits the four generated files from wit/ and wit-device/
 tools/wasmicon-cli/   CLI for app authors (binary name wasmicon). check / run / deploy / assets / trace diff / doctor
 runtime/              wasmicon-core: the no_std / zero-dependency / no-alloc interpreter
 ports/common/         HAL shared by the ports; only board-specific operations go in the Board trait

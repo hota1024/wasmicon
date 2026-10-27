@@ -1,7 +1,8 @@
 # Wasmicon
 
 WebAssembly runtime for microcontrollers: a from-scratch `no_std` Core Wasm
-interpreter (`runtime/`), a HAL defined in WIT (`wit/`), generated bindings for
+interpreter (`runtime/`), a HAL defined in WIT (`wit/`) with a device layer above it
+(`wit-device/`), generated bindings for
 Rust / AssemblyScript / C (`bindings/`), board ports (`ports/`), sample apps
 (`apps/`) and the `wasmicon` CLI (`tools/`). Evaluation boards: ESP32-S3 and
 RP2350 (Pico 2 W). ESP32-C5 is a port in progress (boots and blinks on hardware;
