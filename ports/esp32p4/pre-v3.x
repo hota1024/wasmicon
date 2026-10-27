@@ -2,11 +2,13 @@
  * has v1.0, ROM "esp32p4-eco2-20240710").
  *
  * Read after linkall.x (.cargo/config.toml), so each assignment here replaces
- * esp-hal's. All three fix the same kind of mismatch: esp-hal 1.2 and
+ * esp-hal's. All four fix the same kind of mismatch: esp-hal 1.2 and
  * esp-rom-sys 0.1.5 describe v3.x (ECO5) silicon only. None of them crashes
  * when wrong; each returns plausible garbage, which is why they are worth the
  * comments. Delete them once upstream lets the link pick the silicon
- * revision (docs/TODO.md §1.3.2).
+ * revision (docs/TODO.md §1.3.2). The image header already keeps a v3.x chip
+ * from booting this build (espflash writes a maximum revision of v1.99), and
+ * `main` checks again.
  */
 
 /* 1. ROM function addresses.
@@ -20,7 +22,7 @@
  *
  * A few names are defined only by the ECO5 tables or rom/additional.ld and
  * keep their ECO5 values. Of those, the firmware uses only
- * `syscall_table_ptr` (docs/TODO.md §1.3.2).
+ * `syscall_table_ptr`, set in 4 below.
  */
 INCLUDE "rom/esp32p4.rom.ld"
 INCLUDE "rom/esp32p4.rom.libgcc.ld"
@@ -49,3 +51,16 @@ memcmp = wasmicon_memcmp;
  */
 _stack_start = 0x4FFA0000;
 _stack_start_cpu0 = 0x4FFA0000;
+
+/* 4. The ROM C library's data.
+ *
+ * `esp_hal::init` stores the address of its syscall table in
+ * `syscall_table_ptr` (esp-rom-sys `init_syscall_table`). rom/additional.ld
+ * puts that variable at the ECO5 address 0x4FFBFFE4, inside the L2 cache on
+ * the v1.0 chip, so the store would land in a cache line. The pre-ECO5
+ * addresses are those of ESP-IDF v5.5.3,
+ * components/esp_rom/esp32p4/ld/esp32p4.rom.libc.ld (the ECO5 file of the
+ * same release differs from it in these two lines only).
+ */
+syscall_table_ptr = 0x4ff3ffe4;
+_global_impure_ptr = 0x4ff3ffe0;

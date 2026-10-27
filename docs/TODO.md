@@ -210,27 +210,42 @@ the chip's own pins, and the bus pins are ones the Tab5 brings out unused (docs/
 - [ ] **(3) SPI: lcd-demo-rs draws on the ILI9341** and the trace matches the host
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 on PORT.A** and the trace matches the host
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
-  esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). Four workarounds,
-  each to be deleted once upstream lets the build pick the revision (no upstream report yet):
+  esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). The workarounds below
+  are each to be deleted once upstream lets the build pick the revision (no upstream report yet).
+  The image is for pre-v3 silicon only: espflash writes a maximum revision of v1.99 into the
+  header, so the bootloader refuses a v3.x chip, and `main` halts with the reason if one gets
+  that far:
   - `ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"` in `.cargo/config.toml`. Without it the
     second-stage bootloader refuses the image (`chip revision check failed. Required >= v3.0`)
   - `vendor/esp-sync` drops the `mintthresh` (CSR 0x347) write, an illegal instruction on v1.0
-    that made `esp_hal::init` reset forever (its README)
+    that made `esp_hal::init` reset forever (its README). `build.rs` fails the build if
+    `Cargo.lock` takes esp-sync from crates.io (a `[patch]` that stops matching is only a warning)
+  - **Constraint: no interrupts.** esp-hal 1.2.2 reads and writes the same CSR in its CLIC code
+    (`interrupt/riscv/clic.rs`, `mintthresh`), which the interrupt handler and runlevel changes
+    run. The firmware enables no interrupt today, so it is never reached; enabling one (an async
+    driver, a GPIO interrupt, a timer) would fault on v1.0 the same way
+  - **CPU clock 200 MHz**, not `CpuClock::max()` (400 MHz, the v3.x maximum). ESP-IDF caps
+    pre-v3 silicon at 360 MHz unless the chips passed extra qualification, and esp-hal has no
+    360 MHz preset
   - `pre-v3.x` reads the pre-ECO5 ROM function tables and points `memcpy` / `memmove` /
     `memset` / `memcmp` at `src/mem.rs`. With the ECO5 tables `__ashldi3` was off by 12 bytes
     and LEB128 decoding returned wrong values without crashing. Checked on the linked ELF
     (2026-10-26): all 533 ROM symbols that the pre-ECO5 tables define carry the pre-ECO5
-    address. Eight names are defined only by the ECO5 tables or `rom/additional.ld`; the linker's `--trace-symbol` shows
-    the firmware references just one, `syscall_table_ptr`, which `esp_hal::init` writes once
-    (0x4FFBFFE4, inside the non-RAM top on v1.0). Nothing in the firmware calls the ROM C
-    library that reads it, and the earlier attempt ran with the same write; a v1.0 address
-    for it has not been looked up
+    address. Eight names are defined only by the ECO5 tables or `rom/additional.ld`; the
+    linker's `--trace-symbol` shows the firmware references just one, `syscall_table_ptr`,
+    which `esp_hal::init` writes once. `pre-v3.x` moves it (and `_global_impure_ptr`) from the
+    ECO5 0x4FFBFFE4, inside the non-RAM top on v1.0, to 0x4FF3FFE4, the address in ESP-IDF
+    v5.5.3 `esp32p4.rom.libc.ld`. The same ESP-IDF tables give `memset` one address for both
+    revisions, so the ROM `mem*` functions may be fine after all: the earlier attempt blamed
+    them for a corruption that matches the stack problem below. `src/mem.rs` (byte-wise
+    `memmove` / `memcmp`, slow) could go back to the ROM once that is checked on hardware
   - `pre-v3.x` lowers the stack top to 0x4FFA0000. L2 memory from there up is cache, not RAM, on
     the v1.0 chip, and a stack there lost its contents once `instantiate` evicted the cache
     (measured: a value at 0x4FF9E000 survives an eviction, one at 0x4FFA0000 does not).
     For the same reason nothing goes in `ram(reclaimed)` (it starts at 0x4FFADFC0)
 - **RAM.** The link puts the statics at 0x4FF40000 (esp-hal's default 256 KB L2 cache) and
   `.bss` ends near 0x4FF8ECA0 with the 300 KiB arena, so the native stack gets about 70 KiB.
+  `ESP_HAL_CONFIG_ENSURE_MAIN_STACK_MINIMUM = "32768"` makes the link fail below 32 KiB.
   The usable top (0x4FFA0000) was measured on one Tab5; another revision may differ.
   The firmware image is 140,192 B (`espflash save-image`, 2026-10-26), far below the app
   slot at 1 MiB
