@@ -2,7 +2,8 @@
 
 Created: 2026-10-27
 Status: **approved; stages 1 to 3 of §10 are implemented** (the WIT, the bindings, the
-host mock display and the ILI9341 backend). Stage 3 is not yet verified on hardware. The owner agreed on the direction on 2026-10-27 (a separate
+host mock display and the ILI9341 backend). Stage 3 ran on the ESP32-S3
+(docs/verification-report.md §27); the Pico 2 W is still to run. The owner agreed on the direction on 2026-10-27 (a separate
 package above the HAL, named `wasmicon:device`, with `display` as its first interface)
 and settled docs/TODO.md §6-1 ... §6-7 the same day. The stages and their status are in
 docs/TODO.md §6.

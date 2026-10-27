@@ -1217,7 +1217,9 @@ recommended option. Nothing is implemented yet.**
       320x240 and 720x1280. **Moved to (3):** `[board.<name>.display]` in `wasmicon.toml` and
       config slot v2 (§6-5); they matter only once a board has a backend
 - [ ] (3) `ili9341` backend; the demo trace on ESP32-S3 and Pico 2 W equals the host mock.
-      **Implemented 2026-10-27, not yet verified on hardware.** `ports/common/src/ili9341.rs`;
+      **Implemented 2026-10-27. Verified on the ESP32-S3 the same day** (docs/verification-report.md
+      §27: the demo's 1,164-line trace equals the host mock and the picture appeared); **the
+      Pico 2 W remains**. `ports/common/src/ili9341.rs`;
       config slot v2 with `@display=` (written only with a display entry) and
       `[board.<name>.display]` in `wasmicon.toml` (§6-5); `check` / `deploy` refuse a display
       app on a board without an entry, and rp2040 (no SPI) has no display. On the host the
