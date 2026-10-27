@@ -148,6 +148,9 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
   something changed. The workaround is to boot with the `RST` button
   (docs/verification-report.md §12 "Where the ESP32-S3 got stuck"). Until fixed,
   `deploy` on the ESP32-S3 is two steps: flash, then press `RST`
+  - The DOOM port reported the same on another Freenove board (2026-10-27,
+    docs/verification-report.md §30): with a CP2102N on UART0 both the DTR/RTS reset and
+    `RST` entered download mode (`boot:0x0`)
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
@@ -689,11 +692,12 @@ change.**
         Through the protocol is stage 2
 - [ ] **§5-10 Assets slot follow-ups** (the slot and `wasmicon:hal/assets@0.1.0` were
       adopted on 2026-10-22, docs/decisions.md A-10; design: docs/app-workflow.md §3.10)
-      - **Measure the first-`open` CRC check of a multi-megabyte body on the ESP32-S3.**
-        The body is streamed in 512-byte pieces through `esp-storage` and the bitwise
-        `crc32_update` of `ports/common`; the estimate is one to three seconds for 4 MiB,
-        paid once per run. If it is too long for DOOM's start, a table-driven CRC (same
-        output) is the fix, not skipping the check
+      - ~~Measure the first-`open` CRC check of a multi-megabyte body on the ESP32-S3~~
+        -> **1.65 s for 4,196,020 B**, reported by the DOOM port on the `esp32s3-psram`
+        firmware (2026-10-27, docs/verification-report.md §30; not measured here). Within
+        the one-to-three-second estimate and paid once per run, against 22 s to DOOM's first
+        frame, so the bitwise `crc32_update` stays. A table-driven CRC (same output) is the
+        fix if a faster start is ever needed, not skipping the check
       - **No firmware-overlap check for the assets slot on the ESP ports.** The Pico ports
         refuse a slot the firmware's end reaches into (`slot::xip_region`); the ESP firmware
         has no linker symbol for its flash extent, so neither the app slot nor the assets
@@ -1131,6 +1135,19 @@ change.**
       `info` (docs/app-workflow.md §3.8, stage 2). Until then `deploy` could reset the
       board and read the identity line, at the cost of a slower `deploy`; that would also
       let `deploy` choose the board when `--board` is omitted
+- [ ] **`deploy` and `assets write` flash at 115200 baud** (reported 2026-10-27,
+      docs/verification-report.md §30). espflash is never given a speed, so a 415 KB app
+      took 23 s and a 4.2 MB assets image 202 s. Pass `--flash-baud <n>` through to
+      `espflash write-bin --baud`; a separate name from `monitor --baud`, which is the
+      firmware's UART speed and stays 115200
+- [ ] **`deploy --monitor` stops after 3 s of silence** (reported 2026-10-27,
+      docs/verification-report.md §30). An app that is quiet while it loads (DOOM: 1.65 s of
+      asset CRC, then level loading) loses its trace. Give `deploy` the `--idle <secs>` of
+      `monitor`, rather than a default that changes with the image size
+- [ ] **`trace diff` cannot skip lines that differ by design** (reported 2026-10-27,
+      docs/verification-report.md §30). An app that logs timings stops the comparison at the
+      first one. An `--ignore <text>` (repeatable) that drops the lines containing the text
+      from both sides; without it the verdict stays the same as `verify/diff-traces.sh`
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
       over USB, trace over UART0**

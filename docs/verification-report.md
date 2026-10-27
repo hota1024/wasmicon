@@ -1685,3 +1685,43 @@ The board was left with this trace-on firmware.
 - `present` does not wait for vertical blank; tearing was not looked for
 - A DCS command with more than 63 parameter bytes (the streamed long-packet path) was not sent: no init
   list has one. A PSRAM failure at boot (printed then, `io` at the `open`) was not produced
+
+## 30. DOOM on the `esp32s3-psram` firmware, as reported by the DOOM port (2026-10-27)
+
+**Not measured in this repository.** The figures below were reported by the agent porting DOOM
+to Wasmicon (a separate clone, its own scripts and its own UART0 reader) and are recorded so
+that the open items in docs/TODO.md §5-10 can cite them. Nothing here was rerun here.
+
+Setup as reported: a second Freenove ESP32-S3 board (MAC `28:84:85:a4:24:9c`, not the board of
+§26), firmware `ports/esp32s3 --features psram` and the CLI both built from `31516b9`. That
+commit is on the `feat/device-layer` branch, seven commits past `main` at the time
+(`e4919e9`); one of them changes the config slot format, so the identity says `roles=v2`
+where §26 says `v1`.
+
+| Check | Reported result |
+|---|---|
+| Boot | `wasmicon esp32s3-psram`, identity `pages=112 slot=v1/1048576 roles=v2/4096 assets=v1/6287360`; no PSRAM halt; `assets doom1.wad=4196020`; `slot 414951 B crc32=7fdb30a6` |
+| Trace, 541 frames (`FRAMES=500 PREVIEW=100`) | 2,004 lines on both sides; the 1,968 lines other than 18 timing messages (startup / frame / done) match, including the data of 819 `blob.read` calls and 5 preview images. `trace diff` stops at the first timing line, so the comparison without them was a script of the DOOM port |
+| First `open` of the 4,196,020 B asset (its CRC check) | 1.65 s (from the trace line before `blob.open` to the `blob.open` line) |
+| App copy at boot: the slot CRC stream, the copy into the PSRAM arena and its verify, 414,951 B | 0.32 s |
+| Speed | 541 frames in 378 s: title 0.26 s per frame, demo 0.99 s per frame; 22.0 s to the first frame. The host runs the same in 5.2 s (0.18 s for the title) |
+| Linear memory | the guest's heap is 4,485,976 B on both sides, inside the 112-page limit |
+| `wasmicon deploy --no-run` of the 414,951 B app | 23 s (§26: 7.9 s for a 1,247 B app; the image is real bytecode, not `0xff` padding that compresses) |
+| `wasmicon assets write` of the 4.2 MB image | 202 s at 115200 baud |
+
+Also reported:
+
+- `deploy --monitor` ends after 3 s of silence, before DOOM's first frame (the CRC check
+  alone takes 1.65 s and level loading longer), so the run was captured with `--no-run` and
+  the DOOM port's own reader
+- With a CP2102N left on UART0, both espflash's DTR/RTS reset and the `RST` button booted into
+  download mode (`boot:0x0`). When another espflash opened the CH343 port, about 35
+  `rst:0x1 (POWERON)` resets appeared within 1.2 s, then a normal boot (`boot:0x8`). The
+  mechanism was not found; the symptom is the one of §12 and §14
+
+### What this report does not say
+
+- Nothing here was reproduced in this repository, and the firmware was not built from `main`
+- Real play was not measured: DOOM's input path is not implemented yet, so the deepest call
+  chain is still the demo's (47, docs/TODO.md §5-10)
+- No app close to the 1 MiB slot was copied; DOOM's 415 KB is the largest so far
