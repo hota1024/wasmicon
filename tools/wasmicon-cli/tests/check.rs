@@ -495,11 +495,24 @@ fn display_demo_needs_a_display_entry_on_a_board() {
     assert_eq!(rp2040.fails(), 1);
 
     let without = check::judge(&wasm, &profile::RP2350, &f, None, &[], None);
-    assert!(matches!(without.display, Some(Err(()))));
+    assert!(matches!(without.display, Some(Err(_))));
     assert_eq!(without.fails(), 1);
 
     let with = check::judge(&wasm, &profile::RP2350, &f, None, &[], Some(lcd));
     assert!(with.is_ok(), "{} failures", with.fails());
+
+    // The Tab5 panel's backend does not exist yet, so naming it fails here
+    // instead of `open` returning `unsupported` on the board.
+    let tab5 = check::judge(
+        &wasm,
+        &profile::ESP32P4,
+        &f,
+        None,
+        &[],
+        Some(DisplayConfig::Tab5),
+    );
+    assert!(matches!(tab5.display, Some(Err(_))));
+    assert_eq!(tab5.fails(), 1);
 
     let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None);
     assert!(host.is_ok(), "the host mock needs no entry");
