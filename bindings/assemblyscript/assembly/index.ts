@@ -1,4 +1,4 @@
-// Guest-side bindings of the Wasmicon HAL (AssemblyScript).
+// Guest-side bindings of the Wasmicon HAL and device layer (AssemblyScript).
 //
 // generated.ts is the output of wasmicon-gen; do not edit it by hand.
 // This file adds thin wrappers over the generated @external declarations.
@@ -7,6 +7,7 @@
 // under --runtime stub). Release a handle by calling close() explicitly.
 
 import {
+  DisplayPixelFormat,
   ErrorCode,
   GpioLevel,
   GpioPinMode,
@@ -18,6 +19,14 @@ import {
   assets_blob_open,
   assets_blob_read,
   board_pin_by_role,
+  display_screen_drop,
+  display_screen_fill_rect,
+  display_screen_format,
+  display_screen_height,
+  display_screen_open,
+  display_screen_present,
+  display_screen_width,
+  display_screen_write_rect,
   gpio_pin_drop,
   gpio_pin_open,
   gpio_pin_read,
@@ -39,7 +48,15 @@ import {
   time_sleep_us,
 } from "./generated";
 
-export { ErrorCode, GpioLevel as Level, GpioPinMode as PinMode, I2cSpeed as Speed, LogLevel, SpiMode };
+export {
+  DisplayPixelFormat as PixelFormat,
+  ErrorCode,
+  GpioLevel as Level,
+  GpioPinMode as PinMode,
+  I2cSpeed as Speed,
+  LogLevel,
+  SpiMode,
+};
 
 /// Scratch space for out-pointers. The guest is single-threaded, so it can be reused.
 const out32 = new Uint32Array(1);
@@ -251,5 +268,54 @@ export class Blob {
   /// Releases the handle. Call it explicitly; AssemblyScript has no Drop.
   close(): void {
     assets_blob_drop(this.handle);
+  }
+}
+
+/// An open display that the host drives (device layer, docs/device-layer.md §4).
+export class Screen {
+  constructor(public handle: u32) {}
+
+  /// Opens display index. Returns null on failure (no display at index, or
+  /// already open).
+  static open(index: u32): Screen | null {
+    const status = display_screen_open(index, out32.dataStart);
+    if (status != 0) return null;
+    return new Screen(out32[0]);
+  }
+
+  /// Width in pixels, after the configured orientation.
+  width(): u32 {
+    return display_screen_width(this.handle);
+  }
+
+  /// Height in pixels, after the configured orientation.
+  height(): u32 {
+    return display_screen_height(this.handle);
+  }
+
+  /// The pixel format that writeRect and fillRect take, as a raw discriminant.
+  format(): u32 {
+    return display_screen_format(this.handle);
+  }
+
+  /// Fills a rectangle with one color in the screen's pixel format. Returns the status.
+  fillRect(x: u32, y: u32, w: u32, h: u32, color: u32): u32 {
+    return display_screen_fill_rect(this.handle, x, y, w, h, color);
+  }
+
+  /// Writes w * h pixels, row by row (RGB565: two bytes each, high byte first).
+  /// Returns the status.
+  writeRect(x: u32, y: u32, w: u32, h: u32, pixels: Uint8Array): u32 {
+    return display_screen_write_rect(this.handle, x, y, w, h, pixels.dataStart, pixels.length);
+  }
+
+  /// Makes everything drawn so far visible. Call it after drawing. Returns the status.
+  present(): u32 {
+    return display_screen_present(this.handle);
+  }
+
+  /// Releases the handle; the picture stays. Call it explicitly; AssemblyScript has no Drop.
+  close(): void {
+    display_screen_drop(this.handle);
   }
 }

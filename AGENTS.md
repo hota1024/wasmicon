@@ -13,7 +13,8 @@ the M5Stack Tab5; docs/TODO.md §1.3.2). RP2040 builds but is not evaluated.
 1. `README.md` - what exists, layout, build and flash instructions
 2. `docs/TODO.md` - remaining work and open owner questions. The only place for them.
 3. `docs/abi-spec.md` - normative WIT -> Core Wasm lowering rules
-4. `wit/` - the HAL. Source of truth; every `generated.*` file is generator output
+4. `wit/` - the HAL; `wit-device/` - the device layer above it (docs/device-layer.md).
+   Source of truth; every `generated.*` file is generator output
 5. `docs/decisions.md` - frozen decisions (D-NN), adopted defaults (A-NN), pitfalls (P-NN)
 6. `docs/style-guide.md` - language, comment, citation and commit conventions
 

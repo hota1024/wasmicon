@@ -17,7 +17,7 @@ pub struct Output {
 
 /// Builds the four generated files from the repository root.
 pub fn outputs(root: &Path) -> Result<Vec<Output>> {
-    let hal = lower::load(&root.join("wit"))?;
+    let hal = lower::load_tree(root)?;
     Ok(vec![
         Output {
             path: root.join("runtime/src/generated.rs"),

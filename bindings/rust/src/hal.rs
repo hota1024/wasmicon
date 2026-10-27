@@ -416,3 +416,99 @@ pub mod assets {
         }
     }
 }
+
+/// A pixel display that the host drives (device layer, docs/device-layer.md §4).
+pub mod display {
+    use super::{Result, check};
+    use crate::generated::display as raw;
+
+    pub use crate::generated::display::PixelFormat;
+
+    /// An open display. `Drop` releases the handle; the picture stays.
+    pub struct Screen(u32);
+
+    impl Screen {
+        /// Opens display `index`.
+        ///
+        /// # Errors
+        /// `Unsupported` if the board has no display at `index`, `Busy` if it is
+        /// already open.
+        pub fn open(index: u32) -> Result<Screen> {
+            let mut h: u32 = 0;
+            // SAFETY: `h` is a live `u32` on this stack frame and `&raw mut h` points to it for
+            // the whole call. The host writes at most 4 bytes there, and only on success.
+            check(unsafe { raw::screen_open(index, &raw mut h) })?;
+            Ok(Screen(h))
+        }
+
+        /// Width in pixels, after the configured orientation.
+        #[must_use]
+        pub fn width(&self) -> u32 {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. No pointer arguments; the result is a scalar.
+            unsafe { raw::screen_width(self.0) }
+        }
+
+        /// Height in pixels, after the configured orientation.
+        #[must_use]
+        pub fn height(&self) -> u32 {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. No pointer arguments; the result is a scalar.
+            unsafe { raw::screen_height(self.0) }
+        }
+
+        /// The pixel format that `write_rect` and `fill_rect` take, or `None` for a
+        /// format this binding does not know.
+        #[must_use]
+        pub fn format(&self) -> Option<PixelFormat> {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. No pointer arguments; the result is a scalar.
+            PixelFormat::from_u32(unsafe { raw::screen_format(self.0) })
+        }
+
+        /// Fills a rectangle with one color in the screen's pixel format.
+        ///
+        /// # Errors
+        /// `InvalidArgument` if the rectangle is empty or leaves the screen.
+        pub fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, color: u32) -> Result<()> {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. The other arguments are scalars passed by value.
+            check(unsafe { raw::screen_fill_rect(self.0, x, y, w, h, color) })
+        }
+
+        /// Writes `w * h` pixels, row by row, into a rectangle. RGB565 pixels are
+        /// two bytes each, high byte first.
+        ///
+        /// # Errors
+        /// `InvalidArgument` if the rectangle is empty or leaves the screen, or if
+        /// `pixels` is not exactly `w * h` pixels long.
+        pub fn write_rect(&self, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) -> Result<()> {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `pixels.as_ptr()` and `pixels.len()` describe one live slice
+            // that outlives the call; the host reads at most `len` bytes from it and writes
+            // nothing.
+            check(unsafe {
+                raw::screen_write_rect(self.0, x, y, w, h, pixels.as_ptr(), pixels.len() as u32)
+            })
+        }
+
+        /// Makes everything drawn so far visible. Call it after drawing.
+        ///
+        /// # Errors
+        /// `InvalidHandle` if the handle is invalid; `Io` if the backend fails.
+        pub fn present(&self) -> Result<()> {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. No pointer arguments.
+            check(unsafe { raw::screen_present(self.0) })
+        }
+    }
+
+    impl Drop for Screen {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is the handle `open` returned and this is its only release.
+            // The host ignores an invalid handle without an error or a trap
+            // (docs/abi-spec.md §5.2). There are no pointer arguments.
+            unsafe { raw::screen_drop(self.0) }
+        }
+    }
+}

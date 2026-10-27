@@ -1,33 +1,95 @@
-//! Reads `wit/` and lowers it to the ABI model by the rules of `docs/abi-spec.md`.
+//! Reads `wit/` and `wit-device/` and lowers them to the ABI model by the rules
+//! of `docs/abi-spec.md`.
 //!
 //! Any syntax outside the subset of docs/abi-spec.md §2 is an error.
+//!
+//! - The HAL interfaces come first, in the import order of the HAL `world app`;
+//!   the device interfaces follow. Adding a device interface therefore leaves
+//!   the HAL part of every generated file, and the host slot numbers, unchanged.
 
 use anyhow::{Context, Result, bail, ensure};
+use std::path::Path;
 use wit_parser::{
-    Docs, Function, FunctionKind, Handle, Interface, InterfaceId, Resolve, Type, TypeDefKind,
-    WorldItem,
+    Docs, Function, FunctionKind, Handle, Interface, InterfaceId, PackageId, Resolve, Type,
+    TypeDefKind, WorldId, WorldItem,
 };
 
 use crate::model::{
     EnumCase, EnumDef, FlagBit, FlagsDef, Hal, Iface, Import, Param, Ret, Role, Scalar,
 };
 
-/// Reads `wit/` and builds the ABI model.
-pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
+/// Reads the HAL package in `wit_dir` and builds the ABI model.
+pub fn load(wit_dir: &Path) -> Result<Hal> {
+    load_dirs(wit_dir, None)
+}
+
+/// Reads `wit/` and, if present, `wit-device/` under `root` and builds the ABI model.
+///
+/// `wit-device/` has no `deps/` copy of the HAL: the HAL package is pushed first,
+/// so the device package's `use wasmicon:hal/...` resolves against it.
+pub fn load_tree(root: &Path) -> Result<Hal> {
+    let device = root.join("wit-device");
+    load_dirs(
+        &root.join("wit"),
+        device.is_dir().then_some(device.as_path()),
+    )
+}
+
+fn load_dirs(wit_dir: &Path, device_dir: Option<&Path>) -> Result<Hal> {
     let mut resolve = Resolve::default();
-    let (pkg_id, _) = resolve
+    let (hal_id, _) = resolve
         .push_dir(wit_dir)
         .with_context(|| format!("cannot parse `{}`", wit_dir.display()))?;
+    let package = package_name(&resolve, hal_id)?;
+    let mut interfaces = lower_world(&resolve, app_world(&resolve, hal_id)?, &[])?;
 
-    let pkg = &resolve.packages[pkg_id];
+    let device_package = match device_dir {
+        None => None,
+        Some(dir) => {
+            let (dev_id, _) = resolve
+                .push_dir(dir)
+                .with_context(|| format!("cannot parse `{}`", dir.display()))?;
+            let hal_modules: Vec<String> = interfaces.iter().map(|i| i.module.clone()).collect();
+            let device = lower_world(&resolve, app_world(&resolve, dev_id)?, &hal_modules)?;
+            let name = package_name(&resolve, dev_id)?;
+            let prefix = name.split('@').next().unwrap_or_default().to_string() + "/";
+            for i in &device {
+                ensure!(
+                    i.module.starts_with(&prefix),
+                    "the device world imports `{}`, which is neither a HAL nor a device \
+                     interface (docs/abi-spec.md §2.3)",
+                    i.module
+                );
+            }
+            interfaces.extend(device);
+            Some(name)
+        }
+    };
+
+    Ok(Hal {
+        package,
+        device_package,
+        interfaces,
+    })
+}
+
+/// `wasmicon:hal@0.1.0`
+fn package_name(resolve: &Resolve, id: PackageId) -> Result<String> {
+    let pkg = &resolve.packages[id];
     let version = pkg
         .name
         .version
         .as_ref()
         .context("package has no version; docs/abi-spec.md §3.1 requires one")?;
-    let package = format!("{}:{}@{}", pkg.name.namespace, pkg.name.name, version);
+    Ok(format!(
+        "{}:{}@{}",
+        pkg.name.namespace, pkg.name.name, version
+    ))
+}
 
-    let world_id = *pkg
+/// The package's `world app`, checked to export `run: func()` (docs/abi-spec.md §3.3).
+fn app_world(resolve: &Resolve, pkg: PackageId) -> Result<WorldId> {
+    let world_id = *resolve.packages[pkg]
         .worlds
         .get("app")
         .context("world `app` not found (docs/abi-spec.md §2.3)")?;
@@ -45,10 +107,14 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
         run.params.is_empty() && run.result.is_none(),
         "export `run` must be `func() -> ()` (docs/abi-spec.md §3.3)"
     );
+    Ok(world_id)
+}
 
-    // Interfaces keep the import order of `world app`.
+/// Lowers the imported interfaces of a world in import order, skipping the
+/// modules in `skip`. The module name comes from the interface's own package.
+fn lower_world(resolve: &Resolve, world_id: WorldId, skip: &[String]) -> Result<Vec<Iface>> {
     let mut interfaces = Vec::new();
-    for (key, item) in &world.imports {
+    for (key, item) in &resolve.worlds[world_id].imports {
         let WorldItem::Interface { id, .. } = item else {
             bail!("import {key:?} of world `app` is not an interface (docs/abi-spec.md §2.3)");
         };
@@ -57,20 +123,21 @@ pub fn load(wit_dir: &std::path::Path) -> Result<Hal> {
             .name
             .clone()
             .context("anonymous interfaces are not supported")?;
-        let module = format!(
-            "{}:{}/{}@{}",
-            pkg.name.namespace, pkg.name.name, name, version
-        );
+        let pkg = package_name(
+            resolve,
+            iface.package.context("interface without a package")?,
+        )?;
+        let (ns_name, version) = pkg.split_once('@').unwrap_or((pkg.as_str(), ""));
+        let module = format!("{ns_name}/{name}@{version}");
+        if skip.contains(&module) {
+            continue;
+        }
         interfaces.push(
-            lower_interface(&resolve, *id, iface, &name, module)
+            lower_interface(resolve, *id, iface, &name, module)
                 .with_context(|| format!("cannot lower interface `{name}`"))?,
         );
     }
-
-    Ok(Hal {
-        package,
-        interfaces,
-    })
+    Ok(interfaces)
 }
 
 fn lower_interface(

@@ -10,7 +10,12 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-wasm-tools component wit --json "$root/wit" > "$tmp/hal.json"
+# wit-device/ has no deps/ copy of the HAL (docs/device-layer.md §3), so the
+# HAL goes into deps/ of a scratch copy for wasm-tools to resolve it.
+mkdir -p "$tmp/tree/deps/hal"
+cp "$root"/wit/*.wit "$tmp/tree/deps/hal/"
+cp "$root"/wit-device/*.wit "$tmp/tree/"
+wasm-tools component wit --json "$tmp/tree" > "$tmp/hal.json"
 
 # Normalize the wit2sig.py output to module<TAB>name<TAB>sig.
 python3 "$root/tools/wit2sig.py" "$tmp/hal.json" | awk '

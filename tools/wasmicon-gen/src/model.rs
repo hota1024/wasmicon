@@ -287,11 +287,13 @@ pub struct Iface {
     pub imports: Vec<Import>,
 }
 
-/// The whole HAL.
+/// The whole HAL, plus the device layer when `wit-device/` exists.
 #[derive(Debug, Clone)]
 pub struct Hal {
     /// `wasmicon:hal@0.1.0`
     pub package: String,
+    /// `wasmicon:device@0.1.0`, or `None` when only `wit/` was read.
+    pub device_package: Option<String>,
     pub interfaces: Vec<Iface>,
 }
 

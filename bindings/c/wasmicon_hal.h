@@ -1,4 +1,4 @@
-// Guest-side bindings of the Wasmicon HAL (C).
+// Guest-side bindings of the Wasmicon HAL and device layer (C).
 //
 // generated.h is the output of wasmicon-gen; do not edit it by hand.
 // This header adds thin helpers over the generated import declarations.
