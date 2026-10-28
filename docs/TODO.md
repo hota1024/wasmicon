@@ -729,12 +729,12 @@ change.**
           `--board esp32s3 --variant psram`, a new CLI concept. Run on the Freenove board
           2026-10-23 (docs/verification-report.md §25): matches the host trace, takes its
           wiring from `[board.esp32s3.roles]` and grows linear memory past 4 pages
-        - **Quad PSRAM modules.** A second board on hand is an N8R2 (2 MiB of quad PSRAM,
-          docs/verification-report.md §25): `esp32s3-psram` halts on it as designed, and
-          the plain `esp32s3` firmware runs. Open: whether such modules get a profile of
-          their own (quad mode, an arena under 2 MiB, about 24 pages) or stay on
-          `esp32s3`. Quad PSRAM does not use GPIO33..=37, so the reservation in the
-          `esp32s3` profile costs these modules five pins they could use
+        - ~~Quad PSRAM modules~~ -> **not supported** (owner decision 2026-10-29). A second
+          board on hand is an N8R2 (2 MiB of quad PSRAM, docs/verification-report.md §25):
+          `esp32s3-psram` halts on it as designed, and the plain `esp32s3` firmware runs
+          without using the PSRAM. No quad profile (quad mode, an arena under 2 MiB, about
+          24 pages) is made. The GPIO33..=37 reservation in the `esp32s3` profile stays as
+          decided on 2026-10-22, so these modules keep losing five pins they could use
         - **Page limit.** **112 pages (7 MiB) for now** (2026-10-23, provisional; the 1 MiB
           left in the 8 MiB arena holds the copied app, the decoded module and `Exec`).
           Better settled after measuring DOOM; Wi-Fi buffers in PSRAM would need the arena
@@ -797,8 +797,10 @@ change.**
           compare the speed with the window
           -> **checks pass** (2026-10-28, docs/verification-report.md §33): 9 of 9 4 MiB
           reads and 6 of 6 edge cases equal to the window, guard intact, 16% faster on
-          4 MiB. Still to decide: whether to enable the direct path in the `psram` build
-          (one board, against ESP-IDF's practice), measured on an app's small reads first
+          4 MiB. **Owner decision 2026-10-29: A/B on a real app before deciding.** The
+          `psram` build keeps the window until then. Next: run an app's small reads (DOOM:
+          819 `blob.read` calls) with the window and with the direct path, and compare the
+          time; the check passed on one board only, against ESP-IDF's practice
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost
@@ -1218,7 +1220,7 @@ Also agreed that day: refuse an app early when the board lacks the device; sever
 backends per interface selected by board configuration; a small API (screen size,
 `fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
-recommended option**, and §6-8 on 2026-10-28. Implementation status is under Implementation below.
+recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Implementation status is under Implementation below.
 
 ### Open questions (owner decisions; the text cites them as §6-1 ... §6-9)
 
@@ -1252,7 +1254,9 @@ recommended option**, and §6-8 on 2026-10-28. Implementation status is under Im
       `ports/esp32p4/src/tab5_ili9881c.rs` is extracted from M5GFX's `Panel_ILI9881C.hpp`, whose
       header names LovyanGFX's FreeBSD license. LovyanGFX's `license.txt` is copied unchanged
       into `ports/esp32p4/notices/lovyangfx/`, next to M5GFX's MIT notice in `../m5gfx/`
-- [ ] **§6-9 An indexed pixel format for `display`?** Proposed by the DOOM port (2026-10-29,
+- [ ] **§6-9 An indexed pixel format for `display`?** **Owner decision 2026-10-29: option (c),
+      decide after the interpreter work of §4, with new numbers.** Nothing is added to the
+      imports until then; apps convert in the guest. Proposed by the DOOM port (2026-10-29,
       docs/verification-report.md §34): add `indexed8` to `pixel-format` and a `set-palette`
       (256 RGB565 entries, sent when they change), so a backend converts while it sends and the
       guest's per-pixel loop goes away. **It adds to the `wasmicon:device` imports, so it needs
