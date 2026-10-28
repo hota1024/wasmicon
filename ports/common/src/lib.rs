@@ -629,18 +629,16 @@ impl<B: Board> Resolver for Hal<B> {
                 let index = args[0] as u32;
                 a.u32(index);
                 let have = (index as usize) < MAX_SCREENS && self.display_size(index).is_some();
-                // The panel is brought up at the first open, not at boot: a
-                // firmware that runs no display app leaves the bus alone.
-                let up = match &mut self.ili9341 {
-                    _ if !have => Ok(()),
-                    Some(d) => d.init(&mut self.board),
-                    None => self.board.display_open(index),
-                };
                 status = if !have {
                     ErrorCode::Unsupported.status()
                 } else if self.screens[index as usize].open {
                     ErrorCode::Busy.status()
-                } else if let Err(e) = up {
+                } else if let Err(e) = match &mut self.ili9341 {
+                    // The panel is brought up at the first open, not at boot:
+                    // a firmware that runs no display app leaves the bus alone.
+                    Some(d) => d.init(&mut self.board),
+                    None => self.board.display_open(index),
+                } {
                     e.status()
                 } else {
                     self.screens[index as usize] = BusSlot { open: true, index };

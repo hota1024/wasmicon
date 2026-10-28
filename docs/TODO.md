@@ -1238,8 +1238,8 @@ recommended option**, and §6-8 on 2026-10-28. Implementation status is under Im
       `wasmicon run --trace` through `sh verify/diff-traces.sh`. Pass = identical traces
       and the demo picture on the panel
 - [x] (4) `tab5` backend on the ESP32-P4 (2026-10-28; docs/verification-report.md §29).
-      `ports/esp32p4/src/tab5.rs`, brought up at the first `open` when the config slot says
-      `@display=tab5`; the bring-up is docs/verification-report.md §28. The profile lists
+      `ports/esp32p4/src/tab5.rs`, when the config slot says `@display=tab5`: PSRAM at boot,
+      the panel at the first `open`; the bring-up is docs/verification-report.md §28. The profile lists
       the drivers each firmware has (`Interfaces::display_drivers`), and `check` refuses
       an entry whose driver is not listed. `apps/display-demo-rs` names `tab5` for esp32p4;
       its trace equals the host mock at 720x1280 (`wasmicon run --display-size`), 4,494

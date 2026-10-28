@@ -12,6 +12,7 @@
 
 use wasmicon_core::Config;
 use wasmicon_port::profile::{self, Profile};
+use wasmicon_port::roles::DisplayConfig;
 
 /// The values each `main.rs` had before they were collected (identical across
 /// the ports except `max_memory_pages`).
@@ -358,7 +359,7 @@ fn display_drivers_are_listed_exactly_where_there_is_a_display() {
         );
         for d in i.display_drivers {
             assert!(
-                matches!(*d, "ili9341" | "tab5"),
+                DisplayConfig::DRIVERS.contains(d),
                 "{}: unknown driver `{d}`",
                 p.name
             );
@@ -366,6 +367,7 @@ fn display_drivers_are_listed_exactly_where_there_is_a_display() {
     }
     assert_eq!(
         profile::ESP32P4.interfaces.display_drivers,
-        ["ili9341", "tab5"]
+        DisplayConfig::DRIVERS
     );
+    assert!(DisplayConfig::DRIVERS.contains(&DisplayConfig::Tab5.driver()));
 }

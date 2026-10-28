@@ -1,10 +1,12 @@
 //! The M5Stack Tab5's own panel as `wasmicon:device/display`: the `tab5`
 //! backend of docs/device-layer.md §5.3.
 //!
-//! - Brought up at the guest's first `open`, and only when the config slot
-//!   names it (`@display=tab5`), so a firmware that runs no display app leaves
-//!   PSRAM, the internal I2C and the backlight alone (docs/TODO.md §6-6).
-//!   The board holds the parts until then (`board.rs`).
+//! - Only when the config slot names it (`@display=tab5`), so a firmware that
+//!   runs no display app leaves PSRAM, the internal I2C and the backlight
+//!   alone (docs/TODO.md §6-6). PSRAM comes up at boot (`Pending::new`): its
+//!   init rewrites every external LDO, which must not happen under a running
+//!   guest. The panel comes up at the guest's first `open` (`Tab5::up`); the
+//!   board holds the parts until then (`board.rs`).
 //! - The order matters on v1.0 silicon: PSRAM before DSI (esp-hal's PSRAM
 //!   init turns the D-PHY supply off), the panel lit only once video runs.
 //!   `tab5_dpi` has the DSI side.
@@ -20,12 +22,13 @@
 
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_hal::i2c::master::{Config as I2cConfig, I2c};
+use esp_hal::i2c::master::{Config as I2cConfig, I2c, SoftwareTimeout};
 use esp_hal::mipi_dsi::{Config as DsiConfig, DataLanes, MipiDsi};
 use esp_hal::peripherals::{GPIO22, GPIO31, GPIO32, I2C1, MIPI_DSI, PSRAM, VDMA_CH0};
 use esp_hal::psram::{Psram, PsramConfig, PsramMode, PsramSize, PsramTimingParams};
-use esp_hal::time::Rate;
+use esp_hal::time::{Duration, Rate};
 use esp_hal::Blocking;
+use wasmicon_port::fmt::Buf;
 use wasmicon_port::Rect;
 
 use crate::tab5_dpi::{self, FB_BYTES, HEIGHT, WIDTH};
@@ -105,8 +108,27 @@ pub enum UpError {
 }
 
 impl UpError {
-    #[must_use]
-    pub fn reason(self) -> &'static str {
+    /// Writes the reason, with the command and wait for a stall.
+    pub fn describe(self, out: &mut Buf) {
+        out.str(self.reason());
+        match self {
+            UpError::Init(cmd, at) => {
+                out.str(" (command 0x");
+                out.hex(u32::from(cmd), 2);
+                out.str(", ");
+                out.str(at);
+                out.str(")");
+            }
+            UpError::Queued(at) => {
+                out.str(" (");
+                out.str(at);
+                out.str(")");
+            }
+            _ => {}
+        }
+    }
+
+    fn reason(self) -> &'static str {
         match self {
             UpError::I2c => "internal I2C refused",
             UpError::Expanders => "IO expander write failed",
@@ -119,6 +141,59 @@ impl UpError {
             UpError::Queued(_) => "init commands not sent before video",
             UpError::Vdma => "VDMA did not reset",
         }
+    }
+}
+
+/// The parts, with PSRAM up and the frame buffer cleared: what the board
+/// holds from boot until the first `open`.
+pub struct Pending {
+    i2c: I2C1<'static>,
+    sda: GPIO31<'static>,
+    scl: GPIO32<'static>,
+    backlight: GPIO22<'static>,
+    dsi: MIPI_DSI<'static>,
+    vdma: VDMA_CH0<'static>,
+    psram: Psram,
+    fb: &'static mut [u16],
+}
+
+impl Pending {
+    /// Brings PSRAM up and clears the frame buffer to black. Drives no pin.
+    ///
+    /// # Errors
+    /// `UpError::Psram`. The parts are consumed either way.
+    pub fn new(p: Parts) -> Result<Pending, UpError> {
+        let psram = Psram::new(
+            p.psram,
+            PsramConfig {
+                mode: PsramMode::Hex,
+                size: PsramSize::AutoDetect,
+                // esp-hal clocks PSRAM from a 500 MHz MPLL, which 200 MHz
+                // does not divide (docs/verification-report.md §28).
+                timing: PsramTimingParams::MHZ_125,
+            },
+        );
+        let (base, size) = psram.raw_parts();
+        if size < FB_BYTES || !(base as usize).is_multiple_of(64) {
+            return Err(UpError::Psram);
+        }
+        // SAFETY: `raw_parts` maps `size` bytes from `base`, at least FB_BYTES
+        // and 64-byte aligned (checked above); nothing else in this firmware
+        // uses PSRAM, and `psram` is kept with the slice for good.
+        let fb = unsafe { core::slice::from_raw_parts_mut(base.cast::<u16>(), FB_BYTES / 2) };
+        fb.fill(0);
+        // SAFETY: the same mapped range.
+        unsafe { tab5_dpi::writeback(base as u32, FB_BYTES as u32) };
+        Ok(Pending {
+            i2c: p.i2c,
+            sda: p.sda,
+            scl: p.scl,
+            backlight: p.backlight,
+            dsi: p.dsi,
+            vdma: p.vdma,
+            psram,
+            fb,
+        })
     }
 }
 
@@ -137,22 +212,22 @@ impl Tab5 {
     /// `(width, height)`: the panel is portrait.
     pub const SIZE: (u32, u32) = (WIDTH, HEIGHT);
 
-    /// Powers the panel, starts video from a black frame buffer and lights it.
-    /// Returns the D-PHY supply setting used, for the boot log.
+    /// Powers the panel, starts video from the black frame buffer and lights
+    /// it. Returns the D-PHY supply setting used, for the log.
     ///
     /// # Errors
     /// The step that failed. The parts are consumed either way.
-    pub fn up(p: Parts) -> Result<(Tab5, tab5_dpi::Ldo), UpError> {
+    pub fn up(p: Pending) -> Result<(Tab5, tab5_dpi::Ldo), UpError> {
         let delay = Delay::new();
-        // Held low from the start: the backlight stays off until video runs
-        // (docs/verification-report.md §28), and the pin is not left floating
-        // while the panel powers up.
+        // Held low from the start: the backlight stays off until video runs,
+        // and the pin is not left floating while the panel powers up.
         let mut backlight = Output::new(p.backlight, Level::Low, OutputConfig::default());
-        let i2c = I2c::new(
-            p.i2c,
-            I2cConfig::default().with_frequency(Rate::from_khz(100)),
-        )
-        .map_err(|_| UpError::I2c)?;
+        // A per-byte limit, as the guest's I2C has: a stuck bus fails the
+        // bring-up instead of hanging it.
+        let config = I2cConfig::default()
+            .with_frequency(Rate::from_khz(100))
+            .with_software_timeout(SoftwareTimeout::PerByte(Duration::from_millis(25)));
+        let i2c = I2c::new(p.i2c, config).map_err(|_| UpError::I2c)?;
         let mut i2c = i2c.with_sda(p.sda).with_scl(p.scl);
         for (addr, table) in [(PI4IO1, IO1_FIRST), (PI4IO2, IO2)] {
             for &(reg, val) in table {
@@ -168,30 +243,8 @@ impl Tab5 {
         delay.delay_millis(100);
         detect(&mut i2c, &delay)?;
 
-        let psram = Psram::new(
-            p.psram,
-            PsramConfig {
-                mode: PsramMode::Hex,
-                size: PsramSize::AutoDetect,
-                // esp-hal clocks PSRAM from a 500 MHz MPLL, which 200 MHz
-                // does not divide (its init then gives up).
-                timing: PsramTimingParams::MHZ_125,
-            },
-        );
-        let (base, size) = psram.raw_parts();
-        if size < FB_BYTES || !(base as usize).is_multiple_of(64) {
-            return Err(UpError::Psram);
-        }
-        // SAFETY: `raw_parts` maps `size` bytes from `base`, at least FB_BYTES
-        // and 64-byte aligned (checked above); nothing else in this firmware
-        // uses PSRAM, and `psram` is kept in the returned `Tab5` for good.
-        let fb = unsafe { core::slice::from_raw_parts_mut(base.cast::<u16>(), FB_BYTES / 2) };
-        fb.fill(0);
-        // SAFETY: the same mapped range.
-        unsafe { tab5_dpi::writeback(base as u32, FB_BYTES as u32) };
-
-        // DSI after PSRAM: esp-hal's PSRAM init rewrites every external LDO
-        // and leaves the one that powers the D-PHY off.
+        // DSI after PSRAM (`Pending::new`): esp-hal's PSRAM init rewrites
+        // every external LDO and leaves the one that powers the D-PHY off.
         let config = DsiConfig::default()
             .with_num_data_lanes(DataLanes::_2)
             .with_lane_bit_rate_mbps(ESP_HAL_LANE_MBPS);
@@ -214,19 +267,19 @@ impl Tab5 {
         // must be out first.
         tab5_dpi::dbi::drain().map_err(|e| UpError::Queued(e.0))?;
 
-        // SAFETY: the frame buffer stays allocated (above), the DSI host is up
-        // at LANE_MBPS, and VDMA channel 0 came with the DSI bus, which is
-        // never dropped.
-        unsafe { tab5_dpi::start(base) }.map_err(|()| UpError::Vdma)?;
+        // SAFETY: the frame buffer stays allocated (it moves into the
+        // returned `Tab5` with its `Psram`), the DSI host is up at LANE_MBPS,
+        // and VDMA channel 0 came with the DSI bus, which is never dropped.
+        unsafe { tab5_dpi::start(p.fb.as_ptr().cast()) }.map_err(|()| UpError::Vdma)?;
         // A few frames first, so the panel has a whole picture to show.
         delay.delay_millis(50);
         backlight.set_high();
 
         Ok((
             Tab5 {
-                fb,
+                fb: p.fb,
                 dirty: None,
-                _psram: psram,
+                _psram: p.psram,
                 _i2c: i2c,
                 _backlight: backlight,
             },

@@ -263,6 +263,9 @@ pub enum DisplayConfig {
 }
 
 impl DisplayConfig {
+    /// Every driver name `driver` returns.
+    pub const DRIVERS: [&'static str; 2] = ["ili9341", "tab5"];
+
     /// The driver's name, as `@display=` and `[board.<name>.display]` spell it.
     #[must_use]
     pub fn driver(&self) -> &'static str {

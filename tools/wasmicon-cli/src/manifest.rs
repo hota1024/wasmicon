@@ -214,11 +214,7 @@ fn build_display(
             }
         }
         "tab5" => {
-            // The Tab5 panel is the board's own; its pins are fixed. Which
-            // firmware has it is the profile's driver list.
-            if !board.interfaces.display_drivers.contains(&"tab5") {
-                bail!("{at}: driver = \"tab5\" is the M5Stack Tab5's panel (board esp32p4)");
-            }
+            // The Tab5 panel is the board's own; its pins are fixed.
             if raw.spi.is_some()
                 || raw.cs.is_some()
                 || raw.dc.is_some()
@@ -229,8 +225,24 @@ fn build_display(
             }
             DisplayConfig::Tab5
         }
-        other => bail!("{at}: unknown driver `{other}` (known: ili9341, tab5)"),
+        other => bail!(
+            "{at}: unknown driver `{other}` (known: {})",
+            DisplayConfig::DRIVERS.join(", ")
+        ),
     };
+    // Which firmware has which driver is the profile's list.
+    if !board.interfaces.display_drivers.contains(&d.driver()) {
+        bail!(
+            "{at}: the {} firmware has no `{}` driver (it has: {})",
+            board.name,
+            d.driver(),
+            if board.interfaces.display_drivers.is_empty() {
+                "none".to_string()
+            } else {
+                board.interfaces.display_drivers.join(", ")
+            }
+        );
+    }
     d.check(&Limits::of(board), roles)
         .map_err(|e| anyhow::anyhow!("{at}: {}", e.reason()))?;
     Ok(d)
@@ -726,7 +738,14 @@ driver = "tab5"
             "version = 1\n[board.esp32s3.display]\ndriver = \"tab5\"\n",
         )
         .expect_err("tab5 on esp32s3");
-        assert!(format!("{e:#}").contains("board esp32p4"));
+        assert!(format!("{e:#}").contains("esp32s3 firmware has no `tab5` driver"));
+        // Nor any driver where the firmware has no display.
+        let e = parse(
+            "display-rp2040",
+            "version = 1\n[board.rp2040.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n",
+        )
+        .expect_err("ili9341 on rp2040");
+        assert!(format!("{e:#}").contains("rp2040 firmware has no `ili9341` driver"));
         // A role on a display pin.
         let e = parse(
             "display-role",
