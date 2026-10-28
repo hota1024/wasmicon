@@ -307,7 +307,14 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
 
 /// `<W>x<H>`, each 1 to 4096: the mock keeps two RGB565 buffers of that size.
 fn parse_display_size(v: &str) -> Result<(u32, u32)> {
-    let parse = |s: &str| s.parse::<u32>().ok().filter(|n| (1..=4096).contains(n));
+    // Digits only: `u32::from_str` would also take a leading `+`.
+    let parse = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+            .filter(|n| (1..=4096).contains(n))
+    };
     match v.split_once('x') {
         Some((w, h)) => match (parse(w), parse(h)) {
             (Some(w), Some(h)) => Ok((w, h)),
@@ -548,7 +555,14 @@ mod tests {
         assert_eq!(parse_display_size("720x1280").unwrap(), (720, 1280));
         assert_eq!(parse_display_size("1x4096").unwrap(), (1, 4096));
         for bad in [
-            "720", "0x240", "320x4097", "320x", "x240", "320X240", "-1x2",
+            "720",
+            "0x240",
+            "320x4097",
+            "320x",
+            "x240",
+            "320X240",
+            "-1x2",
+            "+720x1280",
         ] {
             assert!(parse_display_size(bad).is_err(), "{bad}");
         }

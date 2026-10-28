@@ -50,4 +50,5 @@ wasmicon run ../target/wasm32-unknown-unknown/release/display_demo_rs.wasm --tra
 
 With the trace on, the board prints every call at 115200 baud, and the gray
 ramp alone is 2,048 `write-rect` calls: the picture takes about 18 s to
-appear. A firmware built without the trace draws it at once.
+appear. A firmware built without the trace (`--no-default-features`) draws it
+faster; how long it takes was not measured (docs/verification-report.md §29).

@@ -162,3 +162,21 @@ fn a_failed_bring_up_is_the_open_error() {
     // No handle came of it: the next open is not `busy`.
     assert_eq!(open(&mut hal, &mut mem), u64::from(ErrorCode::Io.status()));
 }
+
+#[test]
+fn an_open_refused_as_busy_does_not_reach_the_board() {
+    let mut hal = Hal::new(
+        PanelBoard {
+            opens: 0,
+            fail: false,
+        },
+        false,
+    );
+    let mut mem = [0u8; 64];
+    assert_eq!(open(&mut hal, &mut mem), 0);
+    assert_eq!(
+        open(&mut hal, &mut mem),
+        u64::from(ErrorCode::Busy.status())
+    );
+    assert_eq!(hal.board_mut().opens, 1);
+}

@@ -75,12 +75,17 @@ pub unsafe fn writeback(addr: u32, len: u32) {
         // ROM (in the pre-ECO5 tables the port links).
         fn Cache_WriteBack_Addr(bus: u32, addr: u32, size: u32);
     }
-    // L1 data cache and L2 cache: PSRAM is behind both.
+    // PSRAM is behind the L1 data cache and the L2 cache. One level per
+    // call, L1 first so its lines reach L2 before L2 is written back, as
+    // ESP-IDF v6.0.1's `cache_ll_writeback_addr` (esp32p4) does.
     const L1_DCACHE: u32 = 1 << 4;
     const L2_CACHE: u32 = 1 << 5;
     // SAFETY: the caller guarantees the range is mapped; the ROM routine
     // only writes dirty lines of that range back.
-    unsafe { Cache_WriteBack_Addr(L1_DCACHE | L2_CACHE, addr, len) };
+    unsafe {
+        Cache_WriteBack_Addr(L1_DCACHE, addr, len);
+        Cache_WriteBack_Addr(L2_CACHE, addr, len);
+    }
 }
 
 /// Starts video mode from the frame buffer at `fb`, at `PIXEL_MHZ`.
@@ -215,8 +220,8 @@ pub unsafe fn start(fb: *const u8) -> Result<(), ()> {
             w.dsi_raw_buf_almost_empty_thrd()
                 .bits(FIFO_EMPTY_THRESHOLD as u16)
         });
-        // What the bridge sends when its FIFO runs dry; black instead of the
-        // reset value 0x3FFF, which shows as cyan.
+        // What the bridge sends when its FIFO runs dry: black instead of the
+        // reset value 0x3FFF, cyan in RGB565.
         bridge
             .dpi_rsv_dpi_data()
             .modify(|_, w| w.dpi_rsv_data().bits(0));
@@ -372,17 +377,20 @@ pub mod dbi {
             [] => header(DCS_SHORT_WRITE_0, cmd, 0),
             [p] => header(DCS_SHORT_WRITE_1, cmd, *p),
             _ => {
+                let n = u16::try_from(params.len() + 1)
+                    .map_err(|_| Stall("long packet over 65535 bytes"))?;
                 // The command byte, then the parameters, packed little-endian.
-                let mut bytes = [0u8; 64];
-                let n = params.len() + 1;
-                bytes[0] = cmd;
-                bytes[1..n].copy_from_slice(params);
-                for chunk in bytes[..n].chunks(4) {
+                let mut bytes = core::iter::once(cmd).chain(params.iter().copied());
+                loop {
                     let mut w = [0u8; 4];
-                    w[..chunk.len()].copy_from_slice(chunk);
+                    let got = w.iter_mut().zip(&mut bytes).map(|(s, b)| *s = b).count();
+                    if got == 0 {
+                        break;
+                    }
                     payload(u32::from_le_bytes(w))?;
                 }
-                header(DCS_LONG_WRITE, n as u8, 0)
+                let [lo, hi] = n.to_le_bytes();
+                header(DCS_LONG_WRITE, lo, hi)
             }
         }
     }
@@ -391,7 +399,7 @@ pub mod dbi {
 /// D-PHY PLL reference on silicon before v3.0: PLL_F20M, shared with the PHY
 /// configuration clock (ESP-IDF v6.0.1 `mipi_dsi_ll.h`, the legacy branch).
 /// esp-hal 1.2.2 computes M/N for a 40 MHz XTAL reference, which these chips
-/// cannot select, so every rate it programs comes out at half.
+/// cannot select: from 20 MHz, each rate is half the one asked for.
 pub const PLL_REF_MHZ: u32 = 20;
 
 /// Lane rate this module programs: 20 MHz x 52 / 1 (ESP-IDF's limits:
@@ -448,7 +456,6 @@ pub fn retune_pll(delay: &esp_hal::delay::Delay, ldo: Ldo) -> bool {
         w.phy_enableclk().set_bit();
         w.phy_forcepll().set_bit()
     });
-    let h = MIPI_DSI_HOST::regs();
     for _ in 0..10_000 {
         // PLL lock, and the clock lane and both data lanes in stop state.
         const STOPPED: u32 = (1 << 2) | (1 << 4) | (1 << 7);

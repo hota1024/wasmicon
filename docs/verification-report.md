@@ -1658,13 +1658,30 @@ are the commit that records this), the slots as above, one power cycle:
 
 The board was left with this trace-on firmware.
 
+**Repeated after the second review of PR #12 (same day).** PSRAM now comes up at boot when the config
+slot names the panel (its init rewrites every external LDO, which should not happen under a running
+guest); the panel still comes up at the first `open`. The internal I2C has a per-byte timeout, and the
+cache write-back is one call per level, L1 then L2. Firmware `trace=on`, built from the uncommitted tree on
+`95d25f6` (its sources are the commit that records this), the slots as above. The capture holds one
+boot:
+
+| Check | Result |
+|---|---|
+| Boot lines | `... roles none display=tab5`, the slot line, no failure at boot, then at the open `wasmicon: display tab5 bring-up` and `wasmicon: display tab5 up, d-phy ldo dref=14 mul=3` |
+| Trace | identical to the host mock at 720x1280, 4,494 lines |
+| The panel (the owner, after power cycles) | the same picture as before; no haze and no speaker pop at power-on |
+
+The board was left with this trace-on firmware.
+
 ### What this measurement does not say
 
 - How long the trace-off run takes, and where that time goes (interpreter, the panel
-  bring-up at boot, cache write-back) was not measured
+  bring-up, cache write-back) was not measured
 - The faint shimmer on bright grays of §28 was not looked at again
 - PSRAM ran at 125 MHz; 250 MHz was not tried with the backend
 - Only this unit's eFuse was read; the calculation has not met another calibration
 - No rotation exists; a Tab5 with an ST7121 / ST7123 panel was not available (the backend refuses one
   by its touch controller and leaves the board without a display)
 - `present` does not wait for vertical blank; tearing was not looked for
+- A DCS command with more than 63 parameter bytes (the streamed long-packet path) was not sent: no init
+  list has one. A PSRAM failure at boot (printed then, `io` at the `open`) was not produced

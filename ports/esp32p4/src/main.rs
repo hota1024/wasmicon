@@ -67,7 +67,8 @@ const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32P4
 
 /// Runtime arena; whatever is left becomes linear memory (`Arena::alloc_rest`).
 /// Sized like the ESP32-S3: four pages of linear memory (256 KB) plus the
-/// runtime's structures. PSRAM is not used.
+/// runtime's structures. PSRAM holds only the Tab5 panel's frame buffer
+/// (`tab5`), never the arena.
 static mut ARENA: [u8; wasmicon_port::profile::ESP32P4.arena] =
     [0; wasmicon_port::profile::ESP32P4.arena];
 
@@ -195,7 +196,8 @@ fn main() -> ! {
     let wiring = pick_roles(storage, serial);
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
-    // The panel comes up at the guest's first `open`.
+    // PSRAM comes up here, before the app runs; the panel at the guest's
+    // first `open`.
     if wiring.display == Some(DisplayConfig::Tab5) {
         hal.board_mut().configure_tab5(tab5_parts);
     }

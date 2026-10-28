@@ -164,12 +164,12 @@ pub struct EspBoard<S: Serial> {
     tab5: Tab5State,
 }
 
-/// Where the Tab5 panel is: its parts are held from boot and taken at the
-/// guest's first `open`; the panel, once up, is never dropped.
+/// Where the Tab5 panel is: its parts are held from boot (PSRAM up) and taken
+/// at the guest's first `open`; the panel, once up, is never dropped.
 enum Tab5State {
     /// Not configured.
     None,
-    Parts(tab5::Parts),
+    Pending(tab5::Pending),
     Up(Tab5),
     /// Bring-up failed (the reason was printed); `open` returns `io`.
     Failed,
@@ -196,10 +196,27 @@ impl<S: Serial> EspBoard<S> {
         }
     }
 
-    /// Makes the Tab5 panel display 0. It comes up at the guest's first
-    /// `open` (`display_open`).
+    /// Makes the Tab5 panel display 0 and brings PSRAM up for it, before the
+    /// app runs. The panel comes up at the guest's first `open`
+    /// (`display_open`). A PSRAM failure is printed here and returned by
+    /// that `open`.
     pub fn configure_tab5(&mut self, parts: tab5::Parts) {
-        self.tab5 = Tab5State::Parts(parts);
+        self.tab5 = match tab5::Pending::new(parts) {
+            Ok(pending) => Tab5State::Pending(pending),
+            Err(e) => {
+                self.print_tab5_failure(e);
+                Tab5State::Failed
+            }
+        };
+    }
+
+    fn print_tab5_failure(&mut self, e: tab5::UpError) {
+        let mut line = [0u8; 128];
+        let mut out = Buf::new(&mut line);
+        out.str("wasmicon: display tab5 failed: ");
+        e.describe(&mut out);
+        self.serial.write(out.as_bytes());
+        self.serial.write(b"\r\n");
     }
 
     fn tab5_up(&mut self) -> BoardResult<&mut Tab5> {
@@ -331,8 +348,8 @@ impl<S: Serial> Board for EspBoard<S> {
     }
 
     fn display_open(&mut self, _index: u32) -> BoardResult<()> {
-        let parts = match core::mem::replace(&mut self.tab5, Tab5State::Failed) {
-            Tab5State::Parts(parts) => parts,
+        let pending = match core::mem::replace(&mut self.tab5, Tab5State::Failed) {
+            Tab5State::Pending(pending) => pending,
             Tab5State::Failed => return Err(ErrorCode::Io),
             other => {
                 self.tab5 = other;
@@ -342,42 +359,24 @@ impl<S: Serial> Board for EspBoard<S> {
         // Printed first: a bring-up that hangs inside esp-hal (its D-PHY
         // waits have no limit) still shows where.
         self.serial.write(b"wasmicon: display tab5 bring-up\r\n");
-        let mut line = [0u8; 128];
-        let mut out = Buf::new(&mut line);
-        out.str("wasmicon: display tab5 ");
-        let result = match Tab5::up(parts) {
+        match Tab5::up(pending) {
             Ok((panel, ldo)) => {
                 self.tab5 = Tab5State::Up(panel);
-                out.str("up, d-phy ldo dref=");
+                let mut line = [0u8; 64];
+                let mut out = Buf::new(&mut line);
+                out.str("wasmicon: display tab5 up, d-phy ldo dref=");
                 out.u32(u32::from(ldo.dref));
                 out.str(" mul=");
                 out.u32(u32::from(ldo.mul));
+                self.serial.write(out.as_bytes());
+                self.serial.write(b"\r\n");
                 Ok(())
             }
             Err(e) => {
-                out.str("failed: ");
-                out.str(e.reason());
-                match e {
-                    tab5::UpError::Init(cmd, at) => {
-                        out.str(" (command 0x");
-                        out.hex(u32::from(cmd), 2);
-                        out.str(", ");
-                        out.str(at);
-                        out.str(")");
-                    }
-                    tab5::UpError::Queued(at) => {
-                        out.str(" (");
-                        out.str(at);
-                        out.str(")");
-                    }
-                    _ => {}
-                }
+                self.print_tab5_failure(e);
                 Err(ErrorCode::Io)
             }
-        };
-        self.serial.write(out.as_bytes());
-        self.serial.write(b"\r\n");
-        result
+        }
     }
 
     fn display_fill_rect(&mut self, _index: u32, rect: Rect, color: u16) -> BoardResult<()> {
