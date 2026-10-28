@@ -1725,3 +1725,50 @@ Also reported:
 - Real play was not measured: DOOM's input path is not implemented yet, so the deepest call
   chain is still the demo's (47, docs/TODO.md §5-10)
 - No app close to the 1 MiB slot was copied; DOOM's 415 KB is the largest so far
+
+## 31. `--flash-baud` on the ESP32-S3 (2026-10-28)
+
+Question (docs/TODO.md §5): which flashing speeds does the Freenove board's CH343 hold, and what do
+they save on a multi-megabyte `assets write`, which took 202 s at espflash's default 115200
+(docs/verification-report.md §30)?
+
+The second Freenove board (MAC `28:84:85:a4:24:9c`, the DOOM port's board), the CLI built from
+`1b3106a`, espflash 4.5.0 through the CH343 port, `ESPFLASH_BAUD` unset. The image was a 4,202,496-byte
+assets slot image (one 4,196,020-byte asset) of random bytes, which espflash cannot compress, so these
+are the slowest case; DOOM's WAD at 115200 took 202 s against 381 s here. The firmware was left as it
+was; only the assets slot was written. The whole 8 MiB flash was read first and written back at the end
+(below).
+
+| Write to `0x201000` | Time |
+|---|---|
+| `wasmicon assets write --board esp32s3-psram --flash-baud 921600` (through the CLI, ends with a reset) | 64.3 s |
+| `espflash write-bin --after no-reset`, default 115200 | 381.5 s |
+| the same with `--baud 1500000` | 57.3 s |
+| the same with `--baud 2000000` | 49.3 s |
+| the same with `--baud 3000000` | 44.4 s; read back at 3000000, equal byte for byte |
+
+Above 1.5 Mbaud the gain flattens: erasing and writing the flash, not the line, sets the time. No speed
+up to 3 Mbaud failed. Each speed got its own random image: writing an image equal to what the flash
+already holds took about 8 s at any speed, because espflash skips a region whose checksum matches. A
+timing taken with the same image twice measures that skip, not the write.
+
+Writing back the board's own contents: 7 MiB (`0x100000` to the end) took 58.2 s at 3 Mbaud, and the
+whole 8 MiB read back at 3 Mbaud was equal to the copy taken before. Reading 8 MiB at 921600 took 115.5 s.
+
+### Where the board got stuck
+
+- After the CLI's write ended with a reset, espflash could not connect through the CH343 at any speed,
+  115200 included (`Failed to connect to the device`). The writes above at 1.5 / 2 / 3 Mbaud first
+  failed this way, and passed once the board was put into download mode by hand (`BOOT` held while
+  `RST` was pressed). So `--after no-reset` was used for the timings, and the speed was never the cause
+- After a reset, nothing came out of UART0 (read through the CP2102N, which carried espflash's own
+  exchange with the ROM), neither the ROM's lines nor the firmware's identity line. The same as the DOOM
+  port's report of `boot:0x0` with the CP2102N attached (docs/TODO.md §1.3)
+
+### What this measurement does not say
+
+- `deploy --monitor --idle 0 --timeout <secs>` was not run: the board did not boot to an app
+- `deploy --flash-baud` was not run; it passes the same arguments to `espflash write-bin` as
+  `assets write` does (`tools/wasmicon-cli/tests/deploy.rs`)
+- Speeds above 3 Mbaud, and the CP2102N as a flashing port, were not tried
+- A compressible image (such as DOOM's WAD) was not timed at the higher speeds
