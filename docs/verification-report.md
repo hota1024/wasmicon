@@ -1946,3 +1946,56 @@ This is the first timing of the `ili9341` backend; §27 did not time the demo.
 - One board, rotation 90, one SPI clock (16 MHz); the Pico 2 W and the ESP32-P4 did not run the module
 - The conversion cost is DOOM's loop in the interpreter. It says nothing about a frame that is already
   RGB565, nor about how the time would split if the backend took indexed pixels (docs/TODO.md §6-9)
+
+## 35. Asset reads straight into PSRAM, A/B with DOOM, as reported by the DOOM port (2026-10-29)
+
+**The timings were not measured in this repository.** The DOOM port ran the A/B of docs/TODO.md §5-10
+and reported it from its own clone (logs in that clone, `logs/2026-10-29-esp32s3-psram-read-ab/`:
+`A/`, `B/` and `startup/`). The read counts, the start-up times and the trace comparisons below were
+checked here on those logs, with the `wasmicon` CLI built from `ea1ba94` and the host trace of
+`logs/2026-10-27-esp32s3-psram/`.
+
+Setup as reported: the board of §30 to §34 (MAC `28:84:85:a4:24:9c`), firmware `ports/esp32s3` from
+`ea1ba94` flashed with `espflash flash --baud 921600 --after no-reset`, CLI from `69b53da`. The module
+logs only (`PANEL=0 FRAMES=500 PREVIEW=100`, crc32 `7fdb30a6`), run once per firmware with
+`deploy --monitor --idle 60`. A is `--features psram,read-stats` (every asset read through the 256-byte
+window); B is `--features psram-direct-read,read-stats` (aligned reads straight into the destination).
+`ea1ba94` predates the boot line naming the path, so neither capture has it.
+
+| Item | A (window) | B (direct) |
+|---|---|---|
+| `wasmicon: asset reads ...` after the run | `direct=0 window=9015 bytes=6125358 us=990703` | `direct=9006 window=9 bytes=6125358 us=883863` |
+| `startup:` | 21,950,095 us | 21,846,181 us (-103.9 ms, -0.47%) |
+| 541 frames | 378.474 s | 378.472 s; every 35-frame average within 15 us of A |
+| `trace diff` against the host, `--ignore "startup: " "frame " "done: "` | match: 1,970 lines (34 ignored per file) | the same |
+
+The 9,015 reads are 8,196 of the body check at the WAD's first `open` (4,196,020 B in 512-byte chunks)
+and 819 of the guest. In B the guest's buffers were all word-aligned: the 9 reads left on the window are
+the 9 whose offset or length is not, which the module counts itself.
+
+The port split the 104 ms with timestamped captures of A, B and the plain `psram` firmware (60 s each):
+
+| Part | A -> B |
+|---|---|
+| The body check at the first `open` (its chunk is on the stack, in SRAM) | 1.634 -> 1.591 s (-43 ms) |
+| The guest's 795 reads during start-up (these land in PSRAM) | -61 ms |
+| The guest's 24 reads during the demo | -2.5 ms over 378 s |
+
+Also reported:
+
+- The body check spends at most 0.99 s reading flash (A's `us` covers the check and the guest's reads
+  together), so 0.64 s or more of its 1.63 s is not the read. The bitwise `crc32_update` is the likely
+  rest; not measured on its own
+- The `>` line of the first `blob.open` arrives after the 1.6 s silence, and its `<` within 6 ms: the
+  check runs before the call line is written
+- Back on the plain `psram` firmware of `ea1ba94`: `startup:` 21,968,941 us, 29 us from `6a54de7`. A,
+  with `read-stats`, started 19 ms faster than plain; the reason is not known
+
+### What this measurement does not say
+
+- One board, one run per firmware. A difference of 19 ms appeared between A and plain, which share the
+  read path, so differences of that size are within what this setup cannot explain
+- The direct path stored the guest's 1,929,338 B into PSRAM (6,125,358 B less the 4,196,020 B of the
+  check) with no wrong byte the trace could see (each read's data is traced as a CRC-32), but nothing
+  else was using PSRAM during the reads, as in §33
+- The CRC split of the body check is inferred from the totals, not timed

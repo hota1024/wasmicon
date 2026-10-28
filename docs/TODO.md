@@ -808,6 +808,18 @@ change.**
           the run. The counts include the body check at an asset's first `open`, whose
           chunk is on the stack in SRAM, so B speeds that check up without storing into
           PSRAM; only the guest's own reads land in PSRAM
+          -> **A/B run by the DOOM port** (2026-10-29, docs/verification-report.md §35): start-up
+          -104 ms of 21.95 s. Of that, 61 ms are the guest's reads into PSRAM and 43 ms the body
+          check into SRAM; the demo frames do not change (-2.5 ms over 378 s). Traces equal the
+          host in both. **Still for the owner**, with these numbers:
+          - (a) keep the window for every read in the `psram` build (no change)
+          - (b) enable the direct path in the `psram` build: -104 ms per start, against
+            ESP-IDF's practice, checked on one board
+          - (c) take the direct path only when the destination is in internal SRAM, as the plain
+            build does for every read: -43 ms, never stores into PSRAM
+          - Independent of the choice: the body check spends 0.64 s or more outside the reads,
+            likely the bitwise CRC. A table-driven CRC (same output, 1 KiB table) is the larger
+            lever on DOOM's start-up; the item above already names it as the fix
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost
@@ -1286,6 +1298,12 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Imp
       trace must stay equal across backends (docs/device-layer.md §7)
     - Options: (a) leave it, apps convert in the guest; (b) add `indexed8` and `set-palette`
       as proposed; (c) wait for the interpreter work of §4 and decide with new numbers
+    - Partial rectangles need no change (`write-rect` takes x, y, w, h), but help DOOM little:
+      its view is redrawn every frame (320x168 of 320x200 at the default size) and the status
+      bar changes nearly every frame at 1.4 s per frame, so at most about 0.08 s of the
+      0.487 s (the DOOM port, 2026-10-29). Of `write-rect` + `present`'s 0.112 s, 64 ms is
+      the SPI floor and 14 ms the four trace lines; about 34 ms (CRC-32, chunking, reading
+      guest memory) is not split yet
 
 ### Implementation (stages: docs/device-layer.md §10)
 
