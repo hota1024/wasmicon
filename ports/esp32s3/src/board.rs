@@ -161,6 +161,23 @@ pub struct EspBoard<S: Serial> {
     /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; GPIO8/9
     /// are not reset by hand.
     i2c: Option<I2c<'static, Blocking>>,
+    /// What the guest's asset reads cost so far (`read-stats`).
+    #[cfg(feature = "read-stats")]
+    stats: ReadStats,
+}
+
+/// Counts of the guest's asset reads, by the path `read_flash` took.
+#[cfg(feature = "read-stats")]
+#[derive(Clone, Copy, Default)]
+pub struct ReadStats {
+    /// Reads that went straight into the guest's memory.
+    pub direct: u32,
+    /// Reads that went through the window.
+    pub window: u32,
+    /// Bytes read, both paths.
+    pub bytes: u64,
+    /// Microseconds spent in `read_flash`, both paths.
+    pub us: u64,
 }
 
 impl<S: Serial> EspBoard<S> {
@@ -176,7 +193,15 @@ impl<S: Serial> EspBoard<S> {
             assets_base,
             spi: None,
             i2c: None,
+            #[cfg(feature = "read-stats")]
+            stats: ReadStats::default(),
         }
+    }
+
+    /// The asset reads so far and the serial port, to print them after the run.
+    #[cfg(feature = "read-stats")]
+    pub fn read_stats(&mut self) -> (ReadStats, &mut S) {
+        (self.stats, &mut self.serial)
     }
 
     /// The serial port, used to print the reason for a failure.
@@ -256,14 +281,21 @@ struct Window([u8; 256]);
 /// PSRAM share the MSPI bus and the cache; ESP-IDF never lets a flash read
 /// land in PSRAM directly. Only the copy out of an SRAM buffer was tried on
 /// hardware (docs/verification-report.md §24), so that build always goes
-/// through the window, which is on the stack.
-fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> BoardResult<()> {
+/// through the window, which is on the stack. The `psram-direct-read` build
+/// lifts that for the A/B of docs/TODO.md §5-10, after the checks of
+/// docs/verification-report.md §33 passed on one board.
+///
+/// Returns whether the read went straight into `buf`.
+fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> BoardResult<bool> {
     const WORD: u32 = 4;
     const MASK: usize = WORD as usize - 1;
     let aligned =
         (at as usize) & MASK == 0 && buf.len() & MASK == 0 && (buf.as_ptr() as usize) & MASK == 0;
-    if aligned && cfg!(not(feature = "psram")) {
-        return storage.read_nor(at, buf).map_err(|_| ErrorCode::Io);
+    if aligned && (cfg!(not(feature = "psram")) || cfg!(feature = "psram-direct-read")) {
+        return storage
+            .read_nor(at, buf)
+            .map(|()| true)
+            .map_err(|_| ErrorCode::Io);
     }
     let cap = u32::try_from(storage.capacity()).unwrap_or(u32::MAX);
     let mut window = Window([0; 256]);
@@ -287,7 +319,7 @@ fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> B
         buf[done..done + want].copy_from_slice(&window.0[skip..skip + want]);
         done += want;
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Picks the register of the two 32-GPIO banks and the bit within it.
@@ -692,7 +724,24 @@ impl<S: Serial> Board for EspBoard<S> {
 
     fn assets_read(&mut self, offset: u32, buf: &mut [u8]) -> BoardResult<()> {
         let at = self.assets_base.checked_add(offset).ok_or(ErrorCode::Io)?;
-        read_flash(&mut self.storage, at, buf)
+        #[cfg(feature = "read-stats")]
+        let start = self.now_us();
+        let direct = read_flash(&mut self.storage, at, buf)?;
+        #[cfg(feature = "read-stats")]
+        {
+            let took = self.now_us().saturating_sub(start);
+            let s = &mut self.stats;
+            if direct {
+                s.direct = s.direct.saturating_add(1);
+            } else {
+                s.window = s.window.saturating_add(1);
+            }
+            s.bytes += buf.len() as u64;
+            s.us += took;
+        }
+        #[cfg(not(feature = "read-stats"))]
+        let _ = direct;
+        Ok(())
     }
 
     // --- Time ---

@@ -194,6 +194,25 @@ fn main() -> ! {
 
     let outcome = run(&mut hal, arena_buf, scratch_buf);
 
+    // Not a trace line (it does not start with `>` or `<`), so trace
+    // comparisons skip it. Printed whatever the outcome.
+    #[cfg(feature = "read-stats")]
+    {
+        let (st, serial) = hal.board_mut().read_stats();
+        let mut line = [0u8; 128];
+        let mut out = Buf::new(&mut line);
+        out.str("wasmicon: asset reads direct=");
+        out.u32(st.direct);
+        out.str(" window=");
+        out.u32(st.window);
+        out.str(" bytes=");
+        out.u64(st.bytes);
+        out.str(" us=");
+        out.u64(st.us);
+        serial.write(out.as_bytes());
+        serial.write(b"\r\n");
+    }
+
     // The firmware embeds no app (docs/app-workflow.md §3.3). If the slot is
     // empty or corrupt, pick_guest has already printed the reason.
     if let Ok(false) = outcome {

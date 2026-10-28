@@ -800,7 +800,11 @@ change.**
           4 MiB. **Owner decision 2026-10-29: A/B on a real app before deciding.** The
           `psram` build keeps the window until then. Next: run an app's small reads (DOOM:
           819 `blob.read` calls) with the window and with the direct path, and compare the
-          time; the check passed on one board only, against ESP-IDF's practice
+          time; the check passed on one board only, against ESP-IDF's practice. The two
+          firmwares: `--features psram,read-stats` (A, the window) and
+          `--features psram-direct-read,read-stats` (B); `read-stats` prints
+          `wasmicon: asset reads direct=N window=N bytes=N us=N` after the run, which shows
+          how many reads each path took and the time spent in them
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost
