@@ -791,6 +791,10 @@ change.**
           always reads through the 256-byte stack window. To lift that, run the §24
           checks with `read_nor` into PSRAM (CRC, unaligned edges, a guard pattern) and
           compare the speed with the window
+          -> **checks pass** (2026-10-28, docs/verification-report.md §33): 9 of 9 4 MiB
+          reads and 6 of 6 edge cases equal to the window, guard intact, 16% faster on
+          4 MiB. Still to decide: whether to enable the direct path in the `psram` build
+          (one board, against ESP-IDF's practice), measured on an app's small reads first
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost

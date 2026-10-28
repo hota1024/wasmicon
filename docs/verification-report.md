@@ -1844,3 +1844,37 @@ The DOOM port then took the capture again with the CLI built from `68cb1d3` (the
 - Whether the CP2102N's wires were the cause of §31's silent boots: the CH343 alone worked, but the
   CP2102N was not shown to be off UART0
 - Real play: DOOM's input path is still missing
+
+## 33. `read_nor` straight into PSRAM (2026-10-28)
+
+Question (docs/TODO.md §5-10): can the port's direct path, `FlashStorage::read_nor` handing a PSRAM
+destination to the ROM flash routine, be used in the `psram` build? §24 checked only the copy out of an
+SRAM buffer. The checks are §24's, with the direct path in place of `FlashStorage::read`, compared with
+the 256-byte window the `psram` build uses today (`read_flash` in `ports/esp32s3/src/board.rs`).
+
+The board of §30 to §32 (MAC `28:84:85:a4:24:9c`, octal PSRAM, 240 MHz), a throwaway firmware: the
+`psram` build of `b78dd6e` (esp-hal 1.2.1, esp-storage 0.10.0) with a probe that runs right after PSRAM
+is mapped and before anything else. The 8 MiB arena was split in two: reads land in the lower 4 MiB, and
+the upper 4 MiB holds a guard pattern (one value per word) written first and checked last. Run twice from
+reset; both runs printed the same lines.
+
+| Check | Result |
+|---|---|
+| Flash `0x0..0x400000` through the window into PSRAM | CRC-32 `b30eab8a` |
+| The same with `read_nor` straight into PSRAM, nine times | 9 of 9 the same CRC |
+| Word-aligned requests at destinations off the cache line (destination +4, +12, +36, +68, +100), 4 B to 64 KiB, flash offsets `0x0`, `0xffc`, `0x10004`, `0x100000`, `0x201000`, `0x7ff000`, against the same range through the window | 6 of 6 equal; the 4 bytes before and 256 after each destination unchanged |
+| The guard pattern, after all of the above | 0 of 1,048,576 words changed |
+| 4 MiB through the window (read and copy) | 817,802 us (5.1 MB/s) |
+| 4 MiB with `read_nor` straight into PSRAM | 689,640 us (6.1 MB/s), 16% less time |
+
+So on this board the ROM routine stores into PSRAM correctly while it drives the flash: no wrong byte,
+nothing outside the destination touched. Before and after the run the firmware region (`0x0..0x100000`)
+was read and written back; the read-back equalled the copy and DOOM booted from it.
+
+### What this measurement does not say
+
+- Only bulk reads were timed. The guest's reads are a few KB (DOOM: 819 `blob.read` calls), where the
+  window's cost per 256-byte call may weigh differently; no app was run with the direct path
+- Nothing else touched PSRAM during a read, and there was no interrupt handler using PSRAM, as in §24
+- One board, one PSRAM die and one esp-storage version; ESP-IDF still never lets a flash read land in
+  PSRAM, so a different chip revision or library version could differ
