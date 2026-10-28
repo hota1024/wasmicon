@@ -1906,3 +1906,43 @@ was read and written back; the read-back equalled the copy and DOOM booted from 
 - Nothing else touched PSRAM during a read, and there was no interrupt handler using PSRAM, as in §24
 - One board, one PSRAM die and one esp-storage version; ESP-IDF still never lets a flash read land in
   PSRAM, so a different chip revision or library version could differ
+
+## 34. DOOM through `wasmicon:device/display` on the ESP32-S3, as reported by the DOOM port (2026-10-29)
+
+**The panel and the timings were not measured in this repository.** The DOOM port reported two runs
+from its own clone (logs in that clone, `logs/2026-10-28-esp32s3-psram-panel/` and
+`logs/2026-10-29-esp32s3-psram-panel-split/`: capture, `deploy` output, the host trace of the same module
+and the host mock's last frame). The trace comparisons below were re-run here on those logs with the
+`wasmicon` CLI built from `69b53da`.
+
+Setup as reported: the board of §30 to §33 (MAC `28:84:85:a4:24:9c`) with the ILI9341 of §27, firmware
+`ports/esp32s3 --features psram` from `6a54de7`, CLI from `68cb1d3`. The DOOM module's `wasmicon.toml`
+has `[board.esp32s3.display]` (`ili9341`, CS 10, DC 14, RST 15), which `deploy` wrote into the config
+slot. The module opens screen 0, reads 320x240, clears it with one `fill-rect`, then each frame converts
+DOOM's 320x200 8-bit indexed frame to RGB565 in the guest through a 256-entry table and sends it with
+one `write-rect` at (0,20) and one `present`.
+
+| Item | Result |
+|---|---|
+| Identity line | `... git=6a54de7 ... device=wasmicon:device@0.1.0 trace=on pages=112 if=gpio,i2c,spi,time,log,board,assets,display ...` |
+| Config slot banner | `wasmicon: roles none display=ili9341 spi=0 cs=10 dc=14 rst=15 rotation=90` |
+| Two runs, 541 frames each (`PREVIEW=100`) | both captures (4,182 trace lines, taken with `--no-addresses`) read without editing |
+| `wasmicon trace diff` against the host trace, `--ignore "startup: " "frame " "done: " "panel: on"` | **match: 4,144 lines** for each run (checked here); 38 lines ignored in each file |
+| The 541 `write-rect` CRC-32s | the same, line by line, in both host traces and both captures (checked here) |
+| `usage:` of the host run | `max_call_depth 29, operand_stack_slots 178`, as without the display (host only; the firmware does not print it) |
+| Panel time per frame (the module's own averages over each 35 frames) | 0.487 s: 0.375 s converting in the guest, 0.112 s in `write-rect` and `present` |
+| Demo frame time | 0.99 s without the panel, 1.42 s with it |
+
+The guest's conversion loop is 64,000 table lookups: 4.9 ms on the host and 0.375 s on the board, about
+5.9 us per pixel. Reading four pixels at a time saved 3.7%. The 0.112 s of `write-rect` and `present`
+sends 128,000 bytes at the backend's 16 MHz SPI clock, whose floor is 64 ms.
+
+This is the first timing of the `ili9341` backend; §27 did not time the demo.
+
+### What this measurement does not say
+
+- The picture on the panel was reported, not seen here. The traces show what the guest sent, not what
+  the panel showed
+- One board, rotation 90, one SPI clock (16 MHz); the Pico 2 W and the ESP32-P4 did not run the module
+- The conversion cost is DOOM's loop in the interpreter. It says nothing about a frame that is already
+  RGB565, nor about how the time would split if the backend took indexed pixels (docs/TODO.md §6-9)

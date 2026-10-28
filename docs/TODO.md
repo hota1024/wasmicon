@@ -1220,7 +1220,7 @@ backends per interface selected by board configuration; a small API (screen size
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
 recommended option**, and §6-8 on 2026-10-28. Implementation status is under Implementation below.
 
-### Open questions (owner decisions; the text cites them as §6-1 ... §6-8)
+### Open questions (owner decisions; the text cites them as §6-1 ... §6-9)
 
 - [x] **§6-1 Changes to frozen decisions and the ABI spec** (owner decision 2026-10-27).
       docs/decisions.md D-03, D-05 and D-09 change wording and D-13 records the layer
@@ -1252,6 +1252,29 @@ recommended option**, and §6-8 on 2026-10-28. Implementation status is under Im
       `ports/esp32p4/src/tab5_ili9881c.rs` is extracted from M5GFX's `Panel_ILI9881C.hpp`, whose
       header names LovyanGFX's FreeBSD license. LovyanGFX's `license.txt` is copied unchanged
       into `ports/esp32p4/notices/lovyangfx/`, next to M5GFX's MIT notice in `../m5gfx/`
+- [ ] **§6-9 An indexed pixel format for `display`?** Proposed by the DOOM port (2026-10-29,
+      docs/verification-report.md §34): add `indexed8` to `pixel-format` and a `set-palette`
+      (256 RGB565 entries, sent when they change), so a backend converts while it sends and the
+      guest's per-pixel loop goes away. **It adds to the `wasmicon:device` imports, so it needs
+      the owner** (AGENTS.md; docs/device-layer.md §4 kept `format` for exactly this).
+      Not implemented.
+    - What it would save: DOOM spends 0.375 s of a 0.487 s panel frame converting 64,000 pixels
+      in the guest (4.9 ms on the host); the bytes crossing `write-rect` halve (128 -> 64 KB).
+      Not DOOM only: any app with indexed art (sprites, tiles, GIF-style assets, emulated
+      8-bit screens) runs the same loop
+    - What it would not save: the ILI9341 takes no palette, so the wire still carries
+      128 KB of RGB565, at least 64 ms at 16 MHz of the 0.112 s `write-rect` + `present`
+    - The general fix is a faster interpreter (§4: about 90 cycles per Wasm instruction).
+      An indexed format does not block it, but it is a format-specific fix where a general one
+      exists; with a much faster interpreter the case for it weakens
+    - Open design points: today `format` reports what the backend takes, so the guest would
+      need a way to choose `indexed8` (a `set-format`, or `set-palette` switching to it); what
+      `fill-rect`'s `color` means then (an index or RGB565); per docs/device-layer.md §2 all
+      three backends (host mock, `ili9341`, `tab5`) take it, ideally through one converter in
+      `ports/common`; the trace carries the palette's and the indices' CRC-32, and a display
+      trace must stay equal across backends (docs/device-layer.md §7)
+    - Options: (a) leave it, apps convert in the guest; (b) add `indexed8` and `set-palette`
+      as proposed; (c) wait for the interpreter work of §4 and decide with new numbers
 
 ### Implementation (stages: docs/device-layer.md §10)
 
