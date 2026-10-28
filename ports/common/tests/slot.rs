@@ -225,3 +225,40 @@ fn the_incremental_crc_matches_the_one_shot_one() {
         wasmicon_port::crc32(&[])
     );
 }
+
+#[test]
+fn the_table_crc_matches_the_bitwise_one() {
+    // `crc32_update` looks bytes up in a table. Every CRC already recorded
+    // (slot headers, the assets directory, traces) was made by the bitwise
+    // loop, so the two must agree on every input.
+    fn bitwise(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        !crc
+    }
+    assert_eq!(wasmicon_port::crc32(b"123456789"), 0xcbf4_3926);
+    let mut x = 0x1234_5678u32;
+    let data: Vec<u8> = (0..65_536)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect();
+    for len in [0usize, 1, 2, 3, 255, 256, 257, 4096, 65_536] {
+        assert_eq!(
+            wasmicon_port::crc32(&data[..len]),
+            bitwise(&data[..len]),
+            "{len} bytes"
+        );
+    }
+    for b in 0..=255u8 {
+        assert_eq!(wasmicon_port::crc32(&[b]), bitwise(&[b]), "byte {b:#04x}");
+    }
+}

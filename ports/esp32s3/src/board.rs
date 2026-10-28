@@ -261,6 +261,17 @@ fn i2c_error(e: HalI2cError) -> ErrorCode {
     }
 }
 
+/// Internal SRAM on the data bus (esp-hal's `memory_range!("DRAM")` for the
+/// ESP32-S3). PSRAM is mapped elsewhere (from 0x3C00_0000), so a slice wholly
+/// inside this range is not in PSRAM.
+const DRAM: core::ops::Range<usize> = 0x3FC8_8000..0x3FD0_0000;
+
+/// Whether all of `buf` lies in internal SRAM.
+fn in_dram(buf: &[u8]) -> bool {
+    let r = buf.as_ptr_range();
+    DRAM.contains(&(r.start as usize)) && (r.end as usize) <= DRAM.end
+}
+
 /// A word-aligned window for the ragged edges of `read_flash`.
 #[repr(align(4))]
 struct Window([u8; 256]);
@@ -275,15 +286,15 @@ struct Window([u8; 256]);
 /// straight into the guest's memory and anything else goes through a
 /// 256-byte window.
 ///
-/// The `psram` build never reads straight into the guest's memory, because
-/// that memory is in PSRAM. `read_nor` hands the destination to the ROM
-/// routine, which stores into it while it drives the flash, and flash and
-/// PSRAM share the MSPI bus and the cache; ESP-IDF never lets a flash read
-/// land in PSRAM directly. Only the copy out of an SRAM buffer was tried on
-/// hardware (docs/verification-report.md §24), so that build always goes
-/// through the window, which is on the stack. The `psram-direct-read` build
-/// lifts that for the A/B of docs/TODO.md §5-10, after the checks of
-/// docs/verification-report.md §33 passed on one board.
+/// The `psram` build reads straight only into internal SRAM (the asset body
+/// check's chunk on the stack, say), never into the guest's memory in PSRAM.
+/// `read_nor` hands the destination to the ROM routine, which stores into it
+/// while it drives the flash, and flash and PSRAM share the MSPI bus and the
+/// cache; ESP-IDF never lets a flash read land in PSRAM directly. It is safe
+/// on one board and gains little (docs/verification-report.md §33,
+/// docs/verification-report.md §35), so a PSRAM destination goes through the
+/// window, which is on the stack (docs/TODO.md §5-10). The
+/// `psram-direct-read` build lifts that, for measurement only.
 ///
 /// Returns whether the read went straight into `buf`.
 fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> BoardResult<bool> {
@@ -291,7 +302,9 @@ fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> B
     const MASK: usize = WORD as usize - 1;
     let aligned =
         (at as usize) & MASK == 0 && buf.len() & MASK == 0 && (buf.as_ptr() as usize) & MASK == 0;
-    if aligned && (cfg!(not(feature = "psram")) || cfg!(feature = "psram-direct-read")) {
+    let direct_ok =
+        cfg!(not(feature = "psram")) || cfg!(feature = "psram-direct-read") || in_dram(buf);
+    if aligned && direct_ok {
         return storage
             .read_nor(at, buf)
             .map(|()| true)

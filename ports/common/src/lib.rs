@@ -533,17 +533,33 @@ pub fn crc32(data: &[u8]) -> u32 {
 /// `ports/esp32s3/src/main.rs`).
 pub const CRC32_INIT: u32 = 0xffff_ffff;
 
+/// The CRC of each byte value, eight bit steps at a time, so `crc32_update`
+/// does one lookup per byte instead of eight steps: the asset body check
+/// covers megabytes at an asset's first `open`
+/// (docs/verification-report.md §35). Built at compile time: 1 KiB of
+/// read-only data, no RAM.
+const CRC32_TABLE: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut n = 0;
+    while n < 256 {
+        let mut c = n as u32;
+        let mut i = 0;
+        while i < 8 {
+            let mask = (c & 1).wrapping_neg();
+            c = (c >> 1) ^ (0xedb8_8320 & mask);
+            i += 1;
+        }
+        t[n] = c;
+        n += 1;
+    }
+    t
+};
+
 /// Feeds more data. After all of `data` has been passed in order, finish with `crc32_end`.
 #[must_use]
 pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
-        crc ^= u32::from(b);
-        let mut i = 0;
-        while i < 8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-            i += 1;
-        }
+        crc = (crc >> 8) ^ CRC32_TABLE[((crc ^ u32::from(b)) & 0xff) as usize];
     }
     crc
 }

@@ -23,7 +23,7 @@ hw-probe = []
 # (N8R8 and the like); without one it prints the reason and halts.
 psram = []
 # A/B build for docs/TODO.md §5-10: the `psram` build with aligned asset reads
-# going straight into the guest's memory in PSRAM, as the plain build does.
+# going straight into the guest's memory in PSRAM too, as the plain build does.
 # Measurement only, so off by default. Prints the read path at boot.
 psram-direct-read = ["psram"]
 # Prints the asset read path at boot and one line after the run: how many

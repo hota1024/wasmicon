@@ -707,8 +707,14 @@ change.**
         -> **1.65 s for 4,196,020 B**, reported by the DOOM port on the `esp32s3-psram`
         firmware (2026-10-27, docs/verification-report.md §30; not measured here). Within
         the one-to-three-second estimate and paid once per run, against 22 s to DOOM's first
-        frame, so the bitwise `crc32_update` stays. A table-driven CRC (same output) is the
+        frame, so the bitwise `crc32_update` stayed. A table-driven CRC (same output) is the
         fix if a faster start is ever needed, not skipping the check
+        -> **`crc32_update` is table-driven** (owner go-ahead 2026-10-29): the A/B of
+        docs/verification-report.md §35 put 0.64 s or more of DOOM's 1.63 s check outside the
+        flash reads. One lookup per byte in a 256-entry table built at compile time (1 KiB of
+        read-only data). Same output: a host test compares it with the bitwise loop over
+        every byte value and random data, and the recorded traces and slot CRCs still pass.
+        The new time on hardware is not measured
       - **No firmware-overlap check for the assets slot on the ESP ports.** The Pico ports
         refuse a slot the firmware's end reaches into (`slot::xip_region`); the ESP firmware
         has no linker symbol for its flash extent, so neither the app slot nor the assets
@@ -803,7 +809,7 @@ change.**
           time; the check passed on one board only, against ESP-IDF's practice. The two
           firmwares: `--features psram,read-stats` (A, the window) and
           `--features psram-direct-read,read-stats` (B). Each prints its path at boot
-          (`wasmicon: asset reads through the window` / `... direct when aligned`), and
+          (`wasmicon: asset reads direct into sram only` / `... direct when aligned`), and
           `read-stats` prints `wasmicon: asset reads direct=N window=N bytes=N us=N` after
           the run. The counts include the body check at an asset's first `open`, whose
           chunk is on the stack in SRAM, so B speeds that check up without storing into
@@ -811,15 +817,15 @@ change.**
           -> **A/B run by the DOOM port** (2026-10-29, docs/verification-report.md §35): start-up
           -104 ms of 21.95 s. Of that, 61 ms are the guest's reads into PSRAM and 43 ms the body
           check into SRAM; the demo frames do not change (-2.5 ms over 378 s). Traces equal the
-          host in both. **Still for the owner**, with these numbers:
-          - (a) keep the window for every read in the `psram` build (no change)
-          - (b) enable the direct path in the `psram` build: -104 ms per start, against
-            ESP-IDF's practice, checked on one board
-          - (c) take the direct path only when the destination is in internal SRAM, as the plain
-            build does for every read: -43 ms, never stores into PSRAM
-          - Independent of the choice: the body check spends 0.64 s or more outside the reads,
-            likely the bitwise CRC. A table-driven CRC (same output, 1 KiB table) is the larger
-            lever on DOOM's start-up; the item above already names it as the fix
+          host in both. The options were (a) keep the window for every read, (b) the direct
+          path for every aligned read (-104 ms, against ESP-IDF's practice, one board), and
+          (c) the direct path only into internal SRAM (-43 ms, never stores into PSRAM)
+          -> **(c), owner decision 2026-10-29**, implemented: `read_flash` in
+          `ports/esp32s3/src/board.rs` reads straight into a destination wholly inside
+          internal SRAM (`0x3FC8_8000..0x3FD0_0000`) and through the window into PSRAM. The
+          `psram-direct-read` feature stays for measurement. Not yet run on hardware; the
+          table-driven CRC above landed in the same change, so the next DOOM start-up shows
+          both
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost

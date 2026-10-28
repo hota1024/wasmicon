@@ -158,7 +158,7 @@ fn main() -> ! {
     if cfg!(not(feature = "psram")) || cfg!(feature = "psram-direct-read") {
         serial.write(b"wasmicon: asset reads direct when aligned\r\n");
     } else {
-        serial.write(b"wasmicon: asset reads through the window\r\n");
+        serial.write(b"wasmicon: asset reads direct into sram only\r\n");
     }
 
     // The app slot, the config slot and the assets are all read through it.
