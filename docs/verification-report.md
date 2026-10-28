@@ -1765,10 +1765,26 @@ whole 8 MiB read back at 3 Mbaud was equal to the copy taken before. Reading 8 M
   exchange with the ROM), neither the ROM's lines nor the firmware's identity line. The same as the DOOM
   port's report of `boot:0x0` with the CP2102N attached (docs/TODO.md §1.3)
 
+### `deploy --idle` and `--timeout` on the first board
+
+The capture was then run on the board of §26 (MAC `3c:0f:02:f5:04:6c`, plain `esp32s3` firmware from
+`36a4ddd`, CH343 only), which boots after a reset. The guest was a throwaway module: log `quiet start`,
+sleep 6 s, log `after 6 s`, sleep 6 s, log `quiet done`. Each run was one
+`wasmicon deploy quiet.wasm --board esp32s3 --flash-baud 921600 --monitor ...`:
+
+| Options | Result |
+|---|---|
+| none (`--idle 3`) | `went silent: 1907 B / 2 trace lines` after 7.4 s: only the first call, the cut the DOOM port reported |
+| `--idle 8` | `went silent: 2043 B / 6 trace lines` after 24.4 s: all three calls |
+| `--idle 0 --timeout 25` | `hit the time limit: 2043 B / 6 trace lines` after 32.1 s: all three calls |
+
+`wasmicon trace diff` called the `--idle 8` and `--idle 0` captures a match (6 lines) and stopped the
+default one at line 3, where it ends. On this board `deploy --monitor` flashed, reset and captured in one
+command; the app ran without pressing `RST`. The board was left with the throwaway guest in the app slot.
+
 ### What this measurement does not say
 
-- `deploy --monitor --idle 0 --timeout <secs>` was not run: the board did not boot to an app
-- `deploy --flash-baud` was not run; it passes the same arguments to `espflash write-bin` as
-  `assets write` does (`tools/wasmicon-cli/tests/deploy.rs`)
+- The time `deploy --flash-baud` saves was not measured: the 1 MiB app slot image was the same on each
+  run, so espflash skipped the write (above)
 - Speeds above 3 Mbaud, and the CP2102N as a flashing port, were not tried
 - A compressible image (such as DOOM's WAD) was not timed at the higher speeds

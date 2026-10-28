@@ -152,7 +152,9 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     docs/verification-report.md §30): with a CP2102N on UART0 both the DTR/RTS reset and
     `RST` entered download mode (`boot:0x0`)
   - On that board on 2026-10-28 (docs/verification-report.md §31), after a reset espflash
-    could not connect through the CH343 until `BOOT` + `RST` by hand, and UART0 stayed silent
+    could not connect through the CH343 until `BOOT` + `RST` by hand, and UART0 stayed silent.
+    The board of docs/verification-report.md §26 (CH343 only) flashed, reset and ran the app in
+    one `deploy --monitor` the same day
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
@@ -1162,9 +1164,9 @@ change.**
       CH343 held every speed tried up to 3 Mbaud; a 4.2 MB random assets image took 381 s
       at 115200, 64 s through `assets write --flash-baud 921600` and 44 s at 3 Mbaud.
       Above 1.5 Mbaud the flash, not the line, sets the time
-- [ ] **Run `deploy --monitor --idle 0 --timeout <secs>` on hardware** (ESP32-S3) with an
-      app that is quiet for longer than 3 s. Not done on 2026-10-28: the board used did
-      not boot after a reset (docs/verification-report.md §31)
+- [x] **`deploy --monitor --idle` / `--timeout` on hardware** (2026-10-28,
+      docs/verification-report.md §31). A guest silent for 6 s twice: the default
+      `--idle 3` kept only its first call, `--idle 8` and `--idle 0 --timeout 25` all three
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
       over USB, trace over UART0**
