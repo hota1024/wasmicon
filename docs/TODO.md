@@ -802,9 +802,12 @@ change.**
           819 `blob.read` calls) with the window and with the direct path, and compare the
           time; the check passed on one board only, against ESP-IDF's practice. The two
           firmwares: `--features psram,read-stats` (A, the window) and
-          `--features psram-direct-read,read-stats` (B); `read-stats` prints
-          `wasmicon: asset reads direct=N window=N bytes=N us=N` after the run, which shows
-          how many reads each path took and the time spent in them
+          `--features psram-direct-read,read-stats` (B). Each prints its path at boot
+          (`wasmicon: asset reads through the window` / `... direct when aligned`), and
+          `read-stats` prints `wasmicon: asset reads direct=N window=N bytes=N us=N` after
+          the run. The counts include the body check at an asset's first `open`, whose
+          chunk is on the stack in SRAM, so B speeds that check up without storing into
+          PSRAM; only the guest's own reads land in PSRAM
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost

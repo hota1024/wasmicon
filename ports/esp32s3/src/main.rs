@@ -152,6 +152,15 @@ fn main() -> ! {
         }
     };
 
+    // Names the asset read path at boot, so the two firmwares of the A/B of
+    // docs/TODO.md §5-10 tell themselves apart before the run.
+    #[cfg(any(feature = "read-stats", feature = "psram-direct-read"))]
+    if cfg!(not(feature = "psram")) || cfg!(feature = "psram-direct-read") {
+        serial.write(b"wasmicon: asset reads direct when aligned\r\n");
+    } else {
+        serial.write(b"wasmicon: asset reads through the window\r\n");
+    }
+
     // The app slot, the config slot and the assets are all read through it.
     // The board owns it: the guest's asset reads happen while the app runs.
     let storage = FlashStorage::new(p.FLASH);
