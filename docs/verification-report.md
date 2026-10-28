@@ -1842,7 +1842,7 @@ The DOOM port then took the capture again with the CLI built from `68cb1d3` (the
 
 ### The CP2102N does not reproduce the stuck boots
 
-The DOOM port then tried two things with the adapter still wired, both verifying an unchanged image
+The DOOM port then tried three things with the adapter still wired, each verifying an unchanged image
 (nothing written):
 
 - Its own reader opened the CP2102N port, releasing DTR / RTS and pulsing RTS: the chip was not reset,
@@ -1853,16 +1853,24 @@ The DOOM port then tried two things with the adapter still wired, both verifying
   lines equal to the CH343 capture, and the three `boot:0x0` lines printed while espflash was connected
   reached the adapter too, so the ROM's output reaches it in download mode as well. Start-up took
   21,968,970 us, the fourth time on the `6a54de7` firmware
+- The steps of 2026-10-27 by hand: `deploy --no-run` through the CH343 (an unchanged image, so the chip
+  waited in the bootloader after `--after no-reset`), then the adapter's port opened (DTR / RTS
+  released), then `RST` pressed by the owner. The chip booted (`rst:0x1 (POWERON),boot:0x8`), printed
+  the identity line (`git=6a54de7`), the assets and the slot, and ran the app; start-up 21,968,970 us,
+  the fifth time on that firmware
 
-So neither the wires nor an open adapter port reproduces the `boot:0x0` after `RST` of 2026-10-27 or the
-silent UART0 of §31. The DOOM port suggests that silence means the ROM did not run at all, and that an
-unpowered CH343 and its reset circuit held EN or GPIO0 while the CH343's USB was unplugged. That does not
-fit §31 as recorded: the CH343's USB was connected throughout, and espflash talked through it right
-before the silent resets.
+So neither the wires, nor an open adapter port, nor `RST` after `--no-run` reproduces the `boot:0x0`
+after `RST` of 2026-10-27 or the silent UART0 of §31. The one known difference from 2026-10-27 is that
+an image was actually written then.
+
+The DOOM port suggests that silence means the ROM did not run at all, and that an unpowered CH343 and its
+reset circuit held EN or GPIO0 while the CH343's USB was unplugged. That does not fit §31 as recorded:
+the CH343's USB was connected throughout, and espflash talked through it right before the silent resets.
+It stays a candidate for 2026-10-27 only, a weak one since the steps of that day did not reproduce.
 
 ### What this report does not say
 
-- What stopped the board in §31; the cause is still open (docs/TODO.md §1.3)
+- What stopped the board on 2026-10-27 and in §31; neither was reproduced (docs/TODO.md §1.3)
 - Real play: DOOM's input path is still missing
 
 ## 33. `read_nor` straight into PSRAM (2026-10-28)

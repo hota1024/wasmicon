@@ -159,8 +159,9 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     and a one-command `deploy --monitor` on the same board (docs/verification-report.md §32).
     The CP2102N's wires stayed on UART0 (confirmed by the owner), so the adapter alone is not
     the cause: with its port open, `deploy --monitor` through the CH343 still booted normally,
-    and the ROM's lines reached the adapter (docs/verification-report.md §32). What stopped
-    the board on 2026-10-27 and 2026-10-28 is open
+    and the ROM's lines reached the adapter, and `RST` after `deploy --no-run` booted too
+    (docs/verification-report.md §32). Neither stop has been reproduced; the one known
+    difference from 2026-10-27 is that an image was actually written. The cause is open
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
