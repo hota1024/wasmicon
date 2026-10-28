@@ -236,12 +236,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         // is not opened here (an open port makes espflash fail with
         // `Resource busy`).
         println!("-> handing reset and capture to espflash monitor:");
-        let mut args = vec!["monitor", "-c", chip, "--non-interactive"];
-        let p;
-        if let Some(dev) = opts.port.as_deref() {
-            p = dev.to_string_lossy().into_owned();
-            args.extend_from_slice(&["--port", &p]);
-        }
+        let args = espflash_monitor_args(chip, opts.port.as_deref());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let taken = monitor::capture_cmd(
             "espflash",
             &args,
@@ -335,6 +331,24 @@ pub fn check_flash_baud(flash_baud: Option<u32>, flasher: Flasher) -> Result<()>
             bail!("--flash-baud is for boards flashed with espflash; picotool has no speed to set")
         }
     }
+}
+
+/// The arguments of `espflash monitor` for the capture after a deploy.
+///
+/// `--no-addresses`: by default espflash rewrites what it reads, appending
+/// a symbol line in color after any text that looks like a code address. A
+/// `blob.read` result whose data starts with `0x40004800` gained two lines
+/// and a color code before the next call (docs/verification-report.md §32),
+/// so the capture was no longer the trace the board printed.
+#[must_use]
+pub fn espflash_monitor_args(chip: &str, port: Option<&Path>) -> Vec<String> {
+    let mut args = ["monitor", "-c", chip, "--non-interactive", "--no-addresses"]
+        .map(str::to_string)
+        .to_vec();
+    if let Some(dev) = port {
+        args.extend(["--port".to_string(), dev.to_string_lossy().into_owned()]);
+    }
+    args
 }
 
 /// The arguments of `espflash write-bin` for one image.

@@ -155,6 +155,9 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     could not connect through the CH343 until `BOOT` + `RST` by hand, and UART0 stayed silent.
     The board of docs/verification-report.md §26 (CH343 only) flashed, reset and ran the app in
     one `deploy --monitor` the same day
+  - Later that day, using only the CH343, the DOOM port got normal boots (`boot:0x8` / `0x28`)
+    and a one-command `deploy --monitor` on the same board (docs/verification-report.md §32).
+    The CP2102N on UART0 is the suspect; that its wires were off UART0 is not confirmed
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
@@ -1136,7 +1139,9 @@ change.**
       a PSRAM-less firmware passes `check` and fails at instantiate, and if the profiles'
       slot layouts differ, the image lands at the wrong offset and can overwrite the
       config or assets slot. The planned fix is the cross-check before `deploy` through
-      `info` (docs/app-workflow.md §3.8, stage 2). Until then `deploy` could reset the
+      `info` (docs/app-workflow.md §3.8, stage 2). Seen on 2026-10-28: DOOM deployed with
+      `--board esp32s3-psram` onto a plain firmware stopped at boot with `arena too small
+      for the slot app` (docs/verification-report.md §32). Until then `deploy` could reset the
       board and read the identity line, at the cost of a slower `deploy`; that would also
       let `deploy` choose the board when `--board` is omitted
 - [x] **`deploy` and `assets write` flash at 115200 baud** (reported 2026-10-27,

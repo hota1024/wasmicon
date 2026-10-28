@@ -260,3 +260,26 @@ fn a_flashing_speed_for_picotool_is_refused_before_the_image_is_written() {
         "the image was written anyway"
     );
 }
+
+#[test]
+fn the_capture_is_not_rewritten_by_espflash() {
+    use std::path::Path;
+
+    // Without `--no-addresses`, espflash appends a symbol line after data
+    // that looks like a code address, and `trace diff` then sees lines the
+    // board never printed (docs/verification-report.md §32).
+    let args = deploy::espflash_monitor_args("esp32s3", Some(Path::new("/dev/cu.usbmodem1")));
+    assert_eq!(
+        args,
+        [
+            "monitor",
+            "-c",
+            "esp32s3",
+            "--non-interactive",
+            "--no-addresses",
+            "--port",
+            "/dev/cu.usbmodem1"
+        ]
+    );
+    assert!(deploy::espflash_monitor_args("esp32s3", None).contains(&"--no-addresses".to_string()));
+}

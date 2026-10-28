@@ -1788,3 +1788,47 @@ command; the app ran without pressing `RST`. The board was left with the throwaw
   run, so espflash skipped the write (above)
 - Speeds above 3 Mbaud, and the CP2102N as a flashing port, were not tried
 - A compressible image (such as DOOM's WAD) was not timed at the higher speeds
+
+## 32. DOOM on `main` through the CH343 alone, as reported by the DOOM port (2026-10-28)
+
+**Mostly not measured in this repository.** The DOOM port reported the run below from its own clone
+(logs in that clone, `logs/2026-10-28-esp32s3-psram-ch343/`). Only the `espflash monitor` options were
+checked here.
+
+Setup as reported: the board of §30 and §31 (MAC `28:84:85:a4:24:9c`) with only its CH343 in use; the
+CP2102N's USB was still connected to the Mac, and whether its wires still reach UART0 was not checked.
+Firmware `ports/esp32s3 --features psram` and the CLI both built from `main` at `6a54de7`, flashed with
+`espflash flash --baud 921600` (4 s for 211 KB). App slot: DOOM; assets slot: the WAD.
+
+| Item | Result |
+|---|---|
+| Reset and boot | `espflash board-info` connected at once; every reset booted normally (`boot:0x8` / `0x28`), no `boot:0x0` |
+| `wasmicon deploy build/doom.wasm --flash-baud 921600 --monitor --idle 0 --timeout 600` | flashed, reset and captured in one command |
+| The first attempt, onto the plain `esp32s3` firmware left by §27 | `arena too small for the slot app, idle`. The firmware read the roles and slot written by the `6a54de7` CLI first, so the config slot format is the same on both sides |
+| Start-up, frames | 21,969 ms to start (as on 2026-10-27); 541 frames in 378.47 s against 378.48 s; per-35-frame averages within 20 us; heap 4,485,976 B. No difference from `31516b9` |
+| The 1 MiB app slot image, changed | 9 s at `--flash-baud 921600` (23 s at 115200 on 2026-10-27); 3 s when unchanged |
+| Longest silence in the timed log of 2026-10-27 | 40 s (35 demo frames), so `--idle 60` covers DOOM; `--idle 0 --timeout 600` waits the full 600 s after the run ends |
+
+### The capture was rewritten by `espflash monitor`
+
+In 25 of 819 `blob.read` results the data dump began with something like `0x40004800`.
+`espflash monitor`, which `deploy --monitor` uses on a shared port, took it for a code address and
+added a symbol line in color, so the capture held lines the board never printed:
+
+```
+< 0 [len=5192 data=0x400048001f0043000801000055010000..len=5192 crc32=2c65bea7]
+ESC[38;5;11m0x40004800 - __call_r_lld_scan_sync_accept
+    at ??:??
+ESC[39m> wasmicon:hal/assets@0.1.0/[method]blob.read(1, 3820860, 10088)
+```
+
+`trace diff` counted 1,979 trace lines and stopped at line 65. With the two added lines and the color
+codes removed by hand, the capture matched the host and the log of 2026-10-27 in 1,970 lines.
+`espflash monitor` (4.5.0) has `--no-addresses` ("Disable address resolution"), and `deploy --monitor`
+now passes it; espflash accepts the flag. A capture with it was not taken on hardware.
+
+### What this report does not say
+
+- Whether the CP2102N's wires were the cause of §31's silent boots: the CH343 alone worked, but the
+  CP2102N was not shown to be off UART0
+- Real play: DOOM's input path is still missing
