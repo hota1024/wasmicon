@@ -1807,7 +1807,7 @@ Firmware `ports/esp32s3 --features psram` and the CLI both built from `main` at 
 | The first attempt, onto the plain `esp32s3` firmware left by §27 | `arena too small for the slot app, idle`. The firmware read the roles and slot written by the `6a54de7` CLI first, so the config slot format is the same on both sides |
 | Start-up, frames | 21,969 ms to start (as on 2026-10-27); 541 frames in 378.47 s against 378.48 s; per-35-frame averages within 20 us; heap 4,485,976 B. No difference from `31516b9` |
 | The 1 MiB app slot image, changed | 9 s at `--flash-baud 921600` (23 s at 115200 on 2026-10-27); 3 s when unchanged |
-| Longest silence in the timed log of 2026-10-27 | 40 s (35 demo frames), so `--idle 60` covers DOOM; `--idle 0 --timeout 600` waits the full 600 s after the run ends |
+| Longest silence in the timed log of 2026-10-27 | 40 s (35 demo frames), so `--idle 60` covers DOOM (confirmed below); `--idle 0 --timeout 600` waits the full 600 s after the run ends |
 
 ### The capture was rewritten by `espflash monitor`
 
@@ -1825,7 +1825,19 @@ ESC[39m> wasmicon:hal/assets@0.1.0/[method]blob.read(1, 3820860, 10088)
 `trace diff` counted 1,979 trace lines and stopped at line 65. With the two added lines and the color
 codes removed by hand, the capture matched the host and the log of 2026-10-27 in 1,970 lines.
 `espflash monitor` (4.5.0) has `--no-addresses` ("Disable address resolution"), and `deploy --monitor`
-now passes it; espflash accepts the flag. A capture with it was not taken on hardware.
+now passes it.
+
+The DOOM port then took the capture again with the CLI built from `68cb1d3` (the firmware stayed at
+`6a54de7`; that commit changed only the CLI):
+`deploy build/doom.wasm --flash-baud 921600 --monitor --idle 60 --timeout 600`.
+
+| Item | Result |
+|---|---|
+| The capture as taken | no ESC byte, no added line, 2,004 trace lines |
+| `trace diff --ignore "startup: " --ignore "frame " --ignore "done: "` | `match: 1970 lines` (34 lines ignored on each side) against the host trace, the board log of 2026-10-27 and the hand-cleaned capture above, with no hand editing |
+| `--idle 60` | `went silent: 155714 B / 2004 trace lines` 60 s after the last line, exit 0; 465 s from start to end (3 s flashing, 22 s start-up, 378 s of frames, 60 s of silence), against 600 s with `--idle 0 --timeout 600` |
+| Unchanged slot image | written in 3 s; normal boot (`boot:0x8`) |
+| Repeatability | start-up 21,968,970 us as in the previous run; `done` at 378,471,633 us against 378,471,632 us; every other timing within 1 us |
 
 ### What this report does not say
 
