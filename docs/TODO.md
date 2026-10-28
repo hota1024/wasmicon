@@ -157,7 +157,10 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     one `deploy --monitor` the same day
   - Later that day, using only the CH343, the DOOM port got normal boots (`boot:0x8` / `0x28`)
     and a one-command `deploy --monitor` on the same board (docs/verification-report.md §32).
-    The CP2102N on UART0 is the suspect; that its wires were off UART0 is not confirmed
+    The CP2102N's wires stayed on UART0 (confirmed by the owner), so the adapter alone is not
+    the cause: with its port open, `deploy --monitor` through the CH343 still booted normally,
+    and the ROM's lines reached the adapter (docs/verification-report.md §32). What stopped
+    the board on 2026-10-27 and 2026-10-28 is open
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them

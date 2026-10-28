@@ -1795,8 +1795,9 @@ command; the app ran without pressing `RST`. The board was left with the throwaw
 (logs in that clone, `logs/2026-10-28-esp32s3-psram-ch343/`). Only the `espflash monitor` options were
 checked here.
 
-Setup as reported: the board of §30 and §31 (MAC `28:84:85:a4:24:9c`) with only its CH343 in use; the
-CP2102N's USB was still connected to the Mac, and whether its wires still reach UART0 was not checked.
+Setup as reported: the board of §30 and §31 (MAC `28:84:85:a4:24:9c`) with only its CH343 in use. The
+CP2102N stayed wired to UART0 (confirmed by the owner) with its USB connected to the Mac; its port was
+not opened.
 Firmware `ports/esp32s3 --features psram` and the CLI both built from `main` at `6a54de7`, flashed with
 `espflash flash --baud 921600` (4 s for 211 KB). App slot: DOOM; assets slot: the WAD.
 
@@ -1839,10 +1840,29 @@ The DOOM port then took the capture again with the CLI built from `68cb1d3` (the
 | Unchanged slot image | written in 3 s; normal boot (`boot:0x8`) |
 | Repeatability | start-up 21,968,970 us as in the previous run; `done` at 378,471,633 us against 378,471,632 us; every other timing within 1 us |
 
+### The CP2102N does not reproduce the stuck boots
+
+The DOOM port then tried two things with the adapter still wired, both verifying an unchanged image
+(nothing written):
+
+- Its own reader opened the CP2102N port, releasing DTR / RTS and pulsing RTS: the chip was not reset,
+  and the running app went on (twice). Its timed log of 2026-10-27 agrees: the reset was issued at
+  0.000 s and the ROM's lines came 4.1 s later, from espflash on the CH343
+- With that port held open, `deploy --monitor` through the CH343 entered the bootloader, verified the
+  image and booted (`boot:0x8`). The adapter's reader got the boot and identity lines and 1,258 trace
+  lines equal to the CH343 capture, and the three `boot:0x0` lines printed while espflash was connected
+  reached the adapter too, so the ROM's output reaches it in download mode as well. Start-up took
+  21,968,970 us, the fourth time on the `6a54de7` firmware
+
+So neither the wires nor an open adapter port reproduces the `boot:0x0` after `RST` of 2026-10-27 or the
+silent UART0 of §31. The DOOM port suggests that silence means the ROM did not run at all, and that an
+unpowered CH343 and its reset circuit held EN or GPIO0 while the CH343's USB was unplugged. That does not
+fit §31 as recorded: the CH343's USB was connected throughout, and espflash talked through it right
+before the silent resets.
+
 ### What this report does not say
 
-- Whether the CP2102N's wires were the cause of §31's silent boots: the CH343 alone worked, but the
-  CP2102N was not shown to be off UART0
+- What stopped the board in §31; the cause is still open (docs/TODO.md §1.3)
 - Real play: DOOM's input path is still missing
 
 ## 33. `read_nor` straight into PSRAM (2026-10-28)
