@@ -627,7 +627,7 @@ This does not push §1 aside. **Stage 0 shortens the SHT40 work in §1.3** (capt
 cross-check move into the CLI). **The Phase 4 / 5 / 6 completion criteria in §1.3 do not
 change.**
 
-### Open questions (owner decisions; the text cites them as §5-1 ... §5-10)
+### Open questions (owner decisions; the text cites them as §5-1 ... §5-11)
 
 - [ ] **§5-1 Settle the behavior after a trap as "stay halted, but accept the next app"?**
       Today it is "log and halt, no restart" (docs/decisions.md A-04), and `main` enters
@@ -843,6 +843,25 @@ change.**
       - **The 4 MB Pico 2 W cannot hold the shareware IWAD** (4,196,020 B against a
         3,076,096-byte slot); `check --board rp2350` says so. Not a defect, a fact to keep
         in the DOOM plans
+- [ ] **§5-11 Make the guest `log` readable over the board's own USB port, with no external
+      adapter?** (raised 2026-10-29). Today `log`, trap messages and the trace go to UART0
+      only. On the ESP32-S3 and the ESP32-C5 UART0 is wired to the onboard CH343, so one
+      cable carries flashing and the log, as in ordinary ESP-IDF / Arduino work. On the
+      Pico 2 W it takes an external adapter (CP2102N on GP0/GP1), and on the Tab5 too
+      (§1.3.2). Proposal: make "the log can be read through the USB port the board is
+      normally developed over" a port requirement and record it in docs/decisions.md.
+      **Not an ABI change**: `wit/log.wit` leaves the destination to the host. Points to
+      decide:
+      - **How the log shares USB with the control channel.** docs/app-workflow.md §3.5
+        keeps control on USB and the trace on UART0 so that frames and lines do not
+        collide; the log on the same USB brings the collision back. Options: (a) a log
+        frame in the docs/app-workflow.md §3.6 protocol (a new `cmd`, bumps the protocol
+        version), (b) a composite device with two CDC ACM interfaces (console + control),
+        (c) plain lines between frames, and the CLI resyncs on the magic
+      - **Whether the trace moves too.** Recommendation: no. `trace diff` needs every line,
+        and the USB path drops output when nobody reads it (implementation item below)
+      - **UART0 stays** as a mirror of the log and trap messages: it works before USB
+        enumerates and when the USB stack is the thing that broke
 
 ### Implementation (stages: docs/app-workflow.md §5)
 
@@ -1224,6 +1243,38 @@ change.**
       - **Turn the `hw-probe` feature into a `probe` command** (docs/app-workflow.md §3.6).
         Triage without reflashing, one build configuration fewer, and the variants
         converge on two: `trace` on / off
+- [ ] **USB CDC log output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with one USB
+      cable and no CP2102N shows the guest `log` and trap messages. It shares the USB stack
+      with the control channel above and can land before it
+      - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
+        control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
+        `runtime/` only), but record the choice in docs/decisions.md
+      - **Service USB from the USBCTRL interrupt**, not from host calls. A guest can run for
+        a long time without a host call, and the host must still see enumeration and
+        reads. The interrupt shifts `time` values, not trace lines (the same trade-off as
+        docs/app-workflow.md §3.6)
+      - **Never block the guest.** `Board::log` writes into a ring buffer; when no host
+        reads the port or the buffer is full, drop and count, and print the count once
+        space returns. A blocking write would hang every app run without a cable
+      - **Write to UART0 and USB both** (§5-11). Each port defines its own `Serial` trait
+        today (`ports/*/src/board.rs`); the fan-out and the drop policy belong in
+        `ports/common` so the ESP ports can reuse them
+      - **Boot output**: the banner and the identity line (docs/app-workflow.md §3.8) are
+        written before the host opens the port. Keep the boot output in the ring buffer
+        until DTR is asserted, or `wasmicon monitor` misses the line that records the
+        firmware's identity
+      - **BOOTSEL over the same cable**: `deploy` still calls `picotool load`, which needs
+        BOOTSEL. Confirm whether `picotool reboot -f` can reach a Rust firmware (pico-sdk
+        exposes a vendor reset interface for it); otherwise the `reset` command of
+        docs/app-workflow.md §3.6 with `reboot::RebootKind::BootSel` does it
+        (docs/app-workflow.md §3.5)
+      - **CLI**: `monitor` waits for the CDC device to come back after a reset (it
+        re-enumerates on every reset) and looks for `/dev/cu.usbmodem*`. Decide the
+        VID / PID the firmware reports
+      - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines arrive;
+        with no host reading, the app runs to the end; the UART0 trace is unchanged
+        (`verify/diff-traces.sh` against a capture taken before the change).
+        `ports/rp2040` can follow with the same code but stays unverified (§1)
 - [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
 - [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
       output and `apps/blink-c` went in. `cargo test` checks on the host that its trace is
