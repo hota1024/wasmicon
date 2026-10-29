@@ -858,12 +858,13 @@ change.**
       only. On the ESP32-S3 and the ESP32-C5 UART0 is wired to the onboard CH343, so one
       cable carries flashing and the log, as in ordinary ESP-IDF / Arduino work. On the
       Pico 2 W it takes an external adapter (CP2102N on GP0/GP1), and on the Tab5 too
-      (§1.3.2). Proposal: make "the log can be read through the USB port the board is
-      normally developed over" a port requirement and record it in docs/decisions.md.
-      **The Tab5 is not checked yet**: no firmware has written to its USB-Serial-JTAG, so
-      whether its USB-C can carry the log is open (§1.3.2 item (6)). Record the requirement
-      after that check, or the esp32p4 port may break it on the day it is recorded. **Not an ABI
-      change**: `wit/log.wit` leaves the destination to the host. Points to decide:
+      (§1.3.2). -> **Yes: "the log can be read through the USB port the board is normally
+      developed over" becomes a port requirement** (owner decision, 2026-10-29). **What is
+      left is recording it in docs/decisions.md, after the Tab5 check**: no firmware has
+      written to the Tab5's USB-Serial-JTAG, so whether its USB-C can carry the log is open
+      (§1.3.2 item (6)). If it can, record the requirement for every port; if not, record it
+      with the Tab5 named as an exception and why. **Not an ABI change**: `wit/log.wit`
+      leaves the destination to the host. The points that were decided with it:
       - ~~How USB output shares the port with the control channel~~ -> **(b), a composite
         device with two CDC ACM interfaces, console + control** (owner decision,
         2026-10-29; docs/decisions.md A-11). A plain serial terminal reads the console, as
@@ -874,10 +875,12 @@ change.**
         the RP2350 / RP2040; the ESP32-S3's USB-Serial-JTAG has one. There the control
         channel goes to the `USB-OTG` port and the log stays on the CH343 one, so the log
         and control are on two cables
-      - **Whether the trace moves to USB.** Open. If it stays on UART0, a Pico 2 W still
-        needs the CP2102N to capture a trace, and `trace` is on by default in
-        `ports/rp2350`. A lossless trace over USB (wait for room while a host reads,
-        instead of dropping) needs answers to these first:
+      - ~~Whether the trace moves to USB~~ -> **Not for now: the trace stays on UART0**
+        (owner decision, 2026-10-29). The speed of a `trace` build is fixed first by the
+        UART0 baud rate (implementation list below). Revisit if the CP2102N stays a burden
+        on the Pico 2 W, where `trace` is on by default in `ports/rp2350`. A lossless trace
+        over USB (wait for room while a host reads, instead of dropping) would need answers
+        to these first:
         - **Boot window.** The CDC device re-enumerates on every reset, and the host opens
           it about a second later. Output dropped while DTR is down loses the start of the
           trace; blink-rs's 20 lines would all be gone. A firmware queue that holds every
@@ -1288,13 +1291,13 @@ change.**
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`, as the
       control interface of the composite device of docs/decisions.md A-11. **Control
-      over USB, trace over UART0** (whether the trace also goes to USB is §5-11)
+      over USB, trace over UART0** (§5-11 keeps the trace there)
       - **Turn the `hw-probe` feature into a `probe` command** (docs/app-workflow.md §3.6).
         Triage without reflashing, one build configuration fewer, and the variants
         converge on two: `trace` on / off
 - [ ] **USB CDC output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with one USB
-      cable and no CP2102N shows the guest `log` and trap messages; the trace too, if
-      §5-11 moves it. Output goes to the console interface of the composite device
+      cable and no CP2102N shows the guest `log` and trap messages. The trace stays on
+      UART0 (§5-11). Output goes to the console interface of the composite device
       (docs/decisions.md A-11). Build both interfaces from the start, the control one
       answering nothing yet, so the descriptors and the VID / PID do not change when the
       control channel lands
@@ -1306,8 +1309,8 @@ change.**
         reads. The interrupt shifts `time` values; for an app that puts no timings into
         host calls the trace stays the same (docs/app-workflow.md §3.6)
       - **Never hang without a host.** The log drops and counts when its queue is full or
-        no host reads. The trace follows the §5-11 answers (boot window, DTR that stays up,
-        a mark for dropped lines)
+        no host reads; a line written before the host opens the port may be lost, and
+        UART0 still has it
       - **One `Serial` trait, line by line.** The trait is defined almost identically in
         the five `ports/*/src/board.rs`; move it into `ports/common` with a line API that
         carries the kind of each line, so a drop never cuts a line in two. The trap reason
@@ -1323,20 +1326,17 @@ change.**
         instead of ending with `Closed`. Select the port by VID / PID (and interface number
         for (b)): the ESP32-S3's CH343 is a `cu.usbmodem*` too, and `choose()` refuses two
         candidates, as with a CP2102N and the CDC device plugged in together
-      - **Docs to update when it lands**: docs/app-workflow.md §3.5 and the UART line in the
-        header of `ports/rp2350/src/main.rs`, if the trace moves
+      - **Docs to update when it lands**: the header of `ports/rp2350/src/main.rs` names
+        the USB console next to UART0
       - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines and a trap
-        reason arrive; with the cable pulled or the host asleep, the app runs to the end.
-        If the trace moves: blink-rs's full trace is captured right after `deploy`, and the
-        USB trace of an app without timings matches the UART0 trace of the same run line
-        for line (`verify/diff-traces.sh`).
+        reason arrive; with the cable pulled or the host asleep, the app runs to the end;
+        the UART0 trace is unchanged against a capture taken before the change.
         `ports/rp2040` can follow with the same code but stays unverified (§1)
 - [ ] **Raise the UART0 baud rate on every port** (§5-11). 115200 baud caps a `trace` build
       on every board, because UART0 writes block (`write_full_blocking` in
       `ports/rp2350/src/main.rs`). On the Tab5, `display-demo-rs` sent about 213 KB of
-      trace before its first picture, about 18 s (docs/verification-report.md §29). This
-      fixes the speed on the ESP32-S3, the ESP32-C5 and the Tab5 too, where the trace
-      stays on UART0 whatever §5-11 decides for the Pico 2 W
+      trace before its first picture, about 18 s (docs/verification-report.md §29). The
+      trace stays on UART0 on every board (§5-11), so this is the fix for its speed
       - The CH343 held up to 3 Mbaud when flashing (docs/verification-report.md §31); the
         firmware's own output at that speed, and the CP2102N's, are not checked yet
       - `monitor --baud` (default 115200, `DEFAULT_BAUD`) and `deploy --monitor` must
