@@ -852,16 +852,23 @@ change.**
       normally developed over" a port requirement and record it in docs/decisions.md.
       **Not an ABI change**: `wit/log.wit` leaves the destination to the host. Points to
       decide:
-      - **How the log shares USB with the control channel.** docs/app-workflow.md §3.5
-        keeps control on USB and the trace on UART0 so that frames and lines do not
-        collide; the log on the same USB brings the collision back. Options: (a) a log
-        frame in the docs/app-workflow.md §3.6 protocol (a new `cmd`, bumps the protocol
-        version), (b) a composite device with two CDC ACM interfaces (console + control),
-        (c) plain lines between frames, and the CLI resyncs on the magic
-      - **Whether the trace moves too.** Recommendation: no. `trace diff` needs every line,
-        and the USB path drops output when nobody reads it (implementation item below)
-      - **UART0 stays** as a mirror of the log and trap messages: it works before USB
-        enumerates and when the USB stack is the thing that broke
+      - **How the log and the trace share USB with the control channel.**
+        docs/app-workflow.md §3.5 keeps control on USB and the trace on UART0 so that
+        frames and lines do not collide; the log and the trace on the same USB bring the
+        collision back. Options: (a) log and trace frames in the docs/app-workflow.md §3.6
+        protocol (new `cmd` values, bumps the protocol version), (b) a composite device
+        with two CDC ACM interfaces (console + control), (c) plain lines between frames,
+        and the CLI resyncs on the magic
+      - **Whether the trace moves too.** Recommendation: yes, or a Pico 2 W still needs the
+        CP2102N to capture a trace, and `trace` is on by default in `ports/rp2350`. `trace
+        diff` needs every line, so the trace does not drop while a host reads the port: it
+        waits for room instead (the log drops; implementation item below). Waiting slows
+        the run but does not change a trace line, because `time` calls are not traced
+        (docs/abi-spec.md §9). This revises "trace over UART0" in docs/app-workflow.md §3.5,
+        which is updated once the owner decides
+      - **UART0 stays** as a mirror of the log, trap messages and the trace: it works before
+        USB enumerates and when the USB stack is the thing that broke, and the CP2102N
+        captures keep working
 
 ### Implementation (stages: docs/app-workflow.md §5)
 
@@ -1243,9 +1250,10 @@ change.**
       - **Turn the `hw-probe` feature into a `probe` command** (docs/app-workflow.md §3.6).
         Triage without reflashing, one build configuration fewer, and the variants
         converge on two: `trace` on / off
-- [ ] **USB CDC log output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with one USB
-      cable and no CP2102N shows the guest `log` and trap messages. It shares the USB stack
-      with the control channel above and can land before it
+- [ ] **USB CDC log and trace output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with
+      one USB cable and no CP2102N shows the guest `log` and trap messages, and
+      `wasmicon monitor` captures a full trace. It shares the USB stack with the control
+      channel above and can land before it
       - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
         control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
         `runtime/` only), but record the choice in docs/decisions.md
@@ -1253,9 +1261,12 @@ change.**
         a long time without a host call, and the host must still see enumeration and
         reads. The interrupt shifts `time` values, not trace lines (the same trade-off as
         docs/app-workflow.md §3.6)
-      - **Never block the guest.** `Board::log` writes into a ring buffer; when no host
-        reads the port or the buffer is full, drop and count, and print the count once
-        space returns. A blocking write would hang every app run without a cable
+      - **Two overflow policies, chosen by DTR.** With DTR down (no host has the port open)
+        both the log and the trace are dropped, or every app run without a cable would
+        hang. With DTR up, `Board::log` drops and counts when the ring buffer is full and
+        prints the count once space returns, while `Board::trace` waits for room so that
+        no trace line is lost. A terminal that holds the port open without reading stalls
+        a `trace` build; that is the price of a lossless trace
       - **Write to UART0 and USB both** (§5-11). Each port defines its own `Serial` trait
         today (`ports/*/src/board.rs`); the fan-out and the drop policy belong in
         `ports/common` so the ESP ports can reuse them
@@ -1271,9 +1282,10 @@ change.**
       - **CLI**: `monitor` waits for the CDC device to come back after a reset (it
         re-enumerates on every reset) and looks for `/dev/cu.usbmodem*`. Decide the
         VID / PID the firmware reports
-      - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines arrive;
-        with no host reading, the app runs to the end; the UART0 trace is unchanged
-        (`verify/diff-traces.sh` against a capture taken before the change).
+      - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines arrive and
+        the trace captured over USB matches the UART0 capture of the same run line for
+        line (`verify/diff-traces.sh`); with no host reading, the app runs to the end; the
+        UART0 trace is unchanged against a capture taken before the change.
         `ports/rp2040` can follow with the same code but stays unverified (§1)
 - [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
 - [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
