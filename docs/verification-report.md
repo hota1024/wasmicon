@@ -2037,22 +2037,41 @@ docs/TODO.md §1.3 that §32 could not reproduce. From the port's diagnostic log
 | 10-28 18:10, 10-29 03:40 | `espflash flash --after no-reset` of `652bd6b` | flashed (`Staying in bootloader`); captures that then issued a reset got 0 bytes in 20 to 30 s |
 | 10-29 03:44 | the same with `ea1ba94` | flashed; 0 bytes in 30 s after a reset |
 | 03:46 | `espflash` hard reset, then watchdog reset, each followed by listening | 0 bytes in 6 s and in 10 s |
-| 03:46:57 | `espflash board-info` | connected at once; the CP2102N's port received the ROM's SLIP replies at the same time |
+| 03:46:57 | `espflash board-info` | connected at once; the CP2102N's port received SLIP `SYNC` replies in the stub's form, so the chip had stayed in the flasher stub since 03:44 through both resets |
 | 03:54 | `espflash board-info` through the CP2102N | `Failed to connect` |
 | 03:59, 04:07 | `espflash flash` through the CH343 (default, then `--before no-reset`) | `Failed to connect` |
-| 04:09 to 04:13 | a retry loop | 38 failures, connected on the 39th (04:13:40), flashed |
+| 04:09 to 04:13 | a retry loop waiting for the board to be replugged with `BOOT` held | connected once that was done (04:13:40), flashed. The 38 failed tries only show that the app could not be put into the bootloader through DTR / RTS |
 | 04:13, 04:14 | port open, no reset issued, `RST` by hand | twice `rst:0x1 (POWERON),boot:0x0 (DOWNLOAD(USB/UART0))` |
 | 04:16 | port open with DTR and RTS asserted, no pulse, `RST` by hand | `boot:0x8`, the run of the table |
 
-`boot:0x0` after a power-on reset means GPIO0 was low when `EN` rose. With both lines asserted the board's
-auto-reset circuit holds neither `EN` nor GPIO0 low, and that was the boot that worked; the line state the
-other captures left is not in the logs. Why resets issued by `espflash` gave no output at all, not even
-the ROM's banner, is not explained.
+`boot:0x0` after a power-on reset means GPIO0 was low when `EN` rose.
+
+The port answered the follow-up questions from the same day's logs:
+
+- Line states set by the host: the captures at 03:40 and 03:44 opened the CH343 (the driver asserts
+  DTR and RTS), released both, then asserted RTS for 100 ms. The `RST` presses at 04:13 and 04:14 had
+  both released; the one at 04:16 had both asserted. Read back with `TIOCMGET` on both ports
+  (`diag/lines-readback.log`), every state was as set, so the difference lies past the host side
+- The CP2102N stayed plugged in throughout. Its port was open only for the port's own listeners and
+  one failed `board-info`; nobody had it open when the board first stopped
+- During the two resets at 03:46 the CP2102N's port received 1,464 bytes, all `SYNC` replies of the
+  stub at the moment espflash connected, and nothing after the resets. No ROM banner reached the TX
+  line, so the chip was not reset
+
+On the usual two-transistor auto-reset circuit, both lines released pull neither `EN` nor GPIO0, and
+both asserted the same; `EN` goes low only with RTS asserted and DTR released, GPIO0 only with DTR
+asserted and RTS released. So GPIO0 low with both released means either the CH343's DTR output stays
+asserted whatever the host sets, or something else pulls the GPIO0 node low. A stuck DTR explains all
+of it: no reset from the host (an `EN` pulse needs DTR released), download mode with both released,
+a normal boot with both asserted, and download mode at power-on. It does not say why the same board
+booted normally through the CH343 on 2026-10-28 (§32). One check tells the two apart: `RST` with DTR
+released and RTS asserted keeps `EN` low on a working circuit, while a stuck DTR lets the board boot
+(`boot:0x8`).
 
 ### What this measurement does not say
 
 - One run of the new firmware; the split of the 1.046 s is the port's, from timestamps, not timed in
   the firmware
 - The slot-check and per-read figures come from the timestamped capture only
-- The stuck boot's cause is still open; these logs narrow it to the reset lines but do not show their
-  state in the failed attempts
+- The stuck boot's cause is still open. The host's line states are known; the pins of the CH343 and
+  the GPIO0 node were not measured

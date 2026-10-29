@@ -166,9 +166,12 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     after `espflash flash --after no-reset`, resets issued by espflash gave no output at all,
     flashing through the CH343 failed 38 times before connecting, and `RST` by hand with the
     port open booted into download mode (`boot:0x0`) twice. With DTR and RTS both asserted
-    and no pulse, `RST` booted normally. That points at GPIO0 held low through the reset
-    lines; their state in the failed attempts was not logged. Next: log DTR / RTS at each
-    step, on both adapters
+    and no pulse, `RST` booted normally, and the chip ignored espflash's resets (it stayed
+    in the flasher stub). The host set every line state as asked (read back with
+    `TIOCMGET`), so the fault lies past the host: either the CH343's DTR output stays
+    asserted, or something else pulls GPIO0 low. Next: `RST` with DTR released and RTS
+    asserted (a stuck DTR boots, a working circuit holds `EN` low), and the voltage on
+    GPIO0 and on the CH343's DTR pin with the port closed
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
