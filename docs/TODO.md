@@ -688,13 +688,14 @@ change.**
 - [ ] **§5-7 Build the ESP32-S3 firmware as a release deliverable in CI?** Not run in CI
       today because of Xtensa (the comment in `.github/workflows/ci.yml`). If app authors
       are not to build firmware (docs/app-workflow.md §4.5), a job that installs espup is
-      needed
+      needed. The firmware manager proposal builds every release in CI from the tag (§7-3)
 - [ ] **§5-8 How firmware versions are assigned.** One version shared by the three ports
       (all `0.1.0`) or independent per port. **The ABI version (`wasmicon:hal@0.1.0`) comes
       from `wit/` and is a different thing from the firmware version.** Do not bump it on
       your own (docs/decisions.md D-05). Compatibility is judged per axis, not by one
       version (docs/app-workflow.md §3.8), so the firmware version is only a provenance
-      record
+      record. The firmware manager proposal answers it with one version for every port
+      (§7-3, docs/firmware-manager.md §8)
 - [x] **§5-9 Make the role map a device-side setting? When?** -> **Yes. The minimal stage-1
       version was implemented on 2026-10-07** (owner decision). Decided: **role names are
       not the firmware's vocabulary** (`ROLE_NAMES` removed; names are free-form) / **the
@@ -1098,7 +1099,8 @@ change.**
         `trace: off` saves suspecting the wiring
 - [ ] **Firmware distribution** (release manifest and `flash --fw` / `fw list`).
       Attach a manifest (file + sha256 + the 5 axes of docs/app-workflow.md §3.8) to the
-      board x version deliverables. Pairs with §5-7
+      board x version deliverables. Pairs with §5-7. Superseded by the firmware manager
+      proposal if §7-1 is adopted (§7, docs/firmware-manager.md)
 - [x] **Read `wasmicon.toml`** (done 2026-10-04. docs/app-workflow.md §4.7). It holds
       `[requirements] pin-roles` (the role names this app looks up), the default board,
       the replay path and the intended wiring.
@@ -1365,3 +1367,54 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Imp
       **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
       PSRAM at 250 MHz (it runs at 125); no rotation; the eFuse calculation has run on one
       unit only; an ST7121 / ST7123 Tab5 gets no display
+
+---
+
+## 7. Firmware manager (`wasmicon fw`)
+
+**The design is owned by `docs/firmware-manager.md`. Only remaining work and open questions live here.**
+Proposed on 2026-10-29 from a discussion with the owner: a firmware manager in the CLI in
+the style of `mise` / `nvm`, common firmware on GitHub Releases, firmware with chosen
+backends built locally and managed the same way, and a version pin per project. Nothing is
+decided or implemented yet.
+
+### Open questions (owner decisions; the text cites them as §7-1 ... §7-7)
+
+- [ ] **§7-1 Adopt a firmware manager?** docs/app-workflow.md §3.8 says "What is needed is
+      not a firmware package manager". The proposal keeps its reasoning (compatibility is
+      judged per axis; the firmware version is provenance) and adds install, flash and pin
+      on top (docs/firmware-manager.md §3). Adopting it changes that sentence and the
+      command names of docs/app-workflow.md §4.5 (`fw flash` instead of `flash --fw`).
+      Recommended: adopt
+- [ ] **§7-2 A version pin in `wasmicon.toml`: exact only?** `[firmware] version = "0.3.1"`,
+      optional, no ranges, because a range claims a compatibility that only the axes can
+      establish (docs/firmware-manager.md §5). Recommended: exact only. A lock file with the
+      sha256 is left out until a project needs it
+- [ ] **§7-3 One release firmware per board profile, with every backend?** A backend costs
+      flash only; splitting releases by feature multiplies the deliverables by board x
+      version x feature set (docs/firmware-manager.md §8). Recommended: yes. Depends on §5-7
+      (the ESP32-S3 job) and §5-8 (the proposal answers it with one version for every port)
+- [ ] **§7-4 Source of a local build.** `fw build` fetches the source at the release tag of
+      the version, and `--source <dir>` builds a working tree; the result is named
+      `<version>+local.<hash>` (docs/firmware-manager.md §7). Recommended: as proposed
+- [ ] **§7-5 `deploy` when the board's firmware differs from the pin: stop or warn?**
+      Recommended: stop before writing anything and name `wasmicon fw flash`; never flash
+      firmware as a side effect (docs/firmware-manager.md §2, §5)
+- [ ] **§7-6 The identity line gains the list of compiled-in device backends**, so that
+      `deploy` judges the board's real firmware instead of the `Profile` constant
+      (docs/firmware-manager.md §6). The trace format of docs/abi-spec.md §9 does not change;
+      `trace diff` already excludes the identity line from the comparison
+- [ ] **§7-7 Where installed firmware lives.** `~/.wasmicon/firmware/<version>/<board>/`
+      (docs/firmware-manager.md §4), or the platform's data directory (XDG on Linux,
+      `~/Library/Application Support` on macOS). Recommended: `~/.wasmicon`, one place on
+      every OS, as `mise` and `nvm` do
+
+### Implementation (stages: docs/firmware-manager.md §10)
+
+- [ ] (0) Checks before implementing (docs/firmware-manager.md §9): whether flashing the
+      firmware keeps the app, config and assets slots on each board (hardware); a size check
+      that refuses a firmware over the 1 MiB below the app slot; a warning when an older
+      firmware cannot read the board's config slot
+- [ ] (1) Release job and manifest; `fw list`, `fw install`, `fw flash`, `fw current`
+- [ ] (2) `check` / `deploy` read the axes from the manifest or the board; the `[firmware]` pin
+- [ ] (3) Backends as Cargo features of each port (default on); `fw build`

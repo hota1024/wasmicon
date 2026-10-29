@@ -882,6 +882,9 @@ espup and the Xtensa toolchain (`ports/esp32s3/build.sh`).
   §3.8). `flash --fw` and `fw list` read it
 - **CI does not build ESP32-S3 today** (because of Xtensa; see the comment in
   `ci.yml`). Producing release deliverables needs a job that installs espup -> §5-7
+- **Proposed extension** (2026-10-29, not decided): a firmware manager under `wasmicon fw`
+  with version pins and local builds with chosen backends (docs/firmware-manager.md,
+  docs/TODO.md §7)
 
 ---
 

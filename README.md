@@ -212,6 +212,7 @@ sh tools/measure-size.sh                                   # core code size
 | [`docs/decisions.md`](docs/decisions.md) | Frozen decisions (D-NN), adopted defaults (A-NN) and pitfalls (P-NN), with stable IDs that code cites |
 | [`docs/style-guide.md`](docs/style-guide.md) | Language, comment, file-header, citation, error-string and commit conventions |
 | [`docs/app-workflow.md`](docs/app-workflow.md) | Design of the app workflow: firmware that loads apps over USB / HTTP, and the `wasmicon` CLI |
+| [`docs/firmware-manager.md`](docs/firmware-manager.md) | Proposal: the `wasmicon fw` firmware manager (install, flash, pin, local builds with chosen backends). Not decided |
 | [`tools/wasmicon-cli`](tools/wasmicon-cli) | The `wasmicon` CLI: `new` / `check` / `run` / `pack` / `deploy` / `monitor` / `trace diff` / `doctor`. Also the source of truth for the guest build flags (`src/flags.rs`) |
 | [`docs/verification-report.md`](docs/verification-report.md) | What has been verified, how far, and what has not |
 | [`docs/design-notes.md`](docs/design-notes.md) | Background, direction and the reasons behind the technical choices |
