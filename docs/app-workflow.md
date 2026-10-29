@@ -1192,7 +1192,7 @@ table".
 | **Unknown keys are errors** | Silently ignoring them hides "I set it but it has no effect". Typos stop here |
 | **`version`** | Newer than the CLI supports: error. Older: accepted |
 | **The toml is optional (but required to use roles on hardware)** | `check` / `run` **work without a toml**. Real boards have no default table, though, so an app `deploy`ed without a toml gets no roles at all |
-| **One wiring table per circuit board** | A firmware variant of a board reads that board's table: `--board esp32s3-psram` uses `[board.esp32s3.roles]`, `--board esp32p4-psram` uses `[board.esp32p4.*]` (below). A `[board.esp32s3-psram]` table is an error, since it would never be read |
+| **One wiring table per circuit board** | A firmware variant of a board reads that board's table: `--board esp32s3-psram` uses `[board.esp32s3.roles]`, `--board esp32p4-psram` uses `[board.esp32p4.*]` (below). A `[board.esp32s3-psram]` or `[board.esp32p4-psram]` table is an error, since it would never be read |
 
 - **`check` / `deploy` inside a project** -> declaration and wiring table are cross-checked
 - **A bare `.wasm` received on its own** -> roles are not cross-checked (they cannot be enumerated)

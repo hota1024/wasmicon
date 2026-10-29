@@ -25,12 +25,16 @@ pub fn up(peri: PSRAM<'static>) -> Option<&'static mut [u8]> {
         },
     );
     let (ptr, len) = psram.raw_parts();
+    // Never dropped, so the mapping stays whatever `Drop` a later esp-hal
+    // gives `Psram`. It has none today, which is what the lint points out.
+    #[allow(clippy::forget_non_drop)]
+    core::mem::forget(psram);
     if ptr.is_null() || len == 0 {
         return None;
     }
     // SAFETY: `Psram::new` mapped `len` bytes of PSRAM at `ptr` into the
-    // data bus. The mapping outlives `psram`: `Psram` has no `Drop`, and
-    // esp-hal keeps the range in a static. `peri` is the only PSRAM
+    // data bus, and the `Psram` that owns the mapping is forgotten above, so
+    // the mapping lasts for good. `peri` is the only PSRAM
     // peripheral and is consumed here, so this runs at most once, and the
     // firmware has no allocator: the slice is the only reference to the range.
     Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })

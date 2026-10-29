@@ -259,15 +259,37 @@ not marked with a 2026-10 date were measured there and live on only in these not
   without an A/B. Run on the Tab5 the same day (docs/verification-report.md §37): a guest
   that grows to 240 pages and checks zeroing and read-back, and `display-demo-rs` with the
   frame buffer after the arena, both trace-identical to the host; the owner saw the picture.
-  Open: an asset read into PSRAM on hardware (no app with assets was run), PSRAM speed on
-  the P4 against L2MEM
-  (unmeasured; the S3 numbers of docs/verification-report.md §21 do not carry over), the
-  time `instantiate` and `memory.grow` take to zero pages in PSRAM through the byte-wise
-  `memset` of `src/mem.rs`, and whether 250 MHz holds for the arena
+  Open:
+  - An asset read into PSRAM on hardware (no app with assets was run)
+  - PSRAM speed on the P4 against L2MEM (unmeasured; the S3 numbers of
+    docs/verification-report.md §21 do not carry over), the time `instantiate` and
+    `memory.grow` take to zero pages in PSRAM (the `memset` of `src/mem.rs`, a word at a
+    time on the aligned linear memory), and whether 250 MHz holds for the arena
+  - **The `psram` build rewrites the external LDOs at every boot**, display or not:
+    esp-hal's PSRAM init programs all of them (`psram_phy_ldo_init`; the values differ from
+    ESP-IDF's, docs/verification-report.md §28). The plain build does that only for
+    `@display=tab5` (§6-6). A pin powered from one of those LDOs could then behave
+    differently on the two firmwares. GPIO, I2C and SPI apps have not been run on the
+    `psram` build
+  - **The window rule for asset reads rests on an ESP32-S3 reason.** On the S3 the flash
+    and PSRAM share one MSPI bus; on the P4 PSRAM has its own controller, so the reason does
+    not carry over as is. Whether ESP-IDF stores into PSRAM from a flash read on the P4,
+    and an A/B like §5-10's (`read-stats` / `psram-direct-read` exist only in
+    `ports/esp32s3`), would settle it
 - **Slot layout changed 2026-10-29.** The app slot of both P4 profiles grew from 64 KiB to
   1 MiB, so the config slot moved to `0x200000` and the assets slot to `0x201000`. A config
   or assets slot written under the old layout is not found any more; `deploy` the app again
-  and rewrite the assets with `assets write`
+  and rewrite the assets with `assets write`. Nothing detects a mix of the two layouts,
+  since the app slot's start and format did not change:
+  - New firmware, app slot not rewritten: the old app passes its CRC and runs with no
+    wiring table and no display entry (`roles none`)
+  - Old firmware, new CLI: `deploy` pads the app slot to 1 MiB, so the old config slot at
+    `0x110000` reads as empty and the app runs with no roles; `assets write` lands at
+    `0x201000`, where the old firmware does not look. Flash the new firmware first
+  - The cost of the single layout (owner decision, as on the ESP32-S3): every `deploy` to
+    either P4 firmware erases and writes 1 MiB + 4 KiB instead of 68 KiB, and the plain
+    firmware's assets slot is 960 KiB smaller although its 300 KiB arena cannot use the
+    larger app slot
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
   esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). The workarounds below
   are each to be deleted once upstream lets the build pick the revision (no upstream report yet).

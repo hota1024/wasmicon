@@ -649,14 +649,21 @@ version = 1
 
     #[test]
     fn a_table_for_a_firmware_variant_is_rejected() {
-        // It would never be read; say where the wiring goes instead.
-        let e = parse(
-            "variant-table",
-            "version = 1\n[board.esp32s3-psram.roles]\nled = 2\n",
-        )
-        .expect_err("a variant has no table of its own");
-        let msg = format!("{e:#}");
-        assert!(msg.contains("[board.esp32s3.roles]"), "{msg}");
+        // It would never be read; say where the wiring goes instead. A
+        // display entry counts as a table of its own too.
+        for (table, board) in [
+            ("esp32s3-psram.roles", "esp32s3"),
+            ("esp32p4-psram.roles", "esp32p4"),
+            ("esp32p4-psram.display", "esp32p4"),
+        ] {
+            let e = parse(
+                "variant-table",
+                &format!("version = 1\n[board.{table}]\ndriver = \"tab5\"\n"),
+            )
+            .expect_err("a variant has no table of its own");
+            let msg = format!("{e:#}");
+            assert!(msg.contains(&format!("[board.{board}.roles]")), "{msg}");
+        }
     }
 
     #[test]

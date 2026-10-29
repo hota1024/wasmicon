@@ -144,6 +144,9 @@ impl UpError {
             UpError::Expanders => "IO expander write failed",
             UpError::OtherPanel => "ST7121 / ST7123 panel, not driven",
             UpError::NoPanel => "no touch controller answered, panel unknown",
+            // In the `psram` build PSRAM is already up; what can be missing
+            // is room for the frame buffer after the arena.
+            UpError::Psram if cfg!(feature = "psram") => "no PSRAM left after the arena",
             UpError::Psram => "PSRAM too small or absent",
             UpError::Dsi => "DSI host refused",
             UpError::PllLock => "D-PHY PLL did not lock",
@@ -171,7 +174,8 @@ impl Pending {
     /// black. Drives no pin.
     ///
     /// # Errors
-    /// `UpError::Psram`. The parts are consumed either way.
+    /// `UpError::Psram` when `mem` cannot hold the frame buffer. The parts
+    /// are consumed either way.
     pub fn new(p: Parts) -> Result<Pending, UpError> {
         #[cfg(not(feature = "psram"))]
         let mem: &'static mut [u8] = crate::psram::up(p.psram).unwrap_or_default();

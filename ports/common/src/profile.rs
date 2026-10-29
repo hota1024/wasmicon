@@ -474,7 +474,8 @@ const ESP32P4_SLOT: Slot = Slot {
 };
 
 /// The ESP32-P4 with its in-package PSRAM in use (`ports/esp32p4` built
-/// with the `psram` feature). Checked on the M5Stack Tab5, which has 32 MB.
+/// with the `psram` feature). The M5Stack Tab5 has 32 MB of it
+/// (docs/verification-report.md §28, §37).
 ///
 /// A separate profile for the reasons of `ESP32S3_PSRAM`. The whole arena
 /// lives in PSRAM. On the Tab5 the panel's frame buffer (1,843,200 B) sits

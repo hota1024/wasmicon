@@ -136,7 +136,9 @@ fn main() -> ! {
         .with_tx(p.GPIO37)
         .with_rx(p.GPIO38);
     let mut serial = SerialPort(uart);
-    serial.write(b"wasmicon esp32p4\r\n");
+    serial.write(b"wasmicon ");
+    serial.write(PROFILE.name.as_bytes());
+    serial.write(b"\r\n");
 
     // This build links the pre-ECO5 ROM tables (`pre-v3.x`), so on v3.x
     // silicon ROM calls would land on the wrong functions and return wrong
