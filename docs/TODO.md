@@ -1298,9 +1298,9 @@ change.**
 - [ ] **USB CDC output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with one USB
       cable and no CP2102N shows the guest `log` and trap messages. The trace stays on
       UART0 (§5-11). Output goes to the console interface of the composite device
-      (docs/decisions.md A-11). Build both interfaces from the start, the control one
-      answering nothing yet, so the descriptors and the VID / PID do not change when the
-      control channel lands
+      (docs/decisions.md A-11). Build all three interfaces from the start (console,
+      control, picotool reset), the control one answering nothing yet, so the descriptors
+      and the VID / PID do not change when the control channel lands
       - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
         control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
         `runtime/` only), but record the choice in docs/decisions.md
@@ -1315,11 +1315,17 @@ change.**
         the five `ports/*/src/board.rs`; move it into `ports/common` with a line API that
         carries the kind of each line, so a drop never cuts a line in two. The trap reason
         and the slot lines go through it as well. UART0 keeps every line (§5-11)
-      - **BOOTSEL over the same cable**: `deploy` calls `picotool load`, which needs BOOTSEL.
-        `picotool load -f` / `reboot -f -u` reach a running firmware only if it implements
-        the picotool vendor reset interface (a crate such as `usbd-picotool-reset`; RP2350
-        support to confirm). The `reset` of docs/app-workflow.md §3.6 is not the way: it
-        returns the board to idle, and the control channel may not exist yet
+      - **BOOTSEL over the same cable** (docs/decisions.md A-11, owner decision 2026-10-29):
+        `deploy` calls `picotool load`, which needs BOOTSEL. `picotool load -f` /
+        `reboot -f -u` reach a running firmware through the picotool vendor reset
+        interface, which pico-sdk firmware carries by default. `usbd-picotool-reset` 0.3.0
+        does not fit as is: it depends on `rp2040-hal` 0.10 and calls the RP2040 ROM's
+        `reset_to_usb_boot`. Write the class in the port instead, on the same
+        `usb-device` 0.3 API (the version `ports/rp2350` already locks), and reboot with
+        `reboot::RebootKind::BootSel` from `rp235x-hal`. Confirm on hardware that picotool
+        finds the interface on an RP2350. The `reset` of docs/app-workflow.md §3.6 is not
+        the way: it returns the board to idle, and the control channel may not exist yet.
+        `deploy` can then add `-f` and drop the BOOTSEL step for a firmware that has it
       - **CLI**: `deploy --monitor` opens the port before the reset (`deploy.rs`), but right
         after `picotool load` the board is in BOOTSEL and has no CDC device; open it after
         the board re-enumerates. `monitor` must survive the device going away on a reset
