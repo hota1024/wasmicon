@@ -391,7 +391,7 @@ Seen from the app there are five independent axes.
 | Axis | Where it is today | What happens on mismatch |
 |---|---|---|
 | ABI version `wasmicon:hal@0.1.0` | The import module name (exact match, docs/abi-spec.md §3.1) | Every app fails with `unknown import` |
-| Board profile (`Config` + **implemented interfaces**) | Each `main.rs` (RP2040 = 2 pages, others = 4; `esp32s3-psram` = 112 since 2026-10-23) and each `board.rs` (RP2040 has no SPI / I2C) | A large app fails validate / `unsupported` on hardware |
+| Board profile (`Config` + **implemented interfaces**) | Each `main.rs` (RP2040 = 2 pages, others = 4; `esp32s3-psram` = 112 since 2026-10-23; `esp32p4-psram` = 240 since 2026-10-29) and each `board.rs` (RP2040 has no SPI / I2C) | A large app fails validate / `unsupported` on hardware |
 | Role names (free-form since 2026-10-07) | The app's `wasmicon.toml` -> the device's config slot (§3.9) | `pin-by-role` returns `unsupported` |
 | Protocol version | The frame's `ver u8` (§3.6) | The CLI cannot talk |
 | Slot format version | The slot header (§3.4, = 1) | An old firmware reads a new slot |
@@ -1192,7 +1192,7 @@ table".
 | **Unknown keys are errors** | Silently ignoring them hides "I set it but it has no effect". Typos stop here |
 | **`version`** | Newer than the CLI supports: error. Older: accepted |
 | **The toml is optional (but required to use roles on hardware)** | `check` / `run` **work without a toml**. Real boards have no default table, though, so an app `deploy`ed without a toml gets no roles at all |
-| **One wiring table per circuit board** | A firmware variant of a board reads that board's table: `--board esp32s3-psram` uses `[board.esp32s3.roles]` (below). A `[board.esp32s3-psram]` table is an error, since it would never be read |
+| **One wiring table per circuit board** | A firmware variant of a board reads that board's table: `--board esp32s3-psram` uses `[board.esp32s3.roles]`, `--board esp32p4-psram` uses `[board.esp32p4.*]` (below). A `[board.esp32s3-psram]` table is an error, since it would never be read |
 
 - **`check` / `deploy` inside a project** -> declaration and wiring table are cross-checked
 - **A bare `.wasm` received on its own** -> roles are not cross-checked (they cannot be enumerated)
@@ -1227,6 +1227,23 @@ a slot. So one `.wasm` and one `wasmicon.toml` serve both:
   pages=112`) says which firmware is there
 - The PSRAM firmware prints `psram missing or smaller than the arena, halt` after the
   identity line on a module without PSRAM
+
+#### The same on the ESP32-P4: `esp32p4` and `esp32p4-psram`
+
+`ports/esp32p4` builds two firmwares in the same way. The PSRAM is in the chip's
+package; the M5Stack Tab5 has 32 MB of it (docs/verification-report.md §28):
+
+| `--board` | Firmware | Arena | Page limit |
+|---|---|---|---|
+| `esp32p4` | `cargo build --release` | 300 KiB of SRAM | 4 |
+| `esp32p4-psram` | `cargo build --release --features psram` | 16 MiB of PSRAM | 240 |
+
+The limits are `esp32s3-psram`'s otherwise, and the rules above hold the same way:
+pins, slots and the wiring table, the display entry included, are `esp32p4`'s. Both
+firmwares have a 1 MiB app slot, as on the ESP32-S3, so the assets slot starts at
+`0x201000`. On the Tab5 the panel's frame buffer (`@display=tab5`, 1,843,200 B) lives
+in PSRAM right after the arena. A chip with 16 MB of PSRAM still runs apps, but has
+no room left for the frame buffer, so the panel's `open` fails
 
 `wasmicon.toml` is **searched for upward from the current directory** (like cargo).
 If the declaration and the wiring table disagree, **it stops before flashing, with no

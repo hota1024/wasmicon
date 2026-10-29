@@ -248,6 +248,25 @@ not marked with a 2026-10 date were measured there and live on only in these not
   USB-C, so the ROM reaches the host over it. Check as well whether a reset with the cable
   in still lands in download mode (below; the ESP32-S3 shows the same with its `USB-OTG`
   side in, §1.3), and that an app runs to the end with no host reading the port
+- [ ] **(7) PSRAM as the arena: the `esp32p4-psram` profile** (implemented 2026-10-29, owner
+  decisions the same day: its own profile like `esp32s3-psram`, 16 MiB of arena and 240
+  pages, a 1 MiB app slot on both P4 profiles). `ports/esp32p4 --features psram` brings
+  PSRAM up at boot (hex, 125 MHz, as for the panel), puts the arena at its start and the
+  Tab5 frame buffer right after it; it halts with `psram missing or smaller than the
+  arena` when less is mapped. The limits are `esp32s3-psram`'s (control depth 256, call
+  depth 128, 4096 operand slots, 16 KiB of scratch). Asset reads go straight only into
+  internal RAM and through the window into PSRAM, the ESP32-S3 rule of §5-10, kept here
+  without an A/B. Builds, clippy and fmt pass and CI builds it; **nothing has run on the
+  Tab5 yet**. To check: flash the `psram` firmware, `wasmicon deploy --board esp32p4-psram`
+  an app of more than 4 pages (`bench-rs`, or DOOM) and `display-demo-rs`, compare their
+  traces with the host, and see the picture. Open: PSRAM speed on the P4 against L2MEM
+  (unmeasured; the S3 numbers of docs/verification-report.md §21 do not carry over), the
+  time `instantiate` and `memory.grow` take to zero pages in PSRAM through the byte-wise
+  `memset` of `src/mem.rs`, and whether 250 MHz holds for the arena
+- **Slot layout changed 2026-10-29.** The app slot of both P4 profiles grew from 64 KiB to
+  1 MiB, so the config slot moved to `0x200000` and the assets slot to `0x201000`. A config
+  or assets slot written under the old layout is not found any more; `deploy` the app again
+  and rewrite the assets with `assets write`
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
   esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). The workarounds below
   are each to be deleted once upstream lets the build pick the revision (no upstream report yet).
@@ -285,6 +304,8 @@ not marked with a 2026-10 date were measured there and live on only in these not
 - **RAM.** The link puts the statics at 0x4FF40000 (esp-hal's default 256 KB L2 cache) and
   `.bss` ends near 0x4FF8ECA0 with the 300 KiB arena, so the native stack gets about 70 KiB.
   `ESP_HAL_CONFIG_ENSURE_MAIN_STACK_MINIMUM = "32768"` makes the link fail below 32 KiB.
+  The `psram` build has no static arena: `.bss` ends near 0x4FF46784 (2026-10-29), so the
+  stack gets about 358 KiB.
   The usable top (0x4FFA0000) was measured on one Tab5; another revision may differ.
   The firmware image is 140,192 B (`espflash save-image`, 2026-10-26), far below the app
   slot at 1 MiB

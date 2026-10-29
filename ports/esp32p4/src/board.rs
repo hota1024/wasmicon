@@ -274,6 +274,17 @@ fn i2c_error(e: HalI2cError) -> ErrorCode {
     }
 }
 
+/// HP L2MEM, the chip's internal RAM (esp-hal's `memory.x` for the
+/// ESP32-P4). PSRAM is mapped elsewhere (from 0x4800_0000), so a slice wholly
+/// inside this range is not in PSRAM.
+const L2MEM: core::ops::Range<usize> = 0x4FF0_0000..0x4FFC_0000;
+
+/// Whether all of `buf` lies in internal RAM.
+fn in_l2mem(buf: &[u8]) -> bool {
+    let r = buf.as_ptr_range();
+    L2MEM.contains(&(r.start as usize)) && (r.end as usize) <= L2MEM.end
+}
+
 /// A word-aligned window for the ragged edges of `read_flash`.
 #[repr(align(4))]
 struct Window([u8; 256]);
@@ -287,12 +298,17 @@ struct Window([u8; 256]);
 /// word-aligned destination, so an aligned request goes straight into the
 /// guest's memory and anything else goes through a 256-byte window. The same
 /// as on the ESP32-S3 and C5.
+///
+/// In the `psram` build the guest's memory is in PSRAM, and as on the
+/// ESP32-S3 only a destination in internal RAM is read straight into: the
+/// ROM flash routine never stores into PSRAM (docs/TODO.md §5-10, decided
+/// there for the ESP32-S3 and kept here unmeasured).
 fn read_flash(storage: &mut FlashStorage<'static>, at: u32, buf: &mut [u8]) -> BoardResult<()> {
     const WORD: u32 = 4;
     const MASK: usize = WORD as usize - 1;
     let aligned =
         (at as usize) & MASK == 0 && buf.len() & MASK == 0 && (buf.as_ptr() as usize) & MASK == 0;
-    if aligned {
+    if aligned && (cfg!(not(feature = "psram")) || in_l2mem(buf)) {
         return storage.read_nor(at, buf).map_err(|_| ErrorCode::Io);
     }
     let cap = u32::try_from(storage.capacity()).unwrap_or(u32::MAX);

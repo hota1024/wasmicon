@@ -143,6 +143,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release -- -D warnings
       - run: cargo build --release
+      # The `esp32p4-psram` firmware: the arena in PSRAM, and the Tab5 panel's
+      # frame buffer after it.
+      - run: cargo clippy --release --features psram -- -D warnings
+      - run: cargo build --release --features psram
 
   # ESP32-S3 is not built in CI: it needs the Xtensa toolchain from espup.
   # Check it locally with the two commands in the file header (the same combination as the

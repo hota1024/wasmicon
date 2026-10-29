@@ -19,6 +19,11 @@ rust-version = "1.95"
 # Build that writes the trace. On by default.
 default = ["trace"]
 trace = []
+# Firmware for the `esp32p4-psram` profile: the arena lives in the chip's
+# PSRAM, so the page limit is far higher. The Tab5's 32 MB holds the arena
+# and the panel's frame buffer; with less PSRAM than the arena it prints the
+# reason and halts.
+psram = []
 
 [dependencies]
 wasmicon-core = { path = "../../runtime" }
