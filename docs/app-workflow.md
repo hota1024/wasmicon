@@ -260,7 +260,7 @@ sync and log lines collide. And **both boards have a free USB port** (the ESP32-
 | Board | Control channel | Basis |
 |---|---|---|
 | ESP32-S3 | USB-Serial-JTAG (the `USB-OTG` port) | `usb::usb_serial_jtag` in `esp-hal`. **No extra crate** |
-| RP2350 / RP2040 | USB CDC | `rp235x-hal::usb` (the `UsbBus` impl for `usb-device`) + `usbd-serial` |
+| RP2350 / RP2040 | USB CDC, the control interface of a composite device whose other CDC interface is a console (docs/decisions.md A-11) | `rp235x-hal::usb` (the `UsbBus` impl for `usb-device`) + `usbd-serial` |
 
 **Stage 0, before any USB stack** (write only the slot with the existing flasher):
 

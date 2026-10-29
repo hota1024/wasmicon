@@ -853,16 +853,16 @@ change.**
       **The Tab5 is an exception** until §1.3.2 finds a USB path that gives output; without
       it the esp32p4 port breaks the requirement on the day it is recorded. **Not an ABI
       change**: `wit/log.wit` leaves the destination to the host. Points to decide:
-      - **How USB output shares the port with the control channel.** docs/app-workflow.md
-        §3.5 keeps control on USB and the trace on UART0 so that frames and lines do not
-        collide; any output on the same USB brings the collision back. Options: (a) output
-        frames in the docs/app-workflow.md §3.6 protocol (new `cmd` values; the protocol
-        has no version yet, docs/app-workflow.md §3.8), (b) a composite device with two
-        CDC ACM interfaces (console + control), (c) plain lines between frames, and the
-        CLI resyncs on the magic. **Decide this before any USB output lands**: plain lines
-        first would pick (b) or (c) by default and fix the descriptors and the VID / PID.
-        The question is not only the Pico's: on the ESP32-S3 the control channel goes to
-        the `USB-OTG` port, not the CH343 one, so the log and control are on two cables
+      - ~~How USB output shares the port with the control channel~~ -> **(b), a composite
+        device with two CDC ACM interfaces, console + control** (owner decision,
+        2026-10-29; docs/decisions.md A-11). A plain serial terminal reads the console, as
+        with pico-sdk or Arduino-Pico. The options were: (a) output frames in the
+        docs/app-workflow.md §3.6 protocol, which only `wasmicon monitor` could read,
+        (b) this, (c) plain lines between frames, with the CLI resyncing on the magic,
+        which a log line could break. (b) needs more than one CDC interface, so it is for
+        the RP2350 / RP2040; the ESP32-S3's USB-Serial-JTAG has one. There the control
+        channel goes to the `USB-OTG` port and the log stays on the CH343 one, so the log
+        and control are on two cables
       - **Whether the trace moves to USB.** Open. If it stays on UART0, a Pico 2 W still
         needs the CP2102N to capture a trace, and `trace` is on by default in
         `ports/rp2350`. A lossless trace over USB (wait for room while a host reads,
@@ -1275,15 +1275,18 @@ change.**
       docs/verification-report.md §31). A guest silent for 6 s twice: the default
       `--idle 3` kept only its first call, `--idle 8` and `--idle 0 --timeout 25` all three
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
-      (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
+      (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`, as the
+      control interface of the composite device of docs/decisions.md A-11. **Control
       over USB, trace over UART0** (whether the trace also goes to USB is §5-11)
       - **Turn the `hw-probe` feature into a `probe` command** (docs/app-workflow.md §3.6).
         Triage without reflashing, one build configuration fewer, and the variants
         converge on two: `trace` on / off
 - [ ] **USB CDC output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with one USB
       cable and no CP2102N shows the guest `log` and trap messages; the trace too, if
-      §5-11 moves it. **Starts after §5-11 picks (a), (b) or (c)**, because plain lines
-      first would make that choice by default
+      §5-11 moves it. Output goes to the console interface of the composite device
+      (docs/decisions.md A-11). Build both interfaces from the start, the control one
+      answering nothing yet, so the descriptors and the VID / PID do not change when the
+      control channel lands
       - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
         control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
         `runtime/` only), but record the choice in docs/decisions.md
