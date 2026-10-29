@@ -41,7 +41,7 @@ Options for new:
 Options for check:
     --board <name>           board to check against
                              rp2040 / rp2350 / esp32s3 / esp32s3-psram /
-                             esp32c5 / esp32p4 / host
+                             esp32c5 / esp32p4 / esp32p4-psram / host
                              default: [defaults] board in wasmicon.toml,
                              otherwise every board
 

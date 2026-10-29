@@ -691,6 +691,10 @@ driver = "tab5"
             m.display(&profile::ESP32S3)
         );
         assert_eq!(m.display(&profile::ESP32P4), Some(DisplayConfig::Tab5));
+        assert_eq!(
+            m.display(&profile::ESP32P4_PSRAM),
+            Some(DisplayConfig::Tab5)
+        );
         assert_eq!(m.display(&profile::RP2350), None);
         let w = m.wiring(&profile::ESP32P4).expect("wiring");
         assert_eq!(w.version(), 2);

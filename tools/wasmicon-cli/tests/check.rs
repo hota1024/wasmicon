@@ -165,6 +165,33 @@ fn the_psram_variant_takes_what_the_plain_esp32s3_refuses() {
 }
 
 #[test]
+fn the_p4_psram_variant_fits_what_the_plain_p4_refuses() {
+    // The same split on the ESP32-P4: 4 pages on the plain firmware, 240 with
+    // the arena in PSRAM.
+    let wasm = wat_memory_pages(240);
+    let f = facts_of(&wasm);
+    assert!(
+        check::judge(&wasm, &profile::ESP32P4, &f, None, &[], None)
+            .validate
+            .is_err(),
+        "esp32p4 allows up to 4 pages"
+    );
+    assert!(
+        check::judge(&wasm, &profile::ESP32P4_PSRAM, &f, None, &[], None).is_ok(),
+        "esp32p4-psram fits 240 pages"
+    );
+    let wasm = wat_memory_pages(241);
+    let f = facts_of(&wasm);
+    assert!(
+        check::judge(&wasm, &profile::ESP32P4_PSRAM, &f, None, &[], None)
+            .validate
+            .is_err(),
+        "one page over the limit"
+    );
+    assert_eq!(profile::ESP32P4_PSRAM.wiring, profile::ESP32P4.name);
+}
+
+#[test]
 fn the_psram_variant_validates_deeply_nested_blocks() {
     // A large C `switch` nests one block per case. 200 levels are over the
     // MCU limit of 64 and within the 256 of esp32s3-psram. The check runs
@@ -264,7 +291,7 @@ fn every_board_can_instantiate_its_advertised_maximum() {
         if p.name == "host" {
             continue; // host advertises 65536 pages but has a 256-page arena
         }
-        let pages = u8::try_from(p.config.max_memory_pages).expect("page count fits u8");
+        let pages = p.config.max_memory_pages;
         let wasm = wat_memory_pages(pages);
         assert!(
             check::instantiate_with(&wasm, p).is_ok(),
@@ -285,7 +312,7 @@ fn a_board_that_copies_the_app_into_the_arena_has_less_room() {
     //
     // Take the maximum page count and add a custom section bigger than the
     // headroom.
-    let pages = u8::try_from(profile::ESP32S3.config.max_memory_pages).expect("u8");
+    let pages = profile::ESP32S3.config.max_memory_pages;
     let padded = with_custom_section(&wat_memory_pages(pages), 40 * 1024);
 
     // On a board that does not copy (XIP), the app's size costs no arena,
@@ -415,7 +442,7 @@ fn wat_run_with_param() -> Vec<u8> {
 
 /// Builds `(module (memory n) (export "memory" ...) (func (export "run")))`
 /// by hand: the smallest `.wasm` without pulling in a wat assembler.
-fn wat_memory_pages(pages: u8) -> Vec<u8> {
+fn wat_memory_pages(pages: u32) -> Vec<u8> {
     let mut w = Vec::new();
     w.extend_from_slice(b"\0asm");
     w.extend_from_slice(&1u32.to_le_bytes());
@@ -425,7 +452,11 @@ fn wat_memory_pages(pages: u8) -> Vec<u8> {
     // func: one, of type 0
     w.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]);
     // memory: min = pages, no max
-    w.extend_from_slice(&[0x05, 0x03, 0x01, 0x00, pages]);
+    let mut limits = vec![0x01, 0x00]; // one memory, no max
+    leb128(&mut limits, pages as usize);
+    w.push(0x05);
+    leb128(&mut w, limits.len());
+    w.extend_from_slice(&limits);
     // export: "run" = func 0, "memory" = mem 0
     let exports: &[u8] = &[
         0x02, // 2 entries

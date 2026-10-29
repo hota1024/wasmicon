@@ -48,7 +48,7 @@ fn arenas_are_what_the_ports_had() {
     for p in profile::PROFILES {
         let scratch = match p.name {
             "host" => 4 << 20,
-            "esp32s3-psram" => 16 * 1024,
+            "esp32s3-psram" | "esp32p4-psram" => 16 * 1024,
             _ => 8 * 1024,
         };
         assert_eq!(p.scratch, scratch, "{}", p.name);
@@ -103,8 +103,8 @@ fn host_promises_more_pages_than_its_arena_can_hold() {
 #[test]
 fn every_board_has_a_decided_slot() {
     // Every port starts the slot at 1 MiB. It is 64 KiB except on the
-    // ESP32-S3, whose PSRAM firmware runs apps of several hundred KB (1 MiB,
-    // shared by both of its firmwares). The read method differs too (an XIP
+    // ESP32-S3 and ESP32-P4, whose PSRAM firmwares run apps of several
+    // hundred KB (1 MiB, shared by both firmwares of each chip). The read method differs too (an XIP
     // slice on the Pico family, a copy to RAM on ESP32-S3 / C5 / P4).
     for (p, flash, len) in [
         (&profile::RP2040, 2usize << 20, 64 * 1024),
@@ -112,7 +112,8 @@ fn every_board_has_a_decided_slot() {
         (&profile::ESP32S3, 8usize << 20, 1 << 20),
         (&profile::ESP32S3_PSRAM, 8usize << 20, 1 << 20),
         (&profile::ESP32C5, 16usize << 20, 64 * 1024),
-        (&profile::ESP32P4, 16usize << 20, 64 * 1024),
+        (&profile::ESP32P4, 16usize << 20, 1 << 20),
+        (&profile::ESP32P4_PSRAM, 16usize << 20, 1 << 20),
     ] {
         let sl = p
             .slot
@@ -181,6 +182,7 @@ fn only_the_host_mock_has_a_role_table() {
         &profile::ESP32S3,
         &profile::ESP32C5,
         &profile::ESP32P4,
+        &profile::ESP32P4_PSRAM,
     ] {
         assert!(p.roles.is_empty(), "{} must have no default table", p.name);
     }
@@ -232,6 +234,7 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
         &profile::ESP32S3,
         &profile::ESP32C5,
         &profile::ESP32P4,
+        &profile::ESP32P4_PSRAM,
         &profile::HOST,
     ] {
         let i = p.interfaces;
@@ -247,15 +250,16 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
 fn every_board_has_an_assets_slot_to_the_end_of_flash() {
     // Right after the config slot (docs/app-workflow.md §3.10), so it never
     // moves when the app is replaced, and as large as the flash allows. The
-    // flash sizes are the boards' (docs/TODO.md §5-2). The ESP32-S3 starts
-    // later because its app slot is 1 MiB.
+    // flash sizes are the boards' (docs/TODO.md §5-2). The ESP32-S3 and
+    // ESP32-P4 start later because their app slots are 1 MiB.
     for (p, flash, start) in [
         (&profile::RP2040, 2u32 << 20, 0x11_1000),
         (&profile::RP2350, 4 << 20, 0x11_1000),
         (&profile::ESP32S3, 8 << 20, 0x20_1000),
         (&profile::ESP32S3_PSRAM, 8 << 20, 0x20_1000),
         (&profile::ESP32C5, 16 << 20, 0x11_1000),
-        (&profile::ESP32P4, 16 << 20, 0x11_1000),
+        (&profile::ESP32P4, 16 << 20, 0x20_1000),
+        (&profile::ESP32P4_PSRAM, 16 << 20, 0x20_1000),
     ] {
         let r = p
             .role_slot
@@ -308,6 +312,31 @@ fn the_psram_variant_is_the_esp32s3_with_a_larger_arena() {
     assert!(i.gpio && i.i2c && i.spi && i.time && i.log && i.board && i.assets);
 }
 
+#[test]
+fn the_p4_psram_variant_is_the_esp32p4_with_a_larger_arena() {
+    // 16 MiB of the Tab5's 32 MB (owner decision 2026-10-29); the frame
+    // buffer follows the arena in PSRAM. The limits are `esp32s3-psram`'s.
+    let p = &profile::ESP32P4_PSRAM;
+    assert_eq!(p.name, "esp32p4-psram");
+    assert_eq!(p.wiring, "esp32p4");
+    let c = p.config;
+    assert_eq!(c.max_memory_pages, 240);
+    assert_eq!(c.max_control_depth, 256);
+    assert_eq!(c.max_call_depth, 128);
+    assert_eq!(c.operand_stack_slots, 4096);
+    assert_eq!(c.max_value_stack, 512);
+    assert_eq!(c.max_locals, 256);
+    assert_eq!(c.max_table_elems, 256);
+    assert_eq!(p.arena, 16 << 20);
+    assert_eq!(p.scratch, 16 * 1024);
+    assert!(p.roles.is_empty());
+    // The Tab5 panel stays reachable: its frame buffer comes after the arena.
+    assert_eq!(
+        p.interfaces.display_drivers,
+        profile::ESP32P4.interfaces.display_drivers
+    );
+}
+
 /// The slot fields that decide where `deploy` and `assets write` write.
 fn layout(s: Option<profile::Slot>) -> Option<(u32, u32, bool, profile::Flasher)> {
     s.map(|s| {
@@ -342,7 +371,10 @@ fn a_variant_shares_its_boards_pins_and_slots() {
         assert!(layout(p.role_slot) == layout(board.role_slot), "{}", p.name);
         assert!(layout(p.assets) == layout(board.assets), "{}", p.name);
     }
-    assert_eq!(variants, 1, "only esp32s3-psram is a variant today");
+    assert_eq!(
+        variants, 2,
+        "esp32s3-psram and esp32p4-psram are the variants today"
+    );
 }
 
 /// A firmware with the display lists its drivers, and only such a firmware:

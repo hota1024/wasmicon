@@ -127,6 +127,9 @@ sh ports/esp32s3/build.sh build --release   # sources ~/export-esp.sh, then call
 sh ports/esp32s3/build.sh build --release --features psram
 (cd ports/esp32c5 && cargo build --release)  # RISC-V; upstream Rust is enough
 (cd ports/esp32p4 && cargo build --release)  # RISC-V as well
+# The ESP32-P4 with its PSRAM as the arena (--board esp32p4-psram, 240 pages;
+# needs 32 MB of PSRAM, as on the M5Stack Tab5; docs/app-workflow.md §4.7)
+(cd ports/esp32p4 && cargo build --release --features psram)
 
 # Differential test against wasmtime (interpreter correctness)
 (cd verify/differential && cargo test)

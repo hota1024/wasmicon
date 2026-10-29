@@ -130,6 +130,7 @@ pub fn run() -> Result<bool> {
         boards.push("esp32s3-psram");
         boards.push("esp32c5");
         boards.push("esp32p4");
+        boards.push("esp32p4-psram");
     }
     if boards.is_empty() {
         println!("-> no board can be flashed from here; apps can still be built, checked and run");

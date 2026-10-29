@@ -77,8 +77,8 @@ pub struct Profile {
     /// Board whose wiring table (`[board.<wiring>.roles]` in `wasmicon.toml`)
     /// this profile reads. Equal to `name`, except for a firmware variant of
     /// the same circuit board: `esp32s3-psram` runs on the board `esp32s3`
-    /// describes, so the pins are the same and a second table would only
-    /// let the two copies drift apart. `tests/profiles.rs` checks that a
+    /// describes (and `esp32p4-psram` on `esp32p4`'s), so the pins are the
+    /// same and a second table would only let the two copies drift apart. `tests/profiles.rs` checks that a
     /// variant agrees with its board on every pin constraint and every slot.
     pub wiring: &'static str,
     /// Runtime limits.
@@ -170,7 +170,8 @@ pub enum Flasher {
     /// needed, but writing and tracing share one port.
     Espflash {
         /// Chip name for `espflash monitor -c`. Not the board name: a
-        /// firmware variant (`esp32s3-psram`) runs on the same chip.
+        /// firmware variant (`esp32s3-psram`, `esp32p4-psram`) runs on the
+        /// same chip.
         chip: &'static str,
     },
 }
@@ -452,18 +453,53 @@ pub const ESP32P4: Profile = Profile {
     arena: 300 * 1024,
     scratch: 8 * 1024,
     // 16 MB of flash (the Tab5, and most P4 modules). Starts at 1 MiB like
-    // the other ports.
+    // the other ports; 1 MiB long like the ESP32-S3's (`ESP32P4_SLOT`).
     slot: Some(ESP32P4_SLOT),
     role_slot: Some(role_slot_after(ESP32P4_SLOT)),
     assets: Some(assets_after(role_slot_after(ESP32P4_SLOT), ESP32P4_FLASH)),
 };
 
-/// App slot of the ESP32-P4. Copied to RAM like on the S3 and C5.
+/// App slot of the ESP32-P4, shared by `esp32p4` and `esp32p4-psram`. Copied
+/// to RAM like on the S3 and C5.
+///
+/// 1 MiB for the same reason as `ESP32S3_SLOT`: the PSRAM firmware runs
+/// compiled C of several hundred KB, and one layout for both firmwares means
+/// a wrong `--board` never writes the image over the config or assets slot.
+/// The plain firmware cannot use the extra room (its arena is 300 KiB).
 const ESP32P4_SLOT: Slot = Slot {
     offset: 1 << 20,
-    len: 64 * 1024,
+    len: 1 << 20,
     read: SlotRead::Copy,
     flasher: Flasher::Espflash { chip: "esp32p4" },
+};
+
+/// The ESP32-P4 with its in-package PSRAM in use (`ports/esp32p4` built
+/// with the `psram` feature). Checked on the M5Stack Tab5, which has 32 MB.
+///
+/// A separate profile for the reasons of `ESP32S3_PSRAM`. The whole arena
+/// lives in PSRAM. On the Tab5 the panel's frame buffer (1,843,200 B) sits
+/// in PSRAM right after the arena, so the panel needs a chip with 32 MB; one
+/// with 16 MB runs apps but fails the panel's `open`, and one with less
+/// halts at boot.
+pub const ESP32P4_PSRAM: Profile = Profile {
+    name: "esp32p4-psram",
+    wiring: "esp32p4",
+    // 240 pages (15 MiB) leave 1 MiB of the arena for the copied app, the
+    // decoded module and `Exec`, as on `esp32s3-psram`. The control and call
+    // limits are that profile's, raised for compiled C.
+    config: Config {
+        max_memory_pages: 240,
+        max_control_depth: 256,
+        max_call_depth: 128,
+        operand_stack_slots: 4096,
+        ..MCU
+    },
+    arena: 16 << 20,
+    // The validator's control stack grows with `max_control_depth`. The
+    // scratch area stays in SRAM, which the 300 KiB arena no longer takes.
+    scratch: 16 * 1024,
+    // Pins, slots and the display drivers are the chip's.
+    ..ESP32P4
 };
 
 /// The PC mock. Looser than every board, so passing here does not mean passing on a board.
@@ -495,6 +531,7 @@ pub const PROFILES: &[&Profile] = &[
     &ESP32S3_PSRAM,
     &ESP32C5,
     &ESP32P4,
+    &ESP32P4_PSRAM,
     &HOST,
 ];
 

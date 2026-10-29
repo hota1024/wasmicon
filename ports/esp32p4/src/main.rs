@@ -9,6 +9,9 @@
 //! 115200 8N1. On the M5Stack Tab5 UART0 reaches only the M5-Bus (pins 14 /
 //! 13), so a 3.3 V USB serial adapter takes the trace.
 //!
+//! With the `psram` feature it is the firmware of the `esp32p4-psram`
+//! profile: the arena lives in PSRAM, brought up at boot.
+//!
 //! For silicon before v3.0 only (the Tab5 has v1.0): `pre-v3.x`, `src/mem.rs`
 //! and `vendor/esp-sync` make up for esp-hal assuming v3.x, and the build
 //! halts on a v3.x chip.
@@ -21,6 +24,7 @@
 
 mod board;
 mod mem;
+mod psram;
 mod tab5;
 mod tab5_dpi;
 mod tab5_ili9881c;
@@ -32,6 +36,7 @@ use wasmicon_core::{decode, instantiate, invoke, validate, Arena, Config, Exec};
 use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
+use wasmicon_port::profile::{Profile, Slot};
 use wasmicon_port::roles::{self, DisplayConfig, Limits, Wiring};
 use wasmicon_port::{idle, slot, Hal};
 
@@ -43,24 +48,32 @@ use board::{EspBoard, Serial};
 // counterpart of `IMAGE_DEF` on the RP2350).
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// The profile this firmware is built for. With the `psram` feature the arena
+/// lives in PSRAM and the limits are those of `esp32p4-psram`; pins and slots
+/// are the chip's either way.
+#[cfg(not(feature = "psram"))]
+const PROFILE: &Profile = &wasmicon_port::profile::ESP32P4;
+#[cfg(feature = "psram")]
+const PROFILE: &Profile = &wasmicon_port::profile::ESP32P4_PSRAM;
+
 /// Config slot (wiring table, docs/app-workflow.md §3.9), right after the app slot.
-const ROLE_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32P4.role_slot {
+const ROLE_SLOT: Slot = match PROFILE.role_slot {
     Some(s) => s,
     None => panic!("the ESP32-P4 profile has no config slot"),
 };
 
 /// Assets slot (docs/app-workflow.md §3.10), right after the config slot, to
 /// the end of flash.
-const ASSETS_SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32P4.assets {
+const ASSETS_SLOT: Slot = match PROFILE.assets {
     Some(s) => s,
     None => panic!("the ESP32-P4 profile has no assets slot"),
 };
 
 /// Limits on the GPIOs the wiring table may assign.
-const LIMITS: Limits<'static> = Limits::of(&wasmicon_port::profile::ESP32P4);
+const LIMITS: Limits<'static> = Limits::of(PROFILE);
 
-/// App slot (`profile::ESP32P4` in `ports/common`).
-const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32P4.slot {
+/// App slot (`PROFILE` in `ports/common`).
+const SLOT: Slot = match PROFILE.slot {
     Some(s) => s,
     None => panic!("the ESP32-P4 profile has no app slot"),
 };
@@ -68,23 +81,23 @@ const SLOT: wasmicon_port::profile::Slot = match wasmicon_port::profile::ESP32P4
 /// Runtime arena; whatever is left becomes linear memory (`Arena::alloc_rest`).
 /// Sized like the ESP32-S3: four pages of linear memory (256 KB) plus the
 /// runtime's structures. PSRAM holds only the Tab5 panel's frame buffer
-/// (`tab5`), never the arena.
-static mut ARENA: [u8; wasmicon_port::profile::ESP32P4.arena] =
-    [0; wasmicon_port::profile::ESP32P4.arena];
+/// (`tab5`). The `psram` build has no static arena; it takes one from PSRAM
+/// at boot.
+#[cfg(not(feature = "psram"))]
+static mut ARENA: [u8; PROFILE.arena] = [0; PROFILE.arena];
 
 /// Scratch space used only during validation. Sized for the `MCU_CONFIG` limits.
 ///
 /// Not in the RAM reclaimed from the bootloader (`ram(reclaimed)`) as on the
 /// C5: on the P4 that region lies above 0x4FFA0000, which is L2 cache, not
 /// RAM, on silicon before v3.0 (`pre-v3.x`).
-static mut SCRATCH: [u8; wasmicon_port::profile::ESP32P4.scratch] =
-    [0; wasmicon_port::profile::ESP32P4.scratch];
+static mut SCRATCH: [u8; PROFILE.scratch] = [0; PROFILE.scratch];
 
 /// Limits for the microcontroller. The source of truth is
-/// `profile::ESP32P4.config` in `ports/common`; the CLI reads the same table
+/// `PROFILE.config` in `ports/common`; the CLI reads the same table
 /// (docs/app-workflow.md §4.3). With the host defaults the scratch space would
 /// be too small.
-const MCU_CONFIG: Config = wasmicon_port::profile::ESP32P4.config;
+const MCU_CONFIG: Config = PROFILE.config;
 
 /// Output to UART0.
 struct SerialPort<'a>(Uart<'a, esp_hal::Blocking>);
@@ -153,7 +166,7 @@ fn main() -> ! {
         let mut out = Buf::new(&mut line);
         identity::describe(
             &Identity {
-                profile: &wasmicon_port::profile::ESP32P4,
+                profile: PROFILE,
                 fw: env!("CARGO_PKG_VERSION"),
                 git: env!("WASMICON_GIT"),
                 trace: cfg!(feature = "trace"),
@@ -164,6 +177,23 @@ fn main() -> ! {
         serial.write(b"\r\n");
     }
 
+    // Mapped right after the identity line, so a chip with less PSRAM says
+    // why it stops instead of failing later in a way that looks like a bad
+    // app. The arena is the start of PSRAM; the Tab5 panel's frame buffer, if
+    // the config slot names it, comes after.
+    #[cfg(feature = "psram")]
+    let (arena_buf, fb_mem) = match psram::up(p.PSRAM) {
+        Some(mem) if mem.len() >= PROFILE.arena => mem.split_at_mut(PROFILE.arena),
+        _ => {
+            serial.write(b"wasmicon: psram missing or smaller than the arena, halt\r\n");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+    #[cfg(not(feature = "psram"))]
+    let fb_mem = p.PSRAM;
+
     // The Tab5 panel's parts, handed to the board only if the config slot
     // names the panel.
     let tab5_parts = tab5::Parts {
@@ -173,7 +203,7 @@ fn main() -> ! {
         backlight: p.GPIO22,
         dsi: p.MIPI_DSI,
         vdma: p.VDMA_CH0,
-        psram: p.PSRAM,
+        psram: fb_mem,
     };
 
     // The app slot, the config slot and the assets are all read through it.
@@ -196,8 +226,8 @@ fn main() -> ! {
     let wiring = pick_roles(storage, serial);
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
-    // PSRAM comes up here, before the app runs; the panel at the guest's
-    // first `open`.
+    // PSRAM comes up here in the plain build (at boot in the `psram` one),
+    // before the app runs; the panel at the guest's first `open`.
     if wiring.display == Some(DisplayConfig::Tab5) {
         hal.board_mut().configure_tab5(tab5_parts);
     }
@@ -209,6 +239,7 @@ fn main() -> ! {
 
     // SAFETY: only one task ever touches ARENA, so this is the only place
     // that creates a reference to it, and it runs once.
+    #[cfg(not(feature = "psram"))]
     let arena_buf = unsafe { &mut *core::ptr::addr_of_mut!(ARENA) };
     // SAFETY: only one task ever touches SCRATCH, so this is the only place
     // that creates a reference to it, and it runs once.
@@ -252,8 +283,9 @@ fn main() -> ! {
 /// (docs/app-workflow.md §3.3). As on the ESP32-S3, an arbitrary flash
 /// offset cannot be assumed to be mapped into XIP, so unlike the Pico ports
 /// (`slot::read_xip`) the app is copied to RAM. Only the length in the header
-/// is copied: the slot is 64 KiB but an app is a few KB, and the copy comes
-/// from the arena, whose rest becomes linear memory. No static region grows.
+/// is copied: the slot is 1 MiB (sized for the PSRAM firmware) but an app
+/// is usually a few KB, and the copy comes from the arena, whose rest becomes
+/// linear memory. No static region grows.
 fn pick_guest<'a>(
     storage: &mut FlashStorage<'_>,
     arena: &mut Arena<'a>,
