@@ -241,6 +241,13 @@ not marked with a 2026-10 date were measured there and live on only in these not
 - [x] **(5) The Tab5's own display** (2026-10-28): `display-demo-rs` through the `tab5` backend,
   the trace identical to the host mock at 720x1280 (§6, stage 4; docs/verification-report.md
   §28, §29). It uses PSRAM (the frame buffer) and enables no interrupt
+- [ ] **(6) The log over the Tab5's own USB-C** (§5-11). Write the log and trap messages to
+  USB-Serial-JTAG as well as UART0 (`usb_serial_jtag` in `esp-hal`, no extra crate) and read
+  them through the USB-C cable alone. No port writes to USB-Serial-JTAG today, so the "no
+  output" note below does not show that this path fails. Espflash flashes through the same
+  USB-C, so the ROM reaches the host over it. Check as well whether a reset with the cable
+  in still lands in download mode (below; the ESP32-S3 shows the same with its `USB-OTG`
+  side in, §1.3), and that an app runs to the end with no host reading the port
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
   esp-hal 1.2.2, esp-rom-sys 0.1.5 and esp-sync 0.3.0 assume v3.x (ECO5). The workarounds below
   are each to be deleted once upstream lets the build pick the revision (no upstream report yet).
@@ -283,8 +290,11 @@ not marked with a 2026-10 date were measured there and live on only in these not
   slot at 1 MiB
 - **Trace capture on the Tab5.** UART0 (GPIO37 = TX) reaches only M5-Bus pin 14 (GND on pin 1);
   a 3.3 V USB serial adapter takes it at 115200 8N1. Pin 12 next to it is 3V3. The Tab5's own
-  USB-C gave no output through USB-Serial-JTAG or USB-OTG in the earlier attempt. On macOS,
-  set the baud rate on the open descriptor: closing a `cu.*` device resets termios to 9600
+  USB-C gave no output through USB-Serial-JTAG or USB-OTG in the earlier attempt, the port
+  dropped before PR #10. The record does not say whether that firmware wrote to either; the
+  current one writes only to UART0, so the USB-C staying silent is expected (item (6)
+  above). On macOS, set the baud rate on the open descriptor: closing a `cu.*` device
+  resets termios to 9600
 - **Reset on the Tab5.** With the USB-C cable plugged into a PC, a reset from espflash always
   lands in download mode (`boot:0x204 DOWNLOAD`). The power button (double press off, single
   press on) boots normally
@@ -850,8 +860,9 @@ change.**
       Pico 2 W it takes an external adapter (CP2102N on GP0/GP1), and on the Tab5 too
       (§1.3.2). Proposal: make "the log can be read through the USB port the board is
       normally developed over" a port requirement and record it in docs/decisions.md.
-      **The Tab5 is an exception** until §1.3.2 finds a USB path that gives output; without
-      it the esp32p4 port breaks the requirement on the day it is recorded. **Not an ABI
+      **The Tab5 is not checked yet**: no firmware has written to its USB-Serial-JTAG, so
+      whether its USB-C can carry the log is open (§1.3.2 item (6)). Record the requirement
+      after that check, or the esp32p4 port may break it on the day it is recorded. **Not an ABI
       change**: `wit/log.wit` leaves the destination to the host. Points to decide:
       - ~~How USB output shares the port with the control channel~~ -> **(b), a composite
         device with two CDC ACM interfaces, console + control** (owner decision,
@@ -1324,8 +1335,8 @@ change.**
       on every board, because UART0 writes block (`write_full_blocking` in
       `ports/rp2350/src/main.rs`). On the Tab5, `display-demo-rs` sent about 213 KB of
       trace before its first picture, about 18 s (docs/verification-report.md §29). This
-      fixes the speed on the ESP32-S3, the ESP32-C5 and the Tab5 too, which USB output
-      would not
+      fixes the speed on the ESP32-S3, the ESP32-C5 and the Tab5 too, where the trace
+      stays on UART0 whatever §5-11 decides for the Pico 2 W
       - The CH343 held up to 3 Mbaud when flashing (docs/verification-report.md §31); the
         firmware's own output at that speed, and the CP2102N's, are not checked yet
       - `monitor --baud` (default 115200, `DEFAULT_BAUD`) and `deploy --monitor` must
