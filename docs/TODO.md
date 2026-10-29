@@ -866,9 +866,16 @@ change.**
         the run but does not change a trace line, because `time` calls are not traced
         (docs/abi-spec.md §9). This revises "trace over UART0" in docs/app-workflow.md §3.5,
         which is updated once the owner decides
-      - **UART0 stays** as a mirror of the log, trap messages and the trace: it works before
-        USB enumerates and when the USB stack is the thing that broke, and the CP2102N
-        captures keep working
+      - **What stays on UART0.** The log and trap messages stay, as a mirror: they are
+        small, and they still show what went wrong when the USB stack is the thing that
+        broke. On the Pico 2 W the trace leaves UART0 once the USB trace is verified on
+        hardware. UART0 writes block (`write_full_blocking` in `ports/rp2350/src/main.rs`),
+        so 115200 baud caps the run speed of a `trace` build. On the Tab5, at the same
+        baud rate, `display-demo-rs` sent about 213 KB of trace before its first picture,
+        about 18 s (docs/verification-report.md §29). A `uart-trace` feature brings it
+        back for a CP2102N capture. Until that verification, the trace goes to both,
+        because the check compares them. The ESP32-S3, the ESP32-C5 and the Tab5 keep the
+        trace on UART0: there UART0 is the one-cable path, or the only working one
 
 ### Implementation (stages: docs/app-workflow.md §5)
 
@@ -1267,7 +1274,9 @@ change.**
         prints the count once space returns, while `Board::trace` waits for room so that
         no trace line is lost. A terminal that holds the port open without reading stalls
         a `trace` build; that is the price of a lossless trace
-      - **Write to UART0 and USB both** (§5-11). Each port defines its own `Serial` trait
+      - **Fan-out to UART0 and USB** (§5-11). The log and trap messages go to both. The
+        trace goes to both until the check below passes; then it goes to USB only, and a
+        `uart-trace` feature adds UART0 back. Each port defines its own `Serial` trait
         today (`ports/*/src/board.rs`); the fan-out and the drop policy belong in
         `ports/common` so the ESP ports can reuse them
       - **Boot output**: the banner and the identity line (docs/app-workflow.md §3.8) are
@@ -1285,7 +1294,9 @@ change.**
       - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines arrive and
         the trace captured over USB matches the UART0 capture of the same run line for
         line (`verify/diff-traces.sh`); with no host reading, the app runs to the end; the
-        UART0 trace is unchanged against a capture taken before the change.
+        UART0 trace is unchanged against a capture taken before the change. After that,
+        drop the trace from UART0 (above) and record how much faster a `trace` build of a
+        display app reaches its first picture.
         `ports/rp2040` can follow with the same code but stays unverified (§1)
 - [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
 - [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
