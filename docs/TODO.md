@@ -248,7 +248,7 @@ not marked with a 2026-10 date were measured there and live on only in these not
   USB-C, so the ROM reaches the host over it. Check as well whether a reset with the cable
   in still lands in download mode (below; the ESP32-S3 shows the same with its `USB-OTG`
   side in, §1.3), and that an app runs to the end with no host reading the port
-- [ ] **(7) PSRAM as the arena: the `esp32p4-psram` profile** (implemented 2026-10-29, owner
+- [x] **(7) PSRAM as the arena: the `esp32p4-psram` profile** (implemented 2026-10-29, owner
   decisions the same day: its own profile like `esp32s3-psram`, 16 MiB of arena and 240
   pages, a 1 MiB app slot on both P4 profiles). `ports/esp32p4 --features psram` brings
   PSRAM up at boot (hex, 125 MHz, as for the panel), puts the arena at its start and the
@@ -256,10 +256,11 @@ not marked with a 2026-10 date were measured there and live on only in these not
   arena` when less is mapped. The limits are `esp32s3-psram`'s (control depth 256, call
   depth 128, 4096 operand slots, 16 KiB of scratch). Asset reads go straight only into
   internal RAM and through the window into PSRAM, the ESP32-S3 rule of §5-10, kept here
-  without an A/B. Builds, clippy and fmt pass and CI builds it; **nothing has run on the
-  Tab5 yet**. To check: flash the `psram` firmware, `wasmicon deploy --board esp32p4-psram`
-  an app of more than 4 pages (`bench-rs`, or DOOM) and `display-demo-rs`, compare their
-  traces with the host, and see the picture. Open: PSRAM speed on the P4 against L2MEM
+  without an A/B. Run on the Tab5 the same day (docs/verification-report.md §37): a guest
+  that grows to 240 pages and checks zeroing and read-back, and `display-demo-rs` with the
+  frame buffer after the arena, both trace-identical to the host; the owner saw the picture.
+  Open: an asset read into PSRAM on hardware (no app with assets was run), PSRAM speed on
+  the P4 against L2MEM
   (unmeasured; the S3 numbers of docs/verification-report.md §21 do not carry over), the
   time `instantiate` and `memory.grow` take to zero pages in PSRAM through the byte-wise
   `memset` of `src/mem.rs`, and whether 250 MHz holds for the arena
