@@ -2095,6 +2095,10 @@ The identity line:
 
 - Both boots went through the watchdog reset of the second-stage bootloader on the first power-on run
   (docs/TODO.md §1.3.2), then booted the firmware; nothing new.
+- Repeated with `cd7f68a` (the review fixes: the profile name on the first line, `Psram` forgotten
+  instead of dropped, `crate::PROFILE` in `board.rs`): the first line reads `wasmicon esp32p4-psram`,
+  `display-demo-rs` matches the host mock over 4,494 lines, and the owner saw the bars in order. That
+  capture also held noise and the tail of an earlier run; the comparison starts at this boot's first line.
 - Not measured: how long the guest's passes over PSRAM took, the time to zero pages in PSRAM, and PSRAM
   speed against L2MEM. No asset was read (the assets slot was empty under the new layout), so the
   `read_flash` gate into PSRAM did not run.
