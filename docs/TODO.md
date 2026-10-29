@@ -162,6 +162,13 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     and the ROM's lines reached the adapter, and `RST` after `deploy --no-run` booted too
     (docs/verification-report.md §32). Neither stop has been reproduced; the one known
     difference from 2026-10-27 is that an image was actually written. The cause is open
+  - **Reproduced by the DOOM port on 2026-10-28 / 29** (docs/verification-report.md §36):
+    after `espflash flash --after no-reset`, resets issued by espflash gave no output at all,
+    flashing through the CH343 failed 38 times before connecting, and `RST` by hand with the
+    port open booted into download mode (`boot:0x0`) twice. With DTR and RTS both asserted
+    and no pulse, `RST` booted normally. That points at GPIO0 held low through the reset
+    lines; their state in the failed attempts was not logged. Next: log DTR / RTS at each
+    step, on both adapters
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
@@ -714,7 +721,8 @@ change.**
         flash reads. One lookup per byte in a 256-entry table built at compile time (1 KiB of
         read-only data). Same output: a host test compares it with the bitwise loop over
         every byte value and random data, and the recorded traces and slot CRCs still pass.
-        The new time on hardware is not measured
+        On hardware (DOOM port, 2026-10-29, docs/verification-report.md §36): DOOM's start-up
+        21.97 -> 20.92 s, the body check 1.655 -> 0.826 s, traces unchanged
       - **No firmware-overlap check for the assets slot on the ESP ports.** The Pico ports
         refuse a slot the firmware's end reaches into (`slot::xip_region`); the ESP firmware
         has no linker symbol for its flash extent, so neither the app slot nor the assets
@@ -823,9 +831,9 @@ change.**
           -> **(c), owner decision 2026-10-29**, implemented: `read_flash` in
           `ports/esp32s3/src/board.rs` reads straight into a destination wholly inside
           internal SRAM (`0x3FC8_8000..0x3FD0_0000`) and through the window into PSRAM. The
-          `psram-direct-read` feature stays for measurement. Not yet run on hardware; the
-          table-driven CRC above landed in the same change, so the next DOOM start-up shows
-          both
+          `psram-direct-read` feature stays for measurement. Run by the DOOM port together
+          with the table-driven CRC above (docs/verification-report.md §36): start-up -1.046 s,
+          traces equal the host
       - **A read-write store** (a small key-value `storage` interface on its own flash
         region) is the next interface. The assets slot stays read-only; the two are
         different in flash handling (no erase on the device today) and in RAM cost

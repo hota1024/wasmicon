@@ -1999,3 +1999,60 @@ Also reported:
   check) with no wrong byte the trace could see (each read's data is traced as a CRC-32), but nothing
   else was using PSRAM during the reads, as in §33
 - The CRC split of the body check is inferred from the totals, not timed
+
+## 36. DOOM start-up with the table-driven CRC and SRAM-only direct reads, as reported by the DOOM port (2026-10-29)
+
+**The timings were not measured in this repository.** The DOOM port re-ran the module of §35 on the plain
+`psram` firmware of `652bd6b` (table-driven `crc32_update`; direct reads only into internal SRAM;
+docs/TODO.md §5-10) and reported it from its own clone (logs in that clone,
+`logs/2026-10-29-esp32s3-psram-read-ab/plain-652bd6b/`). The identity line, the `startup:` line and the
+trace comparison were checked here on those logs, with the `wasmicon` CLI built from `652bd6b` and the host
+trace of `logs/2026-10-27-esp32s3-psram/`.
+
+The board of §30 to §35 (MAC `28:84:85:a4:24:9c`), the same module (crc32 `7fdb30a6`). The capture was
+taken by hand, not with `deploy` (see below); its timestamps count from the start of the capture, which
+does not change the differences.
+
+| Item | `ea1ba94` (plain `psram`, §35) | `652bd6b` |
+|---|---|---|
+| `startup:` | 21,968,941 us | **20,922,964 us (-1,046 ms, -4.8%)** |
+| Silence before the first `blob.open` (the WAD body check, 4,196,020 B) | 1.655 s | **0.826 s (-0.829 s)** |
+| The 795 guest reads before `startup:` (into PSRAM, still through the window) | 19.502 s | 19.285 s (-0.217 s) |
+| The slot check before the module starts (414,951 B) | 0.317 s | 0.215 s |
+| 541 demo frames | 378.472 s | 378.452 s |
+| `trace diff` against the host, `--ignore "startup: " "frame " "done: "` | 1,970 lines | **match: 1,970 lines** (checked here; 34 ignored per file) |
+
+0.829 s + 0.217 s equals the change of `startup:`. Of the body check's 0.83 s, at most 43 ms is the
+direct read into SRAM (§35); the rest is the CRC. The guest's reads did not change path, so the port puts
+their 0.217 s on the CRC-32 of the data each `<` trace line carries.
+
+### The stuck boot reproduced
+
+The run above came after a stretch in which the board would not boot after flashing, the symptom of
+docs/TODO.md §1.3 that §32 could not reproduce. From the port's diagnostic logs (`diag/` and
+`failed-1810/` next to the capture; times UTC), all through the CH343 with the CP2102N still on UART0:
+
+| When | What | Result |
+|---|---|---|
+| 10-28 18:10, 10-29 03:40 | `espflash flash --after no-reset` of `652bd6b` | flashed (`Staying in bootloader`); captures that then issued a reset got 0 bytes in 20 to 30 s |
+| 10-29 03:44 | the same with `ea1ba94` | flashed; 0 bytes in 30 s after a reset |
+| 03:46 | `espflash` hard reset, then watchdog reset, each followed by listening | 0 bytes in 6 s and in 10 s |
+| 03:46:57 | `espflash board-info` | connected at once; the CP2102N's port received the ROM's SLIP replies at the same time |
+| 03:54 | `espflash board-info` through the CP2102N | `Failed to connect` |
+| 03:59, 04:07 | `espflash flash` through the CH343 (default, then `--before no-reset`) | `Failed to connect` |
+| 04:09 to 04:13 | a retry loop | 38 failures, connected on the 39th (04:13:40), flashed |
+| 04:13, 04:14 | port open, no reset issued, `RST` by hand | twice `rst:0x1 (POWERON),boot:0x0 (DOWNLOAD(USB/UART0))` |
+| 04:16 | port open with DTR and RTS asserted, no pulse, `RST` by hand | `boot:0x8`, the run of the table |
+
+`boot:0x0` after a power-on reset means GPIO0 was low when `EN` rose. With both lines asserted the board's
+auto-reset circuit holds neither `EN` nor GPIO0 low, and that was the boot that worked; the line state the
+other captures left is not in the logs. Why resets issued by `espflash` gave no output at all, not even
+the ROM's banner, is not explained.
+
+### What this measurement does not say
+
+- One run of the new firmware; the split of the 1.046 s is the port's, from timestamps, not timed in
+  the firmware
+- The slot-check and per-read figures come from the timestamped capture only
+- The stuck boot's cause is still open; these logs narrow it to the reset lines but do not show their
+  state in the failed attempts
