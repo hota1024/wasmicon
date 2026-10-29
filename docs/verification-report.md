@@ -2075,3 +2075,26 @@ released and RTS asserted keeps `EN` low on a working circuit, while a stuck DTR
 - The slot-check and per-read figures come from the timestamped capture only
 - The stuck boot's cause is still open. The host's line states are known; the pins of the CH343 and
   the GPIO0 node were not measured
+
+## 37. The `esp32p4-psram` firmware on the M5Stack Tab5 (2026-10-29)
+
+The Tab5 of §28 (MAC `30:ed:a0:e2:9d:0a`, ESP32-P4 v1.0, 32 MB PSRAM). Firmware `7bc4ca0`, built with
+`--features psram` (docs/TODO.md §1.3.2 item (7)), flashed with `espflash flash` through the Tab5's USB-C;
+each app written with `wasmicon deploy --board esp32p4-psram --no-run` through the same port and started
+by a power cycle with the button. UART0 captured with a CP2102N on M5-Bus pins 1 / 14 at 115200 and
+compared with `wasmicon trace diff` against `wasmicon run --trace` of the same `.wasm` on the host.
+
+The identity line:
+`wasmicon id esp32p4-psram fw=0.1.0 git=7bc4ca0 ... pages=240 ... slot=v1/1048576 roles=v2/4096 assets=v1/14675968`
+(the 1 MiB app slot and the assets slot from `0x201000` to the end of the 16 MB flash).
+
+| App | What it does | Result |
+|---|---|---|
+| A throwaway guest (410 B, written in WAT, not kept in the repository) | `memory.grow` from 1 to 240 pages (15 MiB); reads every 64th byte of the new pages and the last word, expecting zero; writes a word every 256 bytes from page 1 to the end and reads all of them back | `grow ok`, `zero ok`, `rw ok 240 pages`; **match: 6 lines** |
+| `display-demo-rs` (3,496 B), `@display=tab5` | the demo of §29 on the panel, whose frame buffer now sits in PSRAM right after the 16 MiB arena | `display tab5 up, d-phy ldo dref=14 mul=3`; **match: 4,494 lines** with the host mock at 720x1280; the owner saw the bars in order |
+
+- Both boots went through the watchdog reset of the second-stage bootloader on the first power-on run
+  (docs/TODO.md §1.3.2), then booted the firmware; nothing new.
+- Not measured: how long the guest's passes over PSRAM took, the time to zero pages in PSRAM, and PSRAM
+  speed against L2MEM. No asset was read (the assets slot was empty under the new layout), so the
+  `read_flash` gate into PSRAM did not run.
