@@ -617,6 +617,15 @@ Items on the roadmap in docs/design-notes.md §6 that are outside v0.1.
       `ports/esp32s3` kept `esp_hal::Config::default()` and ran at **80 MHz**.
       A local build confirmed that `with_cpu_clock(CpuClock::max())` makes every
       measurement exactly 3x faster (not committed)
+- **Console input for the guest** (raised 2026-10-29, deferred by the owner the same day).
+  The RP2350 console of docs/decisions.md A-11 carries output only. Reading from it (a
+  REPL, stdin) needs a guest-side `console` interface, an ABI change (`AGENTS.md`)
+- **A `uart` resource in the HAL** (raised 2026-10-29; the owner's choice the same day is to
+  add it once an app needs it). For external devices such as a GPS or a modem, the guest
+  owns the bus like `gpio`, `i2c` and `spi`, with pins from the board configuration
+  (docs/abi-spec.md §8). Opening the UART that carries the console returns `busy`. The
+  `len-out` of docs/abi-spec.md §4.4 already covers a variable-length receive. An ABI
+  change; the debug console stays `log`, owned by the host
 
 ---
 
@@ -1301,6 +1310,13 @@ change.**
       (docs/decisions.md A-11). Build all three interfaces from the start (console,
       control, picotool reset), the control one answering nothing yet, so the descriptors
       and the VID / PID do not change when the control channel lands
+      - **VID / PID** (owner decision, 2026-10-29): a temporary pair during development,
+        then an assigned one before the firmware is distributed: a PID under Raspberry
+        Pi's VID 0x2E8A, or one from pid.codes. The CLI selects the port by this pair, so
+        the switch updates the CLI in the same change
+      - **Output only** (owner decision, 2026-10-29). The console reads nothing for now;
+        input (a REPL, stdin) needs a guest-side `console` interface, an ABI change, and is
+        a separate item (§4)
       - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
         control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
         `runtime/` only), but record the choice in docs/decisions.md
@@ -1343,14 +1359,25 @@ change.**
       `ports/rp2350/src/main.rs`). On the Tab5, `display-demo-rs` sent about 213 KB of
       trace before its first picture, about 18 s (docs/verification-report.md §29). The
       trace stays on UART0 on every board (§5-11), so this is the fix for its speed
-      - The CH343 held up to 3 Mbaud when flashing (docs/verification-report.md §31); the
-        firmware's own output at that speed, and the CP2102N's, are not checked yet
+      - **Start at 921600 baud** (owner decision, 2026-10-29). Go higher only after that
+        holds on every board. The CH343 held up to 3 Mbaud when flashing
+        (docs/verification-report.md §31); the firmware's own output at any new speed, and
+        the CP2102N's, are not checked yet
       - `monitor --baud` (default 115200, `DEFAULT_BAUD`) and `deploy --monitor` must
-        follow, and the boot ROM keeps printing at 115200, so its lines turn to noise at
-        the new speed; say so in the docs
+        follow. **The boot ROM keeps printing at 115200, and its lines turning to noise at
+        the new speed is accepted** (owner decision, 2026-10-29); say so in the docs
       - Verify on hardware: blink-rs and a display app give the same trace at the new
         speed, and the time to the first picture on the Tab5 is recorded against
         docs/verification-report.md §29
+- [ ] **Show the `log` level** (owner decision, 2026-10-29). Every `Board::log` and the host
+      port drop the `level` argument. Print it after the prefix, as in `[wasm] W: ...`, in all
+      six ports. Filtering by level comes later, if at all
+      - The `[wasm]` prefix stays: `wasmicon trace` and `verify/diff-traces.sh` drop the
+        `[wasm]` lines, so the trace comparison does not change. The fixtures in
+        `tools/wasmicon-cli/tests/trace.rs` and `verify/diff-traces.sh --self-test` carry
+        `[wasm] blink start` as lines to drop; they keep passing, but update them so they
+        show the new form
+      - Not an ABI change: `wit/log.wit` leaves the output to the host
 - [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
 - [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
       output and `apps/blink-c` went in. `cargo test` checks on the host that its trace is
