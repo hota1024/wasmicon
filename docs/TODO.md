@@ -850,32 +850,55 @@ change.**
       Pico 2 W it takes an external adapter (CP2102N on GP0/GP1), and on the Tab5 too
       (§1.3.2). Proposal: make "the log can be read through the USB port the board is
       normally developed over" a port requirement and record it in docs/decisions.md.
-      **Not an ABI change**: `wit/log.wit` leaves the destination to the host. Points to
-      decide:
-      - **How the log and the trace share USB with the control channel.**
-        docs/app-workflow.md §3.5 keeps control on USB and the trace on UART0 so that
-        frames and lines do not collide; the log and the trace on the same USB bring the
-        collision back. Options: (a) log and trace frames in the docs/app-workflow.md §3.6
-        protocol (new `cmd` values, bumps the protocol version), (b) a composite device
-        with two CDC ACM interfaces (console + control), (c) plain lines between frames,
-        and the CLI resyncs on the magic
-      - **Whether the trace moves too.** Recommendation: yes, or a Pico 2 W still needs the
-        CP2102N to capture a trace, and `trace` is on by default in `ports/rp2350`. `trace
-        diff` needs every line, so the trace does not drop while a host reads the port: it
-        waits for room instead (the log drops; implementation item below). Waiting slows
-        the run but does not change a trace line, because `time` calls are not traced
-        (docs/abi-spec.md §9). This revises "trace over UART0" in docs/app-workflow.md §3.5,
-        which is updated once the owner decides
-      - **What stays on UART0.** The log and trap messages stay, as a mirror: they are
-        small, and they still show what went wrong when the USB stack is the thing that
-        broke. On the Pico 2 W the trace leaves UART0 once the USB trace is verified on
-        hardware. UART0 writes block (`write_full_blocking` in `ports/rp2350/src/main.rs`),
-        so 115200 baud caps the run speed of a `trace` build. On the Tab5, at the same
-        baud rate, `display-demo-rs` sent about 213 KB of trace before its first picture,
-        about 18 s (docs/verification-report.md §29). A `uart-trace` feature brings it
-        back for a CP2102N capture. Until that verification, the trace goes to both,
-        because the check compares them. The ESP32-S3, the ESP32-C5 and the Tab5 keep the
-        trace on UART0: there UART0 is the one-cable path, or the only working one
+      **The Tab5 is an exception** until §1.3.2 finds a USB path that gives output; without
+      it the esp32p4 port breaks the requirement on the day it is recorded. **Not an ABI
+      change**: `wit/log.wit` leaves the destination to the host. Points to decide:
+      - **How USB output shares the port with the control channel.** docs/app-workflow.md
+        §3.5 keeps control on USB and the trace on UART0 so that frames and lines do not
+        collide; any output on the same USB brings the collision back. Options: (a) output
+        frames in the docs/app-workflow.md §3.6 protocol (new `cmd` values; the protocol
+        has no version yet, docs/app-workflow.md §3.8), (b) a composite device with two
+        CDC ACM interfaces (console + control), (c) plain lines between frames, and the
+        CLI resyncs on the magic. **Decide this before any USB output lands**: plain lines
+        first would pick (b) or (c) by default and fix the descriptors and the VID / PID.
+        The question is not only the Pico's: on the ESP32-S3 the control channel goes to
+        the `USB-OTG` port, not the CH343 one, so the log and control are on two cables
+      - **Whether the trace moves to USB.** Open. If it stays on UART0, a Pico 2 W still
+        needs the CP2102N to capture a trace, and `trace` is on by default in
+        `ports/rp2350`. A lossless trace over USB (wait for room while a host reads,
+        instead of dropping) needs answers to these first:
+        - **Boot window.** The CDC device re-enumerates on every reset, and the host opens
+          it about a second later. Output dropped while DTR is down loses the start of the
+          trace; blink-rs's 20 lines would all be gone. A firmware queue that holds every
+          line until DTR first rises covers a short app, but only as far as the RAM left
+          next to the 256 KiB linear memory: a display app sends hundreds of KB of trace
+          (about 213 KB before the first picture in docs/verification-report.md §29). When
+          the queue fills before DTR, the firmware must still drop or wait, so pair the
+          queue with a bounded wait for DTR before `run` when the slot has an app
+        - **DTR that stays up.** `usbd-serial` lowers DTR only on a bus reset or a
+          `SET_CONTROL_LINE_STATE`. A suspended host, a cable pulled while the board runs
+          from VSYS, or a crashed host process leaves it up, and a waiting trace hangs the
+          app. Treat suspend and disconnect as DTR down, or bound the wait
+        - **Drop by line.** `Serial::write` takes byte slices, and one log line is three
+          writes (`ports/rp2350/src/board.rs`, `Board::log`). Deciding per write can drop
+          the end of a line and glue the next trace line to it, which
+          `verify/diff-traces.sh` then discards. The output path needs a line API that
+          knows the kind of each line (log, trace, firmware message)
+        - **Firmware messages.** The trap reason and the slot lines (`pick_roles`,
+          `pick_assets`, `pick_guest`) go to `Serial` directly. They need the same policy,
+          or an app that traps before the host opens the port shows no reason over USB,
+          which is the observation docs/decisions.md A-04 relies on
+        - **A mark for dropped trace.** Dropped trace lines and each switch between
+          dropping and waiting leave a line with a count. Otherwise a capture that started
+          late reads as a firmware difference in `trace diff`
+        - Waiting slows the run but changes no trace line **only for an app that does not
+          put timings into host calls**: `bench-rs` logs `us=` and `life-rs` draws its frame
+          rate, so their traces differ from run to run anyway (`trace diff --ignore`)
+      - **UART0 keeps everything**: the log, trap messages and the trace, as today. It works
+        before USB enumerates and when the USB stack is the thing that broke, the CP2102N
+        captures keep working, and no third firmware variant appears (docs/app-workflow.md
+        §3.8 allows two: `trace` on / off). The speed of a `trace` build is a separate
+        item: the UART0 baud rate (implementation list below)
 
 ### Implementation (stages: docs/app-workflow.md §5)
 
@@ -1253,51 +1276,61 @@ change.**
       `--idle 3` kept only its first call, `--idle 8` and `--idle 0 --timeout 25` all three
 - [ ] **USB control channel** (stage 2). ESP32-S3: `usb::usb_serial_jtag` from `esp-hal`
       (no extra crate); RP2350 / RP2040: `rp235x-hal::usb` + `usbd-serial`. **Control
-      over USB, trace over UART0**
+      over USB, trace over UART0** (whether the trace also goes to USB is §5-11)
       - **Turn the `hw-probe` feature into a `probe` command** (docs/app-workflow.md §3.6).
         Triage without reflashing, one build configuration fewer, and the variants
         converge on two: `trace` on / off
-- [ ] **USB CDC log and trace output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with
-      one USB cable and no CP2102N shows the guest `log` and trap messages, and
-      `wasmicon monitor` captures a full trace. It shares the USB stack with the control
-      channel above and can land before it
+- [ ] **USB CDC output on `ports/rp2350`** (§5-11). The goal: a Pico 2 W with one USB
+      cable and no CP2102N shows the guest `log` and trap messages; the trace too, if
+      §5-11 moves it. **Starts after §5-11 picks (a), (b) or (c)**, because plain lines
+      first would make that choice by default
       - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
         control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
         `runtime/` only), but record the choice in docs/decisions.md
       - **Service USB from the USBCTRL interrupt**, not from host calls. A guest can run for
         a long time without a host call, and the host must still see enumeration and
-        reads. The interrupt shifts `time` values, not trace lines (the same trade-off as
-        docs/app-workflow.md §3.6)
-      - **Two overflow policies, chosen by DTR.** With DTR down (no host has the port open)
-        both the log and the trace are dropped, or every app run without a cable would
-        hang. With DTR up, `Board::log` drops and counts when the ring buffer is full and
-        prints the count once space returns, while `Board::trace` waits for room so that
-        no trace line is lost. A terminal that holds the port open without reading stalls
-        a `trace` build; that is the price of a lossless trace
-      - **Fan-out to UART0 and USB** (§5-11). The log and trap messages go to both. The
-        trace goes to both until the check below passes; then it goes to USB only, and a
-        `uart-trace` feature adds UART0 back. Each port defines its own `Serial` trait
-        today (`ports/*/src/board.rs`); the fan-out and the drop policy belong in
-        `ports/common` so the ESP ports can reuse them
-      - **Boot output**: the banner and the identity line (docs/app-workflow.md §3.8) are
-        written before the host opens the port. Keep the boot output in the ring buffer
-        until DTR is asserted, or `wasmicon monitor` misses the line that records the
-        firmware's identity
-      - **BOOTSEL over the same cable**: `deploy` still calls `picotool load`, which needs
-        BOOTSEL. Confirm whether `picotool reboot -f` can reach a Rust firmware (pico-sdk
-        exposes a vendor reset interface for it); otherwise the `reset` command of
-        docs/app-workflow.md §3.6 with `reboot::RebootKind::BootSel` does it
-        (docs/app-workflow.md §3.5)
-      - **CLI**: `monitor` waits for the CDC device to come back after a reset (it
-        re-enumerates on every reset) and looks for `/dev/cu.usbmodem*`. Decide the
-        VID / PID the firmware reports
-      - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines arrive and
-        the trace captured over USB matches the UART0 capture of the same run line for
-        line (`verify/diff-traces.sh`); with no host reading, the app runs to the end; the
-        UART0 trace is unchanged against a capture taken before the change. After that,
-        drop the trace from UART0 (above) and record how much faster a `trace` build of a
-        display app reaches its first picture.
+        reads. The interrupt shifts `time` values; for an app that puts no timings into
+        host calls the trace stays the same (docs/app-workflow.md §3.6)
+      - **Never hang without a host.** The log drops and counts when its queue is full or
+        no host reads. The trace follows the §5-11 answers (boot window, DTR that stays up,
+        a mark for dropped lines)
+      - **One `Serial` trait, line by line.** The trait is defined almost identically in
+        the five `ports/*/src/board.rs`; move it into `ports/common` with a line API that
+        carries the kind of each line, so a drop never cuts a line in two. The trap reason
+        and the slot lines go through it as well. UART0 keeps every line (§5-11)
+      - **BOOTSEL over the same cable**: `deploy` calls `picotool load`, which needs BOOTSEL.
+        `picotool load -f` / `reboot -f -u` reach a running firmware only if it implements
+        the picotool vendor reset interface (a crate such as `usbd-picotool-reset`; RP2350
+        support to confirm). The `reset` of docs/app-workflow.md §3.6 is not the way: it
+        returns the board to idle, and the control channel may not exist yet
+      - **CLI**: `deploy --monitor` opens the port before the reset (`deploy.rs`), but right
+        after `picotool load` the board is in BOOTSEL and has no CDC device; open it after
+        the board re-enumerates. `monitor` must survive the device going away on a reset
+        instead of ending with `Closed`. Select the port by VID / PID (and interface number
+        for (b)): the ESP32-S3's CH343 is a `cu.usbmodem*` too, and `choose()` refuses two
+        candidates, as with a CP2102N and the CDC device plugged in together
+      - **Docs to update when it lands**: docs/app-workflow.md §3.5 and the UART line in the
+        header of `ports/rp2350/src/main.rs`, if the trace moves
+      - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines and a trap
+        reason arrive; with the cable pulled or the host asleep, the app runs to the end.
+        If the trace moves: blink-rs's full trace is captured right after `deploy`, and the
+        USB trace of an app without timings matches the UART0 trace of the same run line
+        for line (`verify/diff-traces.sh`).
         `ports/rp2040` can follow with the same code but stays unverified (§1)
+- [ ] **Raise the UART0 baud rate on every port** (§5-11). 115200 baud caps a `trace` build
+      on every board, because UART0 writes block (`write_full_blocking` in
+      `ports/rp2350/src/main.rs`). On the Tab5, `display-demo-rs` sent about 213 KB of
+      trace before its first picture, about 18 s (docs/verification-report.md §29). This
+      fixes the speed on the ESP32-S3, the ESP32-C5 and the Tab5 too, which USB output
+      would not
+      - The CH343 held up to 3 Mbaud when flashing (docs/verification-report.md §31); the
+        firmware's own output at that speed, and the CP2102N's, are not checked yet
+      - `monitor --baud` (default 115200, `DEFAULT_BAUD`) and `deploy --monitor` must
+        follow, and the boot ROM keeps printing at 115200, so its lines turn to noise at
+        the new speed; say so in the docs
+      - Verify on hardware: blink-rs and a display app give the same trace at the new
+        speed, and the time to the first picture on the Tab5 is recorded against
+        docs/verification-report.md §29
 - [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
 - [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
       output and `apps/blink-c` went in. `cargo test` checks on the host that its trace is
