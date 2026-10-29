@@ -688,13 +688,15 @@ change.**
 - [ ] **§5-7 Build the ESP32-S3 firmware as a release deliverable in CI?** Not run in CI
       today because of Xtensa (the comment in `.github/workflows/ci.yml`). If app authors
       are not to build firmware (docs/app-workflow.md §4.5), a job that installs espup is
-      needed
+      needed. The firmware manager proposal builds every release in CI from the tag
+      (docs/firmware-manager.md §9)
 - [ ] **§5-8 How firmware versions are assigned.** One version shared by the three ports
       (all `0.1.0`) or independent per port. **The ABI version (`wasmicon:hal@0.1.0`) comes
       from `wit/` and is a different thing from the firmware version.** Do not bump it on
       your own (docs/decisions.md D-05). Compatibility is judged per axis, not by one
       version (docs/app-workflow.md §3.8), so the firmware version is only a provenance
-      record
+      record. The firmware manager proposal answers it with one version for every port
+      (§7-3, docs/firmware-manager.md §4)
 - [x] **§5-9 Make the role map a device-side setting? When?** -> **Yes. The minimal stage-1
       version was implemented on 2026-10-07** (owner decision). Decided: **role names are
       not the firmware's vocabulary** (`ROLE_NAMES` removed; names are free-form) / **the
@@ -1154,7 +1156,8 @@ change.**
         `trace: off` saves suspecting the wiring
 - [ ] **Firmware distribution** (release manifest and `flash --fw` / `fw list`).
       Attach a manifest (file + sha256 + the 5 axes of docs/app-workflow.md §3.8) to the
-      board x version deliverables. Pairs with §5-7
+      board x version deliverables. Pairs with §5-7. Superseded by the firmware manager
+      proposal if §7-1 is adopted (§7, docs/firmware-manager.md)
 - [x] **Read `wasmicon.toml`** (done 2026-10-04. docs/app-workflow.md §4.7). It holds
       `[requirements] pin-roles` (the role names this app looks up), the default board,
       the replay path and the intended wiring.
@@ -1472,3 +1475,77 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Imp
       **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
       PSRAM at 250 MHz (it runs at 125); no rotation; the eFuse calculation has run on one
       unit only; an ST7121 / ST7123 Tab5 gets no display
+
+---
+
+## 7. Firmware manager (`wasmicon fw`)
+
+**The design is owned by `docs/firmware-manager.md`. Only remaining work and open questions live here.**
+Proposed on 2026-10-29 from a discussion with the owner: a firmware manager in the CLI in
+the style of `mise` / `nvm`, common firmware on GitHub Releases, firmware with chosen
+backends built locally and managed the same way, and a build pin per project. Nothing is
+decided or implemented yet.
+
+### Open questions (owner decisions; the text cites them as §7-1 ... §7-10)
+
+- [ ] **§7-1 Adopt a firmware manager?** docs/app-workflow.md §3.8 says "What is needed is
+      not a firmware package manager". The proposal keeps its reasoning (compatibility is
+      judged per axis; the version is never an input to it) and adds install, flash and
+      pin on top (docs/firmware-manager.md §3). Adopting it changes docs/app-workflow.md
+      §3.8, §4.2, §4.5, §4.6 and §5 (listed in docs/firmware-manager.md §11).
+      Recommended: adopt
+- [ ] **§7-2 A pin names one release build exactly.** `[firmware] version` and `variant` in
+      `wasmicon.toml`, optional, no ranges; it is compared as a build ID (board x version x
+      variant x backends x source, docs/firmware-manager.md §4, §5), never used to judge
+      compatibility. Recommended: as proposed
+- [ ] **§7-3 One version for every port, enforced.** Answers §5-8. Each port's
+      `Cargo.toml` carries its own version; the release job fails when any differs from
+      the tag. The firmware reports a build name embedded at build time instead of the bare
+      `CARGO_PKG_VERSION` (docs/firmware-manager.md §4). Recommended: yes
+- [ ] **§7-4 May a project pin a local build?** A local build exists only on the machine
+      that built it, so a teammate cannot get it from the pin. Options: (a) pins name
+      releases only; (b) a local pin is allowed and `wasmicon.toml` also records the
+      backend set and commit, so `fw build` can rebuild it elsewhere. Recommended: (a) first
+- [ ] **§7-5 `deploy` when the board's build differs from the pin: stop or warn?**
+      Recommended: stop before writing anything and name `wasmicon fw flash`; never flash
+      firmware as a side effect (docs/firmware-manager.md §2, §5)
+- [ ] **§7-6 How the CLI reads the board's build ID** (docs/firmware-manager.md §6). The
+      identity line is printed once at boot on the trace UART, which on the Pico family is
+      a separate adapter and silent in BOOTSEL; `info` is stage 2. Options: (a) read the
+      image in the flasher session (`esp_app_desc` through `espflash read-flash`, picotool
+      binary info); (b) wait for `info`; (c) reset and read the identity line. Also: what
+      `deploy` does with a pin when the ID cannot be read. Recommended: (a), and stop
+- [ ] **§7-7 Where installed firmware lives.** `~/.wasmicon/firmware/`, keyed by build ID
+      (docs/firmware-manager.md §11), or the platform's data directory (XDG on Linux,
+      `~/Library/Application Support` on macOS). Recommended: `~/.wasmicon`, one place on
+      every OS, as `mise` and `nvm` do
+- [ ] **§7-8 What an ESP release file holds.** It must carry the bootloader and the
+      partition table for a new board, and must not pad to the end of flash, or it erases
+      the slots (docs/firmware-manager.md §10). Options: the ELF, flashed with
+      `espflash flash` (the case docs/verification-report.md §10 checked), or a merged image
+      with `--skip-padding` (not checked). Recommended: the ELF
+- [ ] **§7-9 Backends as Cargo features** (`backend-ili9341`, `backend-tab5`, default on).
+      `fw build` passes `--no-default-features` plus the variant and the chosen backends;
+      `psram` stays a board profile and the diagnostic features stay out of `fw`
+      (docs/firmware-manager.md §8). Recommended: as proposed
+- [ ] **§7-10 Dirty source trees get no build ID.** `fw build --source` of a dirty tree can be
+      flashed but is not stored or pinnable (docs/firmware-manager.md §8). Recommended: as
+      proposed
+
+### Implementation (no stage has started)
+
+- [ ] (1) Checks that need no decision: refuse a firmware image whose end reaches the app
+      slot (`0x100000`; on the ESP chips the image starts at `0x10000`, so at most 960 KiB)
+      in every port's build or a script, before flashing (docs/firmware-manager.md §10);
+      a test that holds the longest identity line under its 256-byte buffer
+      (docs/firmware-manager.md §7); `deploy` passes a selector to `picotool`
+      (docs/firmware-manager.md §2)
+- [ ] (2) Hardware: whether UF2 / `picotool load` of the firmware keeps the app, config and
+      assets slots on the Pico family; the same for the ESP file of §7-8 if it is not the ELF
+- [ ] (3) Release job (§5-7, §7-3, §7-8) and manifest; `fw list`, `fw install`, `fw flash`,
+      `fw current` (§7-6)
+- [ ] (4) `check` / `deploy` read the axes and `Config` from the manifest (docs/firmware-manager.md
+      §7); the `[firmware]` pin (§7-2, §7-5); the warning on flashing an older build over a
+      newer config slot
+- [ ] (5) Backends as Cargo features with `display_drivers` derived from them; `fw build`
+      (§7-9, §7-10)
