@@ -78,7 +78,7 @@ const fn reserved(index: u32) -> bool {
 // number is compared one by one. The firmware holds no role table of its own
 // (docs/app-workflow.md §3.9).
 const _: () = {
-    let p = &wasmicon_port::profile::ESP32P4;
+    let p = crate::PROFILE;
     assert!(NUM_GPIO == p.gpio_count);
     let mut n = 0;
     while n < NUM_GPIO {
@@ -119,7 +119,7 @@ const I2C0_SCL: u8 = 53;
 // The bus pins above must be the profile's `bus_pins`, or the wiring-table
 // check would let a role land on a bus pin.
 const _: () = {
-    let bus = wasmicon_port::profile::ESP32P4.bus_pins;
+    let bus = crate::PROFILE.bus_pins;
     let ours = [SPI2_SCK, SPI2_MOSI, SPI2_MISO, I2C0_SDA, I2C0_SCL];
     assert!(bus.len() == ours.len());
     let mut i = 0;
@@ -351,7 +351,7 @@ impl<S: Serial> Board for EspBoard<S> {
         // The ILI9341 backend in ports/common runs on this port's SPI, and the
         // Tab5 panel is the board's own (docs/device-layer.md §5.3); the
         // profile says whether there is either.
-        wasmicon_port::profile::ESP32P4.interfaces.display
+        crate::PROFILE.interfaces.display
     }
 
     // The Tab5 panel. `Hal` asks the board only when no ILI9341 is configured.
