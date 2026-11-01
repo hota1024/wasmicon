@@ -1563,3 +1563,36 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Imp
       **Open:** a faint shimmer on the last rows of bright grays that M5GFX does not show;
       PSRAM at 250 MHz (it runs at 125); no rotation; the eFuse calculation has run on one
       unit only; an ST7121 / ST7123 Tab5 gets no display
+
+## 7. Touch input (`wasmicon:device/touch`)
+
+**The design is a proposal in docs/device-layer.md §11.** The owner raised touch for the
+Tab5 and the ILI9341 module on 2026-11-01. The ILI9341 module carries an XPT2046 (pins
+T_IRQ, T_DO, T_DIN, T_CS, T_CLK). Nothing is implemented until §7-1 ... §7-4 are settled.
+
+### Open questions (owner decisions; the text cites them as §7-1 ... §7-4)
+
+- [ ] **§7-1 Touch results in the trace comparison (docs/decisions.md D-10).** Touch is
+      input that differs between runs, like `time`. Options: (a) the trace format stays,
+      and the comparison ignores `touch` results on hardware as it ignores `time`; host
+      runs use a scripted mock and stay exact; (b) trace touch results and compare them
+      only on the host. **Recommended: (a).** It changes the wording of D-10
+- [ ] **§7-2 The WIT shape.** (a) one `read(max-points) -> result<list<u8>, error-code>`
+      with 4 bytes per point (docs/device-layer.md §11.2); (b) `poll` plus `x(i)` / `y(i)`,
+      `1 + 2n` host calls per frame; (c) a `record`, which changes the subset of
+      docs/abi-spec.md §2. **Recommended: (a)**
+- [ ] **§7-3 The package version.** (a) add `touch` to `wasmicon:device@0.1.0`, since apps
+      that import only `display` do not change; (b) move to `0.2.0`. **Recommended: (a)**
+- [ ] **§7-4 Coordinates and calibration.** Pixels of the display after its rotation, with
+      the XPT2046 calibration in `[board.<name>.touch]` (docs/device-layer.md §11.3).
+      **Recommended as written**
+
+### Implementation
+
+- [ ] (1) WIT, generator and bindings; the recorded app hashes do not move
+- [ ] (2) Host `mock` with a script, trace rule, `check` / `deploy` refusal,
+      `[board.<name>.touch]` and config slot `@touch=`, `apps/touch-demo-rs`, a host trace test
+- [ ] (3) `xpt2046` backend on the ESP32-S3, then the Pico 2 W (shared SPI bus, clock
+      switch per read)
+- [ ] (4) `tab5` touch backend on the ESP32-P4. The controller part, its I2C address and
+      its INT / RST wiring are not checked yet
