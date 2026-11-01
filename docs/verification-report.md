@@ -2121,13 +2121,14 @@ The Tab5 of §28 (MAC `30:ed:a0:e2:9d:0a`, ILI9881C panel). Firmware `ports/esp3
 | 3 | the dump plus M5GFX's INT pulse at `open` | configuration version `0x50`, resolution 720 x 1280, five points; status bytes `0x80`...`0x85` while touched |
 | 4 | the pulse, built from the uncommitted tree on `4dc9997` (its sources are the commit that adds this section), no dump | three boots; the last one ran to `touch-demo done` (the owner tapped DONE): 1,004 reads, 927 empty, 22 with one point, 55 with two; x 25...692, y 26...1251 |
 
+The owner, on run 4: the dots appeared under the finger; with two or more fingers each point had its
+own color; touching the gray rectangle (CLEAR) cleared the dots.
+
 Run 4's last boot against the host: `wasmicon trace replay --touch` wrote the 1,004 reads,
 `wasmicon run --trace --display-size 720x1280 --touch-script` replayed them, and `wasmicon trace diff`
 reported **match: 2,446 lines**.
 
 ### What this measurement does not say
 
-- Whether the dots appeared under the finger: not reported by the owner yet. The points read span
-  x 25...692 and y 26...1251 of the 720 x 1280 panel
 - How often the GT911 reports (its refresh rate), and the latency from touch to dot
 - A failed read (`io`) did not occur, so the behaviour on a GT911 that stops answering was not seen
