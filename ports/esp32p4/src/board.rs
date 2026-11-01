@@ -186,7 +186,9 @@ impl<S: Serial> EspBoard<S> {
     /// panel's parts, if `configure_tab5` hands them over: its esp-hal drivers
     /// then write the GPIO / IO_MUX registers of GPIO22, 31 and 32, which the
     /// guest cannot open while the display is configured (`Hal` reserves
-    /// `DisplayConfig::pins`).
+    /// `DisplayConfig::pins`), and of GPIO23 once the guest opens the touch
+    /// panel, which needs the touch entry (`Hal` reserves
+    /// `TouchConfig::pins`).
     #[must_use]
     pub unsafe fn new(serial: S, storage: FlashStorage<'static>, assets_base: u32) -> Self {
         EspBoard {

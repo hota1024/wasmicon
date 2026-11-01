@@ -421,16 +421,49 @@ impl TouchConfig {
         }
     }
 
-    /// Checks the entry against the display entry: the touch panel lies over
-    /// a display, and the `tab5` controller sits on the `tab5` display's bus.
+    /// GPIOs the backend drives. The guest may not open them and no role may
+    /// name them.
+    #[must_use]
+    pub fn pins(&self) -> &'static [u32] {
+        match *self {
+            // The GT911's INT, pulsed to wake it (`ports/esp32p4/src/tab5.rs`).
+            TouchConfig::Tab5 => &[23],
+        }
+    }
+
+    /// Checks the entry against the display entry, the board and the roles:
+    /// the touch panel lies over a display, the `tab5` controller sits on
+    /// the `tab5` display's bus, and its pins get the checks of the display
+    /// pins (`DisplayConfig::check`), also against the display pins.
     ///
     /// # Errors
-    /// `BadTouch` without a matching display.
-    pub fn check(&self, display: Option<&DisplayConfig>) -> Result<(), RolesError> {
-        match (*self, display) {
-            (TouchConfig::Tab5, Some(DisplayConfig::Tab5)) => Ok(()),
-            _ => Err(RolesError::BadTouch),
+    /// `BadTouch` without a matching display; a pin out of range, reserved,
+    /// a bus pin, or shared with a role or the display.
+    pub fn check(
+        &self,
+        display: Option<&DisplayConfig>,
+        limits: &Limits<'_>,
+        roles: &RoleMap,
+    ) -> Result<(), RolesError> {
+        let display = match (*self, display) {
+            (TouchConfig::Tab5, Some(d @ DisplayConfig::Tab5)) => d,
+            _ => return Err(RolesError::BadTouch),
+        };
+        for &pin in self.pins() {
+            if pin >= limits.gpio_count {
+                return Err(RolesError::OutOfRange);
+            }
+            if limits.reserved.contains(&pin) {
+                return Err(RolesError::Reserved);
+            }
+            if limits.bus_pins.contains(&pin) {
+                return Err(RolesError::BusPin);
+            }
+            if display.pins().contains(&pin) || (0..roles.len()).any(|r| roles.pin(r) == pin) {
+                return Err(RolesError::DuplicatePin);
+            }
         }
+        Ok(())
     }
 
     /// Parses what follows `@touch=`.
@@ -518,7 +551,7 @@ pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiri
         d.check(limits, &w.roles)?;
     }
     if let Some(t) = &w.touch {
-        t.check(w.display.as_ref())?;
+        t.check(w.display.as_ref(), limits, &w.roles)?;
     }
     Ok(w)
 }

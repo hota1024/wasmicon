@@ -203,6 +203,7 @@ fn main() -> ! {
         sda: p.GPIO31,
         scl: p.GPIO32,
         backlight: p.GPIO22,
+        int: p.GPIO23,
         dsi: p.MIPI_DSI,
         vdma: p.VDMA_CH0,
         psram: fb_mem,
@@ -214,7 +215,8 @@ fn main() -> ! {
 
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
     // / I2C0 and of the pins assigned to SPI2 and I2C0, except GPIO22/31/32
-    // when the Tab5 panel's parts are handed to it below (its `# Safety`).
+    // (and GPIO23 with the touch entry) when the Tab5 panel's parts are
+    // handed to it below (its `# Safety`).
     // The UART holds GPIO37/38, which are reserved and overlap neither a
     // role-assignable GPIO nor the SPI2 pins (GPIO5/18/19) nor the I2C0 pins
     // (GPIO54/53).
@@ -227,7 +229,10 @@ fn main() -> ! {
     let (storage, serial) = hal.board_mut().parts();
     let wiring = pick_roles(storage, serial);
     // The display entry selects the display backend (docs/device-layer.md §5.2).
-    let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
+    let mut hal = hal
+        .with_roles(wiring.roles)
+        .with_display(wiring.display)
+        .with_touch(wiring.touch);
     // PSRAM comes up here in the plain build (at boot in the `psram` one),
     // before the app runs; the panel at the guest's first `open`. The touch
     // entry can only name the Tab5's panel next to its display
