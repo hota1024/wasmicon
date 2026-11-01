@@ -431,7 +431,7 @@ export declare function display_screen_drop(self: u32): void;
 export declare function touch_panel_open(index: u32, out: usize): u32;
 
 /**
- * Reads the points touched now, at most `max-points` of them.
+ * Reads the points touched now, at most `max-points` of them and at most 8.
  * Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
  * display after its configured rotation. An empty list means no touch.
  * Returns `invalid-argument` if `max-points` is 0.

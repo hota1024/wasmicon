@@ -488,7 +488,7 @@ WASMICON_IMPORT("wasmicon:device/touch@0.1.0", "[static]panel.open")
 uint32_t wasmicon_touch_panel_open(uint32_t index, uint32_t *out);
 
 /**
- * Reads the points touched now, at most `max-points` of them.
+ * Reads the points touched now, at most `max-points` of them and at most 8.
  * Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
  * display after its configured rotation. An empty list means no touch.
  * Returns `invalid-argument` if `max-points` is 0.

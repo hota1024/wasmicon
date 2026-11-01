@@ -49,6 +49,15 @@ pub const MAX_PANELS: usize = 1;
 /// trace replays on the host (docs/device-layer.md §11.5).
 pub const MAX_TOUCH_POINTS: usize = 8;
 
+/// Longest `list<u8>` the trace writes in full; a longer one is folded into
+/// its first 16 bytes and a CRC-32 (docs/abi-spec.md §9).
+pub const TRACE_BYTES_IN_FULL: usize = 32;
+
+const _: () = assert!(
+    MAX_TOUCH_POINTS * 4 <= TRACE_BYTES_IN_FULL,
+    "a touch read must fit the trace in full, or a hardware trace cannot replay"
+);
+
 /// Chunk size of the default `Board::assets_crc32`: how much of an asset's
 /// body sits on the stack at a time while its CRC-32 is checked. The ESP
 /// ports stream the app slot in 512-byte pieces too (`pick_guest`).
@@ -629,7 +638,7 @@ fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
         return;
     }
     out.str("0x");
-    if data.len() <= 32 {
+    if data.len() <= TRACE_BYTES_IN_FULL {
         for &b in data {
             out.hex(u32::from(b), 2);
         }

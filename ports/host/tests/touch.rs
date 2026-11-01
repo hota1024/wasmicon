@@ -77,3 +77,31 @@ fn a_point_outside_the_display_is_found() {
     );
     assert_eq!(wasmicon_host::touch_outside(&s, (321, 240)), None);
 }
+
+/// A port returns at most 8 points whatever `max-points` asks for, so the
+/// trace carries every byte and never folds a read into a CRC
+/// (docs/abi-spec.md §7, §9).
+#[test]
+fn a_read_returns_at_most_eight_points_in_full() {
+    let wasm = wat_to_wasm("touch_many.wat");
+    let line = (0..8)
+        .map(|i| format!("{i},{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let opts = wasmicon_host::Options {
+        trace: true,
+        touch_script: wasmicon_host::parse_touch_script(&line).unwrap(),
+        ..Default::default()
+    };
+    let out = match wasmicon_host::run_wasm_opts(&wasm, opts) {
+        Ok(out) => out,
+        Err(e) => panic!("execution failed: {} [{}]", e.reason(), e.kind().name()),
+    };
+    let data: String = (0..8u16).map(|i| format!("{i:04x}{i:04x}")).collect();
+    let expected = format!("< 0 [len=32 data=0x{data}]");
+    assert!(
+        out.trace.lines().any(|l| l == expected),
+        "trace:\n{}",
+        out.trace
+    );
+}
