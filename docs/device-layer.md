@@ -294,3 +294,112 @@ describe something that does not exist:
 4. `tab5` backend on the ESP32-P4; the demo's trace equals the host mock at
    720x1280 (`wasmicon run --display-size 720x1280`), and the panel shows the
    picture (verified on hardware).
+
+## 11. The `touch` interface (proposed)
+
+**Status: a proposal.** Nothing here is implemented, and the open points are owner
+questions in docs/TODO.md §7. The ABI and D-10 parts need the owner's approval before
+any code (`AGENTS.md`).
+
+### 11.1 Why touch belongs in the device layer
+
+A guest cannot reach either touch controller that the boards carry:
+
+- The XPT2046 on the ILI9341 module sits on the same SPI bus as the panel (the
+  ESP32-S3 has one general-purpose bus, index 0). The `ili9341` backend holds that bus
+  for the whole run (§5.3), so a guest `spi.bus.open` returns `busy`.
+- The capacitive controller of the M5Stack Tab5 sits on the internal I2C that the
+  `tab5` backend owns (GPIO31 / GPIO32, §5.3). The guest has no handle to that bus.
+
+The rule of §2 holds with three backends: `mock`, `xpt2046` (ESP32-S3, Pico 2 W) and
+`tab5` (ESP32-P4). Touch is a device-layer interface, not a HAL one, so the deferred
+console input (docs/TODO.md §4) is a separate question.
+
+### 11.2 The interface
+
+Inside the subset of docs/abi-spec.md §2.1 a point cannot be a `record`. One call
+returns all points as bytes, through the caller buffer of docs/abi-spec.md §4.4,
+because each host call is expensive (docs/TODO.md §4) and a guest polls every frame:
+
+```wit
+/// A touch panel over a display (docs/device-layer.md §11).
+/// The host owns the controller, its bus and its calibration.
+interface touch {
+    use wasmicon:hal/types@0.1.0.{error-code};
+
+    /// A touch panel.
+    /// `index` is the display whose pixels the coordinates use.
+    resource panel {
+        /// Opens the touch panel of display `index`.
+        /// Returns `unsupported` if the board has no touch panel there, and `busy` if
+        /// it is already open.
+        open: static func(index: u32) -> result<panel, error-code>;
+
+        /// Reads the points touched now, at most `max-points`.
+        /// Each point is 4 bytes: x then y, u16 high byte first, in the pixels of the
+        /// display after its rotation. An empty list means no touch.
+        read: func(max-points: u32) -> result<list<u8>, error-code>;
+    }
+}
+```
+
+- The returned length is `4 * n` through `len-out`. This is the first variable-length
+  result, which docs/abi-spec.md §4.4 reserves `len-out` for.
+- Coordinates follow the display's configured rotation, so a guest needs no
+  orientation logic, as for `display` (§4).
+- The point order is the controller's. The XPT2046 reports at most one point.
+- The alternative shape (a `poll` that returns the count, then `x(i)` and `y(i)`)
+  costs `1 + 2n` host calls per frame. `record` would change the subset of
+  docs/abi-spec.md §2.
+
+### 11.3 Configuration
+
+```toml
+[board.esp32s3.touch]
+driver = "xpt2046"
+cs = 16         # T_CS; T_CLK / T_DIN / T_DO join the display's SPI bus
+irq = 17        # T_IRQ, optional: no SPI traffic while it reads high
+x-min = 200     # raw 12-bit readings at the panel edges, in the panel's own axes
+x-max = 3900
+y-min = 200
+y-max = 3900
+
+[board.esp32p4.touch]
+driver = "tab5"
+```
+
+- A touch entry needs a display entry on the same board. The XPT2046 uses the bus of
+  `[board.<name>.display]`.
+- `deploy` writes an `@touch=` line to config slot version 2, next to `@display=`.
+  Its pins go through the checks of §5.2, also against the display pins.
+- The backend maps raw readings to pixels with the calibration, then applies the
+  display's rotation.
+
+### 11.4 Backends
+
+| Backend | Boards | What the host does |
+|---|---|---|
+| `mock` | host | Replays a script given to `wasmicon run`: line N is the result of the Nth `read`, so runs repeat exactly |
+| `xpt2046` | ESP32-S3, Pico 2 W | Shares the display's SPI bus with its own CS. The XPT2046 clock is at most about 2 MHz and the panel runs at 16 MHz, so a read closes the bus and opens it at the slower clock, and drawing opens it again at 16 MHz. Reads pressure (Z1, Z2) to decide the touch, and takes the median of several X / Y samples |
+| `tab5` | ESP32-P4 on the Tab5 | Reads the controller on the internal I2C that the display already brings up. The part, address and INT / RST wiring are still to check against the Tab5 schematic |
+
+Wiring note for the XPT2046: the panel's SDO also drives MISO. The `ili9341` backend
+never reads the panel, so SDO can stay unconnected when it disturbs T_DO.
+
+### 11.5 Traces and determinism
+
+`read` results differ between runs on hardware, like `time`. docs/decisions.md D-10
+excludes only `time`. The proposal (docs/TODO.md §7-1): the trace format stays; the
+trace comparison ignores `touch` results on hardware as it ignores `time`; the host
+mock with a script keeps host traces exact.
+
+### 11.6 Stages
+
+1. WIT, generator and bindings. The recorded HAL app hashes and the
+   `display-demo-rs` hash do not move.
+2. Host: `mock` with a script, the trace rule, `check` / `deploy` refusal,
+   `[board.<name>.touch]`, a demo app (`touch-demo-rs`, it draws where it is touched)
+   and a host trace test.
+3. `xpt2046` on the ESP32-S3, then the Pico 2 W. Pass = the demo draws under the
+   finger, and the drawing survives the bus clock switch.
+4. `tab5` on the ESP32-P4.
