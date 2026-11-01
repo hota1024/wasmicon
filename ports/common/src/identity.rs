@@ -47,7 +47,7 @@ pub fn describe(id: &Identity<'_>, out: &mut Buf<'_>) {
     out.str(wasmicon_core::generated::PACKAGE);
     // The device layer moves independently of the HAL (docs/decisions.md D-05),
     // so a port that implements a device interface names its version too.
-    if p.interfaces.display {
+    if p.interfaces.display || p.interfaces.touch {
         out.str(" device=");
         out.str(wasmicon_core::generated::DEVICE_PACKAGE);
     }
@@ -66,6 +66,7 @@ pub fn describe(id: &Identity<'_>, out: &mut Buf<'_>) {
         (i.board, "board"),
         (i.assets, "assets"),
         (i.display, "display"),
+        (i.touch, "touch"),
     ] {
         if on {
             if !first {

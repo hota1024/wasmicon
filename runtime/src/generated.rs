@@ -90,6 +90,12 @@ pub enum HostFn {
     DisplayScreenPresent,
     /// `[resource-drop]screen` in `wasmicon:device/display@0.1.0`
     DisplayScreenDrop,
+    /// `[static]panel.open` in `wasmicon:device/touch@0.1.0`
+    TouchPanelOpen,
+    /// `[method]panel.read` in `wasmicon:device/touch@0.1.0`
+    TouchPanelRead,
+    /// `[resource-drop]panel` in `wasmicon:device/touch@0.1.0`
+    TouchPanelDrop,
 }
 
 impl HostFn {
@@ -135,13 +141,16 @@ impl HostFn {
             29 => Some(Self::DisplayScreenWriteRect),
             30 => Some(Self::DisplayScreenPresent),
             31 => Some(Self::DisplayScreenDrop),
+            32 => Some(Self::TouchPanelOpen),
+            33 => Some(Self::TouchPanelRead),
+            34 => Some(Self::TouchPanelDrop),
             _ => None,
         }
     }
 }
 
 /// All imports of the HAL and the device layer (docs/abi-spec.md §7).
-pub static IMPORTS: [ImportDesc; 32] = [
+pub static IMPORTS: [ImportDesc; 35] = [
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[static]pin.open",
@@ -333,6 +342,24 @@ pub static IMPORTS: [ImportDesc; 32] = [
         name: "[resource-drop]screen",
         sig: "i:",
         host_fn: HostFn::DisplayScreenDrop,
+    },
+    ImportDesc {
+        module: "wasmicon:device/touch@0.1.0",
+        name: "[static]panel.open",
+        sig: "ii:i",
+        host_fn: HostFn::TouchPanelOpen,
+    },
+    ImportDesc {
+        module: "wasmicon:device/touch@0.1.0",
+        name: "[method]panel.read",
+        sig: "iiiii:i",
+        host_fn: HostFn::TouchPanelRead,
+    },
+    ImportDesc {
+        module: "wasmicon:device/touch@0.1.0",
+        name: "[resource-drop]panel",
+        sig: "i:",
+        host_fn: HostFn::TouchPanelDrop,
     },
 ];
 

@@ -615,6 +615,10 @@ impl<B: Board> Resolver for Hal<B> {
         if desc.module.starts_with("wasmicon:device/display@") && !self.board.display_supported() {
             return None;
         }
+        // No backend implements `touch` yet (docs/TODO.md §7).
+        if desc.module.starts_with("wasmicon:device/touch@") {
+            return None;
+        }
         Some(Extern::Func(u32::from(desc.host_fn.index())))
     }
 
@@ -743,6 +747,10 @@ impl<B: Board> Resolver for Hal<B> {
                         Err(e) => e.status(),
                     },
                 };
+            }
+            // `resolve` never links these.
+            HostFn::TouchPanelOpen | HostFn::TouchPanelRead | HostFn::TouchPanelDrop => {
+                return Err(Error::Unlinkable("touch is not implemented"));
             }
             HostFn::DisplayScreenDrop => {
                 a.u64(args[0]);

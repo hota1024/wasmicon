@@ -576,6 +576,7 @@ fn implemented(i: &Interfaces, iface: &str) -> Option<bool> {
         "board" => Some(i.board),
         "assets" => Some(i.assets),
         "display" => Some(i.display),
+        "touch" => Some(i.touch),
         // types has no functions, so it never appears as an import
         // (docs/abi-spec.md §7).
         _ => None,
@@ -773,7 +774,9 @@ fn print_verdict(
     }
 
     for iface in &v.unimplemented {
-        let what = if iface == "display" {
+        // A device interface the firmware lacks does not link
+        // (docs/device-layer.md §6).
+        let what = if iface == "display" || iface == "touch" {
             "not implemented by this port (link error)"
         } else {
             "not implemented by this port (unsupported)"
@@ -945,6 +948,7 @@ mod tests {
         assert_eq!(implemented(&i, "gpio"), Some(true));
         assert_eq!(implemented(&i, "assets"), Some(true));
         assert_eq!(implemented(&i, "display"), Some(false));
+        assert_eq!(implemented(&i, "touch"), Some(false));
         assert_eq!(
             implemented(&profile::HOST.interfaces, "display"),
             Some(true)

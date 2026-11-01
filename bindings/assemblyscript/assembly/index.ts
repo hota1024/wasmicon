@@ -46,6 +46,9 @@ import {
   time_now_us,
   time_sleep_ms,
   time_sleep_us,
+  touch_panel_drop,
+  touch_panel_open,
+  touch_panel_read,
 } from "./generated";
 
 export {
@@ -317,5 +320,34 @@ export class Screen {
   /// Releases the handle; the picture stays. Call it explicitly; AssemblyScript has no Drop.
   close(): void {
     display_screen_drop(this.handle);
+  }
+}
+
+/// An open touch panel over a display that the host drives (device layer,
+/// docs/device-layer.md §11).
+export class Panel {
+  constructor(public handle: u32) {}
+
+  /// Opens the touch panel over display index. Returns null on failure (no
+  /// touch panel at index, or already open).
+  static open(index: u32): Panel | null {
+    const status = touch_panel_open(index, out32.dataStart);
+    if (status != 0) return null;
+    return new Panel(out32[0]);
+  }
+
+  /// Reads the points touched now into buf, at most buf.length / 4 of them.
+  /// Each point is 4 bytes: x, then y, each a u16 high byte first, in display
+  /// pixels. Returns the number of points (0 means no touch), or -1 on failure.
+  read(buf: Uint8Array): i32 {
+    const cap = buf.length as u32;
+    const status = touch_panel_read(this.handle, cap / 4, buf.dataStart, cap, out32.dataStart);
+    if (status != 0) return -1;
+    return (out32[0] / 4) as i32;
+  }
+
+  /// Releases the handle. Call it explicitly; AssemblyScript has no Drop.
+  close(): void {
+    touch_panel_drop(this.handle);
   }
 }

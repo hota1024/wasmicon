@@ -1,0 +1,23 @@
+package wasmicon:device@0.1.0;
+
+/// A touch panel over a display that the host drives (docs/device-layer.md §11).
+/// The host owns the controller: its bus, its calibration and the mapping to the
+/// display's rotation.
+interface touch {
+    use wasmicon:hal/types@0.1.0.{error-code};
+
+    /// A touch panel.
+    /// `index` is the board's display number; coordinates are pixels of that display.
+    resource panel {
+        /// Opens the touch panel over display `index`.
+        /// Returns `unsupported` if the board has no touch panel there, and `busy` if it
+        /// is already open.
+        open: static func(index: u32) -> result<panel, error-code>;
+
+        /// Reads the points touched now, at most `max-points` of them.
+        /// Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
+        /// display after its configured rotation. An empty list means no touch.
+        /// Returns `invalid-argument` if `max-points` is 0.
+        read: func(max-points: u32) -> result<list<u8>, error-code>;
+    }
+}

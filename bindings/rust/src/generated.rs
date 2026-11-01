@@ -487,3 +487,34 @@ pub mod display {
         }
     }
 }
+
+/// A touch panel over a display that the host drives (docs/device-layer.md §11).
+/// The host owns the controller: its bus, its calibration and the mapping to the
+/// display's rotation.
+pub mod touch {
+    #[link(wasm_import_module = "wasmicon:device/touch@0.1.0")]
+    unsafe extern "C" {
+        /// Opens the touch panel over display `index`.
+        /// Returns `unsupported` if the board has no touch panel there, and `busy` if it
+        /// is already open.
+        #[link_name = "[static]panel.open"]
+        pub fn panel_open(index: u32, out: *mut u32) -> u32;
+
+        /// Reads the points touched now, at most `max-points` of them.
+        /// Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
+        /// display after its configured rotation. An empty list means no touch.
+        /// Returns `invalid-argument` if `max-points` is 0.
+        #[link_name = "[method]panel.read"]
+        pub fn panel_read(
+            this: u32,
+            max_points: u32,
+            buf: *mut u8,
+            cap: u32,
+            len_out: *mut u32,
+        ) -> u32;
+
+        /// Releases a `panel` handle. Invalid handles are ignored (docs/abi-spec.md §5.2).
+        #[link_name = "[resource-drop]panel"]
+        pub fn panel_drop(this: u32);
+    }
+}

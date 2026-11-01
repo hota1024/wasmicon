@@ -96,6 +96,17 @@ const SPEC_SECTION_7_DEVICE: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Copied from the `wasmicon:device/touch@0.1.0` table of docs/abi-spec.md §7.
+const SPEC_SECTION_7_TOUCH: &[(&str, &str, &str)] = &[
+    ("wasmicon:device/touch@0.1.0", "[static]panel.open", "ii:i"),
+    (
+        "wasmicon:device/touch@0.1.0",
+        "[method]panel.read",
+        "iiiii:i",
+    ),
+    ("wasmicon:device/touch@0.1.0", "[resource-drop]panel", "i:"),
+];
+
 /// The `error-code` table of docs/abi-spec.md §7. The status value is discriminant + 1.
 const SPEC_ERROR_CODE: &[&str] = &[
     "InvalidArgument",
@@ -173,6 +184,7 @@ fn device_import_table_matches_abi_spec_section_7() {
     let mut expected: Vec<String> = SPEC_SECTION_7
         .iter()
         .chain(SPEC_SECTION_7_DEVICE)
+        .chain(SPEC_SECTION_7_TOUCH)
         .map(|(m, n, s)| format!("{m}\t{n}\t{s}"))
         .collect();
     expected.sort();
