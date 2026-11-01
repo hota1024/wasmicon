@@ -453,7 +453,12 @@ pub fn judge(
             p.name,
             t.driver()
         )),
-        Some(t) => Ok(t.driver().to_string()),
+        Some(t) => Ok(pack::describe_touch(&Wiring {
+            roles: wasmicon_port::roles::RoleMap::EMPTY,
+            display: None,
+            touch: Some(t),
+        })
+        .unwrap_or_default()),
     });
 
     Verdict {

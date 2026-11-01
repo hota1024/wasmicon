@@ -124,8 +124,17 @@ struct RawBoard {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawTouch {
-    /// `"tab5"`.
+    /// `"tab5"` or `"xpt2046"`.
     driver: String,
+    /// XPT2046 chip select; required.
+    cs: Option<u32>,
+    /// XPT2046 PENIRQ; optional.
+    irq: Option<u32>,
+    /// XPT2046 raw readings at the panel's edges at rotation 0; required.
+    x_min: Option<u32>,
+    x_max: Option<u32>,
+    y_min: Option<u32>,
+    y_max: Option<u32>,
 }
 
 /// `[board.<name>.display]` (docs/device-layer.md §5.2).
@@ -285,7 +294,33 @@ fn build_touch(
 ) -> Result<TouchConfig> {
     let at = format!("[board.{}.touch]", board.wiring);
     let t = match raw.driver.as_str() {
-        "tab5" => TouchConfig::Tab5,
+        "tab5" => {
+            if raw.cs.is_some()
+                || raw.irq.is_some()
+                || raw.x_min.is_some()
+                || raw.x_max.is_some()
+                || raw.y_min.is_some()
+                || raw.y_max.is_some()
+            {
+                bail!("{at}: driver = \"tab5\" takes no other keys");
+            }
+            TouchConfig::Tab5
+        }
+        "xpt2046" => {
+            // No default calibration: modules differ, and a wrong one puts
+            // every point somewhere else (docs/device-layer.md §11.3).
+            let need = |v: Option<u32>, key: &str| {
+                v.with_context(|| format!("{at}: driver = \"xpt2046\" needs `{key}`"))
+            };
+            TouchConfig::Xpt2046 {
+                cs: need(raw.cs, "cs")?,
+                irq: raw.irq,
+                x_min: need(raw.x_min, "x-min")?,
+                x_max: need(raw.x_max, "x-max")?,
+                y_min: need(raw.y_min, "y-min")?,
+                y_max: need(raw.y_max, "y-max")?,
+            }
+        }
         other => bail!(
             "{at}: unknown driver `{other}` (known: {})",
             TouchConfig::DRIVERS.join(", ")
@@ -882,14 +917,40 @@ driver = "tab5"
             (
                 "unknown-key",
                 "[board.esp32p4.display]\ndriver = \"tab5\"\n\
-                 [board.esp32p4.touch]\ndriver = \"tab5\"\ncs = 1",
+                 [board.esp32p4.touch]\ndriver = \"tab5\"\nz = 1",
                 "unknown field",
+            ),
+            (
+                "tab5-keys",
+                "[board.esp32p4.display]\ndriver = \"tab5\"\n\
+                 [board.esp32p4.touch]\ndriver = \"tab5\"\ncs = 1",
+                "takes no other keys",
+            ),
+            (
+                "xpt2046-no-calibration",
+                "[board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n\
+                 [board.esp32s3.touch]\ndriver = \"xpt2046\"\ncs = 16\nirq = 17",
+                "needs `x-min`",
+            ),
+            (
+                "xpt2046-pin",
+                "[board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n\
+                 [board.esp32s3.touch]\ndriver = \"xpt2046\"\ncs = 14\n\
+                 x-min = 200\nx-max = 3900\ny-min = 200\ny-max = 3900",
+                "two roles share one gpio",
+            ),
+            (
+                "xpt2046-rp2350",
+                "[board.rp2350.display]\ndriver = \"ili9341\"\ncs = 17\ndc = 20\nrst = 21\n\
+                 [board.rp2350.touch]\ndriver = \"xpt2046\"\ncs = 22\n\
+                 x-min = 200\nx-max = 3900\ny-min = 200\ny-max = 3900",
+                "rp2350 firmware has no `xpt2046` driver",
             ),
             (
                 "no-driver-in-firmware",
                 "[board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n\
                  [board.esp32s3.touch]\ndriver = \"tab5\"",
-                "esp32s3 firmware has no `tab5` driver (it has: none)",
+                "esp32s3 firmware has no `tab5` driver (it has: xpt2046)",
             ),
             (
                 "variant",

@@ -562,10 +562,11 @@ fn display_demo_needs_a_display_entry_on_a_board() {
 }
 
 /// A touch app (docs/device-layer.md §11): the host runs it on the mock, the
-/// ESP32-P4 with the Tab5's panel and touch entries; the other boards have no
-/// touch backend and refuse it at link time, display entry or not.
+/// ESP32-P4 with the Tab5's panel and touch entries, the ESP32-S3 with an
+/// ILI9341 and an XPT2046; the other boards have no touch backend and refuse
+/// it at link time, display entry or not.
 #[test]
-fn touch_demo_runs_on_the_host_and_the_tab5() {
+fn touch_demo_runs_on_the_host_the_tab5_and_the_esp32s3() {
     use wasmicon_port::roles::{DisplayConfig, TouchConfig};
 
     let wasm = build("touch-demo-rs");
@@ -577,10 +578,32 @@ fn touch_demo_runs_on_the_host_and_the_tab5() {
         rst: 15,
         rotation: 90,
     };
-    for board in [&profile::RP2350, &profile::ESP32S3] {
+    for board in [&profile::RP2350, &profile::ESP32C5] {
         let v = check::judge(&wasm, board, &f, None, &[], Some(lcd), None);
         assert_eq!(v.unimplemented, ["touch"], "{}", board.name);
         assert_eq!(v.fails(), 1, "{}", board.name);
+    }
+    let xpt = TouchConfig::Xpt2046 {
+        cs: 16,
+        irq: Some(17),
+        x_min: 200,
+        x_max: 3900,
+        y_min: 200,
+        y_max: 3900,
+    };
+    for board in [&profile::ESP32S3, &profile::ESP32S3_PSRAM] {
+        let v = check::judge(&wasm, board, &f, None, &[], Some(lcd), Some(xpt));
+        assert!(v.is_ok(), "{}: {} failures", board.name, v.fails());
+        assert_eq!(
+            v.touch,
+            Some(Ok(
+                "xpt2046 cs=16 irq=17 x-min=200 x-max=3900 y-min=200 y-max=3900".to_string()
+            )),
+            "{}",
+            board.name
+        );
+        let v = check::judge(&wasm, board, &f, None, &[], Some(lcd), None);
+        assert!(matches!(v.touch, Some(Err(_))), "{}", board.name);
     }
     let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None, None);
     assert!(host.is_ok(), "{} failures on the host", host.fails());

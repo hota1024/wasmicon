@@ -333,7 +333,13 @@ pub const ESP32S3: Profile = Profile {
     name: "esp32s3",
     wiring: "esp32s3",
     config: MCU,
-    interfaces: Interfaces::WITH_DISPLAY,
+    // The ILI9341, and the XPT2046 that shares its bus (`ports/common`; only
+    // this board has run it).
+    interfaces: Interfaces {
+        touch: true,
+        touch_drivers: &["xpt2046"],
+        ..Interfaces::WITH_DISPLAY
+    },
     roles: &[],
     gpio_count: 49,
     reserved: ESP32S3_RESERVED,
@@ -451,6 +457,7 @@ pub const ESP32P4: Profile = Profile {
     interfaces: Interfaces {
         display_drivers: &["ili9341", "tab5"],
         touch: true,
+        // Not `xpt2046` yet: it has run only on the ESP32-S3.
         touch_drivers: &["tab5"],
         ..Interfaces::WITH_DISPLAY
     },

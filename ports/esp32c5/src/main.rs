@@ -325,11 +325,11 @@ fn pick_guest<'a>(
 /// Reads the wiring table from the config slot and prints the table, or the
 /// reason it cannot be read, to the serial port.
 ///
-/// The body is at most `roles::MAX_BODY` (256 bytes), so it is read onto the
+/// The body is at most `roles::MAX_BODY` bytes, so it is read onto the
 /// stack.
 fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> Wiring {
     let result = read_roles(storage);
-    let mut line = [0u8; 256];
+    let mut line = [0u8; roles::DESCRIBE_LEN];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
     serial.write(out.as_bytes());

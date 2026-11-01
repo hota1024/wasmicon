@@ -21,6 +21,7 @@ pub mod ili9341;
 pub mod profile;
 pub mod roles;
 pub mod slot;
+pub mod xpt2046;
 
 use wasmicon_core::error::{Error, Result, Trap};
 use wasmicon_core::generated::display::PixelFormat;
@@ -35,6 +36,7 @@ use assets::{Directory, MAX_ENTRIES};
 use fmt::Buf;
 use ili9341::Ili9341;
 use roles::{DisplayConfig, MAX_ROLES, RoleMap, TouchConfig};
+use xpt2046::Xpt2046;
 
 /// Number of simultaneous handles docs/abi-spec.md §5.3 guarantees.
 pub const MAX_PINS: usize = 16;
@@ -308,6 +310,9 @@ pub struct Hal<B: Board> {
     /// The touch entry of the config slot (docs/device-layer.md §11.3). Its
     /// pins belong to the backend, as the display's do.
     touch: Option<TouchConfig>,
+    /// The backend when the entry is an XPT2046 over the ILI9341; otherwise
+    /// the board's own.
+    xpt2046: Option<Xpt2046>,
 }
 
 impl<B: Board> Hal<B> {
@@ -332,6 +337,7 @@ impl<B: Board> Hal<B> {
             display: None,
             ili9341: None,
             touch: None,
+            xpt2046: None,
         }
     }
 
@@ -356,11 +362,38 @@ impl<B: Board> Hal<B> {
     }
 
     /// Sets the touch entry: on a board what the firmware read from the config
-    /// slot (docs/device-layer.md §11.3). The backend is the board's; `Hal`
-    /// keeps the guest off its pins.
+    /// slot (docs/device-layer.md §11.3). An XPT2046 entry selects the backend
+    /// in `xpt2046` on the bus of the ILI9341 that `with_display` set, so this
+    /// comes after it; any other entry leaves touch to the board. Either way
+    /// `Hal` keeps the guest off the entry's pins.
     #[must_use]
     pub fn with_touch(mut self, touch: Option<TouchConfig>) -> Self {
         self.touch = touch;
+        self.xpt2046 = match (touch, self.display) {
+            (
+                Some(TouchConfig::Xpt2046 {
+                    cs,
+                    irq,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                }),
+                Some(DisplayConfig::Ili9341 { spi, rotation, .. }),
+            ) => Some(Xpt2046::new(
+                spi,
+                cs,
+                irq,
+                xpt2046::Calibration {
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                },
+                rotation,
+            )),
+            _ => None,
+        };
         self
     }
 
@@ -454,7 +487,9 @@ impl<B: Board> Hal<B> {
         }
         for slot in &mut self.panels {
             if slot.open {
-                board.touch_release(slot.index);
+                if self.xpt2046.is_none() {
+                    board.touch_release(slot.index);
+                }
                 *slot = BusSlot::default();
             }
         }
@@ -493,7 +528,7 @@ impl<B: Board> Hal<B> {
     /// not open it.
     fn display_pin(&self, index: u32) -> bool {
         self.display.is_some_and(|d| d.pins().contains(&index))
-            || self.touch.is_some_and(|t| t.pins().contains(&index))
+            || self.touch.is_some_and(|t| t.owns(index))
     }
 
     /// Checks `x, y, w, h` against display `index`: non-empty and inside.
@@ -825,12 +860,23 @@ impl<B: Board> Resolver for Hal<B> {
             HostFn::TouchPanelOpen => {
                 let index = args[0] as u32;
                 a.u32(index);
-                let have = (index as usize) < MAX_PANELS && self.board.touch_present(index);
+                let have = (index as usize) < MAX_PANELS
+                    && match self.xpt2046 {
+                        Some(_) => index == 0,
+                        None => self.board.touch_present(index),
+                    };
                 status = if !have {
                     ErrorCode::Unsupported.status()
                 } else if self.panels[index as usize].open {
                     ErrorCode::Busy.status()
-                } else if let Err(e) = self.board.touch_open(index) {
+                } else if let Err(e) = match (&mut self.xpt2046, &mut self.ili9341) {
+                    // The bus is the panel's: it comes up first, even if the
+                    // guest has not opened the display.
+                    (Some(t), Some(d)) => d
+                        .init(&mut self.board)
+                        .and_then(|()| t.init(&mut self.board)),
+                    _ => self.board.touch_open(index),
+                } {
                     e.status()
                 } else {
                     self.panels[index as usize] = BusSlot { open: true, index };
@@ -855,7 +901,12 @@ impl<B: Board> Resolver for Hal<B> {
                     Ok(index) => {
                         // "At most `max-points`": the port's own limit may be lower.
                         let want = 4 * (max as usize).min(MAX_TOUCH_POINTS);
-                        match self.board.touch_read(index, &mut self.scratch[..want]) {
+                        let buf = &mut self.scratch[..want];
+                        let read = match &mut self.xpt2046 {
+                            Some(t) => t.read(&mut self.board, buf),
+                            None => self.board.touch_read(index, buf),
+                        };
+                        match read {
                             Ok(n) if n <= want / 4 => {
                                 let got = n * 4;
                                 let dst = args[2] as u32 as usize;
@@ -882,7 +933,9 @@ impl<B: Board> Resolver for Hal<B> {
             HostFn::TouchPanelDrop => {
                 a.u64(args[0]);
                 if let Ok(index) = self.panel(args[0]) {
-                    self.board.touch_release(index);
+                    if self.xpt2046.is_none() {
+                        self.board.touch_release(index);
+                    }
                     self.panels[index as usize] = BusSlot::default();
                 }
             }

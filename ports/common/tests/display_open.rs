@@ -210,7 +210,7 @@ fn the_touch_backend_pins_are_not_the_guests() {
     let mut hal = Hal::new(board(), false)
         .with_display(Some(DisplayConfig::Tab5))
         .with_touch(Some(TouchConfig::Tab5));
-    assert_eq!(TouchConfig::Tab5.pins(), [23]);
+    assert_eq!(TouchConfig::Tab5.pins(), [Some(23), None]);
     assert_eq!(
         open_pin(&mut hal, 23, &mut mem),
         u64::from(ErrorCode::InvalidArgument.status())

@@ -41,8 +41,12 @@ pub const MAX_NAME: usize = 16;
 
 /// Maximum body length. Holds `MAX_ROLES` lines of (16-byte name + `=` + 3-digit
 /// number + newline) plus the longest display and touch lines (a test locks
-/// this in).
-pub const MAX_BODY: usize = 256;
+/// this in). 256 until version 3: the touch line did not fit next to them.
+pub const MAX_BODY: usize = 384;
+
+/// Buffer size for the boot line of `describe`: the body, each line one
+/// character longer at most, and the prefix.
+pub const DESCRIBE_LEN: usize = MAX_BODY + 32;
 
 /// Prefix of the display line. `@` cannot start a role name (`valid_name`).
 const DISPLAY_KEY: &[u8] = b"@display=";
@@ -407,38 +411,64 @@ pub enum TouchConfig {
     /// The controller of the M5Stack Tab5's own panel, on the internal I2C
     /// that `@display=tab5` brings up (`@touch=tab5`).
     Tab5,
+    /// An XPT2046 on the bus of the ILI9341 entry, with its own chip select
+    /// (`@touch=xpt2046 cs=16 irq=17 x-min=200 x-max=3900 y-min=200
+    /// y-max=3900`). `irq` is optional. The calibration is the raw 12-bit
+    /// reading at each edge of the panel at rotation 0; a minimum above its
+    /// maximum flips that axis.
+    Xpt2046 {
+        cs: u32,
+        irq: Option<u32>,
+        x_min: u32,
+        x_max: u32,
+        y_min: u32,
+        y_max: u32,
+    },
 }
+
+/// Largest raw XPT2046 reading (12 bits).
+pub const XPT2046_RAW_MAX: u32 = 4095;
 
 impl TouchConfig {
     /// Every driver name `driver` returns.
-    pub const DRIVERS: [&'static str; 1] = ["tab5"];
+    pub const DRIVERS: [&'static str; 2] = ["tab5", "xpt2046"];
 
     /// The driver's name, as `@touch=` and `[board.<name>.touch]` spell it.
     #[must_use]
     pub fn driver(&self) -> &'static str {
         match *self {
             TouchConfig::Tab5 => "tab5",
+            TouchConfig::Xpt2046 { .. } => "xpt2046",
         }
     }
 
-    /// GPIOs the backend drives. The guest may not open them and no role may
-    /// name them.
+    /// GPIOs the backend drives or reads. The guest may not open them and
+    /// no role may name them.
     #[must_use]
-    pub fn pins(&self) -> &'static [u32] {
+    pub fn pins(&self) -> [Option<u32>; 2] {
         match *self {
             // The GT911's INT, pulsed to wake it (`ports/esp32p4/src/tab5.rs`).
-            TouchConfig::Tab5 => &[23],
+            TouchConfig::Tab5 => [Some(23), None],
+            TouchConfig::Xpt2046 { cs, irq, .. } => [Some(cs), irq],
         }
+    }
+
+    /// Whether the backend owns GPIO `pin`.
+    #[must_use]
+    pub fn owns(&self, pin: u32) -> bool {
+        self.pins().contains(&Some(pin))
     }
 
     /// Checks the entry against the display entry, the board and the roles:
-    /// the touch panel lies over a display, the `tab5` controller sits on
-    /// the `tab5` display's bus, and its pins get the checks of the display
-    /// pins (`DisplayConfig::check`), also against the display pins.
+    /// the touch panel lies over a display (`tab5` over `tab5`, `xpt2046`
+    /// over `ili9341`, whose bus it shares), its pins get the checks of the
+    /// display pins (`DisplayConfig::check`), also against the display pins,
+    /// and an XPT2046's calibration is 12-bit with distinct ends.
     ///
     /// # Errors
-    /// `BadTouch` without a matching display; a pin out of range, reserved,
-    /// a bus pin, or shared with a role or the display.
+    /// `BadTouch` without a matching display or with a bad calibration; a
+    /// pin out of range, reserved, a bus pin, or shared with a role, the
+    /// display or the other touch pin.
     pub fn check(
         &self,
         display: Option<&DisplayConfig>,
@@ -446,10 +476,26 @@ impl TouchConfig {
         roles: &RoleMap,
     ) -> Result<(), RolesError> {
         let display = match (*self, display) {
-            (TouchConfig::Tab5, Some(d @ DisplayConfig::Tab5)) => d,
+            (TouchConfig::Tab5, Some(d @ DisplayConfig::Tab5))
+            | (TouchConfig::Xpt2046 { .. }, Some(d @ DisplayConfig::Ili9341 { .. })) => d,
             _ => return Err(RolesError::BadTouch),
         };
-        for &pin in self.pins() {
+        if let TouchConfig::Xpt2046 {
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            ..
+        } = *self
+        {
+            let bad = |a: u32, b: u32| a == b || a.max(b) > XPT2046_RAW_MAX;
+            if bad(x_min, x_max) || bad(y_min, y_max) {
+                return Err(RolesError::BadTouch);
+            }
+        }
+        let pins = self.pins();
+        for (i, pin) in pins.iter().enumerate() {
+            let Some(pin) = *pin else { continue };
             if pin >= limits.gpio_count {
                 return Err(RolesError::OutOfRange);
             }
@@ -459,7 +505,10 @@ impl TouchConfig {
             if limits.bus_pins.contains(&pin) {
                 return Err(RolesError::BusPin);
             }
-            if display.pins().contains(&pin) || (0..roles.len()).any(|r| roles.pin(r) == pin) {
+            if pins[..i].contains(&Some(pin))
+                || display.pins().contains(&pin)
+                || (0..roles.len()).any(|r| roles.pin(r) == pin)
+            {
                 return Err(RolesError::DuplicatePin);
             }
         }
@@ -469,8 +518,49 @@ impl TouchConfig {
     /// Parses what follows `@touch=`.
     fn parse(text: &[u8]) -> Result<TouchConfig, RolesError> {
         let mut words = text.split(|b| *b == b' ').filter(|w| !w.is_empty());
-        match (words.next(), words.next()) {
-            (Some(b"tab5"), None) => Ok(TouchConfig::Tab5),
+        match words.next() {
+            Some(b"tab5") => match words.next() {
+                None => Ok(TouchConfig::Tab5),
+                Some(_) => Err(RolesError::BadTouch),
+            },
+            Some(b"xpt2046") => {
+                // cs and the calibration exactly once; irq at most once.
+                const KEYS: [&[u8]; 6] = [b"cs", b"irq", b"x-min", b"x-max", b"y-min", b"y-max"];
+                let mut v: [Option<u32>; 6] = [None; 6];
+                for w in words {
+                    let eq = w
+                        .iter()
+                        .position(|b| *b == b'=')
+                        .ok_or(RolesError::BadTouch)?;
+                    let k = KEYS
+                        .iter()
+                        .position(|k| *k == &w[..eq])
+                        .ok_or(RolesError::BadTouch)?;
+                    if v[k].is_some() {
+                        return Err(RolesError::BadTouch);
+                    }
+                    v[k] = Some(parse_u32(&w[eq + 1..])?);
+                }
+                let [
+                    Some(cs),
+                    irq,
+                    Some(x_min),
+                    Some(x_max),
+                    Some(y_min),
+                    Some(y_max),
+                ] = v
+                else {
+                    return Err(RolesError::BadTouch);
+                };
+                Ok(TouchConfig::Xpt2046 {
+                    cs,
+                    irq,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                })
+            }
             _ => Err(RolesError::BadTouch),
         }
     }
@@ -478,6 +568,31 @@ impl TouchConfig {
     /// Writes what follows `@touch=`.
     fn encode(&self, out: &mut Buf<'_>) {
         out.str(self.driver());
+        if let TouchConfig::Xpt2046 {
+            cs,
+            irq,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+        } = *self
+        {
+            out.str(" cs=");
+            out.u32(cs);
+            if let Some(irq) = irq {
+                out.str(" irq=");
+                out.u32(irq);
+            }
+            for (k, v) in [
+                (" x-min=", x_min),
+                (" x-max=", x_max),
+                (" y-min=", y_min),
+                (" y-max=", y_max),
+            ] {
+                out.str(k);
+                out.u32(v);
+            }
+        }
     }
 }
 
@@ -753,7 +868,8 @@ pub unsafe fn read_xip(
 /// `wasmicon: <reason>, no roles` otherwise. A banner line,
 /// not a trace line (`>` / `<`), so `trace diff` does not compare it.
 ///
-/// `out` of 256 bytes holds even `MAX_ROLES` entries and a display entry.
+/// `out` of `DESCRIBE_LEN` bytes holds even `MAX_ROLES` entries and the
+/// longest display and touch entries (a test locks this in).
 pub fn describe(result: &Result<Wiring, RolesError>, out: &mut Buf<'_>) {
     out.str("wasmicon: ");
     match result {

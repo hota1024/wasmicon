@@ -351,6 +351,12 @@ impl<S: Serial> Board for EspBoard<S> {
         wasmicon_port::profile::ESP32S3.interfaces.display
     }
 
+    fn touch_supported(&self) -> bool {
+        // The XPT2046 backend in ports/common shares the ILI9341's bus
+        // (docs/device-layer.md §11.4).
+        wasmicon_port::profile::ESP32S3.interfaces.touch
+    }
+
     fn gpio_count(&self) -> u32 {
         NUM_GPIO
     }
