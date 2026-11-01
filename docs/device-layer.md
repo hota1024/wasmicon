@@ -297,7 +297,7 @@ describe something that does not exist:
 
 ## 11. The `touch` interface
 
-**Status: approved; stage 1 of §11.6 is implemented.** The owner settled
+**Status: approved; stages 1 and 2 of §11.6 are implemented.** The owner settled
 docs/TODO.md §7-1 ... §7-4 on 2026-11-01, each on the option written here.
 
 ### 11.1 Why touch belongs in the device layer
@@ -378,7 +378,7 @@ driver = "tab5"
 
 | Backend | Boards | What the host does |
 |---|---|---|
-| `mock` | host | Replays a script given to `wasmicon run`: line N is the result of the Nth `read`, so runs repeat exactly |
+| `mock` | host | Replays a script given to `wasmicon run --touch-script`: line N is the result of the Nth `read`, `-` for no touch or up to 8 points `x,y` separated by spaces; reads past the end report no touch. Runs repeat exactly |
 | `xpt2046` | ESP32-S3, Pico 2 W | Shares the display's SPI bus with its own CS. The XPT2046 clock is at most about 2 MHz and the panel runs at 16 MHz, so a read closes the bus and opens it at the slower clock, and drawing opens it again at 16 MHz. Reads pressure (Z1, Z2) to decide the touch, and takes the median of several X / Y samples |
 | `tab5` | ESP32-P4 on the Tab5 | Reads the controller on the internal I2C that the display already brings up. The part, address and INT / RST wiring are still to check against the Tab5 schematic |
 
@@ -387,18 +387,30 @@ never reads the panel, so SDO can stay unconnected when it disturbs T_DO.
 
 ### 11.5 Traces and determinism
 
-`read` results differ between runs on hardware, like `time`. docs/decisions.md D-10
-excludes only `time`. The proposal (docs/TODO.md §7-1): the trace format stays; the
-trace comparison ignores `touch` results on hardware as it ignores `time`; the host
-mock with a script keeps host traces exact.
+Touch is input from outside, like an I2C sensor reading. The trace treats it the same
+way (docs/abi-spec.md §9, the format does not change):
+
+- `touch.panel.read` is a read call: its result carries `len=<n> data=<bytes>`. A
+  port returns at most 8 points, 32 bytes, so the bytes are never folded into a CRC.
+- `wasmicon trace replay --touch <log>` extracts the reads of a hardware trace in the
+  script format, and `wasmicon run --touch-script` replays them. The host run then
+  traces the same calls as the board, the drawing that followed each touch included.
+  Ignoring the touch results would not give that: the calls after a touch depend on it.
+- docs/decisions.md D-10 does not change. Like a sensor reading, a touch makes two runs
+  equal only when both get the same input, and the replay gives the host that input.
+
+A failed read is not replayed (the mock never fails one), so a trace with one does not
+replay exactly.
 
 ### 11.6 Stages
 
 1. WIT, generator and bindings. The recorded HAL app hashes and the
    `display-demo-rs` hash do not move.
-2. Host: `mock` with a script, the trace rule, `check` / `deploy` refusal,
-   `[board.<name>.touch]`, a demo app (`touch-demo-rs`, it draws where it is touched)
-   and a host trace test.
-3. `xpt2046` on the ESP32-S3, then the Pico 2 W. Pass = the demo draws under the
-   finger, and the drawing survives the bus clock switch.
+2. Host: `mock` with a script, the trace rule, `trace replay --touch`, `check` /
+   `deploy` refusal, a demo app (`touch-demo-rs`, it draws where it is touched) and
+   host trace tests.
+3. `xpt2046` on the ESP32-S3, then the Pico 2 W, with `[board.<name>.touch]` and the
+   `@touch=` config slot line (§11.3). Pass = the demo draws under the finger, the
+   drawing survives the bus clock switch, and the board's trace equals the host run
+   with the touch reads replayed.
 4. `tab5` on the ESP32-P4.

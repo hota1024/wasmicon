@@ -109,6 +109,58 @@ pub fn load_i2c_replay(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> 
     Ok(out)
 }
 
+/// Parses a touch script (docs/device-layer.md §11.4).
+///
+/// One line per `touch.panel.read`: `-` for no touch, or up to
+/// `MAX_TOUCH_POINTS` points `x,y` separated by spaces, in display pixels.
+/// Lines starting with `#` and empty lines are ignored.
+///
+/// # Errors
+/// The line number (from 1) and the reason, for the first line that does not parse.
+pub fn parse_touch_script(text: &str) -> Result<hal::TouchScript, (usize, &'static str)> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "-" {
+            out.push(Vec::new());
+            continue;
+        }
+        let mut points = Vec::new();
+        for tok in line.split_whitespace() {
+            let parsed = tok
+                .split_once(',')
+                .and_then(|(x, y)| Some((x.parse::<u16>().ok()?, y.parse::<u16>().ok()?)));
+            let Some(p) = parsed else {
+                return Err((n + 1, "a point is not `x,y` with x and y from 0 to 65535"));
+            };
+            points.push(p);
+        }
+        if points.len() > wasmicon_port::MAX_TOUCH_POINTS {
+            return Err((n + 1, "more than 8 points"));
+        }
+        out.push(points);
+    }
+    Ok(out)
+}
+
+/// The first point of `script` outside a `width` x `height` display, as
+/// `(entry, x, y)`, entries counted from 0.
+#[must_use]
+pub fn touch_outside(
+    script: &hal::TouchScript,
+    (width, height): (u32, u32),
+) -> Option<(usize, u16, u16)> {
+    script.iter().enumerate().find_map(|(i, points)| {
+        points
+            .iter()
+            .find(|&&(x, y)| u32::from(x) >= width || u32::from(y) >= height)
+            .map(|&(x, y)| (i, x, y))
+    })
+}
+
 /// Loads a `.wasm` and calls `run`.
 ///
 /// I2C responses come from the file named by the `WASMICON_I2C_REPLAY`
@@ -155,6 +207,12 @@ pub struct Options {
     pub display: Option<wasmicon_port::roles::DisplayConfig>,
     /// Records the GPIO and SPI output (`Outcome::bus_log`).
     pub bus_log: bool,
+    /// Removes the mock touch panel, as on a firmware without touch, so the
+    /// touch imports do not link (docs/device-layer.md §6).
+    pub no_touch: bool,
+    /// What the mock touch panel reports, one entry per read
+    /// (`parse_touch_script`). Empty means nothing touches it.
+    pub touch_script: hal::TouchScript,
 }
 
 /// Runs with explicit recorded I2C responses.
@@ -173,6 +231,8 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
             display_size: None,
             display: None,
             bus_log: false,
+            no_touch: false,
+            touch_script: Vec::new(),
         },
     )
 }
@@ -199,7 +259,8 @@ pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
 ///
 /// # Panics
 /// When `opts.assets` has a name outside the grammar, a duplicate, or more
-/// than eight entries. The CLI checks the manifest before it gets here.
+/// than eight entries, or when `opts.touch_script` has a point outside the
+/// mock display (`touch_outside`). The CLI checks both before it gets here.
 pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Error>) {
     let (trace, i2c_replay, spi_unsupported) = (opts.trace, opts.i2c_replay, opts.spi_unsupported);
     // The same image the CLI writes to a board (docs/app-workflow.md §3.10),
@@ -212,6 +273,13 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
         Ok(dir) => dir,
         Err(e) => panic!("the assets image does not parse: {}", e.reason()),
     };
+    let size = opts.display_size.unwrap_or(hal::MOCK_DISPLAY);
+    if let Some((i, x, y)) = touch_outside(&opts.touch_script, size) {
+        panic!(
+            "touch script entry {i}: ({x}, {y}) is outside the {}x{} display",
+            size.0, size.1
+        );
+    }
     let mut buf = vec![0u8; ARENA];
     let mut scratch_buf = vec![0u8; SCRATCH];
     let mut arena = Arena::new(&mut buf);
@@ -226,7 +294,9 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
             .with_i2c_replay(i2c_replay)
             .with_spi_unsupported(spi_unsupported)
             .with_display(!opts.no_display)
-            .with_display_size(opts.display_size.unwrap_or(hal::MOCK_DISPLAY))
+            .with_display_size(size)
+            .with_touch(!opts.no_touch)
+            .with_touch_script(opts.touch_script)
             .with_bus_log(opts.bus_log)
             .with_assets(image),
         trace,

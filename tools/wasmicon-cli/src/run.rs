@@ -9,7 +9,7 @@
 //! (docs/app-workflow.md §4.3).
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use wasmicon_host::Usage;
 use wasmicon_port::profile::{self, Profile};
 
@@ -29,6 +29,9 @@ pub struct Options {
     pub display_out: Option<PathBuf>,
     /// Size of the mock display; `None` is the 320x240 default.
     pub display_size: Option<(u32, u32)>,
+    /// What the mock touch panel reports, one line per read
+    /// (docs/device-layer.md §11.4). `None`: nothing touches it.
+    pub touch_script: Option<PathBuf>,
 }
 
 /// Runs the app. `true` when it finishes without a trap.
@@ -53,6 +56,15 @@ pub fn run(opts: &Options) -> Result<bool> {
             .with_context(|| format!("cannot read `{}`", p.display()))?,
     };
 
+    let touch_script = match &opts.touch_script {
+        None => Vec::new(),
+        Some(p) => load_touch_script(
+            p,
+            opts.display_size
+                .unwrap_or(wasmicon_host::hal::MOCK_DISPLAY),
+        )?,
+    };
+
     // A missing asset file stops the run. Silently serving fewer assets than
     // the table names would make the guest's `not-found` look like its own
     // mistake.
@@ -72,6 +84,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         display_size: opts.display_size,
         display: None,
         bus_log: false,
+        no_touch: false,
+        touch_script,
     };
 
     // The entry point that returns the trace even on failure. A trap is
@@ -114,6 +128,28 @@ pub fn run(opts: &Options) -> Result<bool> {
             Ok(false)
         }
     }
+}
+
+/// Reads a touch script and checks it against the mock display's size.
+///
+/// # Errors
+/// When the file cannot be read, a line does not parse, or a point is
+/// outside the display.
+pub fn load_touch_script(path: &Path, size: (u32, u32)) -> Result<wasmicon_host::hal::TouchScript> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read `{}`", path.display()))?;
+    let script = wasmicon_host::parse_touch_script(&text)
+        .map_err(|(line, why)| anyhow::anyhow!("{}:{line}: {why}", path.display()))?;
+    if let Some((i, x, y)) = wasmicon_host::touch_outside(&script, size) {
+        anyhow::bail!(
+            "{}: read {} touches ({x}, {y}), outside the {}x{} display",
+            path.display(),
+            i + 1,
+            size.0,
+            size.1
+        );
+    }
+    Ok(script)
 }
 
 /// What the run needed against every board's `Config`.

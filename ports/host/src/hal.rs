@@ -48,6 +48,18 @@ pub enum BusEvent {
     Spi(u32, Vec<u8>),
 }
 
+/// What the mock touch panel reports: entry N is the points of the Nth
+/// `touch.panel.read`, as `(x, y)` in display pixels
+/// (docs/device-layer.md §11.4). Reads past the end report no touch.
+pub type TouchScript = Vec<Vec<(u16, u16)>>;
+
+/// The mock touch panel: replays a script, one entry per read, so a run
+/// repeats exactly and a hardware trace replays (docs/device-layer.md §11.5).
+struct MockTouch {
+    script: TouchScript,
+    pos: usize,
+}
+
 /// The mock display backend (docs/device-layer.md §5.3).
 ///
 /// It keeps what was drawn apart from what is visible, and only `present`
@@ -112,6 +124,8 @@ pub struct HostBoard {
     assets: Vec<u8>,
     /// `None` mirrors a firmware without a display (`with_display(false)`).
     display: Option<MockDisplay>,
+    /// `None` mirrors a firmware without touch (`with_touch(false)`).
+    touch: Option<MockTouch>,
     /// GPIO and SPI output, when recording (`with_bus_log`).
     bus_log: Option<Vec<BusEvent>>,
 }
@@ -128,6 +142,10 @@ impl HostBoard {
             spi_unsupported: false,
             assets: Vec::new(),
             display: Some(MockDisplay::new(MOCK_DISPLAY)),
+            touch: Some(MockTouch {
+                script: Vec::new(),
+                pos: 0,
+            }),
             bus_log: None,
         }
     }
@@ -161,6 +179,26 @@ impl HostBoard {
     pub fn with_display_size(mut self, size: (u32, u32)) -> Self {
         if self.display.is_some() {
             self.display = Some(MockDisplay::new(size));
+        }
+        self
+    }
+
+    /// Removes the touch panel, as on a firmware without touch: the touch
+    /// imports then do not link.
+    #[must_use]
+    pub fn with_touch(mut self, yes: bool) -> Self {
+        self.touch = yes.then(|| MockTouch {
+            script: Vec::new(),
+            pos: 0,
+        });
+        self
+    }
+
+    /// Sets what the touch panel reports, one entry per read.
+    #[must_use]
+    pub fn with_touch_script(mut self, script: TouchScript) -> Self {
+        if let Some(t) = &mut self.touch {
+            *t = MockTouch { script, pos: 0 };
         }
         self
     }
@@ -376,6 +414,27 @@ impl Board for HostBoard {
         let d = self.display.as_mut().ok_or(ErrorCode::Unsupported)?;
         d.visible.pixels.copy_from_slice(&d.drawn.pixels);
         Ok(())
+    }
+
+    fn touch_supported(&self) -> bool {
+        self.touch.is_some()
+    }
+
+    fn touch_present(&self, index: u32) -> bool {
+        self.touch.is_some() && index == 0
+    }
+
+    fn touch_read(&mut self, _index: u32, buf: &mut [u8]) -> BoardResult<usize> {
+        let t = self.touch.as_mut().ok_or(ErrorCode::Unsupported)?;
+        let points = t.script.get(t.pos).map_or(&[][..], Vec::as_slice);
+        t.pos += 1;
+        // Fewer points than the entry has when the guest asked for fewer.
+        let n = points.len().min(buf.len() / 4);
+        for (&(x, y), out) in points.iter().zip(buf.chunks_exact_mut(4)).take(n) {
+            out[..2].copy_from_slice(&x.to_be_bytes());
+            out[2..].copy_from_slice(&y.to_be_bytes());
+        }
+        Ok(n)
     }
 
     fn now_us(&mut self) -> u64 {

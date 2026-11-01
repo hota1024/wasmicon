@@ -1,0 +1,21 @@
+# App manifest (docs/app-workflow.md §4.7).
+# The app looks up no roles: the display and the touch panel belong to the
+# host. Only the host has a touch backend so far (docs/TODO.md §7), so
+# `wasmicon check --board` refuses this app on every board; the display
+# entries are those of apps/display-demo-rs.
+version = 1
+
+[requirements]
+pin-roles = []
+
+[board.rp2350.display]
+driver = "ili9341"
+cs = 17
+dc = 20
+rst = 21
+
+[board.esp32s3.display]
+driver = "ili9341"
+cs = 10
+dc = 14
+rst = 15

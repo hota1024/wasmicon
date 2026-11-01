@@ -1,0 +1,22 @@
+# A touch script for the host mock (docs/device-layer.md §11.4).
+# One line per touch.panel.read: `-` for no touch, or x,y points in display
+# pixels. Run it with:
+#   wasmicon run <touch_demo_rs.wasm> --touch-script touch-script.txt --display-out touch.png
+-
+-
+# A stroke from left to right across the canvas.
+40,120
+60,122
+80,124
+100,126
+120,128
+-
+# Two fingers at once.
+200,80 260,180
+-
+# CLEAR, then a single dot, then DONE.
+20,20
+-
+160,200
+-
+300,20

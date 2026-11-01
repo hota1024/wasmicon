@@ -185,6 +185,9 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
         if opts.no_display && desc.module.starts_with("wasmicon:device/display@") {
             continue;
         }
+        if opts.no_touch && desc.module.starts_with("wasmicon:device/touch@") {
+            continue;
+        }
         define(
             &mut linker,
             &engine,
@@ -221,6 +224,8 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
             opts.display_size
                 .unwrap_or(wasmicon_host::hal::MOCK_DISPLAY),
         )
+        .with_touch(!opts.no_touch)
+        .with_touch_script(opts.touch_script)
         .with_assets(image);
     let mut store = Store::new(
         &engine,
