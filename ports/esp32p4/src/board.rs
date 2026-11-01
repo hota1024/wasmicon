@@ -162,6 +162,9 @@ pub struct EspBoard<S: Serial> {
     i2c: Option<I2c<'static, Blocking>>,
     /// The Tab5's own panel (`tab5`), when the config slot names it.
     tab5: Tab5State,
+    /// Whether the config slot names the Tab5's touch panel too
+    /// (`@touch=tab5`, docs/device-layer.md §11.3).
+    tab5_touch: bool,
 }
 
 /// Where the Tab5 panel is: its parts are held from boot (PSRAM up) and taken
@@ -193,14 +196,16 @@ impl<S: Serial> EspBoard<S> {
             spi: None,
             i2c: None,
             tab5: Tab5State::None,
+            tab5_touch: false,
         }
     }
 
-    /// Makes the Tab5 panel display 0 and brings PSRAM up for it, before the
-    /// app runs. The panel comes up at the guest's first `open`
-    /// (`display_open`). A PSRAM failure is printed here and returned by
-    /// that `open`.
-    pub fn configure_tab5(&mut self, parts: tab5::Parts) {
+    /// Makes the Tab5 panel display 0, and with `touch` its touch panel touch
+    /// panel 0, and brings PSRAM up for it, before the app runs. The panel
+    /// comes up at the guest's first `open` of either (`tab5_bring_up`). A
+    /// PSRAM failure is printed here and returned by that `open`.
+    pub fn configure_tab5(&mut self, parts: tab5::Parts, touch: bool) {
+        self.tab5_touch = touch;
         self.tab5 = match tab5::Pending::new(parts) {
             Ok(pending) => Tab5State::Pending(pending),
             Err(e) => {
@@ -217,6 +222,42 @@ impl<S: Serial> EspBoard<S> {
         e.describe(&mut out);
         self.serial.write(out.as_bytes());
         self.serial.write(b"\r\n");
+    }
+
+    /// Brings the panel up if it is not yet: at the first `open` of the
+    /// display or of the touch panel, whichever comes first.
+    fn tab5_bring_up(&mut self) -> BoardResult<()> {
+        let pending = match core::mem::replace(&mut self.tab5, Tab5State::Failed) {
+            Tab5State::Pending(pending) => pending,
+            Tab5State::Failed => return Err(ErrorCode::Io),
+            other => {
+                self.tab5 = other;
+                return Ok(());
+            }
+        };
+        // Printed first: a bring-up that hangs inside esp-hal (its D-PHY
+        // waits have no limit) still shows where.
+        self.serial.write(b"wasmicon: display tab5 bring-up\r\n");
+        match Tab5::up(pending) {
+            Ok((panel, ldo)) => {
+                let mut line = [0u8; 80];
+                let mut out = Buf::new(&mut line);
+                out.str("wasmicon: display tab5 up, d-phy ldo dref=");
+                out.u32(u32::from(ldo.dref));
+                out.str(" mul=");
+                out.u32(u32::from(ldo.mul));
+                out.str(", gt911 at 0x");
+                out.hex(u32::from(panel.touch_address()), 2);
+                self.serial.write(out.as_bytes());
+                self.serial.write(b"\r\n");
+                self.tab5 = Tab5State::Up(panel);
+                Ok(())
+            }
+            Err(e) => {
+                self.print_tab5_failure(e);
+                Err(ErrorCode::Io)
+            }
+        }
     }
 
     fn tab5_up(&mut self) -> BoardResult<&mut Tab5> {
@@ -364,35 +405,7 @@ impl<S: Serial> Board for EspBoard<S> {
     }
 
     fn display_open(&mut self, _index: u32) -> BoardResult<()> {
-        let pending = match core::mem::replace(&mut self.tab5, Tab5State::Failed) {
-            Tab5State::Pending(pending) => pending,
-            Tab5State::Failed => return Err(ErrorCode::Io),
-            other => {
-                self.tab5 = other;
-                return Ok(());
-            }
-        };
-        // Printed first: a bring-up that hangs inside esp-hal (its D-PHY
-        // waits have no limit) still shows where.
-        self.serial.write(b"wasmicon: display tab5 bring-up\r\n");
-        match Tab5::up(pending) {
-            Ok((panel, ldo)) => {
-                self.tab5 = Tab5State::Up(panel);
-                let mut line = [0u8; 64];
-                let mut out = Buf::new(&mut line);
-                out.str("wasmicon: display tab5 up, d-phy ldo dref=");
-                out.u32(u32::from(ldo.dref));
-                out.str(" mul=");
-                out.u32(u32::from(ldo.mul));
-                self.serial.write(out.as_bytes());
-                self.serial.write(b"\r\n");
-                Ok(())
-            }
-            Err(e) => {
-                self.print_tab5_failure(e);
-                Err(ErrorCode::Io)
-            }
-        }
+        self.tab5_bring_up()
     }
 
     fn display_fill_rect(&mut self, _index: u32, rect: Rect, color: u16) -> BoardResult<()> {
@@ -408,6 +421,26 @@ impl<S: Serial> Board for EspBoard<S> {
     fn display_present(&mut self, _index: u32) -> BoardResult<()> {
         self.tab5_up()?.present();
         Ok(())
+    }
+
+    fn touch_supported(&self) -> bool {
+        crate::PROFILE.interfaces.touch
+    }
+
+    // The Tab5's touch panel, over display 0 (docs/device-layer.md §11.4).
+    fn touch_present(&self, index: u32) -> bool {
+        index == 0 && self.tab5_touch && !matches!(self.tab5, Tab5State::None)
+    }
+
+    fn touch_open(&mut self, _index: u32) -> BoardResult<()> {
+        // The GT911 is reset with the panel, so the panel comes up first,
+        // even if the guest never opens the display.
+        self.tab5_bring_up()?;
+        self.tab5_up()?.touch_reset().map_err(|()| ErrorCode::Io)
+    }
+
+    fn touch_read(&mut self, _index: u32, buf: &mut [u8]) -> BoardResult<usize> {
+        self.tab5_up()?.touch_read(buf).map_err(|()| ErrorCode::Io)
     }
 
     fn gpio_count(&self) -> u32 {

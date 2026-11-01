@@ -115,10 +115,11 @@ pub fn build(wasm: &[u8]) -> Vec<u8> {
     image
 }
 
-/// Appends the config slot (wiring table and display entry) to the app slot
-/// image, making one image that is flashed in one go (used by `deploy`;
-/// docs/app-workflow.md §3.9, docs/device-layer.md §5.2). The slot is format
-/// version 1 unless there is a display entry.
+/// Appends the config slot (wiring table, display and touch entries) to the
+/// app slot image, making one image that is flashed in one go (used by
+/// `deploy`; docs/app-workflow.md §3.9, docs/device-layer.md §5.2, §11.3).
+/// The slot has the lowest format version that holds the entries
+/// (`Wiring::version`).
 ///
 /// The space after the app is filled with `0xff` (same as erased flash) up
 /// to the end of the slot. The wiring table is always written, even when
@@ -161,11 +162,24 @@ pub fn describe_roles(map: &RoleMap) -> Option<String> {
 #[must_use]
 pub fn describe_display(w: &Wiring) -> Option<String> {
     w.display?;
+    let line = boot_line(w);
+    let (_, d) = line.split_once(" display=")?;
+    Some(d.split_once(" touch=").map_or(d, |(d, _)| d).to_string())
+}
+
+/// Describes the touch entry as the boot banner does (`tab5`).
+#[must_use]
+pub fn describe_touch(w: &Wiring) -> Option<String> {
+    w.touch?;
+    let line = boot_line(w);
+    line.split_once(" touch=").map(|(_, t)| t.to_string())
+}
+
+fn boot_line(w: &Wiring) -> String {
     let mut line = [0u8; 256];
     let mut out = wasmicon_port::fmt::Buf::new(&mut line);
     roles::describe(&Ok(*w), &mut out);
-    let text = String::from_utf8_lossy(out.as_bytes()).into_owned();
-    text.split_once(" display=").map(|(_, d)| d.to_string())
+    String::from_utf8_lossy(out.as_bytes()).into_owned()
 }
 
 /// The CRC stored in the image header (bytes 12..16, docs/app-workflow.md §3.4).

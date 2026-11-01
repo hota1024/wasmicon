@@ -27,6 +27,12 @@
 //! dc = 14
 //! rst = 15
 //!
+//! [board.esp32p4.display]
+//! driver = "tab5"
+//!
+//! [board.esp32p4.touch]   # the touch panel over it (docs/device-layer.md §11.3)
+//! driver = "tab5"
+//!
 //! [assets]               # read-only data the app opens; assets write flashes it
 //! "font.psf" = "assets/terminus-12.psf"
 //! ```
@@ -63,7 +69,7 @@ use std::path::{Path, PathBuf};
 
 use wasmicon_port::assets;
 use wasmicon_port::profile::{self, Profile};
-use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, Wiring};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, TouchConfig, Wiring};
 
 /// The `version` this CLI can read.
 pub const SUPPORTED_VERSION: u32 = 1;
@@ -110,6 +116,16 @@ struct RawBoard {
     roles: BTreeMap<String, toml::Value>,
     /// `[board.<name>.display]`.
     display: Option<RawDisplay>,
+    /// `[board.<name>.touch]`.
+    touch: Option<RawTouch>,
+}
+
+/// `[board.<name>.touch]` (docs/device-layer.md §11.3).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct RawTouch {
+    /// `"tab5"`.
+    driver: String,
 }
 
 /// `[board.<name>.display]` (docs/device-layer.md §5.2).
@@ -148,6 +164,10 @@ pub struct Manifest {
     /// (docs/device-layer.md §5.2). Checked against the board and its roles at
     /// load time.
     pub board_display: BTreeMap<String, DisplayConfig>,
+    /// Per-board touch entries, written to the config slot next to the
+    /// display entry (docs/device-layer.md §11.3). Checked against the board
+    /// and its display entry at load time.
+    pub board_touch: BTreeMap<String, TouchConfig>,
     /// Asset name -> file (already resolved against `dir`): what `run` serves
     /// to the guest and `assets write` puts in the board's assets slot
     /// (docs/app-workflow.md §3.10). Names are checked at load time; the
@@ -179,8 +199,14 @@ impl Manifest {
         self.board_display.get(board.wiring).copied()
     }
 
+    /// The board's touch entry, if `[board.<wiring>.touch]` exists.
+    #[must_use]
+    pub fn touch(&self, board: &'static Profile) -> Option<TouchConfig> {
+        self.board_touch.get(board.wiring).copied()
+    }
+
     /// What `deploy` writes to the board's config slot: the roles and the
-    /// display entry.
+    /// display and touch entries.
     ///
     /// # Errors
     /// As `role_map`.
@@ -188,6 +214,7 @@ impl Manifest {
         Ok(Wiring {
             roles: self.role_map(board)?,
             display: self.display(board),
+            touch: self.touch(board),
         })
     }
 }
@@ -246,6 +273,45 @@ fn build_display(
     d.check(&Limits::of(board), roles)
         .map_err(|e| anyhow::anyhow!("{at}: {}", e.reason()))?;
     Ok(d)
+}
+
+/// Turns `[board.<name>.touch]` into a `TouchConfig` and checks it against
+/// the board and its display entry, as the firmware does at boot.
+fn build_touch(
+    raw: &RawTouch,
+    board: &'static Profile,
+    display: Option<&DisplayConfig>,
+) -> Result<TouchConfig> {
+    let at = format!("[board.{}.touch]", board.wiring);
+    let t = match raw.driver.as_str() {
+        "tab5" => TouchConfig::Tab5,
+        other => bail!(
+            "{at}: unknown driver `{other}` (known: {})",
+            TouchConfig::DRIVERS.join(", ")
+        ),
+    };
+    if !board.interfaces.touch_drivers.contains(&t.driver()) {
+        bail!(
+            "{at}: the {} firmware has no `{}` driver (it has: {})",
+            board.name,
+            t.driver(),
+            if board.interfaces.touch_drivers.is_empty() {
+                "none".to_string()
+            } else {
+                board.interfaces.touch_drivers.join(", ")
+            }
+        );
+    }
+    t.check(display).map_err(|_| match display {
+        None => anyhow::anyhow!("{at}: needs [board.{}.display]", board.wiring),
+        Some(d) => anyhow::anyhow!(
+            "{at}: driver = \"{}\" needs the display driver \"{}\", not \"{}\"",
+            t.driver(),
+            t.driver(),
+            d.driver()
+        ),
+    })?;
+    Ok(t)
 }
 
 /// Turns one `[board.<name>.roles]` table into a `RoleMap`. `"none"` entries
@@ -327,6 +393,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
 
     let mut board_roles = BTreeMap::new();
     let mut board_display = BTreeMap::new();
+    let mut board_touch = BTreeMap::new();
     for (board, b) in raw.board {
         let Some(p) = profile::by_name(&board) else {
             bail!(
@@ -362,6 +429,11 @@ pub fn load(path: &Path) -> Result<Manifest> {
                 .with_context(|| format!("`{}`: invalid display entry", path.display()))?;
             board_display.insert(board.clone(), d);
         }
+        if let Some(raw) = &b.touch {
+            let t = build_touch(raw, p, board_display.get(&board))
+                .with_context(|| format!("`{}`: invalid touch entry", path.display()))?;
+            board_touch.insert(board.clone(), t);
+        }
         board_roles.insert(board, map);
     }
 
@@ -395,6 +467,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
         default_i2c_replay: raw.defaults.i2c_replay.map(|p| dir.join(p)),
         board_roles,
         board_display,
+        board_touch,
         assets: assets_table,
     })
 }
@@ -765,5 +838,66 @@ driver = "tab5"
         )
         .expect_err("shared pin");
         assert!(format!("{e:#}").contains("two roles share one gpio"));
+    }
+
+    #[test]
+    fn reads_a_touch_entry_and_makes_version_3() {
+        let m = parse(
+            "touch-ok",
+            "version = 1\n[board.esp32p4.display]\ndriver = \"tab5\"\n\
+             [board.esp32p4.touch]\ndriver = \"tab5\"\n",
+        )
+        .expect("loads");
+        assert_eq!(m.touch(&profile::ESP32P4), Some(TouchConfig::Tab5));
+        // The PSRAM firmware reads its board's entry.
+        assert_eq!(m.touch(&profile::ESP32P4_PSRAM), Some(TouchConfig::Tab5));
+        assert_eq!(m.touch(&profile::ESP32S3), None);
+        let w = m.wiring(&profile::ESP32P4).expect("wiring");
+        assert_eq!(w.version(), 3);
+    }
+
+    #[test]
+    fn rejects_a_bad_touch_entry() {
+        for (tag, text, want) in [
+            (
+                "no-display",
+                "[board.esp32p4.touch]\ndriver = \"tab5\"",
+                "needs [board.esp32p4.display]",
+            ),
+            (
+                "other-display",
+                "[board.esp32p4.display]\ndriver = \"ili9341\"\ncs = 20\ndc = 21\nrst = 23\n\
+                 [board.esp32p4.touch]\ndriver = \"tab5\"",
+                "needs the display driver \"tab5\", not \"ili9341\"",
+            ),
+            (
+                "driver",
+                "[board.esp32p4.display]\ndriver = \"tab5\"\n\
+                 [board.esp32p4.touch]\ndriver = \"gt911\"",
+                "unknown driver `gt911`",
+            ),
+            (
+                "unknown-key",
+                "[board.esp32p4.display]\ndriver = \"tab5\"\n\
+                 [board.esp32p4.touch]\ndriver = \"tab5\"\ncs = 1",
+                "unknown field",
+            ),
+            (
+                "no-driver-in-firmware",
+                "[board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n\
+                 [board.esp32s3.touch]\ndriver = \"tab5\"",
+                "esp32s3 firmware has no `tab5` driver (it has: none)",
+            ),
+            (
+                "variant",
+                "[board.esp32p4-psram.touch]\ndriver = \"tab5\"",
+                "[board.esp32p4.roles]",
+            ),
+        ] {
+            let e =
+                parse(&format!("touch-{tag}"), &format!("version = 1\n{text}\n")).expect_err(tag);
+            let msg = format!("{e:#}");
+            assert!(msg.contains(want), "{tag}: {msg}");
+        }
     }
 }

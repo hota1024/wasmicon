@@ -67,6 +67,9 @@ pub struct Plan {
     /// The display entry written alongside (`ili9341 spi=0 ...`), if any
     /// (docs/device-layer.md §5.2).
     pub display: Option<String>,
+    /// The touch entry written alongside (`tab5`), if any
+    /// (docs/device-layer.md §11.3).
+    pub touch: Option<String>,
 }
 
 /// How to flash. Decided by the flasher, not by the board name.
@@ -140,7 +143,8 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         );
     }
     let display = opts.manifest.as_ref().and_then(|m| m.display(board));
-    let verdict = check::judge(&wasm, board, &facts, declared, &provided, display);
+    let touch = opts.manifest.as_ref().and_then(|m| m.touch(board));
+    let verdict = check::judge(&wasm, board, &facts, declared, &provided, display, touch);
     if !verdict.is_ok() {
         bail!(
             "check failed ({} failures on {}); see `wasmicon check {} --board {}`",
@@ -178,6 +182,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         crc: pack::crc_of(&image),
         roles: pack::describe_roles(&wiring.roles),
         display: pack::describe_display(&wiring),
+        touch: pack::describe_touch(&wiring),
     })
 }
 
@@ -210,6 +215,9 @@ pub fn run(opts: &Options) -> Result<bool> {
     }
     if let Some(d) = &plan.display {
         println!("  display: {d}");
+    }
+    if let Some(t) = &plan.touch {
+        println!("  touch: {t}");
     }
 
     let mode = Mode::of(opts, plan.slot.flasher);

@@ -40,7 +40,7 @@ use wasmicon_host::Usage;
 use wasmicon_port::Hal;
 use wasmicon_port::assets::Directory;
 use wasmicon_port::profile::{self, Interfaces, Profile, SlotRead};
-use wasmicon_port::roles::{DisplayConfig, Wiring};
+use wasmicon_port::roles::{DisplayConfig, TouchConfig, Wiring};
 
 /// Arena for the decode that only extracts facts (board-independent).
 ///
@@ -171,6 +171,9 @@ pub struct Verdict {
     /// have no display: `[board.<name>.display]` is missing, or names a
     /// backend this firmware lacks (docs/device-layer.md §6).
     pub display: Option<std::result::Result<String, String>>,
+    /// The touch panel the app uses, as `display` is for the display, from
+    /// `[board.<name>.touch]` (docs/device-layer.md §11.3).
+    pub touch: Option<std::result::Result<String, String>>,
 }
 
 impl Verdict {
@@ -195,6 +198,7 @@ impl Verdict {
     pub fn fails(&self) -> usize {
         usize::from(self.validate.is_err())
             + usize::from(matches!(self.display, Some(Err(_))))
+            + usize::from(matches!(self.touch, Some(Err(_))))
             + self.unimplemented.len()
             + self.missing_declared_roles.len()
     }
@@ -293,7 +297,8 @@ pub fn run(opts: &Options) -> Result<bool> {
     for board in boards {
         let provided = provided_roles(board, opts.manifest.as_ref());
         let display = opts.manifest.as_ref().and_then(|m| m.display(board));
-        let v = judge(&wasm, board, &facts, declared, &provided, display);
+        let touch = opts.manifest.as_ref().and_then(|m| m.touch(board));
+        let v = judge(&wasm, board, &facts, declared, &provided, display, touch);
         println!();
         let fit_fails = print_verdict(&v, &facts, common, board, declared, &assets);
         all_ok &= v.is_ok() && fit_fails == 0;
@@ -387,6 +392,7 @@ pub fn judge(
     declared: Option<&[String]>,
     provided: &[String],
     display: Option<DisplayConfig>,
+    touch: Option<TouchConfig>,
 ) -> Verdict {
     let (validate, stage) = match instantiate_with(wasm, p) {
         Ok(()) => (Ok(p.config.max_memory_pages), Stage::Instantiate),
@@ -427,9 +433,27 @@ pub fn judge(
             Some(d) => Ok(pack::describe_display(&Wiring {
                 roles: wasmicon_port::roles::RoleMap::EMPTY,
                 display: Some(d),
+                touch: None,
             })
             .unwrap_or_default()),
         }
+    });
+
+    // The same for touch: the firmware reads its backend from the config
+    // slot (docs/device-layer.md §11.3).
+    let touch = (f.per_iface.contains_key("touch") && p.interfaces.touch).then(|| match touch {
+        _ if p.role_slot.is_none() => Ok("built-in mock".to_string()),
+        None => Err(format!(
+            "none for this board  <- fails (add [board.{}.touch] to wasmicon.toml)",
+            p.wiring
+        )),
+        Some(t) if !p.interfaces.touch_drivers.contains(&t.driver()) => Err(format!(
+            "{}  <- fails (the {} firmware has no {} driver)",
+            t.driver(),
+            p.name,
+            t.driver()
+        )),
+        Some(t) => Ok(t.driver().to_string()),
     });
 
     Verdict {
@@ -439,6 +463,7 @@ pub fn judge(
         unimplemented,
         missing_declared_roles,
         display,
+        touch,
     }
 }
 
@@ -784,12 +809,14 @@ fn print_verdict(
         row(iface, what, "<- fails");
     }
 
-    match &v.display {
-        None => {}
-        Some(Ok(backend)) => row("display", backend, "ok"),
-        Some(Err(why)) => {
-            let (what, note) = why.split_once("  ").unwrap_or((why, ""));
-            row("display", what, note.trim_start());
+    for (iface, verdict) in [("display", &v.display), ("touch", &v.touch)] {
+        match verdict {
+            None => {}
+            Some(Ok(backend)) => row(iface, backend, "ok"),
+            Some(Err(why)) => {
+                let (what, note) = why.split_once("  ").unwrap_or((why, ""));
+                row(iface, what, note.trim_start());
+            }
         }
     }
 

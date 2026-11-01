@@ -170,6 +170,7 @@ fn the_deploy_image_carries_the_app_and_the_wiring() {
         roles: roles::from_table(&[("status-led", 15)], &limits)
             .unwrap_or_else(|e| panic!("{}", e.reason())),
         display: Some(lcd),
+        touch: None,
     };
     let image = pack::with_wiring(&pack::build(wasm), p, &w).expect("builds");
 
@@ -193,4 +194,29 @@ fn the_deploy_image_carries_the_app_and_the_wiring() {
     let empty = pack::with_wiring(&pack::build(wasm), p, &Wiring::EMPTY).expect("builds");
     let back = roles::parse(&empty[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
     assert!(back.roles.is_empty() && back.display.is_none());
+}
+
+/// The Tab5's panel and touch entries go through the ESP32-P4's slot and come
+/// back as the boot banner names them (docs/device-layer.md §11.3).
+#[test]
+fn the_deploy_image_carries_the_touch_entry() {
+    use wasmicon_port::profile;
+    use wasmicon_port::roles::{self, DisplayConfig, Limits, TouchConfig, Wiring};
+
+    let p = &profile::ESP32P4;
+    let w = Wiring {
+        roles: roles::RoleMap::EMPTY,
+        display: Some(DisplayConfig::Tab5),
+        touch: Some(TouchConfig::Tab5),
+    };
+    let image = pack::with_wiring(&pack::build(b"\0asm\x01\0\0\0app"), p, &w).expect("builds");
+    let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
+        panic!("esp32p4 has a slot");
+    };
+    let at = (rs.offset - sl.offset) as usize;
+    let back =
+        roles::parse(&image[at..], &Limits::of(p)).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.touch, Some(TouchConfig::Tab5));
+    assert_eq!(pack::describe_display(&w).as_deref(), Some("tab5"));
+    assert_eq!(pack::describe_touch(&w).as_deref(), Some("tab5"));
 }

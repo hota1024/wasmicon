@@ -1,6 +1,6 @@
 //! Role map (role name -> GPIO number) and the config slot format that holds
-//! it (docs/app-workflow.md §3.9), together with the board's display entry
-//! (`Wiring`; docs/device-layer.md §5.2).
+//! it (docs/app-workflow.md §3.9), together with the board's display and
+//! touch entries (`Wiring`; docs/device-layer.md §5.2, §11.3).
 //!
 //! Role names are not firmware vocabulary. They are a contract between the
 //! app (`[requirements] pin-roles` in `wasmicon.toml`) and the wiring
@@ -24,10 +24,11 @@ use crate::profile::{Profile, Slot};
 pub const MAGIC: [u8; 4] = *b"WMCR";
 
 /// Newest format version this firmware reads. Version 1 holds roles only;
-/// version 2 may add one `@display=` line. The writer uses version 1 when there
-/// is no display entry, so a firmware that reads only version 1 keeps reading
-/// every other app's roles (docs/TODO.md §6-5).
-pub const FORMAT_VERSION: u16 = 2;
+/// version 2 may add one `@display=` line, version 3 one `@touch=` line too.
+/// The writer uses the lowest version that holds the entries, so a firmware
+/// that reads only version 1 keeps reading every other app's roles
+/// (docs/TODO.md §6-5), and one without touch every app without it.
+pub const FORMAT_VERSION: u16 = 3;
 
 /// Header size. The body starts right after it.
 pub const HEADER_LEN: usize = 16;
@@ -39,11 +40,15 @@ pub const MAX_ROLES: usize = 8;
 pub const MAX_NAME: usize = 16;
 
 /// Maximum body length. Holds `MAX_ROLES` lines of (16-byte name + `=` + 3-digit
-/// number + newline) plus the longest display line (a test locks this in).
+/// number + newline) plus the longest display and touch lines (a test locks
+/// this in).
 pub const MAX_BODY: usize = 256;
 
 /// Prefix of the display line. `@` cannot start a role name (`valid_name`).
 const DISPLAY_KEY: &[u8] = b"@display=";
+
+/// Prefix of the touch line.
+const TOUCH_KEY: &[u8] = b"@touch=";
 
 /// Size reserved for the config slot (one flash erase unit).
 pub const SLOT_LEN: u32 = 4096;
@@ -86,6 +91,8 @@ pub enum RolesError {
     Overlap,
     /// The display line is malformed, repeated, or has a value out of range.
     BadDisplay,
+    /// The touch line is malformed, repeated, or does not match the display.
+    BadTouch,
 }
 
 impl RolesError {
@@ -109,6 +116,7 @@ impl RolesError {
             RolesError::BusPin => "role gpio is used by spi / i2c",
             RolesError::Overlap => "firmware overlaps the roles slot",
             RolesError::BadDisplay => "display entry is malformed",
+            RolesError::BadTouch => "touch entry is malformed or has no matching display",
         }
     }
 
@@ -392,30 +400,88 @@ impl DisplayConfig {
     }
 }
 
-/// What the config slot holds: the role table and the display entry.
+/// The touch backend over the display and its wiring
+/// (docs/device-layer.md §11.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchConfig {
+    /// The controller of the M5Stack Tab5's own panel, on the internal I2C
+    /// that `@display=tab5` brings up (`@touch=tab5`).
+    Tab5,
+}
+
+impl TouchConfig {
+    /// Every driver name `driver` returns.
+    pub const DRIVERS: [&'static str; 1] = ["tab5"];
+
+    /// The driver's name, as `@touch=` and `[board.<name>.touch]` spell it.
+    #[must_use]
+    pub fn driver(&self) -> &'static str {
+        match *self {
+            TouchConfig::Tab5 => "tab5",
+        }
+    }
+
+    /// Checks the entry against the display entry: the touch panel lies over
+    /// a display, and the `tab5` controller sits on the `tab5` display's bus.
+    ///
+    /// # Errors
+    /// `BadTouch` without a matching display.
+    pub fn check(&self, display: Option<&DisplayConfig>) -> Result<(), RolesError> {
+        match (*self, display) {
+            (TouchConfig::Tab5, Some(DisplayConfig::Tab5)) => Ok(()),
+            _ => Err(RolesError::BadTouch),
+        }
+    }
+
+    /// Parses what follows `@touch=`.
+    fn parse(text: &[u8]) -> Result<TouchConfig, RolesError> {
+        let mut words = text.split(|b| *b == b' ').filter(|w| !w.is_empty());
+        match (words.next(), words.next()) {
+            (Some(b"tab5"), None) => Ok(TouchConfig::Tab5),
+            _ => Err(RolesError::BadTouch),
+        }
+    }
+
+    /// Writes what follows `@touch=`.
+    fn encode(&self, out: &mut Buf<'_>) {
+        out.str(self.driver());
+    }
+}
+
+/// What the config slot holds: the role table and the display and touch
+/// entries.
 #[derive(Clone, Copy)]
 pub struct Wiring {
     pub roles: RoleMap,
     pub display: Option<DisplayConfig>,
+    pub touch: Option<TouchConfig>,
 }
 
 impl Wiring {
-    /// No roles and no display. The firmware runs with this when the config
-    /// slot is empty or corrupt.
+    /// No roles, no display and no touch. The firmware runs with this when
+    /// the config slot is empty or corrupt.
     pub const EMPTY: Wiring = Wiring {
         roles: RoleMap::EMPTY,
         display: None,
+        touch: None,
     };
 
-    /// The format version the writer uses: 2 only with a display entry.
+    /// The format version the writer uses: 3 with a touch entry, 2 with only
+    /// a display entry, 1 otherwise.
     #[must_use]
     pub fn version(&self) -> u16 {
-        if self.display.is_some() { 2 } else { 1 }
+        if self.touch.is_some() {
+            3
+        } else if self.display.is_some() {
+            2
+        } else {
+            1
+        }
     }
 }
 
-/// Parses the body (lines of `name=gpio`, and in version 2 one
-/// `@display=` line).
+/// Parses the body (lines of `name=gpio`, from version 2 one `@display=`
+/// line, from version 3 one `@touch=` line).
 ///
 /// # Errors
 /// A malformed line, or whatever `insert` / `DisplayConfig::check` reject.
@@ -434,6 +500,13 @@ pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiri
             w.display = Some(DisplayConfig::parse(rest)?);
             continue;
         }
+        if let Some(rest) = line.strip_prefix(TOUCH_KEY) {
+            if version < 3 || w.touch.is_some() {
+                return Err(RolesError::BadTouch);
+            }
+            w.touch = Some(TouchConfig::parse(rest)?);
+            continue;
+        }
         let Some(eq) = line.iter().position(|b| *b == b'=') else {
             return Err(RolesError::BadLine);
         };
@@ -443,6 +516,9 @@ pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiri
     // Checked once every role is known, so the order of the lines does not matter.
     if let Some(d) = &w.display {
         d.check(limits, &w.roles)?;
+    }
+    if let Some(t) = &w.touch {
+        t.check(w.display.as_ref())?;
     }
     Ok(w)
 }
@@ -473,7 +549,7 @@ fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
 /// ```text
 /// offset  size  contents
 /// 0       4     magic "WMCR" (Wasmicon Roles)
-/// 4       2     format version (u16 LE, = 1)
+/// 4       2     format version (u16 LE, 1 ..= 3)
 /// 6       2     reserved (0)
 /// 8       4     body length (u32 LE)
 /// 12      4     CRC-32 of the body (u32 LE)
@@ -481,7 +557,7 @@ fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
 /// ```
 #[derive(Clone, Copy)]
 pub struct Header {
-    /// Format version (1 or 2).
+    /// Format version (1 ..= `FORMAT_VERSION`).
     pub version: u16,
     /// Body length (already checked to be at most `MAX_BODY`).
     pub len: usize,
@@ -546,17 +622,24 @@ pub fn parse(bytes: &[u8], limits: &Limits<'_>) -> Result<Wiring, RolesError> {
 }
 
 /// Encodes the wiring as a body and returns the length written (for the
-/// writer). The display line, if any, comes last.
+/// writer). The display line, if any, comes after the roles, and the touch
+/// line last.
 ///
 /// `out` of `MAX_BODY` bytes or more is always enough.
 #[must_use]
 pub fn encode_body(w: &Wiring, out: &mut [u8]) -> usize {
     let n = encode_roles(&w.roles, out);
-    let Some(d) = &w.display else { return n };
     let mut line = Buf::new(&mut out[n..]);
-    line.bytes(DISPLAY_KEY);
-    d.encode(&mut line);
-    line.byte(b'\n');
+    if let Some(d) = &w.display {
+        line.bytes(DISPLAY_KEY);
+        d.encode(&mut line);
+        line.byte(b'\n');
+    }
+    if let Some(t) = &w.touch {
+        line.bytes(TOUCH_KEY);
+        t.encode(&mut line);
+        line.byte(b'\n');
+    }
     n + line.as_bytes().len()
 }
 
@@ -633,7 +716,8 @@ pub unsafe fn read_xip(
 ///
 /// `wasmicon: roles lcd-cs=17 lcd-dc=20` when the table was read (`roles none`
 /// when empty), followed by ` display=ili9341 spi=0 ...` when there is a
-/// display entry; `wasmicon: <reason>, no roles` otherwise. A banner line,
+/// display entry and ` touch=tab5` when there is a touch entry;
+/// `wasmicon: <reason>, no roles` otherwise. A banner line,
 /// not a trace line (`>` / `<`), so `trace diff` does not compare it.
 ///
 /// `out` of 256 bytes holds even `MAX_ROLES` entries and a display entry.
@@ -656,6 +740,10 @@ pub fn describe(result: &Result<Wiring, RolesError>, out: &mut Buf<'_>) {
             if let Some(d) = &w.display {
                 out.str(" display=");
                 d.encode(out);
+            }
+            if let Some(t) = &w.touch {
+                out.str(" touch=");
+                t.encode(out);
             }
         }
         Err(e) => {

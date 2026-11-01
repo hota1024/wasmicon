@@ -21,13 +21,18 @@
 //! - The panel is portrait, with no rotation.
 //! - The expander values are M5GFX 0.2.32's (`M5GFX.cpp`, board_M5Tab5),
 //!   except the speaker amplifier, which stays off.
+//! - The touch panel (`@touch=tab5`, docs/device-layer.md §11.4) is the
+//!   GT911 that `detect` found, on the same I2C. Its coordinates are the
+//!   panel's pixels already (M5GFX sets `x_max = 719`, `y_max = 1279` and
+//!   no rotation), so there is no calibration. The protocol follows M5GFX's
+//!   `Touch_GT911.inl`, polled: INT (GPIO23) is not used.
 
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c, SoftwareTimeout};
 use esp_hal::mipi_dsi::{Config as DsiConfig, DataLanes, MipiDsi};
 use esp_hal::peripherals::{GPIO22, GPIO31, GPIO32, I2C1, MIPI_DSI, VDMA_CH0};
-use esp_hal::time::{Duration, Rate};
+use esp_hal::time::{Duration, Instant, Rate};
 use esp_hal::Blocking;
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::Rect;
@@ -71,6 +76,17 @@ const IO1_SECOND: &[(u8, u8)] = &[(0x03, 0b0110_1111), (0x05, 0b0111_0100)];
 /// GT911's addresses.
 const ST_TOUCH: u8 = 0x55;
 const GT911: [u8; 2] = [0x14, 0x5D];
+
+/// GT911 registers, high byte first: the status byte (bit 7 = a new report,
+/// bits 0..3 = its point count), then 8 bytes per point (track id, x, y and
+/// size little-endian, one reserved byte).
+const GT911_STATUS: [u8; 2] = [0x81, 0x4E];
+const GT911_POINTS: [u8; 2] = [0x81, 0x4F];
+/// Most points a GT911 reports.
+const GT911_MAX: usize = 5;
+/// The GT911 keeps a report until the status is cleared, so after a longer
+/// gap between reads the one it holds is old. M5GFX's limit.
+const GT911_STALE: Duration = Duration::from_millis(128);
 
 /// Lane rate asked of esp-hal. It assumes a 40 MHz PLL reference this
 /// silicon does not have, so this runs at half until `tab5_dpi::retune_pll`
@@ -210,8 +226,17 @@ pub struct Tab5 {
     fb: &'static mut [u16],
     /// Rows drawn since the last `present`, as `[first, end)`.
     dirty: Option<(u32, u32)>,
-    _i2c: I2c<'static, Blocking>,
+    /// The internal I2C: the expanders, done with after `up`, and the GT911.
+    i2c: I2c<'static, Blocking>,
     _backlight: Output<'static>,
+    /// The GT911's address, 0x14 or 0x5D: which one depends on INT during
+    /// reset, which this backend does not drive.
+    gt911: u8,
+    /// The last report, as `touch_read` returns it: 4 bytes per point.
+    points: [u8; 4 * GT911_MAX],
+    count: usize,
+    /// When `touch_read` last ran; `None` before the first.
+    last_read: Option<Instant>,
 }
 
 impl Tab5 {
@@ -247,7 +272,7 @@ impl Tab5 {
                 .map_err(|_| UpError::Expanders)?;
         }
         delay.delay_millis(100);
-        detect(&mut i2c, &delay)?;
+        let gt911 = detect(&mut i2c, &delay)?;
 
         // DSI after PSRAM (`crate::psram::up`): esp-hal's PSRAM init rewrites
         // every external LDO and leaves the one that powers the D-PHY off.
@@ -286,8 +311,12 @@ impl Tab5 {
             Tab5 {
                 fb: p.fb,
                 dirty: None,
-                _i2c: i2c,
+                i2c,
                 _backlight: backlight,
+                gt911,
+                points: [0; 4 * GT911_MAX],
+                count: 0,
+                last_read: None,
             },
             ldo,
         ))
@@ -327,6 +356,74 @@ impl Tab5 {
         }
     }
 
+    /// The GT911's address, for the log.
+    pub fn touch_address(&self) -> u8 {
+        self.gt911
+    }
+
+    /// Drops the report the GT911 holds, so the next read starts fresh.
+    ///
+    /// # Errors
+    /// The GT911 did not acknowledge.
+    pub fn touch_reset(&mut self) -> Result<(), ()> {
+        self.count = 0;
+        self.last_read = None;
+        self.clear_report()
+    }
+
+    /// Writes the points touched now into `buf`, 4 bytes each (x then y,
+    /// high byte first), at most `buf.len() / 4`, and returns their number.
+    ///
+    /// The GT911 reports at its own rate. A read that finds no new report
+    /// returns the last one, as M5GFX does; lifting the finger arrives as a
+    /// report with no points.
+    ///
+    /// # Errors
+    /// An I2C transfer failed.
+    pub fn touch_read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
+        let now = Instant::now();
+        let stale = self.last_read.is_none_or(|t| now - t >= GT911_STALE);
+        self.last_read = Some(now);
+        if stale {
+            // Not waiting for a fresh report inside a host call: the guest
+            // reads again on its next frame.
+            self.count = 0;
+            self.clear_report()?;
+        }
+        let mut status = [0u8; 1];
+        self.i2c
+            .write_read(self.gt911, &GT911_STATUS, &mut status)
+            .map_err(drop)?;
+        if status[0] & 0x80 != 0 {
+            let n = usize::from(status[0] & 0x0F).min(GT911_MAX);
+            let mut raw = [0u8; 8 * GT911_MAX];
+            if n > 0 {
+                self.i2c
+                    .write_read(self.gt911, &GT911_POINTS, &mut raw[..8 * n])
+                    .map_err(drop)?;
+            }
+            let points = self.points.as_chunks_mut::<4>().0.iter_mut();
+            for (out, p) in points.zip(raw.as_chunks::<8>().0).take(n) {
+                // Clamped: the guest is promised display pixels.
+                let x = u16::from_le_bytes([p[1], p[2]]).min(WIDTH as u16 - 1);
+                let y = u16::from_le_bytes([p[3], p[4]]).min(HEIGHT as u16 - 1);
+                out[..2].copy_from_slice(&x.to_be_bytes());
+                out[2..].copy_from_slice(&y.to_be_bytes());
+            }
+            self.count = n;
+            self.clear_report()?;
+        }
+        let n = self.count.min(buf.len() / 4);
+        buf[..4 * n].copy_from_slice(&self.points[..4 * n]);
+        Ok(n)
+    }
+
+    /// Clears the status, which lets the GT911 write its next report.
+    fn clear_report(&mut self) -> Result<(), ()> {
+        let [hi, lo] = GT911_STATUS;
+        self.i2c.write(self.gt911, &[hi, lo, 0]).map_err(drop)
+    }
+
     fn row(&mut self, y: u32, x: u32, w: u32) -> &mut [u16] {
         let at = (y * WIDTH + x) as usize;
         &mut self.fb[at..at + w as usize]
@@ -342,8 +439,8 @@ impl Tab5 {
 }
 
 /// Tells the panel apart by its touch controller, waiting up to 600 ms for it
-/// to come out of reset.
-fn detect(i2c: &mut I2c<'static, Blocking>, delay: &Delay) -> Result<(), UpError> {
+/// to come out of reset. Returns the address the GT911 answered at.
+fn detect(i2c: &mut I2c<'static, Blocking>, delay: &Delay) -> Result<u8, UpError> {
     for _ in 0..60 {
         let mut fw = [0u8; 1];
         if i2c.write_read(ST_TOUCH, &[0, 0], &mut fw).is_ok() {
@@ -353,7 +450,7 @@ fn detect(i2c: &mut I2c<'static, Blocking>, delay: &Delay) -> Result<(), UpError
             // Product ID register; the read only has to be acknowledged.
             let mut id = [0u8; 4];
             if i2c.write_read(addr, &[0x81, 0x40], &mut id).is_ok() {
-                return Ok(());
+                return Ok(addr);
             }
         }
         delay.delay_millis(10);
