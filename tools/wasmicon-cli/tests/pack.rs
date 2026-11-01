@@ -204,8 +204,11 @@ fn the_deploy_image_carries_the_touch_entry() {
     use wasmicon_port::roles::{self, DisplayConfig, Limits, TouchConfig, Wiring};
 
     let p = &profile::ESP32P4;
+    // Roles named like the entries do not leak into their descriptions.
+    let limits = Limits::of(p);
     let w = Wiring {
-        roles: roles::RoleMap::EMPTY,
+        roles: roles::from_table(&[("display", 20), ("touch", 21)], &limits)
+            .unwrap_or_else(|e| panic!("{}", e.reason())),
         display: Some(DisplayConfig::Tab5),
         touch: Some(TouchConfig::Tab5),
     };
@@ -214,8 +217,7 @@ fn the_deploy_image_carries_the_touch_entry() {
         panic!("esp32p4 has a slot");
     };
     let at = (rs.offset - sl.offset) as usize;
-    let back =
-        roles::parse(&image[at..], &Limits::of(p)).unwrap_or_else(|e| panic!("{}", e.reason()));
+    let back = roles::parse(&image[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
     assert_eq!(back.touch, Some(TouchConfig::Tab5));
     assert_eq!(pack::describe_display(&w).as_deref(), Some("tab5"));
     assert_eq!(pack::describe_touch(&w).as_deref(), Some("tab5"));

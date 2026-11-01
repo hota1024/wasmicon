@@ -32,12 +32,19 @@ times out.
 
 On the M5Stack Tab5 the app draws on the panel's 720x1280 pixels, through the
 `tab5` display and touch entries of `wasmicon.toml`. The firmware is
-`ports/esp32p4` (either build); `deploy` writes the entries to the config slot:
+`ports/esp32p4` (either build) from the commit that added the touch entry: an
+older one cannot read config slot version 3 and runs with no display at all.
+`deploy` writes the entries to the config slot through the Tab5's USB-C:
 
 ```sh
 wasmicon deploy ../target/wasm32-unknown-unknown/release/touch_demo_rs.wasm \
-    --board esp32p4-psram --monitor
+    --board esp32p4-psram --no-run
 ```
+
+The trace goes out on UART0, which on the Tab5 reaches only the M5-Bus, so a
+3.3 V USB serial adapter there takes it (`ports/esp32p4/src/main.rs`), not
+`--monitor`. Power-cycle the board to start the app. DONE is at the top right
+(x from 640).
 
 The other boards have no touch backend yet (docs/TODO.md §7), so
 `wasmicon check --board` refuses the app on them.
