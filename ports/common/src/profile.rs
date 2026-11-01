@@ -47,6 +47,10 @@ pub struct Interfaces {
     pub display_drivers: &'static [&'static str],
     /// `wasmicon:device/touch` (docs/device-layer.md §11).
     pub touch: bool,
+    /// The touch drivers a config slot entry may name on this firmware, as
+    /// `roles::TouchConfig::driver` spells them. Empty when `touch` is false;
+    /// the host's mock is not listed, since it needs no entry.
+    pub touch_drivers: &'static [&'static str],
 }
 
 impl Interfaces {
@@ -62,6 +66,7 @@ impl Interfaces {
         display: false,
         display_drivers: &[],
         touch: false,
+        touch_drivers: &[],
     };
 
     /// Every HAL interface and the display: the ILI9341 backend in
@@ -441,9 +446,12 @@ pub const ESP32P4: Profile = Profile {
     name: "esp32p4",
     wiring: "esp32p4",
     config: MCU,
-    // The ILI9341 on SPI, and the Tab5's own panel (`ports/esp32p4/src/tab5.rs`).
+    // The ILI9341 on SPI, and the Tab5's own panel and its touch controller
+    // (`ports/esp32p4/src/tab5.rs`).
     interfaces: Interfaces {
         display_drivers: &["ili9341", "tab5"],
+        touch: true,
+        touch_drivers: &["tab5"],
         ..Interfaces::WITH_DISPLAY
     },
     roles: &[],

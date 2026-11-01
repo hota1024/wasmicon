@@ -12,7 +12,7 @@
 
 use wasmicon_core::Config;
 use wasmicon_port::profile::{self, Profile};
-use wasmicon_port::roles::DisplayConfig;
+use wasmicon_port::roles::{DisplayConfig, TouchConfig};
 
 /// The values each `main.rs` had before they were collected (identical across
 /// the ports except `max_memory_pages`).
@@ -402,4 +402,30 @@ fn display_drivers_are_listed_exactly_where_there_is_a_display() {
         DisplayConfig::DRIVERS
     );
     assert!(DisplayConfig::DRIVERS.contains(&DisplayConfig::Tab5.driver()));
+}
+
+/// A firmware lists a touch driver only if it has touch, and only drivers the
+/// config slot knows: `check` refuses an entry whose driver is not listed
+/// (docs/device-layer.md §11.3).
+#[test]
+fn touch_drivers_are_known_and_only_where_there_is_touch() {
+    for p in profile::PROFILES {
+        let i = p.interfaces;
+        assert!(
+            i.touch || i.touch_drivers.is_empty(),
+            "{}: touch drivers without touch",
+            p.name
+        );
+        for d in i.touch_drivers {
+            assert!(
+                TouchConfig::DRIVERS.contains(d),
+                "{}: unknown touch driver `{d}`",
+                p.name
+            );
+        }
+    }
+    assert_eq!(
+        profile::ESP32P4_PSRAM.interfaces.touch_drivers,
+        TouchConfig::DRIVERS
+    );
 }

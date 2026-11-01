@@ -568,6 +568,18 @@ and every app without a display keeps running on it. The display pins get the ro
 checks below and may not be shared with a role; the guest cannot open them, and the
 display's SPI bus is `busy` for it. The boot banner adds ` display=ili9341 ...`.
 
+**Format version 3 adds the touch entry** (docs/device-layer.md §11.3). One more line
+from `[board.<name>.touch]`, after the display line:
+
+```
+@touch=tab5
+```
+
+`deploy` writes version 3 only when the app has a touch entry for that board, for
+the reason above: a firmware that reads at most version 2 keeps running every app
+without touch. The entry needs a matching display entry (`tab5` touch over the
+`tab5` display). The boot banner adds ` touch=tab5`.
+
 #### Checked twice (CLI and firmware)
 
 The same check (`roles::RoleMap::insert`) runs **in the CLI before flashing** (when

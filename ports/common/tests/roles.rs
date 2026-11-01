@@ -2,11 +2,12 @@
 //!
 //! The writer (CLI) and the reader (firmware) share `roles`, so this is the
 //! contract for both. Bump `FORMAT_VERSION` when the shape changes. Version 2
-//! adds the display entry (docs/device-layer.md §5.2).
+//! adds the display entry (docs/device-layer.md §5.2), version 3 the touch
+//! entry (docs/device-layer.md §11.3).
 
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::profile;
-use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, RolesError, Wiring};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, RolesError, TouchConfig, Wiring};
 
 /// Pico 2 W constraints (GP0/1 are the UART, GP4/5 and 16/18/19 are buses).
 fn pico() -> Limits<'static> {
@@ -18,6 +19,7 @@ fn image(map: &RoleMap) -> Vec<u8> {
     image_of(&Wiring {
         roles: *map,
         display: None,
+        touch: None,
     })
 }
 
@@ -167,8 +169,11 @@ fn at_most_max_roles_entries() {
         let name = format!("abcdefghijklmn{i:02}");
         assert!(big.insert(name.as_bytes(), i + 40, &limits).is_ok());
     }
-    // Even with the longest display entry next to them.
-    let w = Wiring {
+    // Even with the longest display entry and a touch entry next to them.
+    // The check of the touch entry against the display is not what this
+    // measures, so the body is only encoded with both and parsed with the
+    // display alone.
+    let mut w = Wiring {
         roles: big,
         display: Some(DisplayConfig::Ili9341 {
             spi: 1,
@@ -177,10 +182,13 @@ fn at_most_max_roles_entries() {
             rst: 62,
             rotation: 270,
         }),
+        touch: Some(TouchConfig::Tab5),
     };
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(&w, &mut body);
     assert!(n < roles::MAX_BODY, "{n} bytes");
+    w.touch = None;
+    let n = roles::encode_body(&w, &mut body);
     let back = roles::parse_body(&body[..n], 2, &limits)
         .unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()));
     assert_eq!(back.roles.len(), roles::MAX_ROLES);
@@ -193,6 +201,7 @@ fn the_boot_line_lists_the_table_or_the_reason() {
         let r = r.map(|roles| Wiring {
             roles,
             display: None,
+            touch: None,
         });
         let mut line = [0u8; 256];
         let mut out = Buf::new(&mut line);
@@ -240,6 +249,7 @@ fn a_display_entry_reads_back_and_makes_version_2() {
     let w = Wiring {
         roles: table(&[("led", 15)]),
         display: Some(PICO_LCD),
+        touch: None,
     };
     let img = image_of(&w);
     assert_eq!(u16::from_le_bytes([img[4], img[5]]), 2);
@@ -254,6 +264,7 @@ fn a_display_entry_reads_back_and_makes_version_2() {
     let tab5 = Wiring {
         roles: RoleMap::EMPTY,
         display: Some(DisplayConfig::Tab5),
+        touch: None,
     };
     let limits = Limits::of(&profile::ESP32P4);
     let img = image_of(&tab5);
@@ -340,8 +351,9 @@ fn a_bad_display_entry_drops_the_whole_table() {
 #[test]
 fn a_newer_version_is_refused() {
     let mut img = image(&table(&[("lcd-cs", 17)]));
-    img[4] = 3;
-    assert!(parse_err(&img, "version 3") == RolesError::UnsupportedVersion);
+    let newer = roles::FORMAT_VERSION + 1;
+    img[4..6].copy_from_slice(&newer.to_le_bytes());
+    assert!(parse_err(&img, "a newer version") == RolesError::UnsupportedVersion);
 }
 
 #[test]
@@ -352,6 +364,7 @@ fn the_boot_line_shows_the_display_entry() {
         &Ok(Wiring {
             roles: RoleMap::EMPTY,
             display: Some(PICO_LCD),
+            touch: None,
         }),
         &mut out,
     );
@@ -359,4 +372,67 @@ fn the_boot_line_shows_the_display_entry() {
         out.as_bytes(),
         b"wasmicon: roles none display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90"
     );
+}
+
+#[test]
+fn a_touch_entry_reads_back_and_makes_version_3() {
+    let w = Wiring {
+        roles: RoleMap::EMPTY,
+        display: Some(DisplayConfig::Tab5),
+        touch: Some(TouchConfig::Tab5),
+    };
+    let img = image_of(&w);
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 3);
+    assert_eq!(&img[roles::HEADER_LEN..], b"@display=tab5\n@touch=tab5\n");
+    let limits = Limits::of(&profile::ESP32P4);
+    let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.display, Some(DisplayConfig::Tab5));
+    assert_eq!(back.touch, Some(TouchConfig::Tab5));
+
+    let mut line = [0u8; 256];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&Ok(back), &mut out);
+    assert_eq!(
+        out.as_bytes(),
+        b"wasmicon: roles none display=tab5 touch=tab5"
+    );
+}
+
+#[test]
+fn a_bad_touch_entry_drops_the_whole_table() {
+    let limits = Limits::of(&profile::ESP32P4);
+    for (version, body) in [
+        // Versions 1 and 2 have no touch entry.
+        (2u16, &b"@display=tab5\n@touch=tab5\n"[..]),
+        (1, b"@touch=tab5\n"),
+        // A touch panel lies over a display, and `tab5` over the `tab5` one.
+        (3, b"@touch=tab5\n"),
+        (
+            3,
+            b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90\n@touch=tab5\n",
+        ),
+        // Unknown, repeated, or with keys `tab5` does not take.
+        (3, b"@display=tab5\n@touch=xpt9999\n"),
+        (3, b"@display=tab5\n@touch=tab5\n@touch=tab5\n"),
+        (3, b"@display=tab5\n@touch=tab5 cs=1\n"),
+    ] {
+        let mut img = roles::header(body, version).to_vec();
+        img.extend_from_slice(body);
+        let got = match roles::parse(&img, &limits) {
+            Ok(_) => panic!("{:?}: accepted", std::str::from_utf8(body)),
+            Err(e) => e,
+        };
+        assert!(
+            got == RolesError::BadTouch,
+            "{:?}: expected {} but got {}",
+            std::str::from_utf8(body),
+            RolesError::BadTouch.reason(),
+            got.reason()
+        );
+    }
+    // The touch line may come before the display line.
+    let body = b"@touch=tab5\n@display=tab5\n";
+    let mut img = roles::header(body, 3).to_vec();
+    img.extend_from_slice(body);
+    assert!(roles::parse(&img, &limits).is_ok());
 }

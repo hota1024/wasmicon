@@ -30,9 +30,19 @@ wasmicon run ../target/wasm32-unknown-unknown/release/touch_demo_rs.wasm \
 Without `--touch-script` nothing touches the panel, and the app runs until it
 times out.
 
-No board has a touch backend yet (docs/TODO.md §7), so `wasmicon check --board`
-refuses the app on every board.
+On the M5Stack Tab5 the app draws on the panel's 720x1280 pixels, through the
+`tab5` display and touch entries of `wasmicon.toml`. The firmware is
+`ports/esp32p4` (either build); `deploy` writes the entries to the config slot:
+
+```sh
+wasmicon deploy ../target/wasm32-unknown-unknown/release/touch_demo_rs.wasm \
+    --board esp32p4-psram --monitor
+```
+
+The other boards have no touch backend yet (docs/TODO.md §7), so
+`wasmicon check --board` refuses the app on them.
 
 A hardware trace replays on the host: `wasmicon trace replay --touch <log>`
 writes the touch reads in the script format, and the host run with that script
-traces the same calls (docs/device-layer.md §11.5).
+traces the same calls (docs/device-layer.md §11.5). For a Tab5 trace the host
+display must have the panel's size: add `--display-size 720x1280`.

@@ -330,7 +330,7 @@ The device layer (docs/device-layer.md §4). The host port implements it with a 
 
 ### `wasmicon:device/touch@0.1.0`
 
-The device layer (docs/device-layer.md §11). The host port implements it with a mock touch panel that replays a script (docs/device-layer.md §11.4); no board yet. A firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
+The device layer (docs/device-layer.md §11). The host port implements it with a mock touch panel that replays a script, and the ESP32-P4 port with the GT911 of the M5Stack Tab5 (docs/device-layer.md §11.4). A firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
 
 | Import name | Core Wasm type | Notes |
 |---|---|---|

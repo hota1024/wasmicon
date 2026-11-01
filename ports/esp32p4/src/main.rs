@@ -37,7 +37,7 @@ use wasmicon_port::assets::{self, Directory};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::identity::{self, Identity};
 use wasmicon_port::profile::{Profile, Slot};
-use wasmicon_port::roles::{self, DisplayConfig, Limits, Wiring};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, TouchConfig, Wiring};
 use wasmicon_port::{idle, slot, Hal};
 
 use board::{EspBoard, Serial};
@@ -229,9 +229,12 @@ fn main() -> ! {
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
     // PSRAM comes up here in the plain build (at boot in the `psram` one),
-    // before the app runs; the panel at the guest's first `open`.
+    // before the app runs; the panel at the guest's first `open`. The touch
+    // entry can only name the Tab5's panel next to its display
+    // (`TouchConfig::check`).
     if wiring.display == Some(DisplayConfig::Tab5) {
-        hal.board_mut().configure_tab5(tab5_parts);
+        let touch = wiring.touch == Some(TouchConfig::Tab5);
+        hal.board_mut().configure_tab5(tab5_parts, touch);
     }
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
     // bodies stay in flash; the guest's reads go through `esp-storage` by range.
