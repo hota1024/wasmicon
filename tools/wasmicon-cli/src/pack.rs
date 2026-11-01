@@ -161,25 +161,23 @@ pub fn describe_roles(map: &RoleMap) -> Option<String> {
 /// (`ili9341 spi=0 cs=10 dc=14 rst=15 rotation=90`).
 #[must_use]
 pub fn describe_display(w: &Wiring) -> Option<String> {
-    w.display?;
-    let line = boot_line(w);
-    let (_, d) = line.split_once(" display=")?;
-    Some(d.split_once(" touch=").map_or(d, |(d, _)| d).to_string())
+    // The banner of the display entry alone: a role may be named `display`.
+    let only = Wiring {
+        roles: roles::RoleMap::EMPTY,
+        display: Some(w.display?),
+        touch: None,
+    };
+    let mut line = [0u8; 256];
+    let mut out = wasmicon_port::fmt::Buf::new(&mut line);
+    roles::describe(&Ok(only), &mut out);
+    let text = String::from_utf8_lossy(out.as_bytes()).into_owned();
+    text.split_once(" display=").map(|(_, d)| d.to_string())
 }
 
 /// Describes the touch entry as the boot banner does (`tab5`).
 #[must_use]
 pub fn describe_touch(w: &Wiring) -> Option<String> {
-    w.touch?;
-    let line = boot_line(w);
-    line.split_once(" touch=").map(|(_, t)| t.to_string())
-}
-
-fn boot_line(w: &Wiring) -> String {
-    let mut line = [0u8; 256];
-    let mut out = wasmicon_port::fmt::Buf::new(&mut line);
-    roles::describe(&Ok(*w), &mut out);
-    String::from_utf8_lossy(out.as_bytes()).into_owned()
+    w.touch.map(|t| t.driver().to_string())
 }
 
 /// The CRC stored in the image header (bytes 12..16, docs/app-workflow.md §3.4).
