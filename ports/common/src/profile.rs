@@ -512,8 +512,12 @@ pub const HOST: Profile = Profile {
     wiring: "host",
     config: Config::DEFAULT,
     // The mock display (docs/device-layer.md §5.3), and the ILI9341 backend
-    // over the mock SPI (`wasmicon_host::Options::display`).
-    interfaces: Interfaces::WITH_DISPLAY,
+    // over the mock SPI (`wasmicon_host::Options::display`). The mock touch
+    // panel replays a script (docs/device-layer.md §11.4).
+    interfaces: Interfaces {
+        touch: true,
+        ..Interfaces::WITH_DISPLAY
+    },
     roles: HOST_ROLES,
     gpio_count: 48,
     reserved: &[],

@@ -57,6 +57,8 @@ fn the_host_run_fills_in_the_run_time_fields() {
         display_size: None,
         display: None,
         bus_log: false,
+        no_touch: false,
+        touch_script: Vec::new(),
     };
     let (out, result) = run_wasm_capture(wasm, opts);
     assert!(result.is_ok());

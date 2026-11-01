@@ -551,6 +551,8 @@ fn sensor_display_agrees_when_spi_is_unsupported() {
         display_size: None,
         display: None,
         bus_log: false,
+        no_touch: false,
+        touch_script: Vec::new(),
     };
     let go = |wasm: &[u8], label: &str| -> String {
         match wasmicon_host::run_wasm_opts(wasm, opts()) {
@@ -816,4 +818,39 @@ fn display_demo_rs_runs_on_host_at_two_sizes() {
             (0..h).any(|y| (0..8).all(|i| at(i * (w / 8) + w / 16, y) == bars[i as usize]));
         assert!(has_bar_row, "{label}: no row shows the eight bars in order");
     }
+}
+
+/// `touch-demo-rs` (docs/device-layer.md §11) on the mock touch panel with the
+/// app's own script: the stroke is cleared by CLEAR, the last dot stays, and
+/// DONE ends the run.
+#[test]
+fn touch_demo_rs_draws_the_script_on_host() {
+    let wasm = build_rust_app("touch-demo-rs");
+    assert_within_feature_set(&wasm, "touch-demo-rs");
+    let text = std::fs::read_to_string(repo_root().join("apps/touch-demo-rs/touch-script.txt"))
+        .expect("cannot read the demo's touch script");
+    let opts = wasmicon_host::Options {
+        trace: true,
+        touch_script: wasmicon_host::parse_touch_script(&text).expect("the script parses"),
+        ..Default::default()
+    };
+    let out = match wasmicon_host::run_wasm_opts(&wasm, opts) {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "touch-demo-rs execution failed: {} [{}]",
+            e.reason(),
+            e.kind().name()
+        ),
+    };
+    assert_display_calls_succeed(&out.trace, "touch-demo-rs");
+    assert!(
+        out.trace.contains(r#"log(2, "touch-demo done")"#),
+        "touch-demo-rs did not reach DONE:\n{}",
+        out.trace
+    );
+    let frame = out.frame.expect("the host has a display");
+    let at = |x: u32, y: u32| frame.pixels[(y * frame.width + x) as usize];
+    assert_eq!(at(160, 200), 0xffff, "the dot after CLEAR");
+    assert_eq!(at(40, 120), 0x0000, "the stroke before CLEAR is gone");
+    assert_eq!(at(319, 0), 0xf800, "the DONE button");
 }

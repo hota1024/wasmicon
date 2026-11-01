@@ -30,7 +30,7 @@ Commands:
     assets write             build it and flash it to the board's assets slot
     monitor                  open the serial port and capture the trace
     trace diff <a> <b>       compare the traces in two serial captures
-    trace replay <log>       extract the I2C responses from a hardware trace
+    trace replay <log>       extract the I2C responses (or the touch reads) from a hardware trace
     doctor                   report which tools are installed
 
 Options for new:
@@ -83,6 +83,7 @@ Options for trace diff:
 
 Options for trace replay:
     -o <file>                output path (default: stdout), in the form run --i2c-replay reads
+    --touch                  extract the touch reads instead, in the form run --touch-script reads
 
 Options for run:
     --trace                  print every host call in the docs/abi-spec.md §9 format
@@ -90,6 +91,7 @@ Options for run:
     --asset <name>=<file>    serve <file> as the asset <name> (repeatable; on top of [assets])
     --display-out <file>     write the mock display's picture (after the last present) as a PNG
     --display-size <W>x<H>   size of the mock display (default 320x240; the Tab5 panel is 720x1280)
+    --touch-script <file>    what the mock touch panel reports, one line per read (`-` or `x,y ...`)
 
 Common:
     -h, --help               this help
@@ -236,6 +238,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     let mut overrides: Vec<(String, PathBuf)> = Vec::new();
     let mut display_out: Option<PathBuf> = None;
     let mut display_size: Option<(u32, u32)> = None;
+    let mut touch_script: Option<PathBuf> = None;
 
     let mut args = args.peekable();
     while let Some(a) = args.next() {
@@ -252,6 +255,10 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
             "--display-size" => {
                 let v = args.next().context("--display-size needs <W>x<H>")?;
                 display_size = Some(parse_display_size(&v)?);
+            }
+            "--touch-script" => {
+                let v = args.next().context("--touch-script needs a file")?;
+                touch_script = Some(PathBuf::from(v));
             }
             "--asset" => {
                 let v = args.next().context("--asset needs <name>=<file>")?;
@@ -312,6 +319,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         assets: assets.into_iter().collect(),
         display_out,
         display_size,
+        touch_script,
     })
 }
 
@@ -506,6 +514,7 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut out: Option<PathBuf> = None;
     let mut ignore: Vec<String> = Vec::new();
+    let mut touch = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => help(),
@@ -517,6 +526,7 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
                 }
                 ignore.push(t);
             }
+            "--touch" if sub == "replay" => touch = true,
             "-o" if sub == "replay" => {
                 out = Some(PathBuf::from(args.next().context("-o needs a file")?));
             }
@@ -531,6 +541,7 @@ fn parse_trace(mut args: impl Iterator<Item = String>) -> Result<TraceCmd> {
         return Ok(TraceCmd::Replay(trace::ReplayOptions {
             log: log.clone(),
             out,
+            touch,
         }));
     }
     let [a, b] = files.as_slice() else {

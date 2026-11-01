@@ -72,6 +72,8 @@ fn main() -> ExitCode {
             display_size: None,
             display: None,
             bus_log: false,
+            no_touch: false,
+            touch_script: Vec::new(),
         },
     );
     if trace {

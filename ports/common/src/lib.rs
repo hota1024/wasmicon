@@ -42,6 +42,12 @@ pub const MAX_I2C: usize = 2;
 pub const MAX_SPI: usize = 2;
 pub const MAX_BLOBS: usize = 4;
 pub const MAX_SCREENS: usize = 1;
+pub const MAX_PANELS: usize = 1;
+
+/// Most points one `touch.panel.read` returns. 8 points are 32 bytes, so the
+/// trace carries every point in full (docs/abi-spec.md §9) and a hardware
+/// trace replays on the host (docs/device-layer.md §11.5).
+pub const MAX_TOUCH_POINTS: usize = 8;
 
 /// Chunk size of the default `Board::assets_crc32`: how much of an asset's
 /// body sits on the stack at a time while its CRC-32 is checked. The ESP
@@ -207,6 +213,33 @@ pub trait Board {
 
     /// The guest released display `index`. The picture stays.
     fn display_release(&mut self, _index: u32) {}
+
+    /// Whether this firmware implements `wasmicon:device/touch`. Without it
+    /// the touch imports do not link (docs/device-layer.md §6).
+    fn touch_supported(&self) -> bool {
+        false
+    }
+
+    /// Whether display `index` has a touch panel.
+    fn touch_present(&self, _index: u32) -> bool {
+        false
+    }
+
+    /// Brings the touch panel of display `index` up, at every guest `open`
+    /// of it.
+    fn touch_open(&mut self, _index: u32) -> BoardResult<()> {
+        Ok(())
+    }
+
+    /// Reads the points touched now into `buf`, 4 bytes each (x, then y, u16
+    /// high byte first, in display pixels after rotation), and returns how
+    /// many it wrote. `buf` holds 1 to `MAX_TOUCH_POINTS` points.
+    fn touch_read(&mut self, _index: u32, _buf: &mut [u8]) -> BoardResult<usize> {
+        Err(ErrorCode::Unsupported)
+    }
+
+    /// The guest released the touch panel of display `index`.
+    fn touch_release(&mut self, _index: u32) {}
 }
 
 /// Verdict of an asset's body CRC, taken at its first `open`
@@ -257,6 +290,7 @@ pub struct Hal<B: Board> {
     verified: [Verified; MAX_ENTRIES],
     blobs: [BlobSlot; MAX_BLOBS],
     screens: [BusSlot; MAX_SCREENS],
+    panels: [BusSlot; MAX_PANELS],
     /// The display entry of the config slot (docs/device-layer.md §5.2). Its
     /// bus and pins belong to the backend, not the guest.
     display: Option<DisplayConfig>,
@@ -282,6 +316,7 @@ impl<B: Board> Hal<B> {
             verified: [Verified::Unchecked; MAX_ENTRIES],
             blobs: [BlobSlot::default(); MAX_BLOBS],
             screens: [BusSlot::default(); MAX_SCREENS],
+            panels: [BusSlot::default(); MAX_PANELS],
             display: None,
             ili9341: None,
         }
@@ -349,7 +384,7 @@ impl<B: Board> Hal<B> {
     ///
     /// The release order is fixed: ascending handle, gpio then i2c then spi,
     /// then the blobs (which hold no peripheral, so the board is not told),
-    /// then the screens. A per-port order would create a difference between
+    /// then the screens, then the touch panels. A per-port order would create a difference between
     /// boards that the trace does not show.
     ///
     /// The record of handed-out roles (`handed`) is not cleared here. It is
@@ -395,6 +430,12 @@ impl<B: Board> Hal<B> {
                 *slot = BusSlot::default();
             }
         }
+        for slot in &mut self.panels {
+            if slot.open {
+                board.touch_release(slot.index);
+                *slot = BusSlot::default();
+            }
+        }
     }
 
     /// The open display behind a screen handle.
@@ -402,6 +443,16 @@ impl<B: Board> Hal<B> {
         let i = slot_of(handle, MAX_SCREENS)?;
         if self.screens[i].open {
             Ok(self.screens[i].index)
+        } else {
+            Err(ErrorCode::InvalidHandle.status())
+        }
+    }
+
+    /// The display behind an open touch panel handle.
+    fn panel(&self, handle: u64) -> core::result::Result<u32, u32> {
+        let i = slot_of(handle, MAX_PANELS)?;
+        if self.panels[i].open {
+            Ok(self.panels[i].index)
         } else {
             Err(ErrorCode::InvalidHandle.status())
         }
@@ -615,8 +666,7 @@ impl<B: Board> Resolver for Hal<B> {
         if desc.module.starts_with("wasmicon:device/display@") && !self.board.display_supported() {
             return None;
         }
-        // No backend implements `touch` yet (docs/TODO.md §7).
-        if desc.module.starts_with("wasmicon:device/touch@") {
+        if desc.module.starts_with("wasmicon:device/touch@") && !self.board.touch_supported() {
             return None;
         }
         Some(Extern::Func(u32::from(desc.host_fn.index())))
@@ -748,9 +798,69 @@ impl<B: Board> Resolver for Hal<B> {
                     },
                 };
             }
-            // `resolve` never links these.
-            HostFn::TouchPanelOpen | HostFn::TouchPanelRead | HostFn::TouchPanelDrop => {
-                return Err(Error::Unlinkable("touch is not implemented"));
+            HostFn::TouchPanelOpen => {
+                let index = args[0] as u32;
+                a.u32(index);
+                let have = (index as usize) < MAX_PANELS && self.board.touch_present(index);
+                status = if !have {
+                    ErrorCode::Unsupported.status()
+                } else if self.panels[index as usize].open {
+                    ErrorCode::Busy.status()
+                } else if let Err(e) = self.board.touch_open(index) {
+                    e.status()
+                } else {
+                    self.panels[index as usize] = BusSlot { open: true, index };
+                    let handle = index + 1;
+                    put_u32(mem, args[1], handle)?;
+                    o.u32(handle);
+                    0
+                };
+            }
+            HostFn::TouchPanelRead => {
+                let max = args[1] as u32;
+                let cap = args[3] as u32;
+                a.u64(args[0]);
+                a.str(", ");
+                a.u32(max);
+                status = match self.panel(args[0]) {
+                    Err(e) => e,
+                    // docs/abi-spec.md §4.4: the requested length must fit `cap`.
+                    Ok(_) if max == 0 || max.checked_mul(4).is_none_or(|n| n > cap) => {
+                        ErrorCode::InvalidArgument.status()
+                    }
+                    Ok(index) => {
+                        // "At most `max-points`": the port's own limit may be lower.
+                        let want = 4 * (max as usize).min(MAX_TOUCH_POINTS);
+                        match self.board.touch_read(index, &mut self.scratch[..want]) {
+                            Ok(n) if n <= want / 4 => {
+                                let got = n * 4;
+                                let dst = args[2] as u32 as usize;
+                                let end = dst
+                                    .checked_add(got)
+                                    .ok_or(Error::Trap(Trap::MemoryOutOfBounds))?;
+                                mem.get_mut(dst..end)
+                                    .ok_or(Error::Trap(Trap::MemoryOutOfBounds))?
+                                    .copy_from_slice(&self.scratch[..got]);
+                                put_u32(mem, args[4], got as u32)?;
+                                o.str("len=");
+                                o.u32(got as u32);
+                                o.str(" data=");
+                                write_bytes(&mut o, &self.scratch[..got]);
+                                0
+                            }
+                            // A backend that reports more points than `buf` holds is broken.
+                            Ok(_) => ErrorCode::Io.status(),
+                            Err(e) => e.status(),
+                        }
+                    }
+                };
+            }
+            HostFn::TouchPanelDrop => {
+                a.u64(args[0]);
+                if let Ok(index) = self.panel(args[0]) {
+                    self.board.touch_release(index);
+                    self.panels[index as usize] = BusSlot::default();
+                }
             }
             HostFn::DisplayScreenDrop => {
                 a.u64(args[0]);

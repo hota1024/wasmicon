@@ -49,6 +49,8 @@ pub struct ReplayOptions {
     pub log: PathBuf,
     /// Output path. `None` = stdout.
     pub out: Option<PathBuf>,
+    /// Extract the touch reads (`run --touch-script`) instead of the I2C reads.
+    pub touch: bool,
 }
 
 /// A normalized trace.
@@ -336,6 +338,75 @@ pub fn i2c_reads(t: &Trace) -> Result<Vec<Vec<u8>>> {
     Ok(out)
 }
 
+/// Extracts the points of each touch read, in trace order.
+///
+/// Picks the `data=0x...` of the result line that follows each
+/// `touch.panel.read` call line (docs/abi-spec.md §9): 4 bytes per point, x
+/// then y, high byte first. The mock consumes one script line per successful
+/// read (`ports/host/src/hal.rs`). A failed read is skipped: the mock never
+/// fails one, so a trace with a failed read does not replay exactly.
+///
+/// # Errors
+/// When a successful read has no complete `data=`. A port returns at most 8
+/// points, 32 bytes, so a CRC-folded result means the trace is broken.
+pub fn touch_reads(t: &Trace) -> Result<Vec<Vec<(u16, u16)>>> {
+    let mut out = Vec::new();
+    let mut lines = t.lines.iter();
+    while let Some(line) = lines.next() {
+        let is_read = line.starts_with(b"> wasmicon:device/touch@")
+            && contains(line, b"/[method]panel.read(");
+        if !is_read {
+            continue;
+        }
+        let Some(result) = lines.next() else { break };
+        if !result.starts_with(b"< 0 ") {
+            continue;
+        }
+        let hex: Vec<u8> = after(result, b"data=0x")
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .take_while(u8::is_ascii_hexdigit)
+            .collect();
+        if after(result, b"data=0x").is_none()
+            || hex.len() % 8 != 0
+            || after(result, b"..len=").is_some()
+        {
+            bail!(
+                "a touch read result is not 4 bytes per point: {}",
+                String::from_utf8_lossy(result)
+            );
+        }
+        let word = |p: &[u8]| u16::from_str_radix(std::str::from_utf8(p).unwrap_or("zz"), 16);
+        let points = hex
+            .chunks(8)
+            .map(|p| Ok((word(&p[..4])?, word(&p[4..])?)))
+            .collect::<Result<Vec<(u16, u16)>, std::num::ParseIntError>>()
+            .context("cannot parse data= as hex")?;
+        out.push(points);
+    }
+    Ok(out)
+}
+
+/// The form `run --touch-script` reads (one line per read: `-`, or `x,y`
+/// points separated by spaces).
+#[must_use]
+pub fn format_touch_script(reads: &[Vec<(u16, u16)>], source: &str) -> String {
+    let mut s =
+        format!("# Touch reads extracted from {source} by wasmicon trace replay --touch.\n");
+    s.push_str("# One line per touch read: `-` for no touch, or x,y points in display pixels.\n");
+    for r in reads {
+        if r.is_empty() {
+            s.push('-');
+        } else {
+            let line: Vec<String> = r.iter().map(|(x, y)| format!("{x},{y}")).collect();
+            s.push_str(&line.join(" "));
+        }
+        s.push('\n');
+    }
+    s
+}
+
 /// The form `run --i2c-replay` reads (one line per read, hex bytes separated
 /// by spaces).
 #[must_use]
@@ -357,6 +428,14 @@ pub fn format_replay(reads: &[Vec<u8>], source: &str) -> String {
 /// has no successful read.
 pub fn replay(opts: &ReplayOptions) -> Result<bool> {
     let t = read(&opts.log)?;
+    if opts.touch {
+        let reads = touch_reads(&t)?;
+        if reads.is_empty() {
+            bail!("no touch read in `{}`", opts.log.display());
+        }
+        let text = format_touch_script(&reads, &short(&opts.log));
+        return write_replay(opts.out.as_deref(), &text, reads.len());
+    }
     let reads = i2c_reads(&t)?;
     // Zero reads never become an empty replay silently. Run on the host, it
     // would mean "no sensor" and a capture failure would show up as a
@@ -365,10 +444,14 @@ pub fn replay(opts: &ReplayOptions) -> Result<bool> {
         bail!("no successful I2C read in `{}`", opts.log.display());
     }
     let text = format_replay(&reads, &short(&opts.log));
-    match &opts.out {
+    write_replay(opts.out.as_deref(), &text, reads.len())
+}
+
+fn write_replay(out: Option<&Path>, text: &str, reads: usize) -> Result<bool> {
+    match out {
         Some(p) => {
-            std::fs::write(p, &text).with_context(|| format!("cannot write `{}`", p.display()))?;
-            eprintln!("wrote {} reads to {}", reads.len(), p.display());
+            std::fs::write(p, text).with_context(|| format!("cannot write `{}`", p.display()))?;
+            eprintln!("wrote {reads} reads to {}", p.display());
         }
         None => print!("{text}"),
     }

@@ -557,3 +557,27 @@ fn display_demo_needs_a_display_entry_on_a_board() {
     let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None);
     assert!(host.is_ok(), "the host mock needs no entry");
 }
+
+/// A touch app (docs/device-layer.md §11): only the host has a touch
+/// backend, so every board refuses it at link time, display entry or not.
+#[test]
+fn touch_demo_runs_only_on_the_host() {
+    use wasmicon_port::roles::DisplayConfig;
+
+    let wasm = build("touch-demo-rs");
+    let f = facts_of(&wasm);
+    let lcd = DisplayConfig::Ili9341 {
+        spi: 0,
+        cs: 10,
+        dc: 14,
+        rst: 15,
+        rotation: 90,
+    };
+    for board in [&profile::RP2350, &profile::ESP32S3, &profile::ESP32P4] {
+        let v = check::judge(&wasm, board, &f, None, &[], Some(lcd));
+        assert_eq!(v.unimplemented, ["touch"], "{}", board.name);
+        assert_eq!(v.fails(), 1, "{}", board.name);
+    }
+    let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None);
+    assert!(host.is_ok(), "{} failures on the host", host.fails());
+}

@@ -1577,7 +1577,9 @@ recommended option.**
       input that differs between runs, like `time`. Options: (a) the trace format stays,
       and the comparison ignores `touch` results on hardware as it ignores `time`; host
       runs use a scripted mock and stay exact; (b) trace touch results and compare them
-      only on the host. **Recommended: (a).** It changes the wording of D-10
+      only on the host. **Recommended: (a).** It changes the wording of D-10.
+      **Built as a replay instead of ignoring the results**, like I2C sensor readings
+      (docs/device-layer.md §11.5; proposed to the owner on 2026-11-01): D-10 does not change
 - [x] **§7-2 The WIT shape.** (owner decision 2026-11-01: the recommended option.) (a) one `read(max-points) -> result<list<u8>, error-code>`
       with 4 bytes per point (docs/device-layer.md §11.2); (b) `poll` plus `x(i)` / `y(i)`,
       `1 + 2n` host calls per frame; (c) a `record`, which changes the subset of
@@ -1595,9 +1597,15 @@ recommended option.**
       docs/abi-spec.md §7 table. Every port refuses the imports at instantiate and
       `Interfaces::touch` is false everywhere until a backend exists. D-10 changes with the
       trace rule in (2)
-- [ ] (2) Host `mock` with a script, trace rule, `check` / `deploy` refusal,
-      `[board.<name>.touch]` and config slot `@touch=`, `apps/touch-demo-rs`, a host trace test
+- [x] (2) Host `mock` with a script, trace rule, `check` / `deploy` refusal,
+      `apps/touch-demo-rs`, host trace tests (2026-11-01). `wasmicon run --touch-script`,
+      `wasmicon trace replay --touch`; `touch.panel.read` is traced as a read call. §7-1 (a) is
+      built as a replay, as I2C sensor readings are (proposed to the owner on 2026-11-01, who
+      said to go on with this stage): a board trace replayed on the host is equal, and
+      docs/decisions.md D-10 does not change
+      (docs/device-layer.md §11.5). **Moved to (3):** `[board.<name>.touch]` and the config
+      slot `@touch=` line; they matter only once a board has a backend
 - [ ] (3) `xpt2046` backend on the ESP32-S3, then the Pico 2 W (shared SPI bus, clock
-      switch per read)
+      switch per read), with `[board.<name>.touch]` and the config slot `@touch=` line
 - [ ] (4) `tab5` touch backend on the ESP32-P4. The controller part, its I2C address and
       its INT / RST wiring are not checked yet

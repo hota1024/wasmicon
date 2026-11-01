@@ -293,3 +293,60 @@ fn ignore_does_not_hide_a_call_one_side_made_more_often() {
     let b = f.write("b.log", &timed(&[1, 2], "done"));
     assert_eq!(diff_ignoring(&a, &b, &["frame ms="]), Ok(false));
 }
+
+/// Builds an app in the guest workspace and returns the `.wasm`, as
+/// `tests/check.rs` does (a shared helper is docs/TODO.md §5).
+fn build(pkg: &str) -> Vec<u8> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = repo_root();
+    // RUSTUP_TOOLCHAIN from cargo test would override apps/rust-toolchain.toml.
+    let status = Command::new("cargo")
+        .current_dir(root.join("apps"))
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .args(["build", "--release", "-p", pkg])
+        .status()
+        .expect("cannot start cargo");
+    assert!(status.success(), "building {pkg} failed");
+    let wasm = root
+        .join("apps/target/wasm32-unknown-unknown/release")
+        .join(format!("{}.wasm", pkg.replace('-', "_")));
+    std::fs::read(&wasm).unwrap_or_else(|e| panic!("cannot read {}: {e}", wasm.display()))
+}
+
+fn run_touch_demo(wasm: &[u8], script: wasmicon_host::hal::TouchScript) -> String {
+    let opts = wasmicon_host::Options {
+        trace: true,
+        touch_script: script,
+        ..Default::default()
+    };
+    match wasmicon_host::run_wasm_opts(wasm, opts) {
+        Ok(out) => out.trace,
+        Err(e) => panic!("touch-demo-rs failed: {} [{}]", e.reason(), e.kind().name()),
+    }
+}
+
+/// A trace replays on the host: the touch reads extracted from it, run as a
+/// script, give the same trace (docs/device-layer.md §11.5). A hardware trace
+/// has the same lines, so the same holds for one.
+#[test]
+fn touch_reads_extracted_from_a_trace_replay_it_exactly() {
+    let root = repo_root();
+    let wasm = build("touch-demo-rs");
+    let text = std::fs::read_to_string(root.join("apps/touch-demo-rs/touch-script.txt"))
+        .expect("cannot read the demo's touch script");
+    let script = wasmicon_host::parse_touch_script(&text).expect("the demo's script parses");
+
+    let first = run_touch_demo(&wasm, script.clone());
+    assert!(first.contains(r#"log(2, "touch-demo done")"#), "{first}");
+
+    let reads = trace::touch_reads(&trace::normalize(first.as_bytes())).expect("touch reads");
+    // DONE ends the app on the last line of the script, so every line was read.
+    assert_eq!(reads, script);
+
+    let written = trace::format_touch_script(&reads, "a test");
+    let again = wasmicon_host::parse_touch_script(&written).expect("the written script parses");
+    assert_eq!(run_touch_demo(&wasm, again), first);
+}

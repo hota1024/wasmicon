@@ -330,7 +330,7 @@ The device layer (docs/device-layer.md §4). The host port implements it with a 
 
 ### `wasmicon:device/touch@0.1.0`
 
-The device layer (docs/device-layer.md §11). No port implements it yet; every firmware refuses these imports at instantiate (docs/device-layer.md §6).
+The device layer (docs/device-layer.md §11). The host port implements it with a mock touch panel that replays a script (docs/device-layer.md §11.4); no board yet. A firmware without it refuses these imports at instantiate (docs/device-layer.md §6).
 
 | Import name | Core Wasm type | Notes |
 |---|---|---|
@@ -338,7 +338,7 @@ The device layer (docs/device-layer.md §11). No port implements it yet; every f
 | `[method]panel.read` | `(param i32 i32 i32 i32 i32) (result i32)` | `(self, max-points, buf, cap, len-out) -> ec` |
 | `[resource-drop]panel` | `(param i32)` | `(self)` |
 
-`read` writes 4 bytes per point: x, then y, each a u16 high byte first, in pixels of display `index` after its rotation. `max-points == 0` is `invalid-argument`, as is `4 * max-points > cap` (§4.4). `len-out` is `4 * n` for `n` points, 0 when nothing touches the panel. `open` of an index without a touch panel is `unsupported`.
+`read` writes 4 bytes per point: x, then y, each a u16 high byte first, in pixels of display `index` after its rotation. `max-points == 0` is `invalid-argument`, as is `4 * max-points > cap` (§4.4). `len-out` is `4 * n` for `n` points, 0 when nothing touches the panel. A port returns at most 8 points per read, whatever `max-points` is, so the trace carries every point (§9). `open` of an index without a touch panel is `unsupported`.
 
 ---
 
@@ -433,7 +433,7 @@ When the port layer is built with `WASMICON_TRACE` enabled, it writes every host
 ```
 
 - A `list<u8>` argument is a hex dump; beyond 32 bytes, the first 16 bytes plus a CRC-32.
-- **The bytes received by the read calls (`i2c.read` / `i2c.write-read` / `spi.transfer` / `assets.blob.read`) are
+- **The bytes received by the read calls (`i2c.read` / `i2c.write-read` / `spi.transfer` / `assets.blob.read` / `touch.panel.read`) are
   also written, in the result on success, as `len=<n> data=<same notation as arguments>`** (added 2026-10-05). Example:
   `< 0 [len=6 data=0x6421e074e970]`. This makes what the board read reproducible from the trace alone
   (`wasmicon trace replay` extracts it in the `--i2c-replay` format). The value is decided by the external
