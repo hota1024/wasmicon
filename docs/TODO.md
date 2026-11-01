@@ -1571,7 +1571,7 @@ Tab5 and the ILI9341 module on 2026-11-01. The ILI9341 module carries an XPT2046
 T_IRQ, T_DO, T_DIN, T_CS, T_CLK). **§7-1 ... §7-4 were settled on 2026-11-01, each on the
 recommended option.**
 
-### Open questions (owner decisions; the text cites them as §7-1 ... §7-4)
+### Open questions (owner decisions; the text cites them as §7-1 ... §7-5)
 
 - [x] **§7-1 Touch results in the trace comparison (docs/decisions.md D-10).** (owner decision 2026-11-01: the recommended option.) Touch is
       input that differs between runs, like `time`. Options: (a) the trace format stays,
@@ -1589,6 +1589,10 @@ recommended option.**
 - [x] **§7-4 Coordinates and calibration.** (owner decision 2026-11-01: the recommended option.) Pixels of the display after its rotation, with
       the XPT2046 calibration in `[board.<name>.touch]` (docs/device-layer.md §11.3).
       **Recommended as written**
+- [x] **§7-5 At most 8 points per read** (owner decision 2026-11-01). Whatever `max-points`
+      asks for, a port returns at most 8 points, 32 bytes, so the trace writes every point in
+      full and a hardware trace replays (docs/abi-spec.md §7, docs/device-layer.md §11.5). A
+      compile-time assert in `ports/common` ties `MAX_TOUCH_POINTS` to `TRACE_BYTES_IN_FULL`
 
 ### Implementation
 
