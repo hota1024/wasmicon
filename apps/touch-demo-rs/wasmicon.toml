@@ -1,8 +1,9 @@
 # App manifest (docs/app-workflow.md §4.7).
 # The app looks up no roles: the display and the touch panel belong to the
-# host. The host's mock and the Tab5 (`esp32p4`, `esp32p4-psram`) have a touch
-# backend so far (docs/TODO.md §7); `wasmicon check --board` refuses the app on
-# the other boards, whose display entries are those of apps/display-demo-rs.
+# host. The host's mock, the Tab5 (`esp32p4`, `esp32p4-psram`) and the ESP32-S3
+# with an XPT2046 have a touch backend so far (docs/TODO.md §7); `wasmicon
+# check --board` refuses the app on the other boards. The display entries are
+# those of apps/display-demo-rs.
 version = 1
 
 [requirements]
@@ -26,3 +27,17 @@ driver = "tab5"
 
 [board.esp32p4.touch]
 driver = "tab5"
+
+# The XPT2046 of the same module: T_CLK / T_DIN / T_DO on the panel's bus,
+# T_CS and T_IRQ on their own pins, the panel's SDO unconnected. The
+# calibration is the raw reading at each edge of the panel at rotation 0
+# (docs/device-layer.md §11.3), measured on the module at hand with drawn
+# crosses (docs/verification-report.md §39); its y axis runs backwards.
+[board.esp32s3.touch]
+driver = "xpt2046"
+cs = 16
+irq = 17
+x-min = 220
+x-max = 3830
+y-min = 3900
+y-max = 340

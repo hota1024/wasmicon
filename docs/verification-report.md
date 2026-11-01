@@ -2132,3 +2132,30 @@ reported **match: 2,446 lines**.
 
 - How often the GT911 reports (its refresh rate), and the latency from touch to dot
 - A failed read (`io`) did not occur, so the behaviour on a GT911 that stops answering was not seen
+
+## 39. `touch-demo-rs` through the `xpt2046` touch backend on the ESP32-S3 (2026-11-01)
+
+Question: does the `xpt2046` backend (docs/device-layer.md §11.4) read the XPT2046 of the ILI9341
+module over the panel's own SPI bus, with the bus clock switched per read, and does the board's trace
+replay on the host?
+
+Freenove ESP32-S3-WROOM; the ILI9341 module of §29's wiring on SPI2 (SCK 12, MOSI 11, MISO 13, CS 10,
+DC 14, RST 15, rotation 90). The XPT2046: T_CLK / T_DIN / T_DO on 12 / 11 / 13, T_CS 16, T_IRQ 17.
+Firmware `ports/esp32s3` with `trace=on`, built from the uncommitted tree on `c26d119` (its sources
+are the commit that adds this section, except where a row says otherwise), flashed with
+`espflash flash --after no-reset`; `apps/touch-demo-rs` written and captured with
+`wasmicon deploy --board esp32s3 --monitor`.
+
+| Step | Result |
+|---|---|
+| First firmware, PENIRQ only | every read empty while the owner touched: PENIRQ stayed high. A throwaway build that sampled every 25th read anyway saw the touches, and PENIRQ worked from then on: it needs one conversion with PD = 00 after power-on. `init` now sends one |
+| Raw readings (throwaway log) | idle: Z1 about 0-5, Z2 about 4080; pressed: Z1 400-1200, Z2 2500-3850 |
+| Calibration | the owner touched five crosses drawn at (30, 30), (290, 30), (290, 210), (30, 210), (160, 120) with an identity calibration; a linear fit gives `x-min = 220`, `x-max = 3830`, `y-min = 3900`, `y-max = 340`, within a few pixels at the centre cross. An earlier fit from corner taps assumed the taps closer to the edges than they were, and the owner saw the dots drift outwards away from the centre |
+| Panel SDO on MISO | in one run after a power-on every conversion read 0, which the pressure formula of the time took for the hardest press: every touch landed in the bottom-right corner. In other runs touches went unseen for minutes; a run with logging after each sample did not show it. The owner then disconnected SDO; no failure since. `pressure` now treats `Z1 = 0` or `Z2 <= Z1` as no touch, and a read with PENIRQ high samples anyway every 16th time |
+| Final run | the owner: the dots land under the finger, at the edges too, and CLEAR and DONE work; the picture survived every clock switch. 6,702 reads, 202 with a point. `trace replay --touch` then `run --trace --touch-script` on the host: **match: 14,236 lines** |
+
+### What this measurement does not say
+
+- Why touches went unseen while SDO was connected: SDO was disconnected before the cause was found
+- Rotations other than 90; the Pico 2 W
+- The time a read takes with the clock switch, and its effect on the frame rate of a drawing app

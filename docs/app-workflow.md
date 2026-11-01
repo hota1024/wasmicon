@@ -551,7 +551,7 @@ Binary (`[role_id u8, gpio u8]`) would be smaller, but text was chosen.
 - **No new "role ID" contract.** Assigning IDs creates a fifth compatibility axis
   (§3.6), "IDs shift between versions"
 - `info` can read it out as is. Dump the flash and a human can read it
-- Parsing works in `no_std` (split on `=`, read a decimal). The body is at most 256 bytes
+- Parsing works in `no_std` (split on `=`, read a decimal). The body is at most 384 bytes (256 before format version 3)
 - `"none"` in `wasmicon.toml` means "do not hand out" and is not written to the table
 
 **Format version 2 adds the display entry** (docs/device-layer.md §5.2, docs/TODO.md

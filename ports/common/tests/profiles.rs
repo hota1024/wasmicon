@@ -424,8 +424,15 @@ fn touch_drivers_are_known_and_only_where_there_is_touch() {
             );
         }
     }
-    assert_eq!(
-        profile::ESP32P4_PSRAM.interfaces.touch_drivers,
-        TouchConfig::DRIVERS
-    );
+    // Every driver is listed by some firmware.
+    for d in TouchConfig::DRIVERS {
+        assert!(
+            profile::PROFILES
+                .iter()
+                .any(|p| p.interfaces.touch_drivers.contains(&d)),
+            "no firmware has `{d}`"
+        );
+    }
+    assert_eq!(profile::ESP32P4_PSRAM.interfaces.touch_drivers, ["tab5"]);
+    assert_eq!(profile::ESP32S3_PSRAM.interfaces.touch_drivers, ["xpt2046"]);
 }

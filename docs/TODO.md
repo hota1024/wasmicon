@@ -1612,7 +1612,10 @@ recommended option.**
       for `tab5` only
 - [ ] (3) `xpt2046` backend on the ESP32-S3, then the Pico 2 W (shared SPI bus, clock
       switch per read), with its keys in `[board.<name>.touch]` and the `@touch=` line.
-      Waits for the owner's wiring of T_CS / T_IRQ
+      **ESP32-S3 done and run** (2026-11-01, docs/verification-report.md §39): T_CS 16,
+      T_IRQ 17, the panel's SDO unconnected, calibration measured with drawn crosses,
+      the board's trace equal to the host's with the reads replayed. **Open:** the Pico
+      2 W (the profile does not list `xpt2046` yet), and rotations other than 90
 - [x] (4) `tab5` touch backend on the ESP32-P4, before (3) at the owner's request
       (2026-11-01). The GT911 of the ILI9881C panel on the internal I2C, woken by an INT
       pulse at `open`, then polled (docs/device-layer.md §11.4); `[board.esp32p4.touch]`,

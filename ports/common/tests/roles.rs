@@ -169,11 +169,9 @@ fn at_most_max_roles_entries() {
         let name = format!("abcdefghijklmn{i:02}");
         assert!(big.insert(name.as_bytes(), i + 40, &limits).is_ok());
     }
-    // Even with the longest display entry and a touch entry next to them.
-    // The check of the touch entry against the display is not what this
-    // measures, so the body is only encoded with both and parsed with the
-    // display alone.
-    let mut w = Wiring {
+    // Even with the longest display and touch entries next to them, and the
+    // boot line of all of it fits its buffer.
+    let w = Wiring {
         roles: big,
         display: Some(DisplayConfig::Ili9341 {
             spi: 1,
@@ -182,17 +180,29 @@ fn at_most_max_roles_entries() {
             rst: 62,
             rotation: 270,
         }),
-        touch: Some(TouchConfig::Tab5),
+        touch: Some(TouchConfig::Xpt2046 {
+            cs: 58,
+            irq: Some(59),
+            x_min: 4095,
+            x_max: 4094,
+            y_min: 4095,
+            y_max: 4094,
+        }),
     };
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(&w, &mut body);
     assert!(n < roles::MAX_BODY, "{n} bytes");
-    w.touch = None;
-    let n = roles::encode_body(&w, &mut body);
-    let back = roles::parse_body(&body[..n], 2, &limits)
+    let back = roles::parse_body(&body[..n], 3, &limits)
         .unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()));
     assert_eq!(back.roles.len(), roles::MAX_ROLES);
     assert_eq!(back.display, w.display);
+    assert_eq!(back.touch, w.touch);
+    let mut line = [0u8; roles::DESCRIBE_LEN];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&Ok(back), &mut out);
+    let len = out.as_bytes().len();
+    assert!(len < roles::DESCRIBE_LEN, "{len} bytes");
+    assert!(out.as_bytes().ends_with(b" y-max=4094"));
 }
 
 #[test]
@@ -448,4 +458,96 @@ fn a_bad_touch_entry_drops_the_whole_table() {
     let mut img = roles::header(body, 3).to_vec();
     img.extend_from_slice(body);
     assert!(roles::parse(&img, &limits).is_ok());
+}
+
+/// The XPT2046 of the ILI9341 module on the ESP32-S3 (docs/device-layer.md §11.3).
+const S3_TOUCH: TouchConfig = TouchConfig::Xpt2046 {
+    cs: 16,
+    irq: Some(17),
+    x_min: 200,
+    x_max: 3900,
+    y_min: 3900,
+    y_max: 200,
+};
+
+const S3_LCD: &[u8] = b"@display=ili9341 spi=0 cs=10 dc=14 rst=15 rotation=90\n";
+
+#[test]
+fn an_xpt2046_entry_reads_back() {
+    let w = Wiring {
+        roles: RoleMap::EMPTY,
+        display: Some(DisplayConfig::Ili9341 {
+            spi: 0,
+            cs: 10,
+            dc: 14,
+            rst: 15,
+            rotation: 90,
+        }),
+        touch: Some(S3_TOUCH),
+    };
+    let img = image_of(&w);
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 3);
+    let mut want = S3_LCD.to_vec();
+    want.extend_from_slice(
+        b"@touch=xpt2046 cs=16 irq=17 x-min=200 x-max=3900 y-min=3900 y-max=200\n",
+    );
+    assert_eq!(&img[roles::HEADER_LEN..], &want[..]);
+    let limits = Limits::of(&profile::ESP32S3);
+    let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.touch, Some(S3_TOUCH));
+    // `irq` is optional.
+    let mut body = S3_LCD.to_vec();
+    body.extend_from_slice(b"@touch=xpt2046 cs=16 x-min=0 x-max=4095 y-min=0 y-max=4095\n");
+    let mut img = roles::header(&body, 3).to_vec();
+    img.extend_from_slice(&body);
+    let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert!(matches!(
+        back.touch,
+        Some(TouchConfig::Xpt2046 { irq: None, .. })
+    ));
+}
+
+#[test]
+fn a_bad_xpt2046_entry_drops_the_whole_table() {
+    let limits = Limits::of(&profile::ESP32S3);
+    let cal = " x-min=200 x-max=3900 y-min=200 y-max=3900";
+    for (touch, want) in [
+        // A key missing, unknown or repeated; a calibration out of range or flat.
+        (
+            "cs=16 irq=17 x-min=200 x-max=3900 y-min=200".to_string(),
+            RolesError::BadTouch,
+        ),
+        (format!("cs=16 irq=17{cal} z=1"), RolesError::BadTouch),
+        (format!("cs=16 cs=16{cal}"), RolesError::BadTouch),
+        (
+            "cs=16 x-min=200 x-max=4096 y-min=200 y-max=3900".to_string(),
+            RolesError::BadTouch,
+        ),
+        (
+            "cs=16 x-min=200 x-max=200 y-min=200 y-max=3900".to_string(),
+            RolesError::BadTouch,
+        ),
+        // Its pins get the checks of the display pins, against the display too.
+        (format!("cs=10{cal}"), RolesError::DuplicatePin),
+        (format!("cs=16 irq=16{cal}"), RolesError::DuplicatePin),
+        (format!("cs=12{cal}"), RolesError::BusPin),
+        (format!("cs=99{cal}"), RolesError::OutOfRange),
+    ] {
+        let mut body = S3_LCD.to_vec();
+        body.extend_from_slice(format!("@touch=xpt2046 {touch}\n").as_bytes());
+        let mut img = roles::header(&body, 3).to_vec();
+        img.extend_from_slice(&body);
+        let got = roles::parse(&img, &limits).err();
+        assert!(
+            got == Some(want),
+            "{touch}: got {:?}",
+            got.map(RolesError::reason)
+        );
+    }
+    // An XPT2046 lies over an ILI9341, not over the Tab5's panel.
+    let body = format!("@display=tab5\n@touch=xpt2046 cs=16{cal}\n");
+    let mut img = roles::header(body.as_bytes(), 3).to_vec();
+    img.extend_from_slice(body.as_bytes());
+    let limits = Limits::of(&profile::ESP32P4);
+    assert!(roles::parse(&img, &limits).err() == Some(RolesError::BadTouch));
 }

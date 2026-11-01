@@ -46,6 +46,16 @@ The trace goes out on UART0, which on the Tab5 reaches only the M5-Bus, so a
 `--monitor`. Power-cycle the board to start the app. DONE is at the top right
 (x from 640).
 
+On the ESP32-S3 the app draws on the ILI9341 and reads the module's XPT2046
+(`[board.esp32s3.touch]`; T_CS 16, T_IRQ 17, the rest on the panel's bus). Leave
+the panel's SDO unconnected (docs/device-layer.md §11.4). The calibration in
+`wasmicon.toml` is the module at hand; another module needs its own:
+
+```sh
+wasmicon deploy ../target/wasm32-unknown-unknown/release/touch_demo_rs.wasm \
+    --board esp32s3 --monitor -o esp32s3.log
+```
+
 The other boards have no touch backend yet (docs/TODO.md §7), so
 `wasmicon check --board` refuses the app on them.
 

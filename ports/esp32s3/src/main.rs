@@ -186,7 +186,11 @@ fn main() -> ! {
     let (storage, serial) = hal.board_mut().parts();
     let wiring = pick_roles(storage, serial);
     // The display entry selects the display backend (docs/device-layer.md §5.2).
-    let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
+    // The touch entry after the display: an XPT2046 uses the ILI9341's bus.
+    let mut hal = hal
+        .with_roles(wiring.roles)
+        .with_display(wiring.display)
+        .with_touch(wiring.touch);
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The
     // bodies stay in flash; the guest's reads go through `esp-storage` by range.
     let (storage, serial) = hal.board_mut().parts();
@@ -362,11 +366,11 @@ fn pick_guest<'a>(
 /// Reads the wiring table from the config slot and prints the table, or the
 /// reason it cannot be read, to the serial port.
 ///
-/// The body is at most `roles::MAX_BODY` (256 bytes), so it is read onto the
+/// The body is at most `roles::MAX_BODY` bytes, so it is read onto the
 /// stack.
 fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) -> Wiring {
     let result = read_roles(storage);
-    let mut line = [0u8; 256];
+    let mut line = [0u8; roles::DESCRIBE_LEN];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
     serial.write(out.as_bytes());

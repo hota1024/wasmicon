@@ -242,7 +242,7 @@ fn pick_roles(serial: &mut impl Serial) -> Wiring {
     // the app slot) lies inside the flash. Overlap with the firmware is
     // rejected by xip_region using fw_end.
     let result = unsafe { roles::read_xip(XIP_BASE, ROLE_SLOT, fw_end, &LIMITS) };
-    let mut line = [0u8; 256];
+    let mut line = [0u8; roles::DESCRIBE_LEN];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
     serial.write(out.as_bytes());

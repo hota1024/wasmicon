@@ -174,10 +174,20 @@ pub fn describe_display(w: &Wiring) -> Option<String> {
     text.split_once(" display=").map(|(_, d)| d.to_string())
 }
 
-/// Describes the touch entry as the boot banner does (`tab5`).
+/// Describes the touch entry as the boot banner does (`tab5`,
+/// `xpt2046 cs=16 irq=17 x-min=200 ...`).
 #[must_use]
 pub fn describe_touch(w: &Wiring) -> Option<String> {
-    w.touch.map(|t| t.driver().to_string())
+    let only = Wiring {
+        roles: roles::RoleMap::EMPTY,
+        display: None,
+        touch: Some(w.touch?),
+    };
+    let mut line = [0u8; 256];
+    let mut out = wasmicon_port::fmt::Buf::new(&mut line);
+    roles::describe(&Ok(only), &mut out);
+    let text = String::from_utf8_lossy(out.as_bytes()).into_owned();
+    text.split_once(" touch=").map(|(_, t)| t.to_string())
 }
 
 /// The CRC stored in the image header (bytes 12..16, docs/app-workflow.md §3.4).

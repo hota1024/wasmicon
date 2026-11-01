@@ -297,8 +297,9 @@ describe something that does not exist:
 
 ## 11. The `touch` interface
 
-**Status: approved; stages 1, 2 and 4 of §11.6 are implemented, stage 4 run on the
-Tab5 (docs/verification-report.md §38).** The owner settled docs/TODO.md §7-1 ... §7-4 on 2026-11-01, each on
+**Status: approved; stages 1, 2 and 4 of §11.6 are implemented and stage 3 on the
+ESP32-S3, each run on hardware (docs/verification-report.md §38, §39); the Pico 2 W
+part of stage 3 is open.** The owner settled docs/TODO.md §7-1 ... §7-4 on 2026-11-01, each on
 the option written here, and asked for the Tab5 before the XPT2046.
 
 ### 11.1 Why touch belongs in the device layer
@@ -358,11 +359,11 @@ interface touch {
 [board.esp32s3.touch]
 driver = "xpt2046"
 cs = 16         # T_CS; T_CLK / T_DIN / T_DO join the display's SPI bus
-irq = 17        # T_IRQ, optional: no SPI traffic while it reads high
-x-min = 200     # raw 12-bit readings at the panel edges, in the panel's own axes
-x-max = 3900
-y-min = 200
-y-max = 3900
+irq = 17        # T_IRQ, optional: less SPI traffic while it reads high
+x-min = 220     # raw 12-bit readings at the panel edges at rotation 0
+x-max = 3830    # (x across the 240 pixels, y along the 320); a minimum
+y-min = 3900    # above its maximum flips the axis
+y-max = 340
 
 [board.esp32p4.touch]
 driver = "tab5"
@@ -373,8 +374,13 @@ driver = "tab5"
 - `deploy` writes an `@touch=` line after `@display=`, in config slot format
   version 3. It writes version 3 only when the app has a touch entry for that board,
   so a firmware that reads at most version 2 keeps running every app without touch
-  (the rule of §5.2). The XPT2046's pins will go through the checks of §5.2, also
-  against the display pins.
+  (the rule of §5.2). The touch pins (`TouchConfig::pins`: the XPT2046's `cs` and
+  `irq`, the Tab5's INT) go through the checks of §5.2, also against the display
+  pins, and the guest cannot open them. The slot body grew from 256 to 384 bytes for
+  the XPT2046 line.
+- `xpt2046` needs an `ili9341` display entry, `cs` and all four calibration values;
+  there is no default calibration. The values in the example are the module at hand
+  (`apps/touch-demo-rs/wasmicon.toml`), measured by touching five drawn crosses.
 - `tab5` takes no other key and needs `driver = "tab5"` in the display entry: the
   controller sits on the bus that display brings up.
 - The backend maps raw readings to pixels with the calibration, then applies the
@@ -385,11 +391,13 @@ driver = "tab5"
 | Backend | Boards | What the host does |
 |---|---|---|
 | `mock` | host | Replays a script given to `wasmicon run --touch-script`: line N is the result of the Nth `read`, `-` for no touch or up to 8 points `x,y` separated by spaces; reads past the end report no touch. Runs repeat exactly |
-| `xpt2046` | ESP32-S3, Pico 2 W | Shares the display's SPI bus with its own CS. The XPT2046 clock is at most about 2 MHz and the panel runs at 16 MHz, so a read closes the bus and opens it at the slower clock, and drawing opens it again at 16 MHz. Reads pressure (Z1, Z2) to decide the touch, and takes the median of several X / Y samples |
+| `xpt2046` | ESP32-S3 (the Pico 2 W is to come) | In `ports/common/src/xpt2046.rs`, over the board's SPI and GPIO like `ili9341`. Shares the display's SPI bus with its own CS. The XPT2046 clock is at most about 2 MHz and the panel runs at 16 MHz, so a read closes the bus, opens it at 2 MHz, samples, and opens it again at 16 MHz. A touch is a pressure (`4095 + Z1 - Z2`, with `0 < Z1 < Z2`) of at least 400, before and after the median of 5 X / Y samples. PENIRQ needs one conversion after power-on before it works, so opening sends one; a read with PENIRQ high skips the bus, except every 16th, which samples anyway. One point per read |
 | `tab5` | ESP32-P4 on the Tab5 | Reads the GT911 that comes with the ILI9881C panel, on the internal I2C (GPIO31 / GPIO32) that the display brings up. Opening the touch panel brings the display up first if the guest has not opened it, since the GT911 is reset with the panel (through the PI4IOE5V6408 at 0x43). The address is 0x14 or 0x5D, whichever answers: it depends on INT (GPIO23) during reset, which the backend does not drive (0x14 on the Tab5 measured). At `open` the backend pulses INT as M5GFX's `wakeup` does (low 58 ms, high 2 ms, then an input with pull-up): without it the GT911 answered with an empty configuration and never reported a touch. Then polled; INT is not read. GPIO23 belongs to the backend while the touch entry is configured (`TouchConfig::pins`). The coordinates are already the panel's 720x1280 portrait pixels (M5GFX 0.2.32 sets `x_max = 719`, `y_max = 1279`, no rotation), so there is no calibration. A read without a new report returns the last one, as M5GFX does. After 128 ms without a read the held report is old: it is dropped, and that read reports no touch, so the next one starts fresh (M5GFX instead waits up to 24 ms for a new report). The ST7121 / ST7123 panels and their ST touch controller are not driven (§5.3) |
 
-Wiring note for the XPT2046: the panel's SDO also drives MISO. The `ili9341` backend
-never reads the panel, so SDO can stay unconnected when it disturbs T_DO.
+Wiring note for the XPT2046: leave the panel's SDO unconnected. On the module at hand,
+with SDO and T_DO both on MISO, every conversion read 0 after some power-ons, which
+put every touch in the bottom-right corner (docs/verification-report.md §39). The
+`ili9341` backend never reads the panel, so SDO is not needed.
 
 ### 11.5 Traces and determinism
 
@@ -415,8 +423,8 @@ replay exactly.
 2. Host: `mock` with a script, the trace rule, `trace replay --touch`, `check` /
    `deploy` refusal, a demo app (`touch-demo-rs`, it draws where it is touched) and
    host trace tests.
-3. `xpt2046` on the ESP32-S3, then the Pico 2 W, with `[board.<name>.touch]` and the
-   `@touch=` config slot line (§11.3). Pass = the demo draws under the finger, the
+3. `xpt2046` on the ESP32-S3 (done), then the Pico 2 W, with `[board.<name>.touch]`
+   and the `@touch=` config slot line (§11.3). Pass = the demo draws under the finger, the
    drawing survives the bus clock switch, and the board's trace equals the host run
    with the touch reads replayed.
 4. `tab5` on the ESP32-P4, with `[board.esp32p4.touch]` and the `@touch=` line, done
