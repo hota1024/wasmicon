@@ -180,3 +180,39 @@ fn an_open_refused_as_busy_does_not_reach_the_board() {
     );
     assert_eq!(hal.board_mut().opens, 1);
 }
+
+/// `pin.open(index, output)` with the handle written at 0; returns the status.
+fn open_pin(hal: &mut Hal<PanelBoard>, index: u64, mem: &mut [u8]) -> u64 {
+    let f = generated::resolve("wasmicon:hal/gpio@0.1.0", "[static]pin.open")
+        .expect("not in the import table")
+        .host_fn
+        .index();
+    let mut out = [0u64; 1];
+    if let Err(e) = hal.call(u32::from(f), &[index, 3, 0], &mut out, mem) {
+        panic!("pin.open failed: {}", e.reason());
+    }
+    out[0]
+}
+
+#[test]
+fn the_touch_backend_pins_are_not_the_guests() {
+    use wasmicon_port::roles::{DisplayConfig, TouchConfig};
+
+    // The Tab5's GT911 INT (docs/device-layer.md §11.4): the guest's while
+    // there is no touch entry, the backend's with one.
+    let board = || PanelBoard {
+        opens: 0,
+        fail: false,
+    };
+    let mut mem = [0u8; 64];
+    let mut hal = Hal::new(board(), false).with_display(Some(DisplayConfig::Tab5));
+    assert_eq!(open_pin(&mut hal, 23, &mut mem), 0);
+    let mut hal = Hal::new(board(), false)
+        .with_display(Some(DisplayConfig::Tab5))
+        .with_touch(Some(TouchConfig::Tab5));
+    assert_eq!(TouchConfig::Tab5.pins(), [23]);
+    assert_eq!(
+        open_pin(&mut hal, 23, &mut mem),
+        u64::from(ErrorCode::InvalidArgument.status())
+    );
+}

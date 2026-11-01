@@ -1613,10 +1613,10 @@ recommended option.**
 - [ ] (3) `xpt2046` backend on the ESP32-S3, then the Pico 2 W (shared SPI bus, clock
       switch per read), with its keys in `[board.<name>.touch]` and the `@touch=` line.
       Waits for the owner's wiring of T_CS / T_IRQ
-- [ ] (4) `tab5` touch backend on the ESP32-P4, before (3) at the owner's request
-      (2026-11-01). **Built, not yet run on the Tab5.** The GT911 of the ILI9881C panel
-      on the internal I2C, polled, address 0x14 or 0x5D (docs/device-layer.md §11.4);
-      `[board.esp32p4.touch]`, config slot version 3 with `@touch=tab5`
-      (docs/app-workflow.md §3.9); `apps/touch-demo-rs` has the Tab5 entries. To check
-      on the board: the address the boot line reports, dots under the finger (axes and
-      orientation), the trace against the host at 720x1280 with the reads replayed
+- [x] (4) `tab5` touch backend on the ESP32-P4, before (3) at the owner's request
+      (2026-11-01). The GT911 of the ILI9881C panel on the internal I2C, woken by an INT
+      pulse at `open`, then polled (docs/device-layer.md §11.4); `[board.esp32p4.touch]`,
+      config slot version 3 with `@touch=tab5` (docs/app-workflow.md §3.9);
+      `apps/touch-demo-rs` has the Tab5 entries. **Run on the Tab5** (2026-11-01,
+      docs/verification-report.md §38): GT911 at 0x14, one- and two-point reads, the
+      board's trace equal to the host's with the reads replayed

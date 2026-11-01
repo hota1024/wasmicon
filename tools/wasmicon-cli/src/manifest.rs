@@ -276,11 +276,12 @@ fn build_display(
 }
 
 /// Turns `[board.<name>.touch]` into a `TouchConfig` and checks it against
-/// the board and its display entry, as the firmware does at boot.
+/// the board, its display entry and its roles, as the firmware does at boot.
 fn build_touch(
     raw: &RawTouch,
     board: &'static Profile,
     display: Option<&DisplayConfig>,
+    roles: &RoleMap,
 ) -> Result<TouchConfig> {
     let at = format!("[board.{}.touch]", board.wiring);
     let t = match raw.driver.as_str() {
@@ -302,15 +303,17 @@ fn build_touch(
             }
         );
     }
-    t.check(display).map_err(|_| match display {
-        None => anyhow::anyhow!("{at}: needs [board.{}.display]", board.wiring),
-        Some(d) => anyhow::anyhow!(
-            "{at}: driver = \"{}\" needs the display driver \"{}\", not \"{}\"",
-            t.driver(),
-            t.driver(),
-            d.driver()
-        ),
-    })?;
+    t.check(display, &Limits::of(board), roles)
+        .map_err(|e| match display {
+            _ if e != roles::RolesError::BadTouch => anyhow::anyhow!("{at}: {}", e.reason()),
+            None => anyhow::anyhow!("{at}: needs [board.{}.display]", board.wiring),
+            Some(d) => anyhow::anyhow!(
+                "{at}: driver = \"{}\" needs the display driver \"{}\", not \"{}\"",
+                t.driver(),
+                t.driver(),
+                d.driver()
+            ),
+        })?;
     Ok(t)
 }
 
@@ -430,7 +433,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
             board_display.insert(board.clone(), d);
         }
         if let Some(raw) = &b.touch {
-            let t = build_touch(raw, p, board_display.get(&board))
+            let t = build_touch(raw, p, board_display.get(&board), &role_map)
                 .with_context(|| format!("`{}`: invalid touch entry", path.display()))?;
             board_touch.insert(board.clone(), t);
         }
@@ -892,6 +895,12 @@ driver = "tab5"
                 "variant",
                 "[board.esp32p4-psram.touch]\ndriver = \"tab5\"",
                 "[board.esp32p4.roles]",
+            ),
+            (
+                "role-on-int",
+                "[board.esp32p4.roles]\nled = 23\n[board.esp32p4.display]\ndriver = \"tab5\"\n\
+                 [board.esp32p4.touch]\ndriver = \"tab5\"",
+                "two roles share one gpio",
             ),
         ] {
             let e =

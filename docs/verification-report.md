@@ -2102,3 +2102,32 @@ The identity line:
 - Not measured: how long the guest's passes over PSRAM took, the time to zero pages in PSRAM, and PSRAM
   speed against L2MEM. No asset was read (the assets slot was empty under the new layout), so the
   `read_flash` gate into PSRAM did not run.
+
+## 38. `touch-demo-rs` through the `tab5` touch backend on the M5Stack Tab5 (2026-11-01)
+
+Question: does the `tab5` touch backend (docs/device-layer.md §11.4) report the GT911's points to a
+guest, and does the board's trace replay on the host (docs/device-layer.md §11.5)?
+
+The Tab5 of §28 (MAC `30:ed:a0:e2:9d:0a`, ILI9881C panel). Firmware `ports/esp32p4 --features psram`,
+`trace=on`, flashed with `espflash flash --after no-reset` through the Tab5's USB-C;
+`apps/touch-demo-rs` (1,918 B, crc32 `a327fe30`) written with
+`wasmicon deploy --board esp32p4-psram --no-run`, config slot version 3 with `@display=tab5` and
+`@touch=tab5`. Started by power cycles; UART0 captured with the CP2102N on the M5-Bus at 115200.
+
+| Run | Firmware | Result |
+|---|---|---|
+| 1 | `4dc9997`, no INT pulse | boot `roles none display=tab5 touch=tab5`, `gt911 at 0x14`; every one of 5,763 reads empty while the owner touched the panel |
+| 2 | `4dc9997` plus a throwaway register dump | before any pulse: product ID `911`, firmware `0x1060`, and the configuration (0x8047...) and resolution all zero; the status byte never set |
+| 3 | the dump plus M5GFX's INT pulse at `open` | configuration version `0x50`, resolution 720 x 1280, five points; status bytes `0x80`...`0x85` while touched |
+| 4 | the pulse, built from the uncommitted tree on `4dc9997` (its sources are the commit that adds this section), no dump | three boots; the last one ran to `touch-demo done` (the owner tapped DONE): 1,004 reads, 927 empty, 22 with one point, 55 with two; x 25...692, y 26...1251 |
+
+Run 4's last boot against the host: `wasmicon trace replay --touch` wrote the 1,004 reads,
+`wasmicon run --trace --display-size 720x1280 --touch-script` replayed them, and `wasmicon trace diff`
+reported **match: 2,446 lines**.
+
+### What this measurement does not say
+
+- Whether the dots appeared under the finger: not reported by the owner yet. The points read span
+  x 25...692 and y 26...1251 of the 720 x 1280 panel
+- How often the GT911 reports (its refresh rate), and the latency from touch to dot
+- A failed read (`io`) did not occur, so the behaviour on a GT911 that stops answering was not seen

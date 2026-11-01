@@ -34,7 +34,7 @@ use wasmicon_core::instance::{Extern, ExternType, Resolver};
 use assets::{Directory, MAX_ENTRIES};
 use fmt::Buf;
 use ili9341::Ili9341;
-use roles::{DisplayConfig, MAX_ROLES, RoleMap};
+use roles::{DisplayConfig, MAX_ROLES, RoleMap, TouchConfig};
 
 /// Number of simultaneous handles docs/abi-spec.md §5.3 guarantees.
 pub const MAX_PINS: usize = 16;
@@ -305,6 +305,9 @@ pub struct Hal<B: Board> {
     display: Option<DisplayConfig>,
     /// The backend when the entry is an ILI9341; otherwise the board's own.
     ili9341: Option<Ili9341>,
+    /// The touch entry of the config slot (docs/device-layer.md §11.3). Its
+    /// pins belong to the backend, as the display's do.
+    touch: Option<TouchConfig>,
 }
 
 impl<B: Board> Hal<B> {
@@ -328,6 +331,7 @@ impl<B: Board> Hal<B> {
             panels: [BusSlot::default(); MAX_PANELS],
             display: None,
             ili9341: None,
+            touch: None,
         }
     }
 
@@ -348,6 +352,15 @@ impl<B: Board> Hal<B> {
             }) => Some(Ili9341::new(spi, cs, dc, rst, rotation)),
             _ => None,
         };
+        self
+    }
+
+    /// Sets the touch entry: on a board what the firmware read from the config
+    /// slot (docs/device-layer.md §11.3). The backend is the board's; `Hal`
+    /// keeps the guest off its pins.
+    #[must_use]
+    pub fn with_touch(mut self, touch: Option<TouchConfig>) -> Self {
+        self.touch = touch;
         self
     }
 
@@ -476,9 +489,11 @@ impl<B: Board> Hal<B> {
         }
     }
 
-    /// Whether the display backend owns GPIO `index`: the guest may not open it.
+    /// Whether the display or touch backend owns GPIO `index`: the guest may
+    /// not open it.
     fn display_pin(&self, index: u32) -> bool {
         self.display.is_some_and(|d| d.pins().contains(&index))
+            || self.touch.is_some_and(|t| t.pins().contains(&index))
     }
 
     /// Checks `x, y, w, h` against display `index`: non-empty and inside.

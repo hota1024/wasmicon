@@ -430,6 +430,19 @@ fn a_bad_touch_entry_drops_the_whole_table() {
             got.reason()
         );
     }
+    // Its INT pin gets the checks of the display pins, against the roles too.
+    for body in [
+        &b"led=23\n@display=tab5\n@touch=tab5\n"[..],
+        b"@display=tab5\n@touch=tab5\nled=23\n",
+    ] {
+        let mut img = roles::header(body, 3).to_vec();
+        img.extend_from_slice(body);
+        assert!(
+            roles::parse(&img, &limits).err() == Some(RolesError::DuplicatePin),
+            "{:?}",
+            std::str::from_utf8(body)
+        );
+    }
     // The touch line may come before the display line.
     let body = b"@touch=tab5\n@display=tab5\n";
     let mut img = roles::header(body, 3).to_vec();

@@ -25,13 +25,17 @@
 //!   GT911 that `detect` found, on the same I2C. Its coordinates are the
 //!   panel's pixels already (M5GFX sets `x_max = 719`, `y_max = 1279` and
 //!   no rotation), so there is no calibration. The protocol follows M5GFX's
-//!   `Touch_GT911.inl`, polled: INT (GPIO23) is not used.
+//!   `Touch_GT911.inl`, polled. INT (GPIO23) is only pulsed at `open` to wake
+//!   the GT911: without the pulse it answers with an empty configuration and
+//!   never reports a touch (measured on the Tab5). The pin is touched only
+//!   when the touch entry is configured; `Hal` keeps the guest off it then
+//!   (`TouchConfig::pins`).
 
 use esp_hal::delay::Delay;
-use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::gpio::{Flex, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c, SoftwareTimeout};
 use esp_hal::mipi_dsi::{Config as DsiConfig, DataLanes, MipiDsi};
-use esp_hal::peripherals::{GPIO22, GPIO31, GPIO32, I2C1, MIPI_DSI, VDMA_CH0};
+use esp_hal::peripherals::{GPIO22, GPIO23, GPIO31, GPIO32, I2C1, MIPI_DSI, VDMA_CH0};
 use esp_hal::time::{Duration, Instant, Rate};
 use esp_hal::Blocking;
 use wasmicon_port::fmt::Buf;
@@ -99,6 +103,8 @@ pub struct Parts {
     pub sda: GPIO31<'static>,
     pub scl: GPIO32<'static>,
     pub backlight: GPIO22<'static>,
+    /// The GT911's INT, used only by `touch_reset`.
+    pub int: GPIO23<'static>,
     pub dsi: MIPI_DSI<'static>,
     pub vdma: VDMA_CH0<'static>,
     pub psram: FbMemory,
@@ -180,6 +186,7 @@ pub struct Pending {
     sda: GPIO31<'static>,
     scl: GPIO32<'static>,
     backlight: GPIO22<'static>,
+    int: GPIO23<'static>,
     dsi: MIPI_DSI<'static>,
     vdma: VDMA_CH0<'static>,
     fb: &'static mut [u16],
@@ -213,6 +220,7 @@ impl Pending {
             sda: p.sda,
             scl: p.scl,
             backlight: p.backlight,
+            int: p.int,
             dsi: p.dsi,
             vdma: p.vdma,
             fb,
@@ -229,6 +237,9 @@ pub struct Tab5 {
     /// The internal I2C: the expanders, done with after `up`, and the GT911.
     i2c: I2c<'static, Blocking>,
     _backlight: Output<'static>,
+    /// INT, until the first `touch_reset` takes it as `wake`.
+    int: Option<GPIO23<'static>>,
+    wake: Option<Flex<'static>>,
     /// The GT911's address, 0x14 or 0x5D: which one depends on INT during
     /// reset, which this backend does not drive.
     gt911: u8,
@@ -313,6 +324,8 @@ impl Tab5 {
                 dirty: None,
                 i2c,
                 _backlight: backlight,
+                int: Some(p.int),
+                wake: None,
                 gt911,
                 points: [0; 4 * GT911_MAX],
                 count: 0,
@@ -361,11 +374,32 @@ impl Tab5 {
         self.gt911
     }
 
-    /// Drops the report the GT911 holds, so the next read starts fresh.
+    /// Wakes the GT911 with M5GFX's INT pulse (`Touch_GT911::wakeup`: low
+    /// 58 ms, high 2 ms, then an input with pull-up), and drops the report it
+    /// holds, so the next read starts fresh.
     ///
     /// # Errors
     /// The GT911 did not acknowledge.
     pub fn touch_reset(&mut self) -> Result<(), ()> {
+        let delay = Delay::new();
+        if let Some(int) = self.int.take() {
+            self.wake = Some(Flex::new(int));
+        }
+        let Some(wake) = self.wake.as_mut() else {
+            return Err(());
+        };
+        wake.apply_output_config(&OutputConfig::default());
+        wake.set_low();
+        wake.set_output_enable(true);
+        delay.delay_millis(58);
+        wake.set_high();
+        delay.delay_millis(2);
+        wake.set_output_enable(false);
+        wake.apply_input_config(&InputConfig::default().with_pull(Pull::Up));
+        wake.set_input_enable(true);
+        // M5GFX reads right after; a little time for the GT911 to load its
+        // configuration costs nothing at `open`.
+        delay.delay_millis(50);
         self.count = 0;
         self.last_read = None;
         self.clear_report()
