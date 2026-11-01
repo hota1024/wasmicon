@@ -149,7 +149,7 @@ Rules:
 - The out-pointer is written only on success. On error its contents are undefined (the host need not write it).
 - The out-pointer and `[buf, buf+cap)` must lie inside `memory`; out of range traps. No alignment is required (the host writes byte by byte).
 - In a function that returns `list<u8>`, if the requested length (such as a `len` argument) exceeds `cap`, the host returns `invalid-argument`. The guest is always responsible for passing a sufficient `cap`.
-- In v0.1, `i2c.read` / `i2c.write-read` / `spi.transfer` / `assets.blob.read` always set `len-out` equal to the requested length on success. `len-out` exists for future variable-length APIs (UART receive and the like).
+- In v0.1, `i2c.read` / `i2c.write-read` / `spi.transfer` / `assets.blob.read` always set `len-out` equal to the requested length on success. `len-out` exists for variable-length APIs. The first is `touch.panel.read`: it requests `4 * max-points` bytes and sets `len-out` to 4 bytes per point touched, possibly 0.
 
 ### 4.5 Summary of deviations
 
@@ -184,7 +184,7 @@ A resource handle is an `i32` (interpreted as an unsigned u32). The meaning of t
 
 ### 5.3 Handle limits
 
-The host guarantees at least this many simultaneous handles per type: `gpio.pin` 16, `i2c.bus` 2, `spi.bus` 2, `assets.blob` 4. Beyond that: `out-of-memory`. `display.screen` is one per display `index`; a second `open` of the same index is `busy`.
+The host guarantees at least this many simultaneous handles per type: `gpio.pin` 16, `i2c.bus` 2, `spi.bus` 2, `assets.blob` 4. Beyond that: `out-of-memory`. `display.screen` is one per display `index`; a second `open` of the same index is `busy`. The same holds for `touch.panel`.
 
 ---
 
@@ -327,6 +327,18 @@ The device layer (docs/device-layer.md §4). The host port implements it with a 
 | `[resource-drop]screen` | `(param i32)` | `(self)` |
 
 `pixel-format` has one case, `rgb565` = 0: two bytes per pixel, high byte first. `write-rect` takes exactly `w * h * 2` bytes. A rectangle is valid when `w > 0`, `h > 0`, `x + w <= width` and `y + h <= height`; otherwise `invalid-argument`, as is a `fill-rect` color above 0xffff. `width`, `height` and `format` have no error path: an invalid handle reads as 0. `open` of an index without a display is `unsupported`.
+
+### `wasmicon:device/touch@0.1.0`
+
+The device layer (docs/device-layer.md §11). No port implements it yet; every firmware refuses these imports at instantiate (docs/device-layer.md §6).
+
+| Import name | Core Wasm type | Notes |
+|---|---|---|
+| `[static]panel.open` | `(param i32 i32) (result i32)` | `(index, out-handle) -> ec` |
+| `[method]panel.read` | `(param i32 i32 i32 i32 i32) (result i32)` | `(self, max-points, buf, cap, len-out) -> ec` |
+| `[resource-drop]panel` | `(param i32)` | `(self)` |
+
+`read` writes 4 bytes per point: x, then y, each a u16 high byte first, in pixels of display `index` after its rotation. `max-points == 0` is `invalid-argument`, as is `4 * max-points > cap` (§4.4). `len-out` is `4 * n` for `n` points, 0 when nothing touches the panel. `open` of an index without a touch panel is `unsupported`.
 
 ---
 

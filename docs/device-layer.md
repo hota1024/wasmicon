@@ -295,11 +295,10 @@ describe something that does not exist:
    720x1280 (`wasmicon run --display-size 720x1280`), and the panel shows the
    picture (verified on hardware).
 
-## 11. The `touch` interface (proposed)
+## 11. The `touch` interface
 
-**Status: a proposal.** Nothing here is implemented, and the open points are owner
-questions in docs/TODO.md §7. The ABI and D-10 parts need the owner's approval before
-any code (`AGENTS.md`).
+**Status: approved; stage 1 of §11.6 is implemented.** The owner settled
+docs/TODO.md §7-1 ... §7-4 on 2026-11-01, each on the option written here.
 
 ### 11.1 Why touch belongs in the device layer
 

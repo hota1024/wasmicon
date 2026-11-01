@@ -512,3 +512,71 @@ pub mod display {
         }
     }
 }
+
+/// A touch panel over a display that the host drives (device layer,
+/// docs/device-layer.md §11).
+pub mod touch {
+    use super::{Result, check};
+    use crate::generated::touch as raw;
+
+    /// An open touch panel. `Drop` releases the handle.
+    pub struct Panel(u32);
+
+    impl Panel {
+        /// Opens the touch panel over display `index`.
+        ///
+        /// # Errors
+        /// `Unsupported` if the board has no touch panel at `index`, `Busy` if it is
+        /// already open.
+        pub fn open(index: u32) -> Result<Panel> {
+            let mut h: u32 = 0;
+            // SAFETY: `h` is a live `u32` on this stack frame and `&raw mut h` points to it for
+            // the whole call. The host writes at most 4 bytes there, and only on success.
+            check(unsafe { raw::panel_open(index, &raw mut h) })?;
+            Ok(Panel(h))
+        }
+
+        /// Reads the points touched now into `buf`, at most `buf.len() / 4` of them,
+        /// and returns how many there are. Each point is 4 bytes: x, then y, each a
+        /// `u16` high byte first, in display pixels. 0 means no touch.
+        ///
+        /// # Errors
+        /// `InvalidArgument` if `buf` is shorter than one point.
+        pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
+            let cap = buf.len() as u32;
+            let mut len: u32 = 0;
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `buf.as_mut_ptr()` and `cap` describe one live mutable slice
+            // that outlives the call; the host writes at most `cap` bytes into it. `len` is a
+            // live `u32` on this stack frame; the host writes at most 4 bytes there.
+            check(unsafe {
+                raw::panel_read(self.0, cap / 4, buf.as_mut_ptr(), cap, &raw mut len)
+            })?;
+            Ok(len as usize / 4)
+        }
+
+        /// Reads the first point touched now as `(x, y)` in display pixels, or `None`
+        /// when nothing touches the panel.
+        ///
+        /// # Errors
+        /// The errors of [`Panel::read`].
+        pub fn first(&self) -> Result<Option<(u16, u16)>> {
+            let mut p = [0u8; 4];
+            Ok((self.read(&mut p)? > 0).then(|| {
+                (
+                    u16::from_be_bytes([p[0], p[1]]),
+                    u16::from_be_bytes([p[2], p[3]]),
+                )
+            }))
+        }
+    }
+
+    impl Drop for Panel {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is the handle `open` returned and this is its only release.
+            // The host ignores an invalid handle without an error or a trap
+            // (docs/abi-spec.md §5.2). There are no pointer arguments.
+            unsafe { raw::panel_drop(self.0) }
+        }
+    }
+}

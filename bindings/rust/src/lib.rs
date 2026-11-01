@@ -10,4 +10,4 @@ pub mod generated;
 mod hal;
 
 pub use generated::types::ErrorCode;
-pub use hal::{Result, assets, board, display, gpio, i2c, log, spi, time};
+pub use hal::{Result, assets, board, display, gpio, i2c, log, spi, time, touch};

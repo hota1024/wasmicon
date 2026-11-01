@@ -413,3 +413,34 @@ export declare function display_screen_present(self: u32): u32;
  */
 @external("wasmicon:device/display@0.1.0", "[resource-drop]screen")
 export declare function display_screen_drop(self: u32): void;
+
+// ---- wasmicon:device/touch@0.1.0 ----
+
+/**
+ * A touch panel over a display that the host drives (docs/device-layer.md §11).
+ * The host owns the controller: its bus, its calibration and the mapping to the
+ * display's rotation.
+ */
+
+/**
+ * Opens the touch panel over display `index`.
+ * Returns `unsupported` if the board has no touch panel there, and `busy` if it
+ * is already open.
+ */
+@external("wasmicon:device/touch@0.1.0", "[static]panel.open")
+export declare function touch_panel_open(index: u32, out: usize): u32;
+
+/**
+ * Reads the points touched now, at most `max-points` of them.
+ * Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
+ * display after its configured rotation. An empty list means no touch.
+ * Returns `invalid-argument` if `max-points` is 0.
+ */
+@external("wasmicon:device/touch@0.1.0", "[method]panel.read")
+export declare function touch_panel_read(self: u32, maxPoints: u32, buf: usize, cap: u32, lenOut: usize): u32;
+
+/**
+ * Releases a `panel` handle. Invalid handles are ignored (docs/abi-spec.md §5.2).
+ */
+@external("wasmicon:device/touch@0.1.0", "[resource-drop]panel")
+export declare function touch_panel_drop(self: u32): void;

@@ -45,6 +45,8 @@ pub struct Interfaces {
     /// Empty exactly when `display` is false; the host's built-in mock is not
     /// listed, since it needs no entry.
     pub display_drivers: &'static [&'static str],
+    /// `wasmicon:device/touch` (docs/device-layer.md §11).
+    pub touch: bool,
 }
 
 impl Interfaces {
@@ -59,6 +61,7 @@ impl Interfaces {
         assets: true,
         display: false,
         display_drivers: &[],
+        touch: false,
     };
 
     /// Every HAL interface and the display: the ILI9341 backend in

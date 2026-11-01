@@ -6,4 +6,5 @@ package wasmicon:device@0.1.0;
 world app {
     include wasmicon:hal/app@0.1.0;
     import display;
+    import touch;
 }

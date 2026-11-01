@@ -471,6 +471,37 @@ uint32_t wasmicon_display_screen_present(uint32_t self);
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[resource-drop]screen")
 void wasmicon_display_screen_drop(uint32_t self);
 
+// ---- wasmicon:device/touch@0.1.0 ----
+
+/**
+ * A touch panel over a display that the host drives (docs/device-layer.md §11).
+ * The host owns the controller: its bus, its calibration and the mapping to the
+ * display's rotation.
+ */
+
+/**
+ * Opens the touch panel over display `index`.
+ * Returns `unsupported` if the board has no touch panel there, and `busy` if it
+ * is already open.
+ */
+WASMICON_IMPORT("wasmicon:device/touch@0.1.0", "[static]panel.open")
+uint32_t wasmicon_touch_panel_open(uint32_t index, uint32_t *out);
+
+/**
+ * Reads the points touched now, at most `max-points` of them.
+ * Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
+ * display after its configured rotation. An empty list means no touch.
+ * Returns `invalid-argument` if `max-points` is 0.
+ */
+WASMICON_IMPORT("wasmicon:device/touch@0.1.0", "[method]panel.read")
+uint32_t wasmicon_touch_panel_read(uint32_t self, uint32_t max_points, uint8_t *buf, uint32_t cap, uint32_t *len_out);
+
+/**
+ * Releases a `panel` handle. Invalid handles are ignored (docs/abi-spec.md §5.2).
+ */
+WASMICON_IMPORT("wasmicon:device/touch@0.1.0", "[resource-drop]panel")
+void wasmicon_touch_panel_drop(uint32_t self);
+
 #ifdef __cplusplus
 }
 #endif
