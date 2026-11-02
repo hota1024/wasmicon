@@ -442,6 +442,16 @@ impl TouchConfig {
         }
     }
 
+    /// The display driver the panel lies over (`check`).
+    #[must_use]
+    pub const fn display_driver(&self) -> &'static str {
+        match self {
+            TouchConfig::Tab5 => "tab5",
+            // It shares the ILI9341's bus.
+            TouchConfig::Xpt2046 { .. } => "ili9341",
+        }
+    }
+
     /// GPIOs the backend drives or reads. The guest may not open them and
     /// no role may name them.
     #[must_use]

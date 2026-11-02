@@ -573,12 +573,16 @@ from `[board.<name>.touch]`, after the display line:
 
 ```
 @touch=tab5
+@touch=xpt2046 cs=16 irq=17 x-min=220 x-max=3830 y-min=3900 y-max=340
 ```
 
 `deploy` writes version 3 only when the app has a touch entry for that board, for
 the reason above: a firmware that reads at most version 2 keeps running every app
-without touch. The entry needs a matching display entry (`tab5` touch over the
-`tab5` display). The boot banner adds ` touch=tab5`.
+without touch. The entry needs a matching display entry: `tab5` touch over the
+`tab5` display, `xpt2046` over `ili9341`, whose SPI bus it shares. An XPT2046's
+`cs` and `irq` get the checks of the display pins, and its calibration (the raw
+readings at the panel's edges at rotation 0) is 12-bit with distinct ends. The
+boot banner adds ` touch=...`.
 
 #### Checked twice (CLI and firmware)
 

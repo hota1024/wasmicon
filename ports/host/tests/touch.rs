@@ -105,3 +105,20 @@ fn a_read_returns_at_most_eight_points_in_full() {
         out.trace
     );
 }
+
+/// `[buf, buf+cap)` outside memory traps whether or not a finger is down,
+/// though a read with no touch writes nothing (docs/abi-spec.md §4.4).
+#[test]
+fn a_buffer_past_memory_traps_without_a_touch_too() {
+    let wasm = wat_to_wasm("touch_oob.wat");
+    for script in ["-\n", "1,2\n"] {
+        let opts = wasmicon_host::Options {
+            touch_script: wasmicon_host::parse_touch_script(script).unwrap(),
+            ..Default::default()
+        };
+        match wasmicon_host::run_wasm_opts(&wasm, opts) {
+            Ok(_) => panic!("{script:?}: ran to the end"),
+            Err(e) => assert_eq!(e.kind().name(), "trap", "{script:?}: {}", e.reason()),
+        }
+    }
+}

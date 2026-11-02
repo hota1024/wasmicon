@@ -338,17 +338,37 @@ fn build_touch(
             }
         );
     }
+    // `check` answers `BadTouch` for the display and for the calibration
+    // alike; these say which.
+    match display {
+        None => bail!("{at}: needs [board.{}.display]", board.wiring),
+        Some(d) if d.driver() != t.display_driver() => bail!(
+            "{at}: driver = \"{}\" needs the display driver \"{}\", not \"{}\"",
+            t.driver(),
+            t.display_driver(),
+            d.driver()
+        ),
+        Some(_) => {}
+    }
+    if let TouchConfig::Xpt2046 {
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        ..
+    } = t
+    {
+        for (axis, lo, hi) in [("x", x_min, x_max), ("y", y_min, y_max)] {
+            if lo == hi || lo.max(hi) > roles::XPT2046_RAW_MAX {
+                bail!(
+                    "{at}: {axis}-min and {axis}-max must differ and be at most {}",
+                    roles::XPT2046_RAW_MAX
+                );
+            }
+        }
+    }
     t.check(display, &Limits::of(board), roles)
-        .map_err(|e| match display {
-            _ if e != roles::RolesError::BadTouch => anyhow::anyhow!("{at}: {}", e.reason()),
-            None => anyhow::anyhow!("{at}: needs [board.{}.display]", board.wiring),
-            Some(d) => anyhow::anyhow!(
-                "{at}: driver = \"{}\" needs the display driver \"{}\", not \"{}\"",
-                t.driver(),
-                t.driver(),
-                d.driver()
-            ),
-        })?;
+        .map_err(|e| anyhow::anyhow!("{at}: {}", e.reason()))?;
     Ok(t)
 }
 
@@ -938,6 +958,20 @@ driver = "tab5"
                  [board.esp32s3.touch]\ndriver = \"xpt2046\"\ncs = 14\n\
                  x-min = 200\nx-max = 3900\ny-min = 200\ny-max = 3900",
                 "two roles share one gpio",
+            ),
+            (
+                "xpt2046-same-ends",
+                "[board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n\
+                 [board.esp32s3.touch]\ndriver = \"xpt2046\"\ncs = 16\n\
+                 x-min = 200\nx-max = 200\ny-min = 200\ny-max = 3900",
+                "x-min and x-max must differ and be at most 4095",
+            ),
+            (
+                "xpt2046-past-12-bit",
+                "[board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n\
+                 [board.esp32s3.touch]\ndriver = \"xpt2046\"\ncs = 16\n\
+                 x-min = 200\nx-max = 3900\ny-min = 200\ny-max = 5000",
+                "y-min and y-max must differ and be at most 4095",
             ),
             (
                 "xpt2046-rp2350",

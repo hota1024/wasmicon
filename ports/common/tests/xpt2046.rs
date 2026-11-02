@@ -63,6 +63,8 @@ struct TouchBoard {
     pressed: bool,
     /// PENIRQ stays high under the finger.
     irq_high_while_pressed: bool,
+    /// MISO stuck at this byte: every reply byte, the BUSY bit included.
+    miso: Option<u8>,
     /// What Z1 and Z2 read.
     z: (u16, u16),
     x: u16,
@@ -87,7 +89,7 @@ impl Board for TouchBoard {
     }
 
     fn gpio_read(&mut self, _index: u32) -> BoardResult<Level> {
-        Ok(if self.pressed {
+        Ok(if self.pressed && !self.irq_high_while_pressed {
             Level::Low
         } else {
             Level::High
@@ -131,9 +133,15 @@ impl Board for TouchBoard {
 
     fn spi_transfer(&mut self, _index: u32, data: &[u8], buf: &mut [u8]) -> BoardResult<usize> {
         self.log.push(Ev::Transfer(data[0]));
+        if let Some(m) = self.miso {
+            buf[..3].fill(m);
+            return Ok(3);
+        }
         let v: u16 = match data[0] {
             0xD0 => self.x,
             0x90 => self.y,
+            // Lifted, Z1 reads 0.
+            0xB0 if !self.pressed => 0,
             0xB0 => self.z.0,
             0xC0 => self.z.1,
             _ => 0,
@@ -165,6 +173,7 @@ fn a_read_samples_at_the_slow_clock_and_gives_the_bus_back() {
     let mut b = TouchBoard {
         pressed: true,
         irq_high_while_pressed: false,
+        miso: None,
         z: (1000, 2000),
         x: 100,
         y: 200,
@@ -212,9 +221,11 @@ fn a_read_samples_at_the_slow_clock_and_gives_the_bus_back() {
     ]);
     assert_eq!(b.log, want);
 
-    // PENIRQ high: no touch, and the bus is left alone, except that every
-    // 16th such read samples anyway, in case PENIRQ has stopped working.
+    // Lifted: the read right after a touch samples and sees it. Then PENIRQ
+    // high leaves the bus alone, except that every 16th such read samples
+    // anyway, in case PENIRQ has stopped working.
     b.pressed = false;
+    assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
     b.log.clear();
     for _ in 0..15 {
         assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
@@ -227,21 +238,55 @@ fn a_read_samples_at_the_slow_clock_and_gives_the_bus_back() {
 }
 
 #[test]
+fn a_touch_the_idle_sample_finds_is_followed_without_penirq() {
+    // PENIRQ stuck high under the finger: the 16th read finds the touch,
+    // and every read after it samples until the finger lifts.
+    let mut b = TouchBoard {
+        pressed: true,
+        irq_high_while_pressed: true,
+        miso: None,
+        z: (1000, 2000),
+        x: 100,
+        y: 200,
+        log: Vec::new(),
+    };
+    let mut t = Xpt2046::new(0, 16, Some(17), CAL, 0);
+    assert!(t.init(&mut b).is_ok());
+    b.log.clear();
+    let mut buf = [0u8; 4];
+    for _ in 0..15 {
+        assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
+    }
+    assert!(b.log.is_empty(), "{:?}", b.log);
+    for _ in 0..3 {
+        assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 1);
+    }
+    // Lifted: one more sample sees it, then the bus is left alone again.
+    b.pressed = false;
+    assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
+    b.log.clear();
+    assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
+    assert!(b.log.is_empty(), "{:?}", b.log);
+}
+
+#[test]
 fn a_stuck_bus_is_no_touch() {
     // MISO held low reads every conversion as 0, PENIRQ low or not.
     let mut b = TouchBoard {
         pressed: true,
         irq_high_while_pressed: false,
-        z: (0, 0),
-        x: 0,
-        y: 0,
+        miso: Some(0),
+        z: (1000, 2000),
+        x: 100,
+        y: 200,
         log: Vec::new(),
     };
     let mut t = Xpt2046::new(0, 16, Some(17), CAL, 0);
     assert!(t.init(&mut b).is_ok());
     let mut buf = [0u8; 4];
     assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
-    // Held high it reads 4095 everywhere: no touch either.
-    b.z = (4095, 4095);
+    // Held high it reads 4095 everywhere, the BUSY bit masked off: no touch
+    // either.
+    b.miso = Some(0xFF);
     assert_eq!(t.read(&mut b, &mut buf).unwrap_or(99), 0);
 }

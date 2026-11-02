@@ -91,6 +91,9 @@ const GT911_MAX: usize = 5;
 /// The GT911 keeps a report until the status is cleared, so after a longer
 /// gap between reads the one it holds is old. M5GFX's limit.
 const GT911_STALE: Duration = Duration::from_millis(128);
+/// How long a read after such a gap waits for the next report: M5GFX's
+/// 24 ms, over two report periods of the GT911.
+const GT911_FRESH: Duration = Duration::from_millis(24);
 
 /// Lane rate asked of esp-hal. It assumes a 40 MHz PLL reference this
 /// silicon does not have, so this runs at half until `tab5_dpi::retune_pll`
@@ -410,7 +413,8 @@ impl Tab5 {
     ///
     /// The GT911 reports at its own rate. A read that finds no new report
     /// returns the last one, as M5GFX does; lifting the finger arrives as a
-    /// report with no points.
+    /// report with no points. A read after a gap of `GT911_STALE` drops the
+    /// report held and waits up to `GT911_FRESH` for a new one.
     ///
     /// # Errors
     /// An I2C transfer failed.
@@ -419,17 +423,25 @@ impl Tab5 {
         let stale = self.last_read.is_none_or(|t| now - t >= GT911_STALE);
         self.last_read = Some(now);
         if stale {
-            // Not waiting for a fresh report inside a host call: the guest
-            // reads again on its next frame.
             self.count = 0;
             self.clear_report()?;
         }
-        let mut status = [0u8; 1];
-        self.i2c
-            .write_read(self.gt911, &GT911_STATUS, &mut status)
-            .map_err(drop)?;
-        if status[0] & 0x80 != 0 {
-            let n = usize::from(status[0] & 0x0F).min(GT911_MAX);
+        // After a gap, wait for the report that follows the clear: returning
+        // at once would answer no touch to every read of a guest that reads
+        // less often than `GT911_STALE`, finger down or not. No report within
+        // `GT911_FRESH` is no touch.
+        let status = loop {
+            let mut status = [0u8; 1];
+            self.i2c
+                .write_read(self.gt911, &GT911_STATUS, &mut status)
+                .map_err(drop)?;
+            if !stale || status[0] & 0x80 != 0 || now.elapsed() >= GT911_FRESH {
+                break status[0];
+            }
+            Delay::new().delay_millis(1);
+        };
+        if status & 0x80 != 0 {
+            let n = usize::from(status & 0x0F).min(GT911_MAX);
             let mut raw = [0u8; 8 * GT911_MAX];
             if n > 0 {
                 self.i2c
