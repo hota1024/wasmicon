@@ -6,7 +6,9 @@
 //!   read closes the bus, opens it at `SPI_HZ`, samples, and opens it again
 //!   at the panel's clock. Both chip selects are high while the bus changes.
 //! - With `irq` wired, a read that finds PENIRQ high (no touch) touches no
-//!   bus, except every `IDLE_CHECK`th one, which samples anyway. PENIRQ works
+//!   bus, except every `IDLE_CHECK`th one, which samples anyway, and one
+//!   right after a read that found a touch, so a finger that idle sample
+//!   finds is followed without PENIRQ until it lifts. PENIRQ works
 //!   only after a control byte with PD = 00: out of power-on it stayed high
 //!   under a finger until one was sent, so `init` sends one. In some runs
 //!   with the panel's SDO also on MISO, touches then went unseen for
@@ -73,6 +75,8 @@ pub struct Xpt2046 {
     ready: bool,
     /// Reads since the last one that sampled.
     idle: u32,
+    /// The last read found a touch.
+    down: bool,
 }
 
 impl Xpt2046 {
@@ -88,6 +92,7 @@ impl Xpt2046 {
             rotation,
             ready: false,
             idle: 0,
+            down: false,
         }
     }
 
@@ -122,6 +127,7 @@ impl Xpt2046 {
             return Ok(0);
         }
         if let Some(irq) = self.irq
+            && !self.down
             && b.gpio_read(irq)? == Level::High
         {
             self.idle += 1;
@@ -130,9 +136,11 @@ impl Xpt2046 {
             }
         }
         self.idle = 0;
+        self.down = false;
         let Some((x, y)) = self.on_slow_bus(b, Self::sample_selected)? else {
             return Ok(0);
         };
+        self.down = true;
         let (x, y) = to_pixels(x, y, &self.cal, self.rotation);
         buf[..2].copy_from_slice(&x.to_be_bytes());
         buf[2..4].copy_from_slice(&y.to_be_bytes());
@@ -140,7 +148,8 @@ impl Xpt2046 {
     }
 
     /// Runs `f` with the bus at `SPI_HZ` and `cs` low, then gives the bus
-    /// back at the panel's clock.
+    /// back at the panel's clock. A failure while sampling wins over one
+    /// to give the bus back, being the first.
     fn on_slow_bus<B: Board, T>(
         &self,
         b: &mut B,
@@ -158,8 +167,8 @@ impl Xpt2046 {
             Err(e) => Err(e),
         };
         b.spi_close(self.spi);
-        b.spi_open(self.spi, ili9341::SPI_HZ, SpiMode::Mode0)?;
-        r
+        let back = b.spi_open(self.spi, ili9341::SPI_HZ, SpiMode::Mode0);
+        r.and_then(|v| back.map(|()| v))
     }
 
     /// The raw point, or `None` under `Z_MIN`; `cs` is low.
@@ -185,10 +194,12 @@ impl Xpt2046 {
     }
 
     /// One conversion: the control byte, then 12 bits in the next two bytes.
+    /// The bit above them is the BUSY clock, which a stuck or noisy MISO can
+    /// set, so it is masked off.
     fn convert<B: Board>(&self, b: &mut B, control: u8) -> BoardResult<u16> {
         let mut rx = [0u8; 3];
         b.spi_transfer(self.spi, &[control, 0, 0], &mut rx)?;
-        Ok(u16::from_be_bytes([rx[1], rx[2]]) >> 3)
+        Ok((u16::from_be_bytes([rx[1], rx[2]]) >> 3) & 0x0FFF)
     }
 }
 

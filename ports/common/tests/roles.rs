@@ -190,6 +190,12 @@ fn at_most_max_roles_entries() {
         }),
     };
     let mut body = [0u8; roles::MAX_BODY];
+    // Without the touch entry the body is version 2, which a firmware from
+    // before version 3 reads only up to its own limit of 256 bytes.
+    let v2 = Wiring { touch: None, ..w };
+    assert_eq!(v2.version(), 2);
+    let n = roles::encode_body(&v2, &mut body);
+    assert!(n < 256, "{n} bytes in version 2");
     let n = roles::encode_body(&w, &mut body);
     assert!(n < roles::MAX_BODY, "{n} bytes");
     let back = roles::parse_body(&body[..n], 3, &limits)

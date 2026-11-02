@@ -899,6 +899,10 @@ impl<B: Board> Resolver for Hal<B> {
                         ErrorCode::InvalidArgument.status()
                     }
                     Ok(index) => {
+                        // docs/abi-spec.md §4.4: `[buf, buf+cap)` lies in memory.
+                        // Checked before the read, as how much it writes
+                        // depends on the finger.
+                        guest_slice(mem, args[2], u64::from(cap))?;
                         // "At most `max-points`": the port's own limit may be lower.
                         let want = 4 * (max as usize).min(MAX_TOUCH_POINTS);
                         let buf = &mut self.scratch[..want];
