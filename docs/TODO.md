@@ -1623,3 +1623,28 @@ recommended option.**
       `apps/touch-demo-rs` has the Tab5 entries. **Run on the Tab5** (2026-11-01,
       docs/verification-report.md §38): GT911 at 0x14, one- and two-point reads, the
       board's trace equal to the host's with the reads replayed
+- [ ] (5) Run the review fixes on hardware (commit 9cb5623, 2026-11-02; none of it has
+      run on a board yet):
+      - Tab5: `apps/touch-demo-rs` as before, and once with a frame longer than 128 ms
+        (a sleep per frame), which before the fix never saw a touch: a read after such
+        a gap now waits up to 24 ms for a fresh GT911 report (docs/device-layer.md §11.4)
+      - ESP32-S3: `apps/touch-demo-rs` as before (points, CLEAR, DONE), and the trace
+        still equal to the host's. Following a finger with PENIRQ stuck high is covered
+        only by `ports/common/tests/xpt2046.rs`
+- [ ] (6) Find why touches went unseen for minutes on the ESP32-S3 while the panel's SDO
+      was also on MISO (docs/verification-report.md §39). The idle sample every 16th
+      read is a fallback, not a fix
+- [ ] (7) Review findings left for later (`/code-review` of the touch branch, 2026-11-02):
+      - `Hal::with_touch` builds the XPT2046 backend from the display entry, so it must
+        follow `with_display`; take both in one call, or derive the backend at `open`
+      - each XPT2046 read closes and reopens the SPI bus twice to switch its clock (on
+        the ESP32-S3 that also reconfigures SCK, MOSI and MISO); a `Board` method that
+        changes only the clock would avoid it
+      - `touch_reads` in `tools/wasmicon-cli/src/trace.rs` copies `i2c_reads`;
+        `describe_touch` / `describe_display` in `tools/wasmicon-cli/src/pack.rs` format
+        the whole banner to cut one entry out, into a fixed 256-byte buffer
+      - `TouchConfig::Tab5` reserves GPIO 23 as a literal, unrelated to `p.GPIO23` in
+        `ports/esp32p4/src/main.rs`; a shared constant or a test should tie them
+      - rp2040, rp2350 and esp32c5 parse an `@touch=` line and print it in the boot
+        line, but do not call `with_touch`, so its pins are not reserved. Not reachable
+        through the CLI, whose profiles refuse the entry
