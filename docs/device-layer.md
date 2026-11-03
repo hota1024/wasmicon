@@ -96,6 +96,8 @@ interface display {
     enum pixel-format {
         /// 16 bits per pixel, 5-6-5, high byte first.
         rgb565,
+        /// 8 bits per pixel, an index into the palette set by `set-palette`.
+        indexed8,
     }
 
     /// A display.
@@ -123,6 +125,10 @@ interface display {
         /// `pixels` is not exactly `w * h` pixels long.
         write-rect: func(x: u32, y: u32, w: u32, h: u32, pixels: list<u8>) -> result<_, error-code>;
 
+        /// Sets a 256-entry palette (512 bytes, RGB565 high byte first) and switches
+        /// the screen to `indexed8`. Returns `invalid-argument` for any other length.
+        set-palette: func(colors: list<u8>) -> result<_, error-code>;
+
         /// Makes everything drawn so far visible.
         /// Backends that draw straight to the panel return at once; backends with a frame
         /// buffer flush or swap it here.
@@ -138,8 +144,17 @@ All types are inside the subset of docs/abi-spec.md §2.1. Notes:
   over. A backend whose memory is little-endian (the DSI frame buffer) swaps while it
   copies. The order is part of the ABI because the `write-rect` CRC in the trace
   (§7) must be the same on every backend.
-- **Only `rgb565` for now.** `format` exists so a later format does not change the
-  signature of `write-rect`. A guest that sees a format it does not know stops.
+- **`indexed8` is chosen by the guest, through `set-palette`** (docs/TODO.md §6-9).
+  `format` exists so a later format does not change the signature of `write-rect`;
+  `indexed8` is that case. A screen opens in `rgb565`; `set-palette` switches it to
+  `indexed8` until the handle is dropped, and from then on `write-rect` takes one
+  index per pixel and `fill-rect` an index. The palette belongs to the handle (512
+  bytes in the host) and is applied when pixels are written: every backend keeps
+  RGB565, so a new palette does not recolor what is on the screen, and a guest
+  whose palette change must reach every pixel sends them again. The host expands
+  indices in `ports/common`, one converter for all backends, so which color an
+  index gives depends on the palette bytes alone. A guest that sees a format it
+  does not know stops.
 - **`fill-rect` exists for speed.** Each host call is expensive and each byte
   crosses the interpreter (docs/TODO.md §4): clearing 720x1280 through `write-rect` would copy 1.8 MB
   out of the interpreter.

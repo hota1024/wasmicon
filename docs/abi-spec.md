@@ -323,10 +323,11 @@ The device layer (docs/device-layer.md §4). The host port implements it with a 
 | `[method]screen.format` | `(param i32) (result i32)` | `(self) -> pixel-format` |
 | `[method]screen.fill-rect` | `(param i32 i32 i32 i32 i32 i32) (result i32)` | `(self, x, y, w, h, color) -> ec` |
 | `[method]screen.write-rect` | `(param i32 i32 i32 i32 i32 i32 i32) (result i32)` | `(self, x, y, w, h, pixels-ptr, pixels-len) -> ec` |
+| `[method]screen.set-palette` | `(param i32 i32 i32) (result i32)` | `(self, colors-ptr, colors-len) -> ec` |
 | `[method]screen.present` | `(param i32) (result i32)` | `(self) -> ec` |
 | `[resource-drop]screen` | `(param i32)` | `(self)` |
 
-`pixel-format` has one case, `rgb565` = 0: two bytes per pixel, high byte first. `write-rect` takes exactly `w * h * 2` bytes. A rectangle is valid when `w > 0`, `h > 0`, `x + w <= width` and `y + h <= height`; otherwise `invalid-argument`, as is a `fill-rect` color above 0xffff. `width`, `height` and `format` have no error path: an invalid handle reads as 0. `open` of an index without a display is `unsupported`.
+`pixel-format` has two cases. `rgb565` = 0: two bytes per pixel, high byte first; `write-rect` takes exactly `w * h * 2` bytes and a `fill-rect` color above 0xffff is `invalid-argument`. `indexed8` = 1: one palette index per pixel; `write-rect` takes exactly `w * h` bytes and a `fill-rect` color above 255 is `invalid-argument`. A screen opens in `rgb565`; `set-palette` with exactly 512 bytes (256 RGB565 values, high byte first) switches it to `indexed8` for the rest of the handle's life, and any other length is `invalid-argument` and changes nothing. The palette is applied when pixels are written, so a new palette does not recolor what is on the screen. A rectangle is valid when `w > 0`, `h > 0`, `x + w <= width` and `y + h <= height`; otherwise `invalid-argument`. `width`, `height` and `format` have no error path: an invalid handle reads as 0. `open` of an index without a display is `unsupported`.
 
 ### `wasmicon:device/touch@0.1.0`
 
@@ -439,7 +440,7 @@ When the port layer is built with `WASMICON_TRACE` enabled, it writes every host
   (`wasmicon trace replay` extracts it in the `--i2c-replay` format). The value is decided by the external
   device, so **if the sensor reading differs, a mismatch here** is correct.
 - Calls to the `time` interface are **not included** in the trace (they depend on real time).
-- For `spi.write`, `data` is the CRC-32 only (to check that pixel data matches). The same holds for the `pixels` of `display.screen.write-rect`.
+- For `spi.write`, `data` is the CRC-32 only (to check that pixel data matches). The same holds for the `pixels` of `display.screen.write-rect`, in either pixel format (in `indexed8` it is the CRC-32 of the indices). The `colors` of `display.screen.set-palette` follow the general `list<u8>` rule above.
 - `display.screen.width` / `height` / `format` return a value without a `result`; the trace prints that value where a status would be (`< 320`).
 - **Work a device backend does inside the host is not traced.** The SPI and GPIO traffic of a display backend is not a guest host call; only the `display` calls are. A display app therefore traces the same on every backend of the same size (docs/device-layer.md §7).
 - **A GPIO number that `board.pin-by-role` returned is written as the role name.** The numbers differ per

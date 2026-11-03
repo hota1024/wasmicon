@@ -1454,7 +1454,7 @@ Also agreed that day: refuse an app early when the board lacks the device; sever
 backends per interface selected by board configuration; a small API (screen size,
 `fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
-recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Implementation status is under Implementation below.
+recommended option**, §6-8 on 2026-10-28, and §6-9 on 2026-11-03 (deferred on 2026-10-29). Implementation status is under Implementation below.
 
 ### Open questions (owner decisions; the text cites them as §6-1 ... §6-9)
 
@@ -1488,14 +1488,29 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 deferred on 2026-10-29. Imp
       `ports/esp32p4/src/tab5_ili9881c.rs` is extracted from M5GFX's `Panel_ILI9881C.hpp`, whose
       header names LovyanGFX's FreeBSD license. LovyanGFX's `license.txt` is copied unchanged
       into `ports/esp32p4/notices/lovyangfx/`, next to M5GFX's MIT notice in `../m5gfx/`
-- [ ] **§6-9 An indexed pixel format for `display`?** **Owner decision 2026-10-29: option (c),
+- [x] **§6-9 An indexed pixel format for `display`?** **Owner decision 2026-11-03: option (b),
+      add `indexed8` and `set-palette`, inside `wasmicon:device@0.1.0`** (no version bump: the
+      device package has no users outside this repository, and firmware and apps are built
+      together). The DOOM port asked again on 2026-11-02 with trace-off board numbers: the
+      guest's index-to-RGB565 loop is 32 % of a 941 ms ESP32-S3 frame, and since it runs in
+      the same interpreter as DOOM's renderer, the interpreter work of §4 shortens both and
+      leaves the share as it is, so waiting for §4 (the 2026-10-29 decision, option (c)) no
+      longer buys a better answer. Semantics as decided: `set-palette` (exactly 512 bytes)
+      switches the handle to `indexed8` for its life; `fill-rect` takes an index; the palette
+      is applied at `write-rect`, not at `present`; no new error code
+      (docs/device-layer.md §4, docs/abi-spec.md §7). One converter in `ports/common`: the
+      `ili9341` backend expands under one address window, the others through the default
+      `Board::display_write_rect_indexed`. Host tests: `ports/host/tests/display_indexed.rs`
+      (320 and 720 columns) and `ports/host/tests/ili9341.rs` (same trace and picture as the
+      mock). Not yet run on a board; the DOOM port measures the frame times on the ESP32-S3
+      and the Tab5. The record of the 2026-10-29 question follows.
+      Earlier: **Owner decision 2026-10-29: option (c),
       decide after the interpreter work of §4, with new numbers.** Nothing is added to the
       imports until then; apps convert in the guest. Proposed by the DOOM port (2026-10-29,
       docs/verification-report.md §34): add `indexed8` to `pixel-format` and a `set-palette`
       (256 RGB565 entries, sent when they change), so a backend converts while it sends and the
       guest's per-pixel loop goes away. **It adds to the `wasmicon:device` imports, so it needs
       the owner** (AGENTS.md; docs/device-layer.md §4 kept `format` for exactly this).
-      Not implemented.
     - What it would save: DOOM spends 0.375 s of a 0.487 s panel frame converting 64,000 pixels
       in the guest (4.9 ms on the host); the bytes crossing `write-rect` halve (128 -> 64 KB).
       Not DOOM only: any app with indexed art (sprites, tiles, GIF-style assets, emulated

@@ -169,3 +169,25 @@ fn the_backend_bus_and_pins_are_not_the_guests() {
          < 0 [2]\n"
     );
 }
+
+#[test]
+fn indexed_writes_trace_the_same_and_draw_the_same_picture_on_an_ili9341() {
+    let wasm = wat_to_wasm("display_indexed.wat");
+    let mock = run(&wasm, None);
+    let lcd = run(&wasm, Some(LCD));
+
+    assert_eq!(
+        lcd.trace, mock.trace,
+        "the ILI9341 backend changed the guest's trace"
+    );
+    let panel = decode(&lcd.bus_log, 20, 21);
+    let frame = mock.frame.expect("the mock display");
+    assert!(
+        panel.pixels == frame.pixels,
+        "the panel received a different picture from the one the mock shows"
+    );
+    // One address window per successful draw (one fill, two writes): the
+    // backend expands indices under the window instead of opening one per row.
+    let ramwr = panel.commands.iter().filter(|&&c| c == 0x2C).count();
+    assert_eq!(ramwr, 3);
+}

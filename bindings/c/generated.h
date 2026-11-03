@@ -408,10 +408,14 @@ typedef enum wasmicon_display_pixel_format {
      * 16 bits per pixel, 5-6-5, high byte first.
      */
     WASMICON_DISPLAY_PIXEL_FORMAT_RGB565 = 0,
+    /**
+     * 8 bits per pixel, an index into the palette set by `set-palette`.
+     */
+    WASMICON_DISPLAY_PIXEL_FORMAT_INDEXED8 = 1,
 } wasmicon_display_pixel_format_t;
 
 /** Number of cases. Any other value is invalid (docs/abi-spec.md §4.1). */
-#define WASMICON_DISPLAY_PIXEL_FORMAT_COUNT 1u
+#define WASMICON_DISPLAY_PIXEL_FORMAT_COUNT 2u
 
 /**
  * Opens the display.
@@ -442,7 +446,7 @@ uint32_t wasmicon_display_screen_format(uint32_t self);
 
 /**
  * Fills a rectangle with one color in the pixel format: for `rgb565`, a value
- * up to 0xffff.
+ * up to 0xffff; for `indexed8`, a palette index up to 255.
  * Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
  * if `color` does not fit the format; nothing is drawn then.
  */
@@ -450,12 +454,27 @@ WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.fill-rect")
 uint32_t wasmicon_display_screen_fill_rect(uint32_t self, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 
 /**
- * Writes `w * h` pixels, row by row, into a rectangle.
+ * Writes `w * h` pixels, row by row, into a rectangle: two bytes each for
+ * `rgb565`, one byte each for `indexed8`.
  * Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
  * if `pixels` is not exactly `w * h` pixels long; nothing is drawn then.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.write-rect")
 uint32_t wasmicon_display_screen_write_rect(uint32_t self, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t *pixels_ptr, uint32_t pixels_len);
+
+/**
+ * Sets a 256-entry palette and switches the screen to `indexed8`.
+ * From here on `format` returns `indexed8`, `write-rect` takes one byte per
+ * pixel and `fill-rect` takes an index. `colors` is 256 RGB565 values, high
+ * byte first. The palette is applied when pixels are written: calling this
+ * again replaces it for later writes, and the pixels already on the screen
+ * keep their colors. There is no way back to `rgb565` but dropping the screen
+ * and opening it again.
+ * Returns `invalid-argument` if `colors` is not exactly 512 bytes long;
+ * nothing changes then.
+ */
+WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.set-palette")
+uint32_t wasmicon_display_screen_set_palette(uint32_t self, const uint8_t *colors_ptr, uint32_t colors_len);
 
 /**
  * Makes everything drawn so far visible.
