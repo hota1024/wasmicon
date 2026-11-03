@@ -91,6 +91,7 @@ Options for run:
     --asset <name>=<file>    serve <file> as the asset <name> (repeatable; on top of [assets])
     --display-out <file>     write the mock display's picture (after the last present) as a PNG
     --display-size <W>x<H>   size of the mock display (default 320x240; the Tab5 panel is 720x1280)
+    --display-scale <n>      panel pixels per guest pixel on the mock display, 1 to 4 (default 1)
     --touch-script <file>    what the mock touch panel reports, one line per read (`-` or `x,y ...`)
 
 Common:
@@ -238,6 +239,7 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     let mut overrides: Vec<(String, PathBuf)> = Vec::new();
     let mut display_out: Option<PathBuf> = None;
     let mut display_size: Option<(u32, u32)> = None;
+    let mut display_scale: Option<u32> = None;
     let mut touch_script: Option<PathBuf> = None;
 
     let mut args = args.peekable();
@@ -255,6 +257,10 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
             "--display-size" => {
                 let v = args.next().context("--display-size needs <W>x<H>")?;
                 display_size = Some(parse_display_size(&v)?);
+            }
+            "--display-scale" => {
+                let v = args.next().context("--display-scale needs a number")?;
+                display_scale = Some(parse_display_scale(&v)?);
             }
             "--touch-script" => {
                 let v = args.next().context("--touch-script needs a file")?;
@@ -286,6 +292,13 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
     }
 
     let path = path.context("pass the .wasm to run\n\n".to_string() + USAGE)?;
+    // As `check` / `deploy` refuse it for a board (docs/TODO.md §6-10).
+    if let Some(n) = display_scale {
+        let (w, h) = display_size.unwrap_or(wasmicon_host::hal::MOCK_DISPLAY);
+        if w % n != 0 || h % n != 0 {
+            bail!("--display-scale {n} does not divide the {w}x{h} display");
+        }
+    }
     // Without `--i2c-replay`, use the manifest default (already resolved
     // relative to the manifest's directory). The `[assets]` table is the
     // base that `--asset` overrides by name.
@@ -319,8 +332,18 @@ fn parse_run(args: impl Iterator<Item = String>) -> Result<run_cmd::Options> {
         assets: assets.into_iter().collect(),
         display_out,
         display_size,
+        display_scale,
         touch_script,
     })
+}
+
+/// 1 to `MAX_SCALE`, as a board's `scale`.
+fn parse_display_scale(v: &str) -> Result<u32> {
+    let max = wasmicon_port::roles::MAX_SCALE;
+    match v.parse::<u32>() {
+        Ok(n) if v.bytes().all(|b| b.is_ascii_digit()) && (1..=max).contains(&n) => Ok(n),
+        _ => bail!("--display-scale takes 1 to {max}, got `{v}`"),
+    }
 }
 
 /// `<W>x<H>`, each 1 to 4096: the mock keeps two RGB565 buffers of that size.
@@ -617,7 +640,7 @@ fn help() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_display_size;
+    use super::{parse_display_scale, parse_display_size};
 
     #[test]
     fn display_size_takes_width_x_height_in_range() {
@@ -634,6 +657,15 @@ mod tests {
             "+720x1280",
         ] {
             assert!(parse_display_size(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn display_scale_takes_1_to_4() {
+        assert_eq!(parse_display_scale("1").unwrap(), 1);
+        assert_eq!(parse_display_scale("4").unwrap(), 4);
+        for bad in ["0", "5", "+2", "2x", ""] {
+            assert!(parse_display_scale(bad).is_err(), "{bad}");
         }
     }
 }

@@ -287,12 +287,12 @@ export class Screen {
     return new Screen(out32[0]);
   }
 
-  /// Width in pixels, after the configured orientation.
+  /// Width in pixels, after the configured orientation and scale.
   width(): u32 {
     return display_screen_width(this.handle);
   }
 
-  /// Height in pixels, after the configured orientation.
+  /// Height in pixels, after the configured orientation and scale.
   height(): u32 {
     return display_screen_height(this.handle);
   }

@@ -561,6 +561,7 @@ Binary (`[role_id u8, gpio u8]`) would be smaller, but text was chosen.
 @display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90
 ```
 
+
 `@` cannot start a role name, so the two never collide. `deploy` writes version 2
 only when the app has a display entry for that board, and version 1 otherwise: a
 firmware that reads only version 1 discards a table it cannot read, roles included,
@@ -583,6 +584,19 @@ without touch. The entry needs a matching display entry: `tab5` touch over the
 `cs` and `irq` get the checks of the display pins, and its calibration (the raw
 readings at the panel's edges at rotation 0) is 12-bit with distinct ends. The
 boot banner adds ` touch=...`.
+
+**Format version 4 adds `scale=` to the display line** (docs/device-layer.md §5.2,
+docs/TODO.md §6-10). Either driver's line may end in ` scale=<n>`, 2 to 4, from the
+entry's `scale`:
+
+```
+@display=tab5 scale=2
+```
+
+`deploy` writes it, and version 4, only when the scale is not 1, for the same reason:
+a firmware that reads at most version 3 keeps running every app at 1x, and refuses a
+version 4 table as a version it does not support. A version 1 to 3 table with
+`scale=` is malformed.
 
 #### Checked twice (CLI and firmware)
 
@@ -1151,7 +1165,8 @@ lcd-dc = 14
 lcd-rst = 15
 
 # The board's display backend (docs/device-layer.md §5.2). deploy writes it to the
-# config slot with the roles. spi defaults to 0, rotation to 90 (320x240)
+# config slot with the roles. spi defaults to 0, rotation to 90 (320x240),
+# scale to 1 (panel pixels per guest pixel, up to 4)
 [board.esp32s3.display]
 driver = "ili9341"
 cs = 10

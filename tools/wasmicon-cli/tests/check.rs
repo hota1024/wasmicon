@@ -519,6 +519,7 @@ fn display_demo_needs_a_display_entry_on_a_board() {
         dc: 20,
         rst: 21,
         rotation: 90,
+        scale: 1,
     };
 
     let rp2040 = check::judge(&wasm, &profile::RP2040, &f, None, &[], Some(lcd), None);
@@ -541,7 +542,7 @@ fn display_demo_needs_a_display_entry_on_a_board() {
         &f,
         None,
         &[],
-        Some(DisplayConfig::Tab5),
+        Some(DisplayConfig::TAB5),
         None,
     );
     assert!(tab5.is_ok(), "{} failures", tab5.fails());
@@ -551,7 +552,7 @@ fn display_demo_needs_a_display_entry_on_a_board() {
         &f,
         None,
         &[],
-        Some(DisplayConfig::Tab5),
+        Some(DisplayConfig::TAB5),
         None,
     );
     assert!(matches!(tab5_s3.display, Some(Err(_))));
@@ -577,6 +578,7 @@ fn touch_demo_runs_on_the_host_the_tab5_and_the_esp32s3() {
         dc: 14,
         rst: 15,
         rotation: 90,
+        scale: 1,
     };
     for board in [&profile::RP2350, &profile::ESP32C5] {
         let v = check::judge(&wasm, board, &f, None, &[], Some(lcd), None);
@@ -608,7 +610,7 @@ fn touch_demo_runs_on_the_host_the_tab5_and_the_esp32s3() {
     let host = check::judge(&wasm, &profile::HOST, &f, None, &[], None, None);
     assert!(host.is_ok(), "{} failures on the host", host.fails());
 
-    let tab5 = Some(DisplayConfig::Tab5);
+    let tab5 = Some(DisplayConfig::TAB5);
     for board in [&profile::ESP32P4, &profile::ESP32P4_PSRAM] {
         let v = check::judge(&wasm, board, &f, None, &[], tab5, Some(TouchConfig::Tab5));
         assert!(v.is_ok(), "{}: {} failures", board.name, v.fails());

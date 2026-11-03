@@ -339,7 +339,7 @@ The device layer (docs/device-layer.md §11). The host port implements it with a
 | `[method]panel.read` | `(param i32 i32 i32 i32 i32) (result i32)` | `(self, max-points, buf, cap, len-out) -> ec` |
 | `[resource-drop]panel` | `(param i32)` | `(self)` |
 
-`read` writes 4 bytes per point: x, then y, each a u16 high byte first, in pixels of display `index` after its rotation. `max-points == 0` is `invalid-argument`, as is `4 * max-points > cap` (§4.4). `len-out` is `4 * n` for `n` points, 0 when nothing touches the panel. A port returns at most 8 points per read, whatever `max-points` is, so the trace carries every point (§9). `open` of an index without a touch panel is `unsupported`.
+`read` writes 4 bytes per point: x, then y, each a u16 high byte first, in pixels of display `index` after its rotation and scale. `max-points == 0` is `invalid-argument`, as is `4 * max-points > cap` (§4.4). `len-out` is `4 * n` for `n` points, 0 when nothing touches the panel. A port returns at most 8 points per read, whatever `max-points` is, so the trace carries every point (§9). `open` of an index without a touch panel is `unsupported`.
 
 ---
 

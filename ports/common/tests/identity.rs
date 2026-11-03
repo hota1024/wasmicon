@@ -29,7 +29,7 @@ fn every_axis_is_named() {
         "wasmicon id rp2350 fw=0.1.0 git=ba2ce81-dirty abi=wasmicon:hal@0.1.0 \
          device=wasmicon:device@0.1.0 trace=on pages=4 \
          if=gpio,i2c,spi,time,log,board,assets,display slot=v1/65536 \
-         roles=v3/4096 assets=v1/3076096"
+         roles=v4/4096 assets=v1/3076096"
     );
 }
 

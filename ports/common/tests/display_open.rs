@@ -205,10 +205,10 @@ fn the_touch_backend_pins_are_not_the_guests() {
         fail: false,
     };
     let mut mem = [0u8; 64];
-    let mut hal = Hal::new(board(), false).with_display(Some(DisplayConfig::Tab5));
+    let mut hal = Hal::new(board(), false).with_display(Some(DisplayConfig::TAB5));
     assert_eq!(open_pin(&mut hal, 23, &mut mem), 0);
     let mut hal = Hal::new(board(), false)
-        .with_display(Some(DisplayConfig::Tab5))
+        .with_display(Some(DisplayConfig::TAB5))
         .with_touch(Some(TouchConfig::Tab5));
     assert_eq!(TouchConfig::Tab5.pins(), [Some(23), None]);
     assert_eq!(

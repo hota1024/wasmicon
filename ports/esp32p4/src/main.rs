@@ -237,7 +237,7 @@ fn main() -> ! {
     // before the app runs; the panel at the guest's first `open`. The touch
     // entry can only name the Tab5's panel next to its display
     // (`TouchConfig::check`).
-    if wiring.display == Some(DisplayConfig::Tab5) {
+    if matches!(wiring.display, Some(DisplayConfig::Tab5 { .. })) {
         let touch = wiring.touch == Some(TouchConfig::Tab5);
         hal.board_mut().configure_tab5(tab5_parts, touch);
     }

@@ -50,10 +50,10 @@ pub const MAX_PANELS: usize = 1;
 /// (wit-device/display.wit `set-palette`).
 pub const PALETTE: usize = 512;
 
-/// Most pixels the default `Board::display_write_rect_indexed` expands per
+/// Most panel pixels the default `Board::display_write_expanded` expands per
 /// `display_write_rect` call. Wider rows go in several pieces, so the stack
 /// buffer stays at 640 bytes whatever the display's width.
-const INDEXED_PIECE: usize = 320;
+const EXPAND_PIECE: usize = 320;
 
 /// Most points one `touch.panel.read` returns. 8 points are 32 bytes, so the
 /// trace carries every point in full (docs/abi-spec.md §9) and a hardware
@@ -225,33 +225,38 @@ pub trait Board {
         Err(ErrorCode::Unsupported)
     }
 
-    /// Writes `rect.w * rect.h` palette indices, row by row, one byte each,
-    /// as the RGB565 colors `palette` gives them (docs/device-layer.md §4).
-    /// `Hal` has checked `rect` and the length. The default expands a piece
-    /// of a row at a time and hands it to `display_write_rect`; a backend may
-    /// expand straight into its own buffer instead.
-    fn display_write_rect_indexed(
+    /// Writes guest pixels that need expanding: palette indices, or pixels
+    /// that each cover `scale` x `scale` panel pixels
+    /// (docs/device-layer.md §5.2). `rect` is in panel pixels, so its sides
+    /// are `scale` times the guest's; `Hal` has checked it and the length of
+    /// `pixels`. The default expands a piece of a row at a time and hands it
+    /// to `display_write_rect` once per panel row; a backend may expand
+    /// straight into its own buffer instead.
+    fn display_write_expanded(
         &mut self,
         index: u32,
         rect: Rect,
-        pixels: &[u8],
-        palette: &[u8; PALETTE],
+        pixels: Pixels<'_>,
+        scale: u32,
     ) -> BoardResult<()> {
-        let mut buf = [0u8; 2 * INDEXED_PIECE];
-        for (y, row) in (rect.y..).zip(pixels.chunks_exact(rect.w as usize)) {
-            for (x, piece) in (rect.x..)
-                .step_by(INDEXED_PIECE)
-                .zip(row.chunks(INDEXED_PIECE))
-            {
-                let out = &mut buf[..2 * piece.len()];
-                expand_indexed(palette, piece, out);
-                let r = Rect {
-                    x,
-                    y,
-                    w: piece.len() as u32,
-                    h: 1,
-                };
-                self.display_write_rect(index, r, out)?;
+        let n = scale as usize;
+        let width = rect.w as usize / n;
+        let per_piece = EXPAND_PIECE / n;
+        let mut buf = [0u8; 2 * EXPAND_PIECE];
+        for row in 0..rect.h as usize / n {
+            for first in (0..width).step_by(per_piece) {
+                let count = per_piece.min(width - first);
+                let out = &mut buf[..2 * count * n];
+                pixels.expand(row * width + first, n, out);
+                for dy in 0..n {
+                    let r = Rect {
+                        x: rect.x + (first * n) as u32,
+                        y: rect.y + (row * n + dy) as u32,
+                        w: (count * n) as u32,
+                        h: 1,
+                    };
+                    self.display_write_rect(index, r, out)?;
+                }
             }
         }
         Ok(())
@@ -284,8 +289,8 @@ pub trait Board {
     }
 
     /// Reads the points touched now into `buf`, 4 bytes each (x, then y, u16
-    /// high byte first, in display pixels after rotation), and returns how
-    /// many it wrote. `buf` holds 1 to `MAX_TOUCH_POINTS` points.
+    /// high byte first, in panel pixels after rotation; `Hal` divides them by
+    /// the scale), and returns how many it wrote. `buf` holds 1 to `MAX_TOUCH_POINTS` points.
     fn touch_read(&mut self, _index: u32, _buf: &mut [u8]) -> BoardResult<usize> {
         Err(ErrorCode::Unsupported)
     }
@@ -358,6 +363,11 @@ pub struct Hal<B: Board> {
     display: Option<DisplayConfig>,
     /// The backend when the entry is an ILI9341; otherwise the board's own.
     ili9341: Option<Ili9341>,
+    /// Panel pixels per guest pixel in each direction (docs/TODO.md §6-10):
+    /// the display entry's `scale`, or what `with_scale` set for the host
+    /// mock. Every display size, rectangle and touch point the guest sees
+    /// is in guest pixels.
+    scale: u32,
     /// The touch entry of the config slot (docs/device-layer.md §11.3). Its
     /// pins belong to the backend, as the display's do.
     touch: Option<TouchConfig>,
@@ -387,6 +397,7 @@ impl<B: Board> Hal<B> {
             panels: [BusSlot::default(); MAX_PANELS],
             display: None,
             ili9341: None,
+            scale: 1,
             touch: None,
             xpt2046: None,
         }
@@ -406,9 +417,21 @@ impl<B: Board> Hal<B> {
                 dc,
                 rst,
                 rotation,
+                ..
             }) => Some(Ili9341::new(spi, cs, dc, rst, rotation)),
             _ => None,
         };
+        self.scale = display.map_or(1, |d| d.scale());
+        self
+    }
+
+    /// Sets the scale of a display without an entry: the host mock
+    /// (`wasmicon run --display-scale`). A board takes the entry's `scale`
+    /// in `with_display`, so this comes after it. `scale` is at least 1;
+    /// a remainder of the panel that it does not divide is out of reach.
+    #[must_use]
+    pub fn with_scale(mut self, scale: u32) -> Self {
+        self.scale = scale.max(1);
         self
     }
 
@@ -573,12 +596,32 @@ impl<B: Board> Hal<B> {
         }
     }
 
-    /// Size of display `index`, from the ILI9341 backend or the board.
-    fn display_size(&self, index: u32) -> Option<(u32, u32)> {
+    /// Size of display `index` in panel pixels, from the ILI9341 backend or
+    /// the board.
+    fn panel_size(&self, index: u32) -> Option<(u32, u32)> {
         match &self.ili9341 {
             Some(d) if index == 0 => Some(d.size()),
             Some(_) => None,
             None => self.board.display_size(index),
+        }
+    }
+
+    /// Size of display `index` as the guest sees it, in guest pixels.
+    fn display_size(&self, index: u32) -> Option<(u32, u32)> {
+        let (w, h) = self.panel_size(index)?;
+        Some((w / self.scale, h / self.scale))
+    }
+
+    /// A rectangle in guest pixels as the panel pixels it covers.
+    fn on_panel(&self, r: Rect) -> Rect {
+        // `rect` checked it against `display_size`, so the products stay
+        // within the panel.
+        let n = self.scale;
+        Rect {
+            x: r.x * n,
+            y: r.y * n,
+            w: r.w * n,
+            h: r.h * n,
         }
     }
 
@@ -605,6 +648,29 @@ impl<B: Board> Hal<B> {
             Ok(r)
         } else {
             Err(bad)
+        }
+    }
+
+    /// Hands `write-rect`'s pixels for the guest rectangle `r` to the
+    /// backend: as they are when the panel takes them (RGB565 at 1x), else
+    /// expanded through the palette and the scale.
+    fn write_pixels(
+        &mut self,
+        index: u32,
+        r: Rect,
+        pixels: &[u8],
+        palette: Option<&[u8; PALETTE]>,
+    ) -> BoardResult<()> {
+        let (n, at) = (self.scale, self.on_panel(r));
+        let src = match palette {
+            Some(p) => Pixels::Indexed(pixels, p),
+            None => Pixels::Rgb565(pixels),
+        };
+        match (&mut self.ili9341, src, n) {
+            (Some(d), Pixels::Rgb565(p), 1) => d.write_rect(&mut self.board, at, p),
+            (None, Pixels::Rgb565(p), 1) => self.board.display_write_rect(index, at, p),
+            (Some(d), src, n) => d.write_expanded(&mut self.board, at, src, n),
+            (None, src, n) => self.board.display_write_expanded(index, at, src, n),
         }
     }
 
@@ -741,19 +807,39 @@ pub fn crc32_end(crc: u32) -> u32 {
 /// The `list<u8>` notation of docs/abi-spec.md §9: beyond 32 bytes, the first
 /// 16 bytes plus a CRC-32. Used both for arguments and for the bytes a read
 /// received (`data=` in the result).
+/// Guest pixels as `write-rect` received them, before the host expands them
+/// for the panel.
+#[derive(Clone, Copy)]
+pub enum Pixels<'a> {
+    /// RGB565, two bytes each, high byte first.
+    Rgb565(&'a [u8]),
+    /// Palette indices, one byte each, and the palette they index.
+    Indexed(&'a [u8], &'a [u8; PALETTE]),
+}
+
+impl Pixels<'_> {
+    /// Writes guest pixels from `first` on into `out` as RGB565, high byte
+    /// first, each repeated `scale` times: `out.len() / (2 * scale)` of them.
+    pub fn expand(&self, first: usize, scale: usize, out: &mut [u8]) {
+        for (i, run) in (first..).zip(out.chunks_exact_mut(2 * scale)) {
+            let color = match *self {
+                Pixels::Rgb565(p) => [p[2 * i], p[2 * i + 1]],
+                Pixels::Indexed(p, palette) => {
+                    let k = 2 * usize::from(p[i]);
+                    [palette[k], palette[k + 1]]
+                }
+            };
+            for px in run.chunks_exact_mut(2) {
+                px.copy_from_slice(&color);
+            }
+        }
+    }
+}
+
 /// The RGB565 color of `index` in a palette of high-byte-first pairs.
 fn palette_color(palette: &[u8; PALETTE], index: u8) -> u16 {
     let i = 2 * usize::from(index);
     u16::from_be_bytes([palette[i], palette[i + 1]])
-}
-
-/// Expands palette indices into RGB565 pixels, high byte first. `out` is
-/// exactly twice as long as `indices`.
-pub fn expand_indexed(palette: &[u8; PALETTE], indices: &[u8], out: &mut [u8]) {
-    for (px, &i) in out.chunks_exact_mut(2).zip(indices) {
-        let i = 2 * usize::from(i);
-        px.copy_from_slice(&palette[i..i + 2]);
-    }
 }
 
 fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
@@ -892,11 +978,11 @@ impl<B: Board> Resolver for Hal<B> {
                     Err(e) => e,
                     Ok(index) => match self.rect(index, &args[1..5]) {
                         Err(e) => e,
-                        Ok(r) => match color {
-                            None => ErrorCode::InvalidArgument.status(),
-                            Some(c) => match match &mut self.ili9341 {
-                                Some(d) => d.fill_rect(&mut self.board, r, c),
-                                None => self.board.display_fill_rect(index, r, c),
+                        Ok(r) => match (color, self.on_panel(r)) {
+                            (None, _) => ErrorCode::InvalidArgument.status(),
+                            (Some(c), at) => match match &mut self.ili9341 {
+                                Some(d) => d.fill_rect(&mut self.board, at, c),
+                                None => self.board.display_fill_rect(index, at, c),
                             } {
                                 Ok(()) => 0,
                                 Err(e) => e.status(),
@@ -930,16 +1016,7 @@ impl<B: Board> Resolver for Hal<B> {
                         {
                             ErrorCode::InvalidArgument.status()
                         }
-                        Ok(r) => match match (&mut self.ili9341, &palette) {
-                            (Some(d), None) => d.write_rect(&mut self.board, r, pixels),
-                            (Some(d), Some(p)) => {
-                                d.write_rect_indexed(&mut self.board, r, pixels, p)
-                            }
-                            (None, None) => self.board.display_write_rect(index, r, pixels),
-                            (None, Some(p)) => {
-                                self.board.display_write_rect_indexed(index, r, pixels, p)
-                            }
-                        } {
+                        Ok(r) => match self.write_pixels(index, r, pixels, palette.as_ref()) {
                             Ok(()) => 0,
                             Err(e) => e.status(),
                         },
@@ -1030,6 +1107,14 @@ impl<B: Board> Resolver for Hal<B> {
                         match read {
                             Ok(n) if n <= want / 4 => {
                                 let got = n * 4;
+                                // The backends report panel pixels; the guest
+                                // works in guest pixels (docs/TODO.md §6-10).
+                                if self.scale > 1 {
+                                    for v in self.scratch[..got].chunks_exact_mut(2) {
+                                        let p = u32::from(u16::from_be_bytes([v[0], v[1]]));
+                                        v.copy_from_slice(&((p / self.scale) as u16).to_be_bytes());
+                                    }
+                                }
                                 let dst = args[2] as u32 as usize;
                                 let end = dst
                                     .checked_add(got)

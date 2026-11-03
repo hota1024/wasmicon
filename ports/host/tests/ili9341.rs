@@ -22,6 +22,7 @@ const LCD: DisplayConfig = DisplayConfig::Ili9341 {
     dc: 21,
     rst: 22,
     rotation: 90,
+    scale: 1,
 };
 
 fn build_demo() -> Vec<u8> {
@@ -190,4 +191,47 @@ fn indexed_writes_trace_the_same_and_draw_the_same_picture_on_an_ili9341() {
     // backend expands indices under the window instead of opening one per row.
     let ramwr = panel.commands.iter().filter(|&&c| c == 0x2C).count();
     assert_eq!(ramwr, 3);
+}
+
+#[test]
+fn a_scaled_ili9341_traces_and_draws_as_the_scaled_mock() {
+    let lcd2 = DisplayConfig::Ili9341 {
+        spi: 0,
+        cs: 20,
+        dc: 21,
+        rst: 22,
+        rotation: 90,
+        scale: 2,
+    };
+    // The demo lays itself out from width / height (rgb565, fill-rect and
+    // write-rect); the indexed guest covers indexed8 (docs/TODO.md §6-10).
+    for (name, wasm) in [
+        ("display-demo-rs", build_demo()),
+        ("display_indexed.wat", wat_to_wasm("display_indexed.wat")),
+    ] {
+        let mock = wasmicon_host::run_wasm_opts(
+            &wasm,
+            wasmicon_host::Options {
+                trace: true,
+                display_scale: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("{name}: {} [{}]", e.reason(), e.kind().name()));
+        let lcd = run(&wasm, Some(lcd2));
+        assert_eq!(
+            lcd.trace, mock.trace,
+            "{name}: the ILI9341 backend changed the guest's trace"
+        );
+        assert!(
+            mock.trace.contains("screen.width(1)\n< 160\n"),
+            "{name}: the guest did not see a 160-pixel-wide display"
+        );
+        let panel = decode(&lcd.bus_log, 20, 21);
+        let frame = mock.frame.expect("the mock display");
+        assert!(
+            panel.pixels == frame.pixels,
+            "{name}: the panel received a different picture from the one the mock shows"
+        );
+    }
 }

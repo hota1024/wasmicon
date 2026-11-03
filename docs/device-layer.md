@@ -107,10 +107,10 @@ interface display {
         /// Opens the display. Returns `unsupported` if the board has no display at `index`.
         open: static func(index: u32) -> result<screen, error-code>;
 
-        /// Returns the width in pixels, after the configured orientation.
+        /// Returns the width in pixels, after the configured orientation and scale.
         width: func() -> u32;
 
-        /// Returns the height in pixels, after the configured orientation.
+        /// Returns the height in pixels, after the configured orientation and scale.
         height: func() -> u32;
 
         /// Returns the pixel format that `write-rect` and `fill-rect` take.
@@ -198,6 +198,7 @@ rotation = 90    # 0, 90, 180, 270
 
 [board.esp32p4.display]
 driver = "tab5"  # the Tab5's own MIPI-DSI panel
+scale = 2        # optional, 1 to 4: panel pixels per guest pixel
 ```
 
 - `deploy` writes it to the config slot with the roles. The body of the slot is text
@@ -216,6 +217,19 @@ driver = "tab5"  # the Tab5's own MIPI-DSI panel
   bare `.wasm` flashed without the CLI.
 - The host mock has its display in its profile, like its roles (320x240 by default,
   so lcd-demo-style apps compare against the evaluation boards).
+- **`scale` is configuration, like `rotation`** (docs/TODO.md §6-10). Every driver
+  takes it, 1 by default. At `scale = n` the guest sees a display of the panel's size
+  divided by `n` (the Tab5 at 2 is 360x640): `width` / `height` report it, every
+  rectangle and every touch point is in these guest pixels, and the host repeats
+  each pixel and each row `n` times on the way to the panel, in one converter in
+  `ports/common` for both pixel formats. `n` is 1 to 4 and must divide both sides of
+  the panel after rotation; `check`, `deploy` and the firmware at boot refuse any
+  other value. `deploy` writes `scale=`, in config slot format version 4, only when it
+  is not 1, so an entry at 1x stays readable by a firmware that predates the key, and
+  such a firmware refuses a 2x table as a version it does not support. Traces compare
+  between boards of the same guest size; `wasmicon run --display-scale` scales the
+  host mock. The ILI9341 still receives every panel pixel, so a 2x picture costs the
+  SPI time of its panel size.
 
 ### 5.3 The backends
 
@@ -353,7 +367,7 @@ interface touch {
 
         /// Reads the points touched now, at most `max-points`.
         /// Each point is 4 bytes: x then y, u16 high byte first, in the pixels of the
-        /// display after its rotation. An empty list means no touch.
+        /// display after its rotation and scale. An empty list means no touch.
         read: func(max-points: u32) -> result<list<u8>, error-code>;
     }
 }
@@ -361,8 +375,8 @@ interface touch {
 
 - The returned length is `4 * n` through `len-out`. This is the first variable-length
   result, which docs/abi-spec.md §4.4 reserves `len-out` for.
-- Coordinates follow the display's configured rotation, so a guest needs no
-  orientation logic, as for `display` (§4).
+- Coordinates follow the display's configured rotation and scale (§5.2), so a guest
+  needs no orientation logic, as for `display` (§4).
 - The point order is the controller's. The XPT2046 reports at most one point.
 - The alternative shape (a `poll` that returns the count, then `x(i)` and `y(i)`)
   costs `1 + 2n` host calls per frame. `record` would change the subset of

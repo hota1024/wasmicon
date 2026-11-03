@@ -15,7 +15,7 @@
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::spi::Mode as SpiMode;
 
-use crate::{Board, BoardResult, PALETTE, Rect, expand_indexed};
+use crate::{Board, BoardResult, Pixels, Rect};
 
 /// SPI clock: the 16 MHz of apps/lcd-demo-rs (RP2350 rounds it to 15 MHz).
 pub const SPI_HZ: u32 = 16_000_000;
@@ -140,24 +140,35 @@ impl Ili9341 {
         b.gpio_write(self.cs, Level::High)
     }
 
-    /// Writes palette indices into `r`, expanded to RGB565 through `palette`
-    /// one `CHUNK` at a time under a single address window.
+    /// Writes guest pixels that need expanding (palette indices, or a scale
+    /// above 1) into `r`, in panel pixels, under a single address window: each
+    /// panel row is expanded `CHUNK` bytes at a time and sent.
     ///
     /// # Errors
     /// Whatever the board's SPI or GPIO returns.
-    pub fn write_rect_indexed<B: Board>(
+    pub fn write_expanded<B: Board>(
         &mut self,
         b: &mut B,
         r: Rect,
-        pixels: &[u8],
-        palette: &[u8; PALETTE],
+        pixels: Pixels<'_>,
+        scale: u32,
     ) -> BoardResult<()> {
+        let n = scale as usize;
+        let width = r.w as usize / n;
+        let per_piece = CHUNK / 2 / n;
         let mut buf = [0u8; CHUNK];
         self.begin_write(b, r)?;
-        for piece in pixels.chunks(CHUNK / 2) {
-            let out = &mut buf[..2 * piece.len()];
-            expand_indexed(palette, piece, out);
-            b.spi_write(self.spi, out)?;
+        for row in 0..r.h as usize / n {
+            // RAMWR fills the window row by row, so each guest row is sent
+            // once per panel row it covers.
+            for _ in 0..n {
+                for first in (0..width).step_by(per_piece) {
+                    let count = per_piece.min(width - first);
+                    let out = &mut buf[..2 * count * n];
+                    pixels.expand(row * width + first, n, out);
+                    b.spi_write(self.spi, out)?;
+                }
+            }
         }
         b.gpio_write(self.cs, Level::High)
     }

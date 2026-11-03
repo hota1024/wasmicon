@@ -201,6 +201,10 @@ pub struct Options {
     pub no_display: bool,
     /// Size of the mock display; `None` is `hal::MOCK_DISPLAY` (320x240).
     pub display_size: Option<(u32, u32)>,
+    /// Panel pixels per guest pixel on the mock display, as a board's
+    /// `scale=` (docs/TODO.md §6-10); `None` is 1, or the `display` entry's.
+    /// The picture and the touch script stay in panel pixels.
+    pub display_scale: Option<u32>,
     /// The config slot's display entry, as a board would read it
     /// (docs/device-layer.md §5.2). An ILI9341 entry runs that backend over
     /// the mock SPI and GPIO instead of the mock display.
@@ -229,6 +233,7 @@ pub fn run_wasm_with(wasm: &[u8], trace: bool, i2c_replay: Vec<Vec<u8>>) -> Resu
             assets: Vec::new(),
             no_display: false,
             display_size: None,
+            display_scale: None,
             display: None,
             bus_log: false,
             no_touch: false,
@@ -304,6 +309,9 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
     .with_roles(hal::host_roles())
     .with_display(opts.display)
     .with_assets(dir);
+    if let Some(n) = opts.display_scale {
+        hal = hal.with_scale(n);
+    }
 
     // A failure before the guest starts (decode / validate / Exec / instantiate)
     // leaves the trace empty; a failure afterwards leaves every line so far in

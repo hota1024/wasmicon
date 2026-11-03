@@ -55,6 +55,7 @@ fn the_host_run_fills_in_the_run_time_fields() {
         assets: Vec::new(),
         no_display: false,
         display_size: None,
+        display_scale: None,
         display: None,
         bus_log: false,
         no_touch: false,
