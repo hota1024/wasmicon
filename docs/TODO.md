@@ -1504,6 +1504,15 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 on 2026-11-03 (deferred on 
       (320 and 720 columns) and `ports/host/tests/ili9341.rs` (same trace and picture as the
       mock). Not yet run on a board; the DOOM port measures the frame times on the ESP32-S3
       and the Tab5. The record of the 2026-10-29 question follows.
+    - **The DOOM port on the host, 2026-11-03** (its `PANEL=2`, built against this change;
+      541 frames, two runs): the `--display-out` PNG is byte-identical to the `rgb565`
+      build at 320x240 and 720x1280; the `PANEL=0` and `PANEL=1` modules did not move. The
+      trace is the `rgb565` module's 2,126 lines plus 14 `set-palette` and 1 `format`.
+      Panel time per frame 4.1 -> 0.65 ms, demo frame 12.1 -> 8.6 ms. **At 720x1280 the gain
+      is small** (panel 4.6 -> 4.1 ms): the guest still doubles each pixel and row for the
+      Tab5, and that loop costs what the conversion did. A host-side `scale` on `write-rect`
+      (the proposal's §7) would remove it; not asked for yet. The board runs (trace diff on
+      the ESP32-S3, then frame times on both boards) wait for hardware
       Earlier: **Owner decision 2026-10-29: option (c),
       decide after the interpreter work of §4, with new numbers.** Nothing is added to the
       imports until then; apps convert in the guest. Proposed by the DOOM port (2026-10-29,
