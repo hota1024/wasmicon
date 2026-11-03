@@ -161,6 +161,28 @@ pub fn touch_outside(
     })
 }
 
+/// The display scale a run uses: `display_scale`, else the display entry's,
+/// else 1; always 1 to `MAX_SCALE`.
+#[must_use]
+pub fn scale_of(opts: &Options) -> u32 {
+    opts.display_scale
+        .or(opts.display.map(|d| d.scale()))
+        .unwrap_or(1)
+        .clamp(1, wasmicon_port::roles::MAX_SCALE)
+}
+
+/// A touch script in guest pixels as the panel pixels the mock reports at
+/// `scale`. `touch_outside` has checked it against the guest size, so the
+/// products fit the panel.
+#[must_use]
+pub fn script_on_panel(script: &hal::TouchScript, scale: u32) -> hal::TouchScript {
+    let n = scale as u16;
+    script
+        .iter()
+        .map(|points| points.iter().map(|&(x, y)| (x * n, y * n)).collect())
+        .collect()
+}
+
 /// Loads a `.wasm` and calls `run`.
 ///
 /// I2C responses come from the file named by the `WASMICON_I2C_REPLAY`
@@ -267,6 +289,7 @@ pub fn run_wasm_opts(wasm: &[u8], opts: Options) -> Result<Outcome, Error> {
 /// than eight entries, or when `opts.touch_script` has a point outside the
 /// mock display (`touch_outside`). The CLI checks both before it gets here.
 pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Error>) {
+    let scale = scale_of(&opts);
     let (trace, i2c_replay, spi_unsupported) = (opts.trace, opts.i2c_replay, opts.spi_unsupported);
     // The same image the CLI writes to a board (docs/app-workflow.md §3.10),
     // so the host and the boards read one layout.
@@ -279,12 +302,18 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
         Err(e) => panic!("the assets image does not parse: {}", e.reason()),
     };
     let size = opts.display_size.unwrap_or(hal::MOCK_DISPLAY);
-    if let Some((i, x, y)) = touch_outside(&opts.touch_script, size) {
+    // The script is in guest pixels, as a board's trace records the points
+    // (docs/device-layer.md §11.5), so `trace replay --touch` replays as is.
+    // The mock reports panel pixels, like a board's controller, and `Hal`
+    // divides them again.
+    let guest = (size.0 / scale, size.1 / scale);
+    if let Some((i, x, y)) = touch_outside(&opts.touch_script, guest) {
         panic!(
             "touch script entry {i}: ({x}, {y}) is outside the {}x{} display",
-            size.0, size.1
+            guest.0, guest.1
         );
     }
+    let touch_script = script_on_panel(&opts.touch_script, scale);
     let mut buf = vec![0u8; ARENA];
     let mut scratch_buf = vec![0u8; SCRATCH];
     let mut arena = Arena::new(&mut buf);
@@ -301,7 +330,7 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
             .with_display(!opts.no_display)
             .with_display_size(size)
             .with_touch(!opts.no_touch)
-            .with_touch_script(opts.touch_script)
+            .with_touch_script(touch_script)
             .with_bus_log(opts.bus_log)
             .with_assets(image),
         trace,
@@ -309,8 +338,8 @@ pub fn run_wasm_capture(wasm: &[u8], opts: Options) -> (Outcome, Result<(), Erro
     .with_roles(hal::host_roles())
     .with_display(opts.display)
     .with_assets(dir);
-    if let Some(n) = opts.display_scale {
-        hal = hal.with_scale(n);
+    if opts.display_scale.is_some() {
+        hal = hal.with_scale(scale);
     }
 
     // A failure before the guest starts (decode / validate / Exec / instantiate)

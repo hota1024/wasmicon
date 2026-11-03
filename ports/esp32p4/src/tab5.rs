@@ -253,6 +253,11 @@ pub struct Tab5 {
     last_read: Option<Instant>,
 }
 
+// `check` and the boot check judge `scale` against `roles::TAB5_SIZE`.
+const _: () = assert!(
+    WIDTH == wasmicon_port::roles::TAB5_SIZE.0 && HEIGHT == wasmicon_port::roles::TAB5_SIZE.1
+);
+
 impl Tab5 {
     /// `(width, height)`: the panel is portrait.
     pub const SIZE: (u32, u32) = (WIDTH, HEIGHT);

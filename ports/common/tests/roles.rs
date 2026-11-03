@@ -381,8 +381,9 @@ fn a_bad_display_entry_drops_the_whole_table() {
             b"@display=tab5 scale=2 scale=2\n",
             RolesError::BadDisplay,
         ),
-        // A scale other than 1 needs version 4.
+        // A `scale=` key needs version 4, even at 1.
         (2, b"@display=tab5 scale=2\n", RolesError::BadDisplay),
+        (2, b"@display=tab5 scale=1\n", RolesError::BadDisplay),
         (
             3,
             b"@display=tab5 scale=2\n@touch=tab5\n",

@@ -1501,7 +1501,8 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
       is applied at `write-rect`, not at `present`; no new error code
       (docs/device-layer.md §4, docs/abi-spec.md §7). One converter in `ports/common`: the
       `ili9341` backend expands under one address window, the others through the default
-      `Board::display_write_rect_indexed`. Host tests: `ports/host/tests/display_indexed.rs`
+      `Board::display_write_rect_indexed` (since §6-10, `Board::display_write_expanded`).
+      Host tests: `ports/host/tests/display_indexed.rs`
       (320 and 720 columns) and `ports/host/tests/ili9341.rs` (same trace and picture as the
       mock). Not yet run on a board; the DOOM port measures the frame times on the ESP32-S3
       and the Tab5. The record of the 2026-10-29 question follows.
@@ -1596,11 +1597,17 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
         same logical size. The host mock needs a scale next to `--display-size`
       - One converter in `ports/common` for `rgb565` and `indexed8`: `ili9341` expands a
         row once and sends it `n` times under one address window; the default
-        `Board::display_write_rect_indexed` path and `fill-rect` scale the rectangle
+        `Board::display_write_expanded` path and `fill-rect` scale the rectangle
       - Touch: the backends already map to the rotated display; the host divides by `n`
         after that, in one place for every backend
       - Cost on the wire: the ILI9341 still carries every physical pixel, so a 160x80 view at
         2x costs the SPI time of 320x160
+    - [ ] **Open (from the review of PR #18): the Tab5 has no expander of its own.** It takes
+      the default `Board::display_write_expanded`, which hands every panel row to
+      `display_write_rect` in pieces of up to 320 pixels: a 360x640 frame at 2x is about
+      3,840 calls, each copying and byte-swapping into the frame buffer. Correct, but the
+      cost has not been measured; decide on a Tab5 override (expanding straight into the
+      frame buffer) with the DOOM port's board numbers
 
 ### Implementation (stages: docs/device-layer.md §10)
 

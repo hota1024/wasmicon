@@ -61,11 +61,14 @@ pub fn run(opts: &Options) -> Result<bool> {
 
     let touch_script = match &opts.touch_script {
         None => Vec::new(),
-        Some(p) => load_touch_script(
-            p,
-            opts.display_size
-                .unwrap_or(wasmicon_host::hal::MOCK_DISPLAY),
-        )?,
+        Some(p) => {
+            // In guest pixels, as a board's trace records them.
+            let (w, h) = opts
+                .display_size
+                .unwrap_or(wasmicon_host::hal::MOCK_DISPLAY);
+            let n = opts.display_scale.unwrap_or(1);
+            load_touch_script(p, (w / n, h / n))?
+        }
     };
 
     // A missing asset file stops the run. Silently serving fewer assets than
