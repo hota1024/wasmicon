@@ -1454,9 +1454,10 @@ Also agreed that day: refuse an app early when the board lacks the device; sever
 backends per interface selected by board configuration; a small API (screen size,
 `fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
-recommended option**, §6-8 on 2026-10-28, and §6-9 on 2026-11-03 (deferred on 2026-10-29). Implementation status is under Implementation below.
+recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026-10-29), and
+§6-10 on 2026-11-03. Implementation status is under Implementation below.
 
-### Open questions (owner decisions; the text cites them as §6-1 ... §6-9)
+### Open questions (owner decisions; the text cites them as §6-1 ... §6-10)
 
 - [x] **§6-1 Changes to frozen decisions and the ABI spec** (owner decision 2026-10-27).
       docs/decisions.md D-03, D-05 and D-09 change wording and D-13 records the layer
@@ -1543,6 +1544,45 @@ recommended option**, §6-8 on 2026-10-28, and §6-9 on 2026-11-03 (deferred on 
       0.487 s (the DOOM port, 2026-10-29). Of `write-rect` + `present`'s 0.112 s, 64 ms is
       the SPI floor and 14 ms the four trace lines; about 34 ms (CRC-32, chunking, reading
       guest memory) is not split yet
+
+- [x] **§6-10 Integer scaling for `display`: where does it live?** **Owner decision 2026-11-03 on
+      the direction: (B), a per-board configuration key `scale` next to `rotation`, not an API.**
+      The points under (B) below were settled the same day on the proposed answers. Not
+      implemented.
+      The DOOM port's host run of §6-9 showed that on the Tab5 the guest's own 2x loop costs
+      what the conversion did (panel 4.6 -> 4.1 ms at 720x1280), so the Tab5 gains little
+      from `indexed8` alone.
+    - Considered and rejected: a `scale` argument per call (the DOOM proposal's §7). It needs a
+      second `write-rect` method (the signature cannot change) and leaves `width` / `height`,
+      `fill-rect` and touch in physical pixels while the pixels of a scaled `write-rect`
+      are logical, so the guest multiplies and divides everywhere
+    - (A) A mode on the handle, `set-scale(n)`, like `set-palette`. Adds an import (ABI) and
+      couples the touch panel to the display handle's mode. Kept for later, only if an app
+      must choose its scale at run time or mix scaled and unscaled drawing; it does not
+      conflict with (B)
+    - (B) chosen: `[board.<name>.display]` gains `scale = <n>`, like `rotation`
+      (docs/device-layer.md §4: orientation is configuration, not API). The host presents a
+      logical display of `width / n` x `height / n`: `width` / `height` return it, every
+      rectangle and every touch point is in logical pixels, and the backend repeats each
+      pixel and row `n` times. No WIT change; the same `.wasm` runs at 1x on the ILI9341 and
+      at 2x on the Tab5 (DOOM sees 360x640 there)
+    - Settled for (B):
+      - A size not divisible by `n` (320x240 at 3x): `check` / `deploy` refuse it
+      - Range: integers 1 to 4; 1 is the default and is not
+        written to the config slot
+      - Compatibility: today's `@display=` parser rejects an unknown key, and a firmware that
+        cannot read the display entry fails it (`RolesError::BadDisplay`). `deploy` writes
+        `scale=` only when it is not 1, and `check` refuses `scale` for a firmware whose
+        profile does not list it
+      - Traces: `width` / `height` become logical, so traces compare between boards of the
+        same logical size. The host mock needs a scale next to `--display-size`
+      - One converter in `ports/common` for `rgb565` and `indexed8`: `ili9341` expands a
+        row once and sends it `n` times under one address window; the default
+        `Board::display_write_rect_indexed` path and `fill-rect` scale the rectangle
+      - Touch: the backends already map to the rotated display; the host divides by `n`
+        after that, in one place for every backend
+      - Cost on the wire: the ILI9341 still carries every physical pixel, so a 160x80 view at
+        2x costs the SPI time of 320x160
 
 ### Implementation (stages: docs/device-layer.md §10)
 
