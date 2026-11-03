@@ -434,13 +434,14 @@ pub mod display {
         pub fn screen_format(this: u32) -> u32;
 
         /// Fills a rectangle with one color in the pixel format: for `rgb565`, a value
-        /// up to 0xffff.
+        /// up to 0xffff; for `indexed8`, a palette index up to 255.
         /// Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
         /// if `color` does not fit the format; nothing is drawn then.
         #[link_name = "[method]screen.fill-rect"]
         pub fn screen_fill_rect(this: u32, x: u32, y: u32, w: u32, h: u32, color: u32) -> u32;
 
-        /// Writes `w * h` pixels, row by row, into a rectangle.
+        /// Writes `w * h` pixels, row by row, into a rectangle: two bytes each for
+        /// `rgb565`, one byte each for `indexed8`.
         /// Returns `invalid-argument` if the rectangle is empty or leaves the screen, or
         /// if `pixels` is not exactly `w * h` pixels long; nothing is drawn then.
         #[link_name = "[method]screen.write-rect"]
@@ -453,6 +454,18 @@ pub mod display {
             pixels_ptr: *const u8,
             pixels_len: u32,
         ) -> u32;
+
+        /// Sets a 256-entry palette and switches the screen to `indexed8`.
+        /// From here on `format` returns `indexed8`, `write-rect` takes one byte per
+        /// pixel and `fill-rect` takes an index. `colors` is 256 RGB565 values, high
+        /// byte first. The palette is applied when pixels are written: calling this
+        /// again replaces it for later writes, and the pixels already on the screen
+        /// keep their colors. There is no way back to `rgb565` but dropping the screen
+        /// and opening it again.
+        /// Returns `invalid-argument` if `colors` is not exactly 512 bytes long;
+        /// nothing changes then.
+        #[link_name = "[method]screen.set-palette"]
+        pub fn screen_set_palette(this: u32, colors_ptr: *const u8, colors_len: u32) -> u32;
 
         /// Makes everything drawn so far visible.
         /// Call it after drawing: a backend with a frame buffer may show nothing until
@@ -471,17 +484,20 @@ pub mod display {
     pub enum PixelFormat {
         /// 16 bits per pixel, 5-6-5, high byte first.
         Rgb565 = 0,
+        /// 8 bits per pixel, an index into the palette set by `set-palette`.
+        Indexed8 = 1,
     }
 
     impl PixelFormat {
         /// Number of cases.
-        pub const COUNT: u32 = 1;
+        pub const COUNT: u32 = 2;
 
         /// Converts from a discriminant. Out of range gives `None` (docs/abi-spec.md §4.1).
         #[must_use]
         pub const fn from_u32(v: u32) -> Option<Self> {
             match v {
                 0 => Some(Self::Rgb565),
+                1 => Some(Self::Indexed8),
                 _ => None,
             }
         }

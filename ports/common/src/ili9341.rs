@@ -15,7 +15,7 @@
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::spi::Mode as SpiMode;
 
-use crate::{Board, BoardResult, Rect};
+use crate::{Board, BoardResult, PALETTE, Rect, expand_indexed};
 
 /// SPI clock: the 16 MHz of apps/lcd-demo-rs (RP2350 rounds it to 15 MHz).
 pub const SPI_HZ: u32 = 16_000_000;
@@ -136,6 +136,28 @@ impl Ili9341 {
         self.begin_write(b, r)?;
         for piece in pixels.chunks(CHUNK) {
             b.spi_write(self.spi, piece)?;
+        }
+        b.gpio_write(self.cs, Level::High)
+    }
+
+    /// Writes palette indices into `r`, expanded to RGB565 through `palette`
+    /// one `CHUNK` at a time under a single address window.
+    ///
+    /// # Errors
+    /// Whatever the board's SPI or GPIO returns.
+    pub fn write_rect_indexed<B: Board>(
+        &mut self,
+        b: &mut B,
+        r: Rect,
+        pixels: &[u8],
+        palette: &[u8; PALETTE],
+    ) -> BoardResult<()> {
+        let mut buf = [0u8; CHUNK];
+        self.begin_write(b, r)?;
+        for piece in pixels.chunks(CHUNK / 2) {
+            let out = &mut buf[..2 * piece.len()];
+            expand_indexed(palette, piece, out);
+            b.spi_write(self.spi, out)?;
         }
         b.gpio_write(self.cs, Level::High)
     }

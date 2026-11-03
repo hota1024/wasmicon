@@ -25,6 +25,7 @@ import {
   display_screen_height,
   display_screen_open,
   display_screen_present,
+  display_screen_set_palette,
   display_screen_width,
   display_screen_write_rect,
   gpio_pin_drop,
@@ -306,10 +307,16 @@ export class Screen {
     return display_screen_fill_rect(this.handle, x, y, w, h, color);
   }
 
-  /// Writes w * h pixels, row by row (RGB565: two bytes each, high byte first).
-  /// Returns the status.
+  /// Writes w * h pixels, row by row (RGB565: two bytes each, high byte first;
+  /// indexed8: one palette index each). Returns the status.
   writeRect(x: u32, y: u32, w: u32, h: u32, pixels: Uint8Array): u32 {
     return display_screen_write_rect(this.handle, x, y, w, h, pixels.dataStart, pixels.length);
+  }
+
+  /// Sets a 256-entry palette (512 bytes, RGB565 high byte first) and switches the
+  /// screen to indexed8. The palette applies to later writes. Returns the status.
+  setPalette(colors: Uint8Array): u32 {
+    return display_screen_set_palette(this.handle, colors.dataStart, colors.length);
   }
 
   /// Makes everything drawn so far visible. Call it after drawing. Returns the status.

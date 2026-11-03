@@ -469,7 +469,8 @@ pub mod display {
         /// Fills a rectangle with one color in the screen's pixel format.
         ///
         /// # Errors
-        /// `InvalidArgument` if the rectangle is empty or leaves the screen.
+        /// `InvalidArgument` if the rectangle is empty or leaves the screen, or if
+        /// `color` does not fit the format.
         pub fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, color: u32) -> Result<()> {
             // SAFETY: `self.0` is the handle `open` returned and has not been released; the
             // host validates it. The other arguments are scalars passed by value.
@@ -477,7 +478,7 @@ pub mod display {
         }
 
         /// Writes `w * h` pixels, row by row, into a rectangle. RGB565 pixels are
-        /// two bytes each, high byte first.
+        /// two bytes each, high byte first; `Indexed8` pixels one palette index each.
         ///
         /// # Errors
         /// `InvalidArgument` if the rectangle is empty or leaves the screen, or if
@@ -490,6 +491,21 @@ pub mod display {
             check(unsafe {
                 raw::screen_write_rect(self.0, x, y, w, h, pixels.as_ptr(), pixels.len() as u32)
             })
+        }
+
+        /// Sets a 256-entry palette (256 RGB565 values, high byte first) and switches
+        /// the screen to `Indexed8`: from then on `write_rect` takes one index per
+        /// pixel and `fill_rect` an index. The palette applies to later writes; what is
+        /// on the screen keeps its colors.
+        ///
+        /// # Errors
+        /// `InvalidArgument` if `colors` is not exactly 512 bytes long.
+        pub fn set_palette(&self, colors: &[u8]) -> Result<()> {
+            // SAFETY: `self.0` is the handle `open` returned and has not been released; the
+            // host validates it. `colors.as_ptr()` and `colors.len()` describe one live slice
+            // that outlives the call; the host reads at most `len` bytes from it and writes
+            // nothing.
+            check(unsafe { raw::screen_set_palette(self.0, colors.as_ptr(), colors.len() as u32) })
         }
 
         /// Makes everything drawn so far visible. Call it after drawing.

@@ -86,6 +86,8 @@ pub enum HostFn {
     DisplayScreenFillRect,
     /// `[method]screen.write-rect` in `wasmicon:device/display@0.1.0`
     DisplayScreenWriteRect,
+    /// `[method]screen.set-palette` in `wasmicon:device/display@0.1.0`
+    DisplayScreenSetPalette,
     /// `[method]screen.present` in `wasmicon:device/display@0.1.0`
     DisplayScreenPresent,
     /// `[resource-drop]screen` in `wasmicon:device/display@0.1.0`
@@ -139,18 +141,19 @@ impl HostFn {
             27 => Some(Self::DisplayScreenFormat),
             28 => Some(Self::DisplayScreenFillRect),
             29 => Some(Self::DisplayScreenWriteRect),
-            30 => Some(Self::DisplayScreenPresent),
-            31 => Some(Self::DisplayScreenDrop),
-            32 => Some(Self::TouchPanelOpen),
-            33 => Some(Self::TouchPanelRead),
-            34 => Some(Self::TouchPanelDrop),
+            30 => Some(Self::DisplayScreenSetPalette),
+            31 => Some(Self::DisplayScreenPresent),
+            32 => Some(Self::DisplayScreenDrop),
+            33 => Some(Self::TouchPanelOpen),
+            34 => Some(Self::TouchPanelRead),
+            35 => Some(Self::TouchPanelDrop),
             _ => None,
         }
     }
 }
 
 /// All imports of the HAL and the device layer (docs/abi-spec.md §7).
-pub static IMPORTS: [ImportDesc; 35] = [
+pub static IMPORTS: [ImportDesc; 36] = [
     ImportDesc {
         module: "wasmicon:hal/gpio@0.1.0",
         name: "[static]pin.open",
@@ -330,6 +333,12 @@ pub static IMPORTS: [ImportDesc; 35] = [
         name: "[method]screen.write-rect",
         sig: "iiiiiii:i",
         host_fn: HostFn::DisplayScreenWriteRect,
+    },
+    ImportDesc {
+        module: "wasmicon:device/display@0.1.0",
+        name: "[method]screen.set-palette",
+        sig: "iii:i",
+        host_fn: HostFn::DisplayScreenSetPalette,
     },
     ImportDesc {
         module: "wasmicon:device/display@0.1.0",
@@ -600,17 +609,20 @@ pub mod display {
     pub enum PixelFormat {
         /// 16 bits per pixel, 5-6-5, high byte first.
         Rgb565 = 0,
+        /// 8 bits per pixel, an index into the palette set by `set-palette`.
+        Indexed8 = 1,
     }
 
     impl PixelFormat {
         /// Number of cases.
-        pub const COUNT: u32 = 1;
+        pub const COUNT: u32 = 2;
 
         /// Converts from a discriminant. Out of range gives `None` (docs/abi-spec.md §4.1).
         #[must_use]
         pub const fn from_u32(v: u32) -> Option<Self> {
             match v {
                 0 => Some(Self::Rgb565),
+                1 => Some(Self::Indexed8),
                 _ => None,
             }
         }

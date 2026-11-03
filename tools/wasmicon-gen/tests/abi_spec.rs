@@ -86,6 +86,11 @@ const SPEC_SECTION_7_DEVICE: &[(&str, &str, &str)] = &[
     ),
     (
         "wasmicon:device/display@0.1.0",
+        "[method]screen.set-palette",
+        "iii:i",
+    ),
+    (
+        "wasmicon:device/display@0.1.0",
         "[method]screen.present",
         "i:i",
     ),

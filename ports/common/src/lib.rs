@@ -46,6 +46,15 @@ pub const MAX_BLOBS: usize = 4;
 pub const MAX_SCREENS: usize = 1;
 pub const MAX_PANELS: usize = 1;
 
+/// Bytes of an `indexed8` palette: 256 RGB565 values, high byte first
+/// (wit-device/display.wit `set-palette`).
+pub const PALETTE: usize = 512;
+
+/// Most pixels the default `Board::display_write_rect_indexed` expands per
+/// `display_write_rect` call. Wider rows go in several pieces, so the stack
+/// buffer stays at 640 bytes whatever the display's width.
+const INDEXED_PIECE: usize = 320;
+
 /// Most points one `touch.panel.read` returns. 8 points are 32 bytes, so the
 /// trace carries every point in full (docs/abi-spec.md §9) and a hardware
 /// trace replays on the host (docs/device-layer.md §11.5).
@@ -216,6 +225,38 @@ pub trait Board {
         Err(ErrorCode::Unsupported)
     }
 
+    /// Writes `rect.w * rect.h` palette indices, row by row, one byte each,
+    /// as the RGB565 colors `palette` gives them (docs/device-layer.md §4).
+    /// `Hal` has checked `rect` and the length. The default expands a piece
+    /// of a row at a time and hands it to `display_write_rect`; a backend may
+    /// expand straight into its own buffer instead.
+    fn display_write_rect_indexed(
+        &mut self,
+        index: u32,
+        rect: Rect,
+        pixels: &[u8],
+        palette: &[u8; PALETTE],
+    ) -> BoardResult<()> {
+        let mut buf = [0u8; 2 * INDEXED_PIECE];
+        for (y, row) in (rect.y..).zip(pixels.chunks_exact(rect.w as usize)) {
+            for (x, piece) in (rect.x..)
+                .step_by(INDEXED_PIECE)
+                .zip(row.chunks(INDEXED_PIECE))
+            {
+                let out = &mut buf[..2 * piece.len()];
+                expand_indexed(palette, piece, out);
+                let r = Rect {
+                    x,
+                    y,
+                    w: piece.len() as u32,
+                    h: 1,
+                };
+                self.display_write_rect(index, r, out)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Makes everything drawn so far visible. A backend that draws straight
     /// to the panel keeps the default.
     fn display_present(&mut self, _index: u32) -> BoardResult<()> {
@@ -281,6 +322,16 @@ struct BusSlot {
     index: u32,
 }
 
+/// An open `display.screen`. The palette belongs to the handle: it is set by
+/// `set-palette`, which also switches the screen to `indexed8`, and goes
+/// with the handle at drop.
+#[derive(Clone, Copy, Default)]
+struct ScreenSlot {
+    open: bool,
+    index: u32,
+    palette: Option<[u8; PALETTE]>,
+}
+
 /// Provides the HAL according to the generated import table.
 pub struct Hal<B: Board> {
     board: B,
@@ -300,7 +351,7 @@ pub struct Hal<B: Board> {
     /// so it is read once, not on every `open`.
     verified: [Verified; MAX_ENTRIES],
     blobs: [BlobSlot; MAX_BLOBS],
-    screens: [BusSlot; MAX_SCREENS],
+    screens: [ScreenSlot; MAX_SCREENS],
     panels: [BusSlot; MAX_PANELS],
     /// The display entry of the config slot (docs/device-layer.md §5.2). Its
     /// bus and pins belong to the backend, not the guest.
@@ -332,7 +383,7 @@ impl<B: Board> Hal<B> {
             assets: Directory::EMPTY,
             verified: [Verified::Unchecked; MAX_ENTRIES],
             blobs: [BlobSlot::default(); MAX_BLOBS],
-            screens: [BusSlot::default(); MAX_SCREENS],
+            screens: [ScreenSlot::default(); MAX_SCREENS],
             panels: [BusSlot::default(); MAX_PANELS],
             display: None,
             ili9341: None,
@@ -482,7 +533,7 @@ impl<B: Board> Hal<B> {
                 if self.ili9341.is_none() {
                     board.display_release(slot.index);
                 }
-                *slot = BusSlot::default();
+                *slot = ScreenSlot::default();
             }
         }
         for slot in &mut self.panels {
@@ -503,6 +554,13 @@ impl<B: Board> Hal<B> {
         } else {
             Err(ErrorCode::InvalidHandle.status())
         }
+    }
+
+    /// The palette of an open screen in `indexed8`; `None` for an `rgb565`
+    /// screen or an invalid handle.
+    fn palette(&self, handle: u64) -> Option<[u8; PALETTE]> {
+        let index = self.screen(handle).ok()?;
+        self.screens[index as usize].palette
     }
 
     /// The display behind an open touch panel handle.
@@ -683,6 +741,21 @@ pub fn crc32_end(crc: u32) -> u32 {
 /// The `list<u8>` notation of docs/abi-spec.md §9: beyond 32 bytes, the first
 /// 16 bytes plus a CRC-32. Used both for arguments and for the bytes a read
 /// received (`data=` in the result).
+/// The RGB565 color of `index` in a palette of high-byte-first pairs.
+fn palette_color(palette: &[u8; PALETTE], index: u8) -> u16 {
+    let i = 2 * usize::from(index);
+    u16::from_be_bytes([palette[i], palette[i + 1]])
+}
+
+/// Expands palette indices into RGB565 pixels, high byte first. `out` is
+/// exactly twice as long as `indices`.
+pub fn expand_indexed(palette: &[u8; PALETTE], indices: &[u8], out: &mut [u8]) {
+    for (px, &i) in out.chunks_exact_mut(2).zip(indices) {
+        let i = 2 * usize::from(i);
+        px.copy_from_slice(&palette[i..i + 2]);
+    }
+}
+
 fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
     if !out.is_on() {
         return;
@@ -770,7 +843,11 @@ impl<B: Board> Resolver for Hal<B> {
                 } {
                     e.status()
                 } else {
-                    self.screens[index as usize] = BusSlot { open: true, index };
+                    self.screens[index as usize] = ScreenSlot {
+                        open: true,
+                        index,
+                        palette: None,
+                    };
                     let handle = index + 1;
                     put_u32(mem, args[1], handle)?;
                     o.u32(handle);
@@ -790,8 +867,11 @@ impl<B: Board> Resolver for Hal<B> {
             }
             HostFn::DisplayScreenFormat => {
                 a.u64(args[0]);
-                // `rgb565` is the only format; an invalid handle reads as it too.
-                status = PixelFormat::Rgb565 as u32;
+                // An invalid handle reads as `rgb565` (wit-device/display.wit).
+                status = match self.palette(args[0]) {
+                    Some(_) => PixelFormat::Indexed8 as u32,
+                    None => PixelFormat::Rgb565 as u32,
+                };
             }
             HostFn::DisplayScreenFillRect => {
                 a.u64(args[0]);
@@ -800,17 +880,27 @@ impl<B: Board> Resolver for Hal<B> {
                     a.u64(*v);
                 }
                 let color = args[5] as u32;
+                // In `indexed8` the color is an index, looked up here so the
+                // backends only ever fill with RGB565.
+                let color = match &self.palette(args[0]) {
+                    None if color > 0xffff => None,
+                    None => Some(color as u16),
+                    Some(_) if color > 0xff => None,
+                    Some(p) => Some(palette_color(p, color as u8)),
+                };
                 status = match self.screen(args[0]) {
                     Err(e) => e,
                     Ok(index) => match self.rect(index, &args[1..5]) {
                         Err(e) => e,
-                        Ok(_) if color > 0xffff => ErrorCode::InvalidArgument.status(),
-                        Ok(r) => match match &mut self.ili9341 {
-                            Some(d) => d.fill_rect(&mut self.board, r, color as u16),
-                            None => self.board.display_fill_rect(index, r, color as u16),
-                        } {
-                            Ok(()) => 0,
-                            Err(e) => e.status(),
+                        Ok(r) => match color {
+                            None => ErrorCode::InvalidArgument.status(),
+                            Some(c) => match match &mut self.ili9341 {
+                                Some(d) => d.fill_rect(&mut self.board, r, c),
+                                None => self.board.display_fill_rect(index, r, c),
+                            } {
+                                Ok(()) => 0,
+                                Err(e) => e.status(),
+                            },
                         },
                     },
                 };
@@ -828,20 +918,47 @@ impl<B: Board> Resolver for Hal<B> {
                 if a.is_on() {
                     a.hex(crc32(pixels), 8);
                 }
+                let palette = self.palette(args[0]);
+                let bytes_per_pixel = if palette.is_some() { 1 } else { 2 };
                 status = match self.screen(args[0]) {
                     Err(e) => e,
                     Ok(index) => match self.rect(index, &args[1..5]) {
                         Err(e) => e,
-                        Ok(r) if (r.w as usize) * (r.h as usize) * 2 != pixels.len() => {
+                        Ok(r)
+                            if (r.w as usize) * (r.h as usize) * bytes_per_pixel
+                                != pixels.len() =>
+                        {
                             ErrorCode::InvalidArgument.status()
                         }
-                        Ok(r) => match match &mut self.ili9341 {
-                            Some(d) => d.write_rect(&mut self.board, r, pixels),
-                            None => self.board.display_write_rect(index, r, pixels),
+                        Ok(r) => match match (&mut self.ili9341, &palette) {
+                            (Some(d), None) => d.write_rect(&mut self.board, r, pixels),
+                            (Some(d), Some(p)) => {
+                                d.write_rect_indexed(&mut self.board, r, pixels, p)
+                            }
+                            (None, None) => self.board.display_write_rect(index, r, pixels),
+                            (None, Some(p)) => {
+                                self.board.display_write_rect_indexed(index, r, pixels, p)
+                            }
                         } {
                             Ok(()) => 0,
                             Err(e) => e.status(),
                         },
+                    },
+                };
+            }
+            HostFn::DisplayScreenSetPalette => {
+                let colors = guest_slice(mem, args[1], args[2])?;
+                a.u64(args[0]);
+                a.str(", ");
+                write_bytes(&mut a, colors);
+                status = match self.screen(args[0]) {
+                    Err(e) => e,
+                    Ok(index) => match <[u8; PALETTE]>::try_from(colors) {
+                        Err(_) => ErrorCode::InvalidArgument.status(),
+                        Ok(p) => {
+                            self.screens[index as usize].palette = Some(p);
+                            0
+                        }
                     },
                 };
             }
@@ -949,7 +1066,7 @@ impl<B: Board> Resolver for Hal<B> {
                     if self.ili9341.is_none() {
                         self.board.display_release(index);
                     }
-                    self.screens[index as usize] = BusSlot::default();
+                    self.screens[index as usize] = ScreenSlot::default();
                 }
             }
 
