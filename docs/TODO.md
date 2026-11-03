@@ -172,6 +172,10 @@ I2C and sensor-display were verified on both boards on 2026-10-05 / 07
     asserted, or something else pulls GPIO0 low. Next: `RST` with DTR released and RTS
     asserted (a stuck DTR boots, a working circuit holds `EN` low), and the voltage on
     GPIO0 and on the CH343's DTR pin with the port closed
+  - **Again on 2026-11-03** (docs/verification-report.md §40): two silent `deploy --monitor`
+    captures, and `espflash flash` could not connect to the running app; flashed with
+    `--before no-reset` while the USB was replugged with `BOOT` held, and started by `RST`
+    with a reader holding DTR and RTS asserted. Details in the DOOM port's `docs/board-runs.md`
 - [x] Replace `verify/sht4x-replay.txt` with **a response recorded on hardware** (2026-10-07.
   SHT40 on the Pico 2 W, T=25.63C / RH=74.49%). The owner decided to emit the bytes read
   (`data=`) in the trace (docs/abi-spec.md §9), and `wasmicon trace replay` extracted them
@@ -1504,8 +1508,10 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
       `Board::display_write_rect_indexed` (since §6-10, `Board::display_write_expanded`).
       Host tests: `ports/host/tests/display_indexed.rs`
       (320 and 720 columns) and `ports/host/tests/ili9341.rs` (same trace and picture as the
-      mock). Not yet run on a board; the DOOM port measures the frame times on the ESP32-S3
-      and the Tab5. The record of the 2026-10-29 question follows.
+      mock). **Run on both boards by the DOOM port on 2026-11-03**
+      (docs/verification-report.md §40): the ESP32-S3 trace equals the host's (4,244 lines,
+      566 `write-rect` CRC-32s) and a demo frame takes 699 ms against 941 with RGB565 (trace
+      off); the Tab5 numbers are under §6-10. The record of the 2026-10-29 question follows.
     - **The DOOM port on the host, 2026-11-03** (its `PANEL=2`, built against this change;
       541 frames, two runs): the `--display-out` PNG is byte-identical to the `rgb565`
       build at 320x240 and 720x1280; the `PANEL=0` and `PANEL=1` modules did not move. The
@@ -1513,8 +1519,7 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
       Panel time per frame 4.1 -> 0.65 ms, demo frame 12.1 -> 8.6 ms. **At 720x1280 the gain
       is small** (panel 4.6 -> 4.1 ms): the guest still doubles each pixel and row for the
       Tab5, and that loop costs what the conversion did. A host-side `scale` on `write-rect`
-      (the proposal's §7) would remove it; not asked for yet. The board runs (trace diff on
-      the ESP32-S3, then frame times on both boards) wait for hardware
+      (the proposal's §7) would remove it; §6-10 answers it with a configuration key
       Earlier: **Owner decision 2026-10-29: option (c),
       decide after the interpreter work of §4, with new numbers.** Nothing is added to the
       imports until then; apps convert in the guest. Proposed by the DOOM port (2026-10-29,
@@ -1549,7 +1554,11 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
 - [x] **§6-10 Integer scaling for `display`: where does it live?** **Owner decision 2026-11-03 on
       the direction: (B), a per-board configuration key `scale` next to `rotation`, not an API.**
       The points under (B) below were settled the same day on the proposed answers.
-      **Implemented 2026-11-03 on the host; not yet run on a board.** `DisplayConfig` carries
+      **Implemented 2026-11-03; run on both boards by the DOOM port the same day**
+      (docs/verification-report.md §40: on the Tab5 at `scale = 2` the trace equals the 2x
+      host run and a DOOM demo frame takes 1,023 ms against 1,403 with the guest's own
+      doubling, trace off; on the ESP32-S3 at scale 1 the shared expander adds 2.5 ms to a
+      702 ms frame). `DisplayConfig` carries
       `scale` for both drivers (`scale_fits`, `MAX_SCALE`); `Hal` reports guest sizes,
       scales rectangles and divides touch points; one expander (`Pixels`) serves the
       `ili9341` backend (one address window per draw) and the default
@@ -1604,10 +1613,14 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
         2x costs the SPI time of 320x160
     - [ ] **Open (from the review of PR #18): the Tab5 has no expander of its own.** It takes
       the default `Board::display_write_expanded`, which hands every panel row to
-      `display_write_rect` in pieces of up to 320 pixels: a 360x640 frame at 2x is about
-      3,840 calls, each copying and byte-swapping into the frame buffer. Correct, but the
-      cost has not been measured; decide on a Tab5 override (expanding straight into the
-      frame buffer) with the DOOM port's board numbers
+      `display_write_rect` in pieces of up to 320 pixels: a full 360x640 frame at 2x is
+      about 3,840 calls, each copying and byte-swapping into the frame buffer. Measured by
+      the DOOM port on 2026-11-03 (docs/verification-report.md §40): `write-rect` +
+      `present` take 29.4 ms of a 1,023 ms frame at 2x (10.0 at 1x on the same backend),
+      for about 288 to 400 pieces a frame; DOOM never sends a full-screen rectangle. An
+      override expanding straight into the frame buffer could save part of those 29 ms
+      (about 3 % of the frame). Proposed: leave the default and close this, unless an app
+      that redraws the whole 2x screen every frame shows a larger share. Owner question
 
 ### Implementation (stages: docs/device-layer.md §10)
 

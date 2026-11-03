@@ -2159,3 +2159,45 @@ are the commit that adds this section, except where a row says otherwise), flash
 - Why touches went unseen while SDO was connected: SDO was disconnected before the cause was found
 - Rotations other than 90; the Pico 2 W
 - The time a read takes with the clock switch, and its effect on the frame rate of a drawing app
+
+## 40. DOOM with `indexed8` and `scale` on the ESP32-S3 and the Tab5, as reported by the DOOM port (2026-11-03)
+
+Question: do `indexed8` (docs/TODO.md §6-9) and the `scale` key (docs/TODO.md §6-10) trace on the
+boards as on the host, and what do they cost per frame?
+
+**The panels and the timings were not measured in this repository.** The DOOM port built the CLI, the
+C bindings, `ports/esp32s3` and `ports/esp32p4` (`--features psram`, trace on; `--no-default-features
+--features psram`, trace off) from `c2ca487` (PR #18) in its own clone; its record is "The scale key
+on c2ca487 (2026-11-03)" in that clone's `docs/board-runs.md`. The modules are byte for byte those
+built against `2877cca` (the bindings changed only in comments): `PANEL=2` (indexed8) 419,671 B,
+crc32 `f5878e99`. The only change on the DOOM side is `scale = 2` in `[board.esp32p4.display]`; the
+guest sees 360x640, finds no room for its own 2x and draws at 1x
+(`panel: 360x640, frame at 20,220, indexed8`).
+
+| Run | Result |
+|---|---|
+| Host, 320x240 | 2,141 trace calls as at `2877cca`; `trace diff` against that trace: match, 4,244 lines. The `--display-out` PNGs at 320x240 and 720x1280 are byte-identical to the `2877cca` ones and to the `rgb565` build's |
+| Host, `--display-size 720x1280 --display-scale 2` | PNG byte-identical to the guest-doubled one (indexed8 and rgb565 builds); trace = the 320x240 module's with `< 360` / `< 640`. Panel 0.98 ms per frame against 4.27 with the guest doubling; demo frame 9.3 against 12.4 ms |
+| ESP32-S3 (MAC `28:84:85:a4:24:9c`), `2877cca`, trace on | `trace diff` against the host: match, 4,244 lines; the 566 `write-rect` CRC-32s (492 view, 49 full frame, 25 status bar) and 14 `set-palette` equal |
+| ESP32-S3, `2877cca`, trace off | 699 ms per demo frame against 941 with RGB565 |
+| ESP32-S3, `c2ca487`, trace off | identity `... git=c2ca487 ... trace=off pages=112 ... roles=v4/4096 ...`. Demo frame 702 ms = DOOM 599 + panel 103 (49 guest, 54 `write-rect` + `present`); title 358 ms; start-up 9.01 s; 541 frames 302.0 s. Against `2877cca` the guest and DOOM times are equal and the write path is +2.5 ms a frame (52.6 against 50.0): the shared expander at scale 1 on the `ili9341` backend. Colours right |
+| Tab5 (MAC `30:ed:a0:e2:9d:0a`), `scale = 2`, trace on | `deploy` printed `display: tab5 scale=2`; identity `... git=c2ca487 ... trace=on pages=240 ... roles=v4/4096 ...`, boot `wasmicon: roles none display=tab5 scale=2`. `trace diff` against the 2x host run: match, 4,244 lines (38 ignored per side); start-up 24.18 s, 541 frames 448.9 s |
+| Tab5, `scale = 2`, trace off | demo frame 1,023 ms = DOOM 917 + panel 104 (74 guest, 29 `write-rect` + `present`); title 516 ms; start-up 13.68 s; 541 frames 436.7 s. Earlier Tab5 runs: 1,403 ms with the guest doubling (indexed8), 1,444 (RGB565), 1,000 unscaled at 1x. The picture is the 640x400 of the earlier runs, colours right (by eye) |
+
+The Tab5 write path at scale 2 (the default `Board::display_write_expanded`, docs/TODO.md §6-10):
+29.4 ms per frame over the run (28.7 over the demo windows), against 10.0 ms at 1x on the same
+backend, 22.9 ms for the guest-doubled RGB565 copy and 37.8 ms for the guest-doubled indexed8 frame.
+DOOM's frames are 492 views of 288x144, 49 full frames of 320x200 and 25 status bars of 320x32 (guest
+pixels, one `write-rect` each), so the default path hands about 288 to 400 pieces a frame to the
+backend. Trace on costs 23 ms a frame at scale 2 (19 of it on the write path) and 10.5 s of start-up.
+
+Every power-up of the Tab5 printed `POWERON`, then `HP_SYS_HP_WDT_RESET` before the second-stage
+bootloader (6 of 6 captures): the known first-boot fault of docs/TODO.md §1.3.2. On the ESP32-S3 the
+reset lines misbehaved again (docs/TODO.md §1.3).
+
+### What this measurement does not say
+
+- The pictures were reported, not seen here; the traces show what the guest sent
+- Touch at scale 2 on a board: the module imports no touch interface
+- Scale 4, scale on the ILI9341, and rotations other than the defaults
+- A full-screen `write-rect` at 2x on the Tab5 (3,840 pieces for 360x640): DOOM never sends one
