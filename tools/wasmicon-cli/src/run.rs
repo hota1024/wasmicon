@@ -29,6 +29,9 @@ pub struct Options {
     pub display_out: Option<PathBuf>,
     /// Size of the mock display; `None` is the 320x240 default.
     pub display_size: Option<(u32, u32)>,
+    /// Panel pixels per guest pixel on the mock display, as a board's
+    /// `scale` (docs/TODO.md §6-10); `None` is 1.
+    pub display_scale: Option<u32>,
     /// What the mock touch panel reports, one line per read
     /// (docs/device-layer.md §11.4). `None`: nothing touches it.
     pub touch_script: Option<PathBuf>,
@@ -82,6 +85,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         assets,
         no_display: false,
         display_size: opts.display_size,
+        display_scale: opts.display_scale,
         display: None,
         bus_log: false,
         no_touch: false,

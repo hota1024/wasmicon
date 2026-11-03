@@ -401,7 +401,7 @@ fn display_drivers_are_listed_exactly_where_there_is_a_display() {
         profile::ESP32P4.interfaces.display_drivers,
         DisplayConfig::DRIVERS
     );
-    assert!(DisplayConfig::DRIVERS.contains(&DisplayConfig::Tab5.driver()));
+    assert!(DisplayConfig::DRIVERS.contains(&DisplayConfig::TAB5.driver()));
 }
 
 /// A firmware lists a touch driver only if it has touch, and only drivers the

@@ -24,11 +24,14 @@ use crate::profile::{Profile, Slot};
 pub const MAGIC: [u8; 4] = *b"WMCR";
 
 /// Newest format version this firmware reads. Version 1 holds roles only;
-/// version 2 may add one `@display=` line, version 3 one `@touch=` line too.
+/// version 2 may add one `@display=` line, version 3 one `@touch=` line too,
+/// and version 4 a `scale=` on the display line (docs/TODO.md §6-10).
 /// The writer uses the lowest version that holds the entries, so a firmware
 /// that reads only version 1 keeps reading every other app's roles
-/// (docs/TODO.md §6-5), and one without touch every app without it.
-pub const FORMAT_VERSION: u16 = 3;
+/// (docs/TODO.md §6-5), one without touch every app without it, and one
+/// without `scale` every app at 1x. Such a firmware refuses a newer table as
+/// `UnsupportedVersion`, which names the cause in its boot line.
+pub const FORMAT_VERSION: u16 = 4;
 
 /// Header size. The body starts right after it.
 pub const HEADER_LEN: usize = 16;
@@ -269,21 +272,51 @@ pub enum DisplayConfig {
         dc: u32,
         rst: u32,
         rotation: u32,
+        scale: u32,
     },
     /// The M5Stack Tab5's own MIPI-DSI panel (`@display=tab5`).
-    Tab5,
+    Tab5 { scale: u32 },
 }
+
+/// Largest `scale` of a display entry (docs/TODO.md §6-10).
+pub const MAX_SCALE: u32 = 4;
+
+/// The Tab5 panel's size in pixels, portrait, as its backend drives it.
+pub const TAB5_SIZE: (u32, u32) = (720, 1280);
 
 impl DisplayConfig {
     /// Every driver name `driver` returns.
     pub const DRIVERS: [&'static str; 2] = ["ili9341", "tab5"];
+
+    /// The Tab5 entry at 1x.
+    pub const TAB5: DisplayConfig = DisplayConfig::Tab5 { scale: 1 };
+
+    /// How many panel pixels one guest pixel covers in each direction
+    /// (`scale=`, docs/TODO.md §6-10). The guest sees the panel's size
+    /// divided by it; 1 when the entry does not say.
+    #[must_use]
+    pub fn scale(&self) -> u32 {
+        match *self {
+            DisplayConfig::Ili9341 { scale, .. } | DisplayConfig::Tab5 { scale } => scale,
+        }
+    }
+
+    /// The panel's size in its own pixels, after the rotation.
+    #[must_use]
+    pub fn panel_size(&self) -> (u32, u32) {
+        match *self {
+            DisplayConfig::Ili9341 { rotation, .. } if rotation % 180 == 0 => (240, 320),
+            DisplayConfig::Ili9341 { .. } => (320, 240),
+            DisplayConfig::Tab5 { .. } => TAB5_SIZE,
+        }
+    }
 
     /// The driver's name, as `@display=` and `[board.<name>.display]` spell it.
     #[must_use]
     pub fn driver(&self) -> &'static str {
         match *self {
             DisplayConfig::Ili9341 { .. } => "ili9341",
-            DisplayConfig::Tab5 => "tab5",
+            DisplayConfig::Tab5 { .. } => "tab5",
         }
     }
 
@@ -294,7 +327,7 @@ impl DisplayConfig {
         match *self {
             DisplayConfig::Ili9341 { cs, dc, rst, .. } => [cs, dc, rst],
             // Backlight, and the internal I2C that powers the panel.
-            DisplayConfig::Tab5 => [22, 31, 32],
+            DisplayConfig::Tab5 { .. } => [22, 31, 32],
         }
     }
 
@@ -303,7 +336,7 @@ impl DisplayConfig {
     pub fn spi(&self) -> Option<u32> {
         match *self {
             DisplayConfig::Ili9341 { spi, .. } => Some(spi),
-            DisplayConfig::Tab5 => None,
+            DisplayConfig::Tab5 { .. } => None,
         }
     }
 
@@ -311,11 +344,15 @@ impl DisplayConfig {
     ///
     /// # Errors
     /// A pin out of range, reserved, a bus pin, used twice, or shared with a
-    /// role; an SPI index or rotation out of range.
+    /// role; an SPI index or rotation out of range; a scale out of range or
+    /// one that does not divide the panel's size.
     pub fn check(&self, limits: &Limits<'_>, roles: &RoleMap) -> Result<(), RolesError> {
         if let DisplayConfig::Ili9341 { spi, rotation, .. } = *self
             && (spi as usize >= crate::MAX_SPI || !matches!(rotation, 0 | 90 | 180 | 270))
         {
+            return Err(RolesError::BadDisplay);
+        }
+        if !self.scale_fits() {
             return Err(RolesError::BadDisplay);
         }
         let pins = self.pins();
@@ -336,33 +373,41 @@ impl DisplayConfig {
         Ok(())
     }
 
+    /// Whether `scale` is 1 to `MAX_SCALE` and divides both sides of the
+    /// panel, so that every panel pixel belongs to one guest pixel.
+    #[must_use]
+    pub fn scale_fits(&self) -> bool {
+        let (w, h) = self.panel_size();
+        let n = self.scale();
+        (1..=MAX_SCALE).contains(&n) && w % n == 0 && h % n == 0
+    }
+
     /// Parses what follows `@display=`.
     fn parse(text: &[u8]) -> Result<DisplayConfig, RolesError> {
         let mut words = text.split(|b| *b == b' ').filter(|w| !w.is_empty());
         match words.next() {
-            Some(b"tab5") => match words.next() {
-                None => Ok(DisplayConfig::Tab5),
-                Some(_) => Err(RolesError::BadDisplay),
-            },
+            Some(b"tab5") => {
+                // scale, at most once and optional.
+                let mut v: [Option<u32>; 1] = [None];
+                parse_keys(words, &[b"scale"], &mut v)?;
+                Ok(DisplayConfig::Tab5 {
+                    scale: v[0].unwrap_or(1),
+                })
+            }
             Some(b"ili9341") => {
-                // spi, cs, dc, rst, rotation; each exactly once.
-                const KEYS: [&[u8]; 5] = [b"spi", b"cs", b"dc", b"rst", b"rotation"];
-                let mut v: [Option<u32>; 5] = [None; 5];
-                for w in words {
-                    let eq = w
-                        .iter()
-                        .position(|b| *b == b'=')
-                        .ok_or(RolesError::BadDisplay)?;
-                    let k = KEYS
-                        .iter()
-                        .position(|k| *k == &w[..eq])
-                        .ok_or(RolesError::BadDisplay)?;
-                    if v[k].is_some() {
-                        return Err(RolesError::BadDisplay);
-                    }
-                    v[k] = Some(parse_u32(&w[eq + 1..])?);
-                }
-                let [Some(spi), Some(cs), Some(dc), Some(rst), Some(rotation)] = v else {
+                // spi, cs, dc, rst, rotation, each exactly once; scale optional.
+                const KEYS: [&[u8]; 6] = [b"spi", b"cs", b"dc", b"rst", b"rotation", b"scale"];
+                let mut v: [Option<u32>; 6] = [None; 6];
+                parse_keys(words, &KEYS, &mut v)?;
+                let [
+                    Some(spi),
+                    Some(cs),
+                    Some(dc),
+                    Some(rst),
+                    Some(rotation),
+                    scale,
+                ] = v
+                else {
                     return Err(RolesError::BadDisplay);
                 };
                 Ok(DisplayConfig::Ili9341 {
@@ -371,6 +416,7 @@ impl DisplayConfig {
                     dc,
                     rst,
                     rotation,
+                    scale: scale.unwrap_or(1),
                 })
             }
             _ => Err(RolesError::BadDisplay),
@@ -380,13 +426,14 @@ impl DisplayConfig {
     /// Writes what follows `@display=`.
     fn encode(&self, out: &mut Buf<'_>) {
         match *self {
-            DisplayConfig::Tab5 => out.str("tab5"),
+            DisplayConfig::Tab5 { .. } => out.str("tab5"),
             DisplayConfig::Ili9341 {
                 spi,
                 cs,
                 dc,
                 rst,
                 rotation,
+                ..
             } => {
                 out.str("ili9341");
                 for (k, v) in [
@@ -401,7 +448,37 @@ impl DisplayConfig {
                 }
             }
         }
+        // Written only when it is not 1: a firmware that predates `scale`
+        // rejects the key, so an entry at 1x stays readable by it.
+        if self.scale() != 1 {
+            out.str(" scale=");
+            out.u32(self.scale());
+        }
     }
+}
+
+/// Reads `key=value` words into `v`, in the order of `keys`; each key at
+/// most once.
+fn parse_keys<'a>(
+    words: impl Iterator<Item = &'a [u8]>,
+    keys: &[&[u8]],
+    v: &mut [Option<u32>],
+) -> Result<(), RolesError> {
+    for w in words {
+        let eq = w
+            .iter()
+            .position(|b| *b == b'=')
+            .ok_or(RolesError::BadDisplay)?;
+        let k = keys
+            .iter()
+            .position(|k| *k == &w[..eq])
+            .ok_or(RolesError::BadDisplay)?;
+        if v[k].is_some() {
+            return Err(RolesError::BadDisplay);
+        }
+        v[k] = Some(parse_u32(&w[eq + 1..])?);
+    }
+    Ok(())
 }
 
 /// The touch backend over the display and its wiring
@@ -486,7 +563,7 @@ impl TouchConfig {
         roles: &RoleMap,
     ) -> Result<(), RolesError> {
         let display = match (*self, display) {
-            (TouchConfig::Tab5, Some(d @ DisplayConfig::Tab5))
+            (TouchConfig::Tab5, Some(d @ DisplayConfig::Tab5 { .. }))
             | (TouchConfig::Xpt2046 { .. }, Some(d @ DisplayConfig::Ili9341 { .. })) => d,
             _ => return Err(RolesError::BadTouch),
         };
@@ -624,11 +701,13 @@ impl Wiring {
         touch: None,
     };
 
-    /// The format version the writer uses: 3 with a touch entry, 2 with only
-    /// a display entry, 1 otherwise.
+    /// The format version the writer uses: 4 with a display scale other
+    /// than 1, 3 with a touch entry, 2 with only a display entry, 1 otherwise.
     #[must_use]
     pub fn version(&self) -> u16 {
-        if self.touch.is_some() {
+        if self.display.is_some_and(|d| d.scale() != 1) {
+            4
+        } else if self.touch.is_some() {
             3
         } else if self.display.is_some() {
             2
@@ -639,7 +718,8 @@ impl Wiring {
 }
 
 /// Parses the body (lines of `name=gpio`, from version 2 one `@display=`
-/// line, from version 3 one `@touch=` line).
+/// line, from version 3 one `@touch=` line, from version 4 a `scale=` on the
+/// display line).
 ///
 /// # Errors
 /// A malformed line, or whatever `insert` / `DisplayConfig::check` reject.
@@ -655,7 +735,11 @@ pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiri
             if version < 2 || w.display.is_some() {
                 return Err(RolesError::BadDisplay);
             }
-            w.display = Some(DisplayConfig::parse(rest)?);
+            let d = DisplayConfig::parse(rest)?;
+            if version < 4 && d.scale() != 1 {
+                return Err(RolesError::BadDisplay);
+            }
+            w.display = Some(d);
             continue;
         }
         if let Some(rest) = line.strip_prefix(TOUCH_KEY) {
@@ -707,7 +791,7 @@ fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
 /// ```text
 /// offset  size  contents
 /// 0       4     magic "WMCR" (Wasmicon Roles)
-/// 4       2     format version (u16 LE, 1 ..= 3)
+/// 4       2     format version (u16 LE, 1 ..= 4)
 /// 6       2     reserved (0)
 /// 8       4     body length (u32 LE)
 /// 12      4     CRC-32 of the body (u32 LE)

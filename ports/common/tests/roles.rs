@@ -38,6 +38,7 @@ const PICO_LCD: DisplayConfig = DisplayConfig::Ili9341 {
     dc: 20,
     rst: 21,
     rotation: 90,
+    scale: 1,
 };
 
 fn table(entries: &[(&str, u32)]) -> RoleMap {
@@ -179,6 +180,7 @@ fn at_most_max_roles_entries() {
             dc: 61,
             rst: 62,
             rotation: 270,
+            scale: 4,
         }),
         touch: Some(TouchConfig::Xpt2046 {
             cs: 58,
@@ -190,15 +192,28 @@ fn at_most_max_roles_entries() {
         }),
     };
     let mut body = [0u8; roles::MAX_BODY];
-    // Without the touch entry the body is version 2, which a firmware from
-    // before version 3 reads only up to its own limit of 256 bytes.
-    let v2 = Wiring { touch: None, ..w };
+    // Without the touch entry and the scale the body is version 2, which a
+    // firmware from before version 3 reads only up to its own limit of 256
+    // bytes.
+    let v2 = Wiring {
+        touch: None,
+        display: Some(DisplayConfig::Ili9341 {
+            spi: 1,
+            cs: 60,
+            dc: 61,
+            rst: 62,
+            rotation: 270,
+            scale: 1,
+        }),
+        ..w
+    };
     assert_eq!(v2.version(), 2);
     let n = roles::encode_body(&v2, &mut body);
     assert!(n < 256, "{n} bytes in version 2");
     let n = roles::encode_body(&w, &mut body);
     assert!(n < roles::MAX_BODY, "{n} bytes");
-    let back = roles::parse_body(&body[..n], 3, &limits)
+    assert_eq!(w.version(), 4);
+    let back = roles::parse_body(&body[..n], 4, &limits)
         .unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()));
     assert_eq!(back.roles.len(), roles::MAX_ROLES);
     assert_eq!(back.display, w.display);
@@ -279,14 +294,47 @@ fn a_display_entry_reads_back_and_makes_version_2() {
 
     let tab5 = Wiring {
         roles: RoleMap::EMPTY,
-        display: Some(DisplayConfig::Tab5),
+        display: Some(DisplayConfig::TAB5),
         touch: None,
     };
     let limits = Limits::of(&profile::ESP32P4);
     let img = image_of(&tab5);
     assert_eq!(&img[roles::HEADER_LEN..], b"@display=tab5\n");
     let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
-    assert_eq!(back.display, Some(DisplayConfig::Tab5));
+    assert_eq!(back.display, Some(DisplayConfig::TAB5));
+
+    // `scale=` is written only when it is not 1, so an entry at 1x stays
+    // readable by a firmware that predates it (docs/TODO.md §6-10).
+    let tab5_2x = Wiring {
+        display: Some(DisplayConfig::Tab5 { scale: 2 }),
+        ..tab5
+    };
+    let img = image_of(&tab5_2x);
+    // A scale makes version 4; without it the version stays as it was.
+    assert_eq!(tab5.version(), 2);
+    assert_eq!(tab5_2x.version(), 4);
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 4);
+    assert_eq!(&img[roles::HEADER_LEN..], b"@display=tab5 scale=2\n");
+    let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.display, Some(DisplayConfig::Tab5 { scale: 2 }));
+    let lcd_4x = DisplayConfig::Ili9341 {
+        spi: 0,
+        cs: 17,
+        dc: 20,
+        rst: 21,
+        rotation: 90,
+        scale: 4,
+    };
+    let img = image_of(&Wiring {
+        roles: RoleMap::EMPTY,
+        display: Some(lcd_4x),
+        touch: None,
+    });
+    assert_eq!(
+        &img[roles::HEADER_LEN..],
+        b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90 scale=4\n"
+    );
+    assert_eq!(parsed_wiring(&img).display, Some(lcd_4x));
 }
 
 #[test]
@@ -321,6 +369,28 @@ fn a_bad_display_entry_drops_the_whole_table() {
         (
             2,
             b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=45\n",
+            RolesError::BadDisplay,
+        ),
+        // A scale out of 1 to 4, one that does not divide the panel
+        // (320x240, 720x1280), or repeated (docs/TODO.md §6-10).
+        (4, b"@display=tab5 scale=0\n", RolesError::BadDisplay),
+        (4, b"@display=tab5 scale=3\n", RolesError::BadDisplay),
+        (4, b"@display=tab5 scale=8\n", RolesError::BadDisplay),
+        (
+            4,
+            b"@display=tab5 scale=2 scale=2\n",
+            RolesError::BadDisplay,
+        ),
+        // A scale other than 1 needs version 4.
+        (2, b"@display=tab5 scale=2\n", RolesError::BadDisplay),
+        (
+            3,
+            b"@display=tab5 scale=2\n@touch=tab5\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            4,
+            b"@display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90 scale=3\n",
             RolesError::BadDisplay,
         ),
         // The pins get the role checks, and may not be shared with a role
@@ -388,13 +458,25 @@ fn the_boot_line_shows_the_display_entry() {
         out.as_bytes(),
         b"wasmicon: roles none display=ili9341 spi=0 cs=17 dc=20 rst=21 rotation=90"
     );
+    // A scale shows, so the serial port says what the board read.
+    let mut line = [0u8; 256];
+    let mut out = Buf::new(&mut line);
+    roles::describe(
+        &Ok(Wiring {
+            roles: RoleMap::EMPTY,
+            display: Some(DisplayConfig::Tab5 { scale: 2 }),
+            touch: None,
+        }),
+        &mut out,
+    );
+    assert_eq!(out.as_bytes(), b"wasmicon: roles none display=tab5 scale=2");
 }
 
 #[test]
 fn a_touch_entry_reads_back_and_makes_version_3() {
     let w = Wiring {
         roles: RoleMap::EMPTY,
-        display: Some(DisplayConfig::Tab5),
+        display: Some(DisplayConfig::TAB5),
         touch: Some(TouchConfig::Tab5),
     };
     let img = image_of(&w);
@@ -402,7 +484,7 @@ fn a_touch_entry_reads_back_and_makes_version_3() {
     assert_eq!(&img[roles::HEADER_LEN..], b"@display=tab5\n@touch=tab5\n");
     let limits = Limits::of(&profile::ESP32P4);
     let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
-    assert_eq!(back.display, Some(DisplayConfig::Tab5));
+    assert_eq!(back.display, Some(DisplayConfig::TAB5));
     assert_eq!(back.touch, Some(TouchConfig::Tab5));
 
     let mut line = [0u8; 256];
@@ -488,6 +570,7 @@ fn an_xpt2046_entry_reads_back() {
             dc: 14,
             rst: 15,
             rotation: 90,
+            scale: 1,
         }),
         touch: Some(S3_TOUCH),
     };

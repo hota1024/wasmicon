@@ -441,7 +441,7 @@ pub mod display {
             Ok(Screen(h))
         }
 
-        /// Width in pixels, after the configured orientation.
+        /// Width in pixels, after the configured orientation and scale.
         #[must_use]
         pub fn width(&self) -> u32 {
             // SAFETY: `self.0` is the handle `open` returned and has not been released; the
@@ -449,7 +449,7 @@ pub mod display {
             unsafe { raw::screen_width(self.0) }
         }
 
-        /// Height in pixels, after the configured orientation.
+        /// Height in pixels, after the configured orientation and scale.
         #[must_use]
         pub fn height(&self) -> u32 {
             // SAFETY: `self.0` is the handle `open` returned and has not been released; the

@@ -70,6 +70,7 @@ fn main() -> ExitCode {
             assets: Vec::new(),
             no_display: false,
             display_size: None,
+            display_scale: None,
             display: None,
             bus_log: false,
             no_touch: false,

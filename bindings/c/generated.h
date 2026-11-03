@@ -396,7 +396,9 @@ void wasmicon_assets_blob_drop(uint32_t self);
 
 /**
  * A pixel display that the host drives (docs/device-layer.md §4).
- * The host owns the panel: its bus, initialization, orientation and any frame buffer.
+ * The host owns the panel: its bus, initialization, orientation, scale and any frame
+ * buffer. Sizes and rectangles are in the display's pixels as the guest sees them,
+ * after the configured orientation and scale.
  * The guest only draws rectangles; text and images are drawn by the guest.
  */
 
@@ -426,13 +428,15 @@ WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[static]screen.open")
 uint32_t wasmicon_display_screen_open(uint32_t index, uint32_t *out);
 
 /**
- * Width in pixels, after the configured orientation. 0 for an invalid handle.
+ * Width in pixels, after the configured orientation and scale. 0 for an invalid
+ * handle.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.width")
 uint32_t wasmicon_display_screen_width(uint32_t self);
 
 /**
- * Height in pixels, after the configured orientation. 0 for an invalid handle.
+ * Height in pixels, after the configured orientation and scale. 0 for an invalid
+ * handle.
  */
 WASMICON_IMPORT("wasmicon:device/display@0.1.0", "[method]screen.height")
 uint32_t wasmicon_display_screen_height(uint32_t self);
@@ -495,7 +499,7 @@ void wasmicon_display_screen_drop(uint32_t self);
 /**
  * A touch panel over a display that the host drives (docs/device-layer.md §11).
  * The host owns the controller: its bus, its calibration and the mapping to the
- * display's rotation.
+ * display's rotation and scale.
  */
 
 /**
@@ -509,7 +513,7 @@ uint32_t wasmicon_touch_panel_open(uint32_t index, uint32_t *out);
 /**
  * Reads the points touched now, at most `max-points` of them and at most 8.
  * Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
- * display after its configured rotation. An empty list means no touch.
+ * display after its configured rotation and scale. An empty list means no touch.
  * Returns `invalid-argument` if `max-points` is 0.
  */
 WASMICON_IMPORT("wasmicon:device/touch@0.1.0", "[method]panel.read")

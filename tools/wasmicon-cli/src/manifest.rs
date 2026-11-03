@@ -69,7 +69,7 @@ use std::path::{Path, PathBuf};
 
 use wasmicon_port::assets;
 use wasmicon_port::profile::{self, Profile};
-use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, TouchConfig, Wiring};
+use wasmicon_port::roles::{self, DisplayConfig, Limits, MAX_SCALE, RoleMap, TouchConfig, Wiring};
 
 /// The `version` this CLI can read.
 pub const SUPPORTED_VERSION: u32 = 1;
@@ -150,6 +150,9 @@ struct RawDisplay {
     rst: Option<u32>,
     /// 0, 90, 180 or 270; default 90 (320x240 landscape, as the apps draw).
     rotation: Option<u32>,
+    /// Panel pixels per guest pixel in each direction, 1 to 4; default 1
+    /// (docs/TODO.md §6-10).
+    scale: Option<u32>,
 }
 
 /// A loaded `wasmicon.toml`.
@@ -247,6 +250,7 @@ fn build_display(
                 dc: pin(raw.dc, "dc")?,
                 rst: pin(raw.rst, "rst")?,
                 rotation: raw.rotation.unwrap_or(90),
+                scale: raw.scale.unwrap_or(1),
             }
         }
         "tab5" => {
@@ -257,9 +261,11 @@ fn build_display(
                 || raw.rst.is_some()
                 || raw.rotation.is_some()
             {
-                bail!("{at}: driver = \"tab5\" takes no other keys");
+                bail!("{at}: driver = \"tab5\" takes no keys but `scale`");
             }
-            DisplayConfig::Tab5
+            DisplayConfig::Tab5 {
+                scale: raw.scale.unwrap_or(1),
+            }
         }
         other => bail!(
             "{at}: unknown driver `{other}` (known: {})",
@@ -277,6 +283,13 @@ fn build_display(
             } else {
                 board.interfaces.display_drivers.join(", ")
             }
+        );
+    }
+    if !d.scale_fits() {
+        let (w, h) = d.panel_size();
+        bail!(
+            "{at}: `scale = {}` must be 1 to {MAX_SCALE} and divide the panel's {w}x{h}",
+            d.scale()
         );
     }
     d.check(&Limits::of(board), roles)
@@ -820,7 +833,8 @@ driver = "tab5"
                 cs: 10,
                 dc: 14,
                 rst: 15,
-                rotation: 90
+                rotation: 90,
+                scale: 1
             })
         );
         // The PSRAM firmware reads its board's entry.
@@ -828,10 +842,10 @@ driver = "tab5"
             m.display(&profile::ESP32S3_PSRAM),
             m.display(&profile::ESP32S3)
         );
-        assert_eq!(m.display(&profile::ESP32P4), Some(DisplayConfig::Tab5));
+        assert_eq!(m.display(&profile::ESP32P4), Some(DisplayConfig::TAB5));
         assert_eq!(
             m.display(&profile::ESP32P4_PSRAM),
-            Some(DisplayConfig::Tab5)
+            Some(DisplayConfig::TAB5)
         );
         assert_eq!(m.display(&profile::RP2350), None);
         let w = m.wiring(&profile::ESP32P4).expect("wiring");
@@ -873,7 +887,29 @@ driver = "tab5"
             "version = 1\n[board.esp32p4.display]\ndriver = \"tab5\"\ncs = 1\n",
         )
         .expect_err("tab5 with a pin");
-        assert!(format!("{e:#}").contains("takes no other keys"));
+        assert!(format!("{e:#}").contains("takes no keys but `scale`"));
+        // A scale that does not divide the panel, or out of range.
+        for (board, body) in [
+            ("esp32p4", "driver = \"tab5\"\nscale = 3"),
+            ("esp32p4", "driver = \"tab5\"\nscale = 0"),
+            (
+                "esp32s3",
+                "driver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\nscale = 8",
+            ),
+        ] {
+            let text = format!("version = 1\n[board.{board}.display]\n{body}\n");
+            let e = parse("display-scale", &text).expect_err(body);
+            assert!(format!("{e:#}").contains("must be 1 to 4"), "{body}: {e:#}");
+        }
+        let m = parse(
+            "display-scale-ok",
+            "version = 1\n[board.esp32p4.display]\ndriver = \"tab5\"\nscale = 2\n",
+        )
+        .expect("tab5 at 2x");
+        assert_eq!(
+            m.display(&profile::ESP32P4),
+            Some(DisplayConfig::Tab5 { scale: 2 })
+        );
         // The Tab5 panel exists only on the ESP32-P4.
         let e = parse(
             "display-tab5-s3",

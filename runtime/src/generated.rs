@@ -600,7 +600,9 @@ pub mod log {
 }
 
 /// A pixel display that the host drives (docs/device-layer.md §4).
-/// The host owns the panel: its bus, initialization, orientation and any frame buffer.
+/// The host owns the panel: its bus, initialization, orientation, scale and any frame
+/// buffer. Sizes and rectangles are in the display's pixels as the guest sees them,
+/// after the configured orientation and scale.
 /// The guest only draws rectangles; text and images are drawn by the guest.
 pub mod display {
     /// How pixels are encoded in `write-rect` and `fill-rect`.

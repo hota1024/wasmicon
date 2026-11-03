@@ -165,6 +165,7 @@ fn the_deploy_image_carries_the_app_and_the_wiring() {
         dc: 20,
         rst: 21,
         rotation: 90,
+        scale: 1,
     };
     let w = Wiring {
         roles: roles::from_table(&[("status-led", 15)], &limits)
@@ -209,7 +210,7 @@ fn the_deploy_image_carries_the_touch_entry() {
     let w = Wiring {
         roles: roles::from_table(&[("display", 20), ("touch", 21)], &limits)
             .unwrap_or_else(|e| panic!("{}", e.reason())),
-        display: Some(DisplayConfig::Tab5),
+        display: Some(DisplayConfig::TAB5),
         touch: Some(TouchConfig::Tab5),
     };
     let image = pack::with_wiring(&pack::build(b"\0asm\x01\0\0\0app"), p, &w).expect("builds");

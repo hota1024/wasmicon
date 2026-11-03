@@ -342,7 +342,9 @@ export declare function assets_blob_drop(self: u32): void;
 
 /**
  * A pixel display that the host drives (docs/device-layer.md §4).
- * The host owns the panel: its bus, initialization, orientation and any frame buffer.
+ * The host owns the panel: its bus, initialization, orientation, scale and any frame
+ * buffer. Sizes and rectangles are in the display's pixels as the guest sees them,
+ * after the configured orientation and scale.
  * The guest only draws rectangles; text and images are drawn by the guest.
  */
 
@@ -369,13 +371,15 @@ export enum DisplayPixelFormat {
 export declare function display_screen_open(index: u32, out: usize): u32;
 
 /**
- * Width in pixels, after the configured orientation. 0 for an invalid handle.
+ * Width in pixels, after the configured orientation and scale. 0 for an invalid
+ * handle.
  */
 @external("wasmicon:device/display@0.1.0", "[method]screen.width")
 export declare function display_screen_width(self: u32): u32;
 
 /**
- * Height in pixels, after the configured orientation. 0 for an invalid handle.
+ * Height in pixels, after the configured orientation and scale. 0 for an invalid
+ * handle.
  */
 @external("wasmicon:device/display@0.1.0", "[method]screen.height")
 export declare function display_screen_height(self: u32): u32;
@@ -438,7 +442,7 @@ export declare function display_screen_drop(self: u32): void;
 /**
  * A touch panel over a display that the host drives (docs/device-layer.md §11).
  * The host owns the controller: its bus, its calibration and the mapping to the
- * display's rotation.
+ * display's rotation and scale.
  */
 
 /**
@@ -452,7 +456,7 @@ export declare function touch_panel_open(index: u32, out: usize): u32;
 /**
  * Reads the points touched now, at most `max-points` of them and at most 8.
  * Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
- * display after its configured rotation. An empty list means no touch.
+ * display after its configured rotation and scale. An empty list means no touch.
  * Returns `invalid-argument` if `max-points` is 0.
  */
 @external("wasmicon:device/touch@0.1.0", "[method]panel.read")

@@ -409,7 +409,9 @@ pub mod assets {
 }
 
 /// A pixel display that the host drives (docs/device-layer.md §4).
-/// The host owns the panel: its bus, initialization, orientation and any frame buffer.
+/// The host owns the panel: its bus, initialization, orientation, scale and any frame
+/// buffer. Sizes and rectangles are in the display's pixels as the guest sees them,
+/// after the configured orientation and scale.
 /// The guest only draws rectangles; text and images are drawn by the guest.
 pub mod display {
     #[link(wasm_import_module = "wasmicon:device/display@0.1.0")]
@@ -420,11 +422,13 @@ pub mod display {
         #[link_name = "[static]screen.open"]
         pub fn screen_open(index: u32, out: *mut u32) -> u32;
 
-        /// Width in pixels, after the configured orientation. 0 for an invalid handle.
+        /// Width in pixels, after the configured orientation and scale. 0 for an invalid
+        /// handle.
         #[link_name = "[method]screen.width"]
         pub fn screen_width(this: u32) -> u32;
 
-        /// Height in pixels, after the configured orientation. 0 for an invalid handle.
+        /// Height in pixels, after the configured orientation and scale. 0 for an invalid
+        /// handle.
         #[link_name = "[method]screen.height"]
         pub fn screen_height(this: u32) -> u32;
 
@@ -506,7 +510,7 @@ pub mod display {
 
 /// A touch panel over a display that the host drives (docs/device-layer.md §11).
 /// The host owns the controller: its bus, its calibration and the mapping to the
-/// display's rotation.
+/// display's rotation and scale.
 pub mod touch {
     #[link(wasm_import_module = "wasmicon:device/touch@0.1.0")]
     unsafe extern "C" {
@@ -518,7 +522,7 @@ pub mod touch {
 
         /// Reads the points touched now, at most `max-points` of them and at most 8.
         /// Each point is 4 bytes: x, then y, each a u16 high byte first, in pixels of the
-        /// display after its configured rotation. An empty list means no touch.
+        /// display after its configured rotation and scale. An empty list means no touch.
         /// Returns `invalid-argument` if `max-points` is 0.
         #[link_name = "[method]panel.read"]
         pub fn panel_read(

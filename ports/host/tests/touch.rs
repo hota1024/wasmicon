@@ -51,6 +51,27 @@ fn the_mock_replays_its_script_and_checks_the_arguments() {
 }
 
 #[test]
+fn points_are_in_guest_pixels_on_a_scaled_display() {
+    // The script is in panel pixels; at scale 2 the guest gets half of each
+    // coordinate, rounded down (docs/TODO.md §6-10).
+    let wasm = wat_to_wasm("touch.wat");
+    let script = wasmicon_host::parse_touch_script("11,20 301,201 0,239\n").unwrap();
+    let opts = wasmicon_host::Options {
+        trace: true,
+        display_scale: Some(2),
+        touch_script: script,
+        ..Default::default()
+    };
+    let out = wasmicon_host::run_wasm_opts(&wasm, opts)
+        .unwrap_or_else(|e| panic!("execution failed: {} [{}]", e.reason(), e.kind().name()));
+    assert!(
+        out.trace.contains("< 0 [len=8 data=0x0005000a00960064]\n"),
+        "trace:\n{}",
+        out.trace
+    );
+}
+
+#[test]
 fn script_lines_parse_and_bad_ones_name_their_line() {
     let s = wasmicon_host::parse_touch_script("# comment\n\n-\n1,2\n3,4 5,6\n").unwrap();
     assert_eq!(s, vec![vec![], vec![(1, 2)], vec![(3, 4), (5, 6)]]);

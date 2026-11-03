@@ -8,7 +8,7 @@ and the touch controller, so the app has no driver, no pins and no bus.
 
 | Element | What it checks |
 |---|---|
-| A dot under each touched point | `touch.panel.read` coordinates are display pixels after rotation |
+| A dot under each touched point | `touch.panel.read` coordinates are display pixels after rotation and scale |
 | One color per point of a read (white, green, cyan, yellow, magenta) | Multi-touch reads |
 | CLEAR, the gray button at the top left | Clears the canvas when first touched |
 | DONE, the red button at the top right | Ends the app with `touch-demo done` |

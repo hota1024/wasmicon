@@ -1547,8 +1547,26 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
 
 - [x] **§6-10 Integer scaling for `display`: where does it live?** **Owner decision 2026-11-03 on
       the direction: (B), a per-board configuration key `scale` next to `rotation`, not an API.**
-      The points under (B) below were settled the same day on the proposed answers. Not
-      implemented.
+      The points under (B) below were settled the same day on the proposed answers.
+      **Implemented 2026-11-03 on the host; not yet run on a board.** `DisplayConfig` carries
+      `scale` for both drivers (`scale_fits`, `MAX_SCALE`); `Hal` reports guest sizes,
+      scales rectangles and divides touch points; one expander (`Pixels`) serves the
+      `ili9341` backend (one address window per draw) and the default
+      `Board::display_write_expanded`; `wasmicon run --display-scale`. Host tests:
+      `ports/host/tests/display_scale.rs` (2x and 4x trace as 1x and draw blocks),
+      `ports/host/tests/ili9341.rs` (2x over the ILI9341 equals the 2x mock), the touch test
+      at 2x, and the config slot round trip and refusals in `ports/common/tests/roles.rs`.
+      **One point implemented differently (owner decision 2026-11-03):** no per-firmware
+      profile flag for `check`. Every firmware with a display gets `scale` from
+      `ports/common`, so the flag would always equal `display`, and the profiles in the CLI
+      cannot describe an older firmware still on a board, which is the case to guard
+      against. Instead `scale=` makes the config slot format version 4, written only when
+      the scale is not 1, as versions 2 and 3 were for the display and touch entries
+      (docs/app-workflow.md §3.9). A firmware that reads at most version 3 refuses the
+      table as `UnsupportedVersion` (roles included; its boot line names the cause), and
+      the identity line reports `roles=v4` for one that reads it, so the CLI can refuse
+      before flashing once it reads the identity from the device (`info`, stage 2 of
+      docs/app-workflow.md §3.8)
       The DOOM port's host run of §6-9 showed that on the Tab5 the guest's own 2x loop costs
       what the conversion did (panel 4.6 -> 4.1 ms at 720x1280), so the Tab5 gains little
       from `indexed8` alone.
@@ -1573,7 +1591,7 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
       - Compatibility: today's `@display=` parser rejects an unknown key, and a firmware that
         cannot read the display entry fails it (`RolesError::BadDisplay`). `deploy` writes
         `scale=` only when it is not 1, and `check` refuses `scale` for a firmware whose
-        profile does not list it
+        profile does not list it (implemented as config slot format version 4; see above)
       - Traces: `width` / `height` become logical, so traces compare between boards of the
         same logical size. The host mock needs a scale next to `--display-size`
       - One converter in `ports/common` for `rgb565` and `indexed8`: `ili9341` expands a

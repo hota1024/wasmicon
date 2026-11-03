@@ -1,7 +1,9 @@
 package wasmicon:device@0.1.0;
 
 /// A pixel display that the host drives (docs/device-layer.md §4).
-/// The host owns the panel: its bus, initialization, orientation and any frame buffer.
+/// The host owns the panel: its bus, initialization, orientation, scale and any frame
+/// buffer. Sizes and rectangles are in the display's pixels as the guest sees them,
+/// after the configured orientation and scale.
 /// The guest only draws rectangles; text and images are drawn by the guest.
 interface display {
     use wasmicon:hal/types@0.1.0.{error-code};
@@ -23,10 +25,12 @@ interface display {
         /// is already open.
         open: static func(index: u32) -> result<screen, error-code>;
 
-        /// Width in pixels, after the configured orientation. 0 for an invalid handle.
+        /// Width in pixels, after the configured orientation and scale. 0 for an invalid
+        /// handle.
         width: func() -> u32;
 
-        /// Height in pixels, after the configured orientation. 0 for an invalid handle.
+        /// Height in pixels, after the configured orientation and scale. 0 for an invalid
+        /// handle.
         height: func() -> u32;
 
         /// The pixel format that `write-rect` and `fill-rect` take. `rgb565` (0) for an

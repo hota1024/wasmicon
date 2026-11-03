@@ -2,7 +2,8 @@
 # The app looks up no roles: the display belongs to the host. Each board's
 # display entry goes to the config slot with deploy (docs/device-layer.md §5.2).
 # The ILI9341 pins are those of apps/lcd-demo-rs (its README has the wiring);
-# rotation defaults to 90, the 320x240 landscape the host mock has.
+# rotation defaults to 90, the 320x240 landscape the host mock has, and
+# scale to 1 (the app lays itself out from width / height either way).
 version = 1
 
 [requirements]
