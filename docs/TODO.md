@@ -1611,7 +1611,8 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
         after that, in one place for every backend
       - Cost on the wire: the ILI9341 still carries every physical pixel, so a 160x80 view at
         2x costs the SPI time of 320x160
-    - [ ] **Open (from the review of PR #18): the Tab5 has no expander of its own.** It takes
+    - [x] **Closed (owner decision 2026-11-03: keep the default; no Tab5 override).**
+      From the review of PR #18: the Tab5 has no expander of its own. It takes
       the default `Board::display_write_expanded`, which hands every panel row to
       `display_write_rect` in pieces of up to 320 pixels: a full 360x640 frame at 2x is
       about 3,840 calls, each copying and byte-swapping into the frame buffer. Measured by
@@ -1619,8 +1620,8 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
       `present` take 29.4 ms of a 1,023 ms frame at 2x (10.0 at 1x on the same backend),
       for about 288 to 400 pieces a frame; DOOM never sends a full-screen rectangle. An
       override expanding straight into the frame buffer could save part of those 29 ms
-      (about 3 % of the frame). Proposed: leave the default and close this, unless an app
-      that redraws the whole 2x screen every frame shows a larger share. Owner question
+      (about 3 % of the frame), so the default stays. Reopen if an app that redraws the
+      whole 2x screen every frame shows a larger share
 
 ### Implementation (stages: docs/device-layer.md §10)
 
