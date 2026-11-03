@@ -216,6 +216,9 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
         Ok(dir) => dir,
         Err(e) => panic!("the assets image does not parse: {}", e.reason()),
     };
+    // As `wasmicon_host::run_wasm_opts` does: the touch script is in guest
+    // pixels, the mock reports panel pixels.
+    let scale = wasmicon_host::scale_of(&opts);
     let board = HostBoard::new()
         .with_i2c_replay(opts.i2c_replay)
         .with_spi_unsupported(opts.spi_unsupported)
@@ -225,7 +228,7 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
                 .unwrap_or(wasmicon_host::hal::MOCK_DISPLAY),
         )
         .with_touch(!opts.no_touch)
-        .with_touch_script(opts.touch_script)
+        .with_touch_script(wasmicon_host::script_on_panel(&opts.touch_script, scale))
         .with_assets(image);
     let mut store = Store::new(
         &engine,
@@ -233,6 +236,7 @@ pub fn run_on_wasmtime(wasm: &[u8], opts: wasmicon_host::Options) -> Result<Stri
             hal: Hal::new(board, true)
                 .with_roles(wasmicon_host::hal::host_roles())
                 .with_display(opts.display)
+                .with_scale(scale)
                 .with_assets(dir),
         },
     );

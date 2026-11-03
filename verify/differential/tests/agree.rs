@@ -178,3 +178,18 @@ fn display_demo_rs_agrees_with_wasmtime() {
         "display-demo-rs",
     );
 }
+
+#[test]
+fn display_demo_rs_at_2x_agrees_with_wasmtime() {
+    // Both engines must see the scaled guest size (docs/TODO.md §6-10).
+    assert_agrees_with(
+        &build_rust_app("display-demo-rs"),
+        wasmicon_host::Options {
+            trace: true,
+            display_size: Some((720, 1280)),
+            display_scale: Some(2),
+            ..Default::default()
+        },
+        "display-demo-rs at 2x",
+    );
+}

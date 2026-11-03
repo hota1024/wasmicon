@@ -5,7 +5,7 @@
 //! 513 bytes), the switch of `format`, an index as `fill-rect`'s color, one
 //! byte per pixel in `write-rect`, and that a new open starts in `rgb565`. The picture must be
 //! what the palette gives each index, at 320 columns and at the Tab5's 720,
-//! which the default `Board::display_write_rect_indexed` splits into pieces.
+//! which the default `Board::display_write_expanded` splits into pieces.
 
 mod common;
 

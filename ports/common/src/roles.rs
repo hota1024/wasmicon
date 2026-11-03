@@ -281,7 +281,8 @@ pub enum DisplayConfig {
 /// Largest `scale` of a display entry (docs/TODO.md §6-10).
 pub const MAX_SCALE: u32 = 4;
 
-/// The Tab5 panel's size in pixels, portrait, as its backend drives it.
+/// The Tab5 panel's size in pixels, portrait, as its backend drives it
+/// (`ports/esp32p4/src/tab5.rs` asserts that its panel matches).
 pub const TAB5_SIZE: (u32, u32) = (720, 1280);
 
 impl DisplayConfig {
@@ -305,8 +306,7 @@ impl DisplayConfig {
     #[must_use]
     pub fn panel_size(&self) -> (u32, u32) {
         match *self {
-            DisplayConfig::Ili9341 { rotation, .. } if rotation % 180 == 0 => (240, 320),
-            DisplayConfig::Ili9341 { .. } => (320, 240),
+            DisplayConfig::Ili9341 { rotation, .. } => crate::ili9341::size_at(rotation),
             DisplayConfig::Tab5 { .. } => TAB5_SIZE,
         }
     }
@@ -382,8 +382,13 @@ impl DisplayConfig {
         (1..=MAX_SCALE).contains(&n) && w % n == 0 && h % n == 0
     }
 
-    /// Parses what follows `@display=`.
-    fn parse(text: &[u8]) -> Result<DisplayConfig, RolesError> {
+    /// Parses what follows `@display=` in a table of format `version`. A
+    /// `scale=` key needs version 4, whatever its value: a firmware from
+    /// before it rejects the key, so a lower version must not carry it.
+    fn parse(text: &[u8], version: u16) -> Result<DisplayConfig, RolesError> {
+        if version < 4 && text.split(|b| *b == b' ').any(|w| w.starts_with(b"scale=")) {
+            return Err(RolesError::BadDisplay);
+        }
         let mut words = text.split(|b| *b == b' ').filter(|w| !w.is_empty());
         match words.next() {
             Some(b"tab5") => {
@@ -735,11 +740,7 @@ pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiri
             if version < 2 || w.display.is_some() {
                 return Err(RolesError::BadDisplay);
             }
-            let d = DisplayConfig::parse(rest)?;
-            if version < 4 && d.scale() != 1 {
-                return Err(RolesError::BadDisplay);
-            }
-            w.display = Some(d);
+            w.display = Some(DisplayConfig::parse(rest, version)?);
             continue;
         }
         if let Some(rest) = line.strip_prefix(TOUCH_KEY) {

@@ -52,10 +52,11 @@ fn the_mock_replays_its_script_and_checks_the_arguments() {
 
 #[test]
 fn points_are_in_guest_pixels_on_a_scaled_display() {
-    // The script is in panel pixels; at scale 2 the guest gets half of each
-    // coordinate, rounded down (docs/TODO.md §6-10).
+    // The script is in guest pixels, as a board's trace records them, so a
+    // 2x board's trace replays as is (docs/device-layer.md §11.5). The mock
+    // reports panel pixels and `Hal` divides them back.
     let wasm = wat_to_wasm("touch.wat");
-    let script = wasmicon_host::parse_touch_script("11,20 301,201 0,239\n").unwrap();
+    let script = wasmicon_host::parse_touch_script("5,10 150,100 0,119\n").unwrap();
     let opts = wasmicon_host::Options {
         trace: true,
         display_scale: Some(2),

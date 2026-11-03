@@ -35,7 +35,7 @@ use wasmicon_core::instance::{Extern, ExternType, Resolver};
 use assets::{Directory, MAX_ENTRIES};
 use fmt::Buf;
 use ili9341::Ili9341;
-use roles::{DisplayConfig, MAX_ROLES, RoleMap, TouchConfig};
+use roles::{DisplayConfig, MAX_ROLES, MAX_SCALE, RoleMap, TouchConfig};
 use xpt2046::Xpt2046;
 
 /// Number of simultaneous handles docs/abi-spec.md §5.3 guarantees.
@@ -198,8 +198,9 @@ pub trait Board {
         false
     }
 
-    /// Size of display `index` after orientation, as `(width, height)`, or
-    /// `None` if the board has no display there. Both are at least 1.
+    /// Size of display `index` in panel pixels after orientation, as
+    /// `(width, height)`, or `None` if the board has no display there. Both
+    /// are at least 1. `Hal` divides it by the scale for the guest.
     fn display_size(&self, _index: u32) -> Option<(u32, u32)> {
         None
     }
@@ -212,15 +213,16 @@ pub trait Board {
         Ok(())
     }
 
-    /// Fills `rect` with one RGB565 color. `Hal` has checked `rect` against
-    /// `display_size`.
+    /// Fills `rect`, in panel pixels, with one RGB565 color. `Hal` has checked
+    /// the guest's rectangle against the guest size and multiplied it by the
+    /// scale, so `rect` lies inside `display_size`.
     fn display_fill_rect(&mut self, _index: u32, _rect: Rect, _color: u16) -> BoardResult<()> {
         Err(ErrorCode::Unsupported)
     }
 
     /// Writes `rect.w * rect.h` RGB565 pixels, row by row, two bytes each,
-    /// high byte first (docs/device-layer.md §4). `Hal` has checked `rect`
-    /// and that `pixels` has exactly that length.
+    /// high byte first (docs/device-layer.md §4). `rect` is in panel pixels
+    /// and lies inside `display_size`; `pixels` has exactly that length.
     fn display_write_rect(&mut self, _index: u32, _rect: Rect, _pixels: &[u8]) -> BoardResult<()> {
         Err(ErrorCode::Unsupported)
     }
@@ -421,17 +423,20 @@ impl<B: Board> Hal<B> {
             }) => Some(Ili9341::new(spi, cs, dc, rst, rotation)),
             _ => None,
         };
-        self.scale = display.map_or(1, |d| d.scale());
+        // The firmware checked the entry at boot (`DisplayConfig::check`);
+        // the clamp keeps a host-built entry from dividing by 0.
+        self.scale = display.map_or(1, |d| d.scale().clamp(1, MAX_SCALE));
         self
     }
 
     /// Sets the scale of a display without an entry: the host mock
     /// (`wasmicon run --display-scale`). A board takes the entry's `scale`
-    /// in `with_display`, so this comes after it. `scale` is at least 1;
-    /// a remainder of the panel that it does not divide is out of reach.
+    /// in `with_display`, so this comes after it. `scale` is clamped to 1 to
+    /// `MAX_SCALE`; a remainder of the panel that it does not divide is out
+    /// of reach.
     #[must_use]
     pub fn with_scale(mut self, scale: u32) -> Self {
-        self.scale = scale.max(1);
+        self.scale = scale.clamp(1, MAX_SCALE);
         self
     }
 
@@ -581,9 +586,9 @@ impl<B: Board> Hal<B> {
 
     /// The palette of an open screen in `indexed8`; `None` for an `rgb565`
     /// screen or an invalid handle.
-    fn palette(&self, handle: u64) -> Option<[u8; PALETTE]> {
+    fn palette(&self, handle: u64) -> Option<&[u8; PALETTE]> {
         let index = self.screen(handle).ok()?;
-        self.screens[index as usize].palette
+        self.screens[index as usize].palette.as_ref()
     }
 
     /// The display behind an open touch panel handle.
@@ -651,18 +656,13 @@ impl<B: Board> Hal<B> {
         }
     }
 
-    /// Hands `write-rect`'s pixels for the guest rectangle `r` to the
-    /// backend: as they are when the panel takes them (RGB565 at 1x), else
-    /// expanded through the palette and the scale.
-    fn write_pixels(
-        &mut self,
-        index: u32,
-        r: Rect,
-        pixels: &[u8],
-        palette: Option<&[u8; PALETTE]>,
-    ) -> BoardResult<()> {
+    /// Hands `write-rect`'s pixels for the guest rectangle `r` on display
+    /// `index` to the backend: as they are when the panel takes them (RGB565
+    /// at 1x), else expanded through the screen's palette and the scale.
+    fn write_pixels(&mut self, index: u32, r: Rect, pixels: &[u8]) -> BoardResult<()> {
         let (n, at) = (self.scale, self.on_panel(r));
-        let src = match palette {
+        // Borrowed in place: the backends below are other fields.
+        let src = match &self.screens[index as usize].palette {
             Some(p) => Pixels::Indexed(pixels, p),
             None => Pixels::Rgb565(pixels),
         };
@@ -804,9 +804,6 @@ pub fn crc32_end(crc: u32) -> u32 {
     !crc
 }
 
-/// The `list<u8>` notation of docs/abi-spec.md §9: beyond 32 bytes, the first
-/// 16 bytes plus a CRC-32. Used both for arguments and for the bytes a read
-/// received (`data=` in the result).
 /// Guest pixels as `write-rect` received them, before the host expands them
 /// for the panel.
 #[derive(Clone, Copy)]
@@ -824,10 +821,7 @@ impl Pixels<'_> {
         for (i, run) in (first..).zip(out.chunks_exact_mut(2 * scale)) {
             let color = match *self {
                 Pixels::Rgb565(p) => [p[2 * i], p[2 * i + 1]],
-                Pixels::Indexed(p, palette) => {
-                    let k = 2 * usize::from(p[i]);
-                    [palette[k], palette[k + 1]]
-                }
+                Pixels::Indexed(p, palette) => palette_color(palette, p[i]).to_be_bytes(),
             };
             for px in run.chunks_exact_mut(2) {
                 px.copy_from_slice(&color);
@@ -842,6 +836,9 @@ fn palette_color(palette: &[u8; PALETTE], index: u8) -> u16 {
     u16::from_be_bytes([palette[i], palette[i + 1]])
 }
 
+/// The `list<u8>` notation of docs/abi-spec.md §9: beyond 32 bytes, the first
+/// 16 bytes plus a CRC-32. Used both for arguments and for the bytes a read
+/// received (`data=` in the result).
 fn write_bytes(out: &mut Buf<'_>, data: &[u8]) {
     if !out.is_on() {
         return;
@@ -968,7 +965,7 @@ impl<B: Board> Resolver for Hal<B> {
                 let color = args[5] as u32;
                 // In `indexed8` the color is an index, looked up here so the
                 // backends only ever fill with RGB565.
-                let color = match &self.palette(args[0]) {
+                let color = match self.palette(args[0]) {
                     None if color > 0xffff => None,
                     None => Some(color as u16),
                     Some(_) if color > 0xff => None,
@@ -1004,8 +1001,11 @@ impl<B: Board> Resolver for Hal<B> {
                 if a.is_on() {
                     a.hex(crc32(pixels), 8);
                 }
-                let palette = self.palette(args[0]);
-                let bytes_per_pixel = if palette.is_some() { 1 } else { 2 };
+                let bytes_per_pixel = if self.palette(args[0]).is_some() {
+                    1
+                } else {
+                    2
+                };
                 status = match self.screen(args[0]) {
                     Err(e) => e,
                     Ok(index) => match self.rect(index, &args[1..5]) {
@@ -1016,7 +1016,7 @@ impl<B: Board> Resolver for Hal<B> {
                         {
                             ErrorCode::InvalidArgument.status()
                         }
-                        Ok(r) => match self.write_pixels(index, r, pixels, palette.as_ref()) {
+                        Ok(r) => match self.write_pixels(index, r, pixels) {
                             Ok(()) => 0,
                             Err(e) => e.status(),
                         },

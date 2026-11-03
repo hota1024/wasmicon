@@ -23,6 +23,17 @@ pub const SPI_HZ: u32 = 16_000_000;
 /// Largest single `spi_write`: one 320-pixel row.
 pub const CHUNK: usize = 640;
 
+/// The panel's `(width, height)` at `rotation` (0, 90, 180 or 270). Also what
+/// `roles::DisplayConfig::panel_size` checks a `scale` against.
+#[must_use]
+pub const fn size_at(rotation: u32) -> (u32, u32) {
+    if rotation % 180 == 0 {
+        (240, 320)
+    } else {
+        (320, 240)
+    }
+}
+
 const SWRESET: u8 = 0x01;
 const SLPOUT: u8 = 0x11;
 const DISPON: u8 = 0x29;
@@ -62,11 +73,7 @@ impl Ili9341 {
     /// `(width, height)` after rotation.
     #[must_use]
     pub fn size(&self) -> (u32, u32) {
-        if self.rotation % 180 == 0 {
-            (240, 320)
-        } else {
-            (320, 240)
-        }
+        size_at(self.rotation)
     }
 
     /// MADCTL for the rotation, BGR order (the modules at hand are BGR).
@@ -141,8 +148,9 @@ impl Ili9341 {
     }
 
     /// Writes guest pixels that need expanding (palette indices, or a scale
-    /// above 1) into `r`, in panel pixels, under a single address window: each
-    /// panel row is expanded `CHUNK` bytes at a time and sent.
+    /// above 1) into `r`, in panel pixels, under a single address window. A
+    /// panel row is at most 320 pixels, one `CHUNK`, so each guest row is
+    /// expanded once and sent once per panel row it covers.
     ///
     /// # Errors
     /// Whatever the board's SPI or GPIO returns.
@@ -155,19 +163,15 @@ impl Ili9341 {
     ) -> BoardResult<()> {
         let n = scale as usize;
         let width = r.w as usize / n;
-        let per_piece = CHUNK / 2 / n;
         let mut buf = [0u8; CHUNK];
+        // `Hal` checked `r` against `size`, at most 320 wide.
+        let out = &mut buf[..2 * r.w as usize];
         self.begin_write(b, r)?;
         for row in 0..r.h as usize / n {
-            // RAMWR fills the window row by row, so each guest row is sent
-            // once per panel row it covers.
+            pixels.expand(row * width, n, out);
+            // RAMWR fills the window row by row.
             for _ in 0..n {
-                for first in (0..width).step_by(per_piece) {
-                    let count = per_piece.min(width - first);
-                    let out = &mut buf[..2 * count * n];
-                    pixels.expand(row * width + first, n, out);
-                    b.spi_write(self.spi, out)?;
-                }
+                b.spi_write(self.spi, out)?;
             }
         }
         b.gpio_write(self.cs, Level::High)
