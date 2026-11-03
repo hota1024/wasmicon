@@ -264,7 +264,11 @@ not marked with a 2026-10 date were measured there and live on only in these not
   that grows to 240 pages and checks zeroing and read-back, and `display-demo-rs` with the
   frame buffer after the arena, both trace-identical to the host; the owner saw the picture.
   Open:
-  - An asset read into PSRAM on hardware (no app with assets was run)
+  - An asset read into PSRAM on hardware. The DOOM port ran DOOM (a 4.2 MB WAD in the
+    assets slot) on this firmware on 2026-11-02 and 2026-11-03 with the trace matching the
+    host (docs/verification-report.md §40), which implies the `blob.read` lines and their
+    data CRC-32s matched, but the report does not say so; open until the DOOM port confirms
+    the count
   - PSRAM speed on the P4 against L2MEM (unmeasured; the S3 numbers of
     docs/verification-report.md §21 do not carry over), the time `instantiate` and
     `memory.grow` take to zero pages in PSRAM (the `memset` of `src/mem.rs`, a word at a
@@ -1459,9 +1463,10 @@ backends per interface selected by board configuration; a small API (screen size
 `fill-rect`, `write-rect`, `present`); trace `display` calls like any host call; a rule
 for what may enter the layer. **§6-1 ... §6-7 were all settled on 2026-10-27, each on the
 recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026-10-29), and
-§6-10 on 2026-11-03. Implementation status is under Implementation below.
+§6-10 on 2026-11-03. **§6-11 (a stride for `write-rect`, raised by the DOOM port on
+2026-11-03) is open.** Implementation status is under Implementation below.
 
-### Open questions (owner decisions; the text cites them as §6-1 ... §6-10)
+### Open questions (owner decisions; the text cites them as §6-1 ... §6-11)
 
 - [x] **§6-1 Changes to frozen decisions and the ABI spec** (owner decision 2026-10-27).
       docs/decisions.md D-03, D-05 and D-09 change wording and D-13 records the layer
@@ -1622,6 +1627,26 @@ recommended option**, §6-8 on 2026-10-28, §6-9 on 2026-11-03 (deferred on 2026
       override expanding straight into the frame buffer could save part of those 29 ms
       (about 3 % of the frame), so the default stays. Reopen if an app that redraws the
       whole 2x screen every frame shows a larger share
+
+- [ ] **§6-11 A stride for `write-rect`?** Raised by the DOOM port on 2026-11-03, once
+      `indexed8` had removed its conversion loop: what the panel still costs in the guest
+      (49 ms of a 702 ms demo frame on the ESP32-S3, 74 ms of 1,023 ms on the Tab5 at
+      `scale = 2`; docs/verification-report.md §40) is, by its account, its border and
+      status-bar compares plus 144 row copies a frame, which gather the 288-wide view out of
+      DOOM's 320-wide frame buffer so that `write-rect` gets the pixels packed. A `write-rect`
+      that took a stride (bytes from one source row to the next) would read the view in
+      place. **It adds an import to `wasmicon:device`** (the signature of `write-rect` cannot
+      change, docs/abi-spec.md §3; §6-10 rejected a per-call scale argument in part for that
+      reason), **so it needs the owner.** The DOOM port has not asked for it in so many words;
+      it calls it the stride item of its proposal's §7
+    - What is known: the split between the compares and the copies is not measured. The
+      copies move 144 rows of 288 bytes a frame (41 KB); the compares are per-byte loops
+      in the interpreter, which §4 would speed up
+    - Options: (a) leave it: a guest with a sub-rectangle of a larger buffer copies rows, as
+      every app does today; (b) a second import, `write-rect-strided` (the `write-rect`
+      arguments plus a stride), traced like `write-rect`, the backends reading `w` pixels
+      every `stride` bytes; (c) ask the DOOM port for the split and decide with it.
+      Recommended: (c), then (a) unless the copies are a clear part of the 49 ms
 
 ### Implementation (stages: docs/device-layer.md §10)
 
