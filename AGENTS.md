@@ -9,6 +9,8 @@ RP2350 (Pico 2 W). ESP32-C5 is a port in progress (boots and blinks on hardware;
 status in docs/TODO.md §1.3.1). ESP32-P4 is a port in progress (boots, blinks and
 drives its own display on the M5Stack Tab5; docs/TODO.md §1.3.2). RP2040 builds but is not evaluated.
 
+The project is in development (beta) and has no users yet.
+
 ## Read first
 
 1. `README.md` - what exists, layout, build and flash instructions
