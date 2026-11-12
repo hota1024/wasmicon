@@ -2201,3 +2201,30 @@ reset lines misbehaved again (docs/TODO.md §1.3).
 - Touch at scale 2 on a board: the module imports no touch interface
 - Scale 4, scale on the ILI9341, and rotations other than the defaults
 - A full-screen `write-rect` at 2x on the Tab5 (3,840 pieces for 360x640): DOOM never sends one
+
+## 41. The USB console on the Pico 2 W (2026-11-12)
+
+Question: with the composite USB device of docs/decisions.md A-11 and A-12, does the board's own USB
+cable carry the guest `log` and a trap reason, without the firmware ever waiting for a host, and does
+UART0 stay as it was?
+
+Firmware: `ports/rp2350` at the commit that adds `src/usb.rs`, trace on. Host: macOS, picotool
+2.3.1, a CP2102N on UART0 for the comparison. The test guest logs `usb console test line` 400 times
+(`log` level info) and then executes `unreachable`; it was written in WAT for this run and is not in
+`apps/`.
+
+| Check | Result |
+|---|---|
+| Enumeration | `wasmicon rp2350`, 0x2E8A:0x0009, serial number `85BBCDCC10DAD009`, the same as the board in BOOTSEL. macOS made `cu.usbmodem11401` (console) and `cu.usbmodem11403` (control). With the default 128-byte control buffer of `usb-device` the device enumerated but macOS made no interfaces; `control-buffer-256` fixed it |
+| Console opened after the run | The boot lines in full (banner, identity, roles, assets, slot), 253 test lines, `wasmicon: usb console dropped 147 lines`, `wasmicon: unreachable [trap]`. 253 + 147 = 400 |
+| Console open during the run (reset by `picotool reboot -f`) | All 400 test lines, no drop, then the trap reason |
+| Before the DTR gate | The banner and the first 128 bytes of the identity line were lost: the console took them before the host opened the port. The queue is now sent only while DTR is up |
+| No host reading | UART0 shows the whole run: 800 trace lines and the trap reason |
+| picotool | `load -f` (flash a running firmware and reboot it), `reboot -f -u` (`picotool info` then sees BOOTSEL) and `reboot -f` all work without the button |
+| UART0 against the capture before the change (blink-rs) | Byte-identical apart from `git=`, CR LF included; `trace diff` against the host run: match, 20 lines |
+
+### What this measurement does not say
+
+- The host asleep, and the board running from VSYS with the USB cable pulled, were not tried
+- Only macOS was the host; Linux and Windows were not tried
+- `ports/rp2040` has no USB console yet

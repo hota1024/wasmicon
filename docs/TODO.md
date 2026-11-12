@@ -1362,50 +1362,63 @@ change.**
       (docs/decisions.md A-11). Build all three interfaces from the start (console,
       control, picotool reset), the control one answering nothing yet, so the descriptors
       and the VID / PID do not change when the control channel lands
+      - **Firmware: done 2026-11-12** (`ports/rp2350/src/usb.rs`, docs/decisions.md
+        A-12, docs/verification-report.md §41). What remains is the CLI below
       - **VID / PID** (owner decision, 2026-10-29): a temporary pair during development,
         then an assigned one before the firmware is distributed: a PID under Raspberry
         Pi's VID 0x2E8A, or one from pid.codes. The CLI selects the port by this pair, so
-        the switch updates the CLI in the same change
-      - **Output only** (owner decision, 2026-10-29). The console reads nothing for now;
-        input (a REPL, stdin) needs a guest-side `console` interface, an ABI change, and is
-        a separate item (§4)
-      - **Crates**: `usb-device` + `usbd-serial` over `rp235x-hal::usb`, the same set the
-        control channel plans. Ports may add crates (the rule in `AGENTS.md` covers
-        `runtime/` only), but record the choice in docs/decisions.md
-      - **Service USB from the USBCTRL interrupt**, not from host calls. A guest can run for
-        a long time without a host call, and the host must still see enumeration and
-        reads. The interrupt shifts `time` values; for an app that puts no timings into
-        host calls the trace stays the same (docs/app-workflow.md §3.6)
-      - **Never hang without a host.** The log drops and counts when its queue is full or
-        no host reads; a line written before the host opens the port may be lost, and
-        UART0 still has it
+        the switch updates the CLI in the same change. **The temporary pair is
+        0x2E8A:0x0009**, pico-sdk's stdio USB PID on the RP2350 (adopted default,
+        docs/decisions.md A-12): without `--vid` / `--pid`, picotool only looks for the reset
+        interface under 0x2E8A and a PID it knows. The pair is shared with every pico-sdk
+        stdio firmware, so the CLI also checks the product string `wasmicon rp2350`. An
+        assigned pair then needs `picotool ... --vid --pid`, or a picotool that knows it
+      - ~~**Output only**~~ (done) The console reads nothing; what a host sends is
+        discarded. Input (a REPL, stdin) needs a guest-side `console` interface, an ABI
+        change, and is a separate item (§4)
+      - ~~**Crates**~~ (done) `usb-device` 0.3 (`control-buffer-256`: the configuration
+        descriptor is about 150 bytes against the default 128-byte control buffer, and
+        macOS made no interfaces), `usbd-serial` 0.2, `critical-section` 1; recorded in
+        docs/decisions.md A-12
+      - ~~**Service USB from the USBCTRL interrupt**~~ (done) The interrupt shifts `time`
+        values; for an app that puts no timings into host calls the trace stays the same
+        (docs/app-workflow.md §3.6)
+      - ~~**Never hang without a host.**~~ (done) An 8 KiB queue of whole lines, sent only
+        while DTR is up (bytes the console takes before a host opens the port are lost, and
+        a line could end in the middle). The boot lines wait in the queue and arrive when a
+        host opens the port. A line that does not fit is dropped whole and counted, and the
+        count goes out as `wasmicon: usb console dropped N lines` once there is room. The
+        last 256 bytes are for firmware lines only, so a trap reason fits after a guest
+        filled the queue with `log`. UART0 has every line
       - ~~**One `Serial` trait, line by line.**~~ (done 2026-11-12) `Serial` lives in
         `ports/common/src/serial.rs` with one method, `write_line(kind, parts)`, and no
         method for bare bytes; `LineKind` is `Log` / `Trace` / `Firmware`. Every line of
         the five ports goes through it, the trap reason and the slot lines included.
         UART0 writes every kind (§5-11). The USB output decides by `kind`
-      - **BOOTSEL over the same cable** (docs/decisions.md A-11, owner decision 2026-10-29):
-        `deploy` calls `picotool load`, which needs BOOTSEL. `picotool load -f` /
-        `reboot -f -u` reach a running firmware through the picotool vendor reset
-        interface, which pico-sdk firmware carries by default. `usbd-picotool-reset` 0.3.0
-        does not fit as is: it depends on `rp2040-hal` 0.10 and calls the RP2040 ROM's
-        `reset_to_usb_boot`. Write the class in the port instead, on the same
-        `usb-device` 0.3 API (the version `ports/rp2350` already locks), and reboot with
-        `reboot::RebootKind::BootSel` from `rp235x-hal`. Confirm on hardware that picotool
-        finds the interface on an RP2350. The `reset` of docs/app-workflow.md §3.6 is not
-        the way: it returns the board to idle, and the control channel may not exist yet.
-        `deploy` can then add `-f` and drop the BOOTSEL step for a firmware that has it
+      - ~~**BOOTSEL over the same cable**~~ (done in the firmware) The port has its own
+        reset class (`usbd-picotool-reset` 0.3.0 depends on `rp2040-hal` and the RP2040
+        ROM). `picotool load -f`, `reboot -f -u` and `reboot -f` work on the Pico 2 W. Two
+        things picotool needs that are easy to miss: the USB serial number must be the one
+        the boot ROM shows in BOOTSEL (the chip id, wafer id first), or picotool reboots the
+        board and then cannot find it; and the reboot into the firmware must answer the
+        request before resetting, or `picotool reboot -f` never returns. `deploy` can now
+        add `-f` and drop the BOOTSEL step (CLI below)
       - **CLI**: `deploy --monitor` opens the port before the reset (`deploy.rs`), but right
         after `picotool load` the board is in BOOTSEL and has no CDC device; open it after
         the board re-enumerates. `monitor` must survive the device going away on a reset
-        instead of ending with `Closed`. Select the port by VID / PID (and interface number
-        for (b)): the ESP32-S3's CH343 is a `cu.usbmodem*` too, and `choose()` refuses two
-        candidates, as with a CP2102N and the CDC device plugged in together
-      - **Docs to update when it lands**: the header of `ports/rp2350/src/main.rs` names
-        the USB console next to UART0
-      - **Verify on hardware**: with only the Pico 2 W USB cable, the log lines and a trap
-        reason arrive; with the cable pulled or the host asleep, the app runs to the end;
-        the UART0 trace is unchanged against a capture taken before the change.
+        instead of ending with `Closed`. Select the port by VID / PID, product string and
+        interface number (the console is interface 0, the control channel 2; macOS names
+        them `cu.usbmodem<location>1` and `...3`): the ESP32-S3's CH343 is a
+        `cu.usbmodem*` too, and `choose()` refuses two candidates, as with a CP2102N and
+        the CDC device plugged in together. `deploy` uses `picotool load -f` for a firmware
+        that answers on the reset interface
+      - ~~**Docs to update when it lands**~~ (done) The header of
+        `ports/rp2350/src/main.rs` names the USB console next to UART0
+      - **Verify on hardware** (docs/verification-report.md §41): done for the log lines
+        and a trap reason over USB, the queue holding the boot lines until the port opens,
+        the count of dropped lines, an app running to the end with no host reading, and the
+        UART0 capture byte-identical to the one before the change. **Not done**: the host
+        asleep, and the board running from VSYS with the USB cable pulled.
         `ports/rp2040` can follow with the same code but stays unverified (§1)
 - [ ] **Raise the UART0 baud rate on every port** (§5-11). 115200 baud caps a `trace` build
       on every board, because UART0 writes block (`write_full_blocking` in
