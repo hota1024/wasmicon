@@ -10,6 +10,7 @@ use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
+use wasmicon_port::serial::{LineKind, Serial};
 use wasmicon_port::{Board, BoardResult};
 
 /// The RP2040 has GP0..GP29.
@@ -46,11 +47,6 @@ const FUNCSEL_SIO: u8 = 5;
 /// GP23/24/25/29 connect to the CYW43439 (radio and on-board LED) on the
 /// Pico W(H).
 const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
-
-/// Where traces and logs go.
-pub trait Serial {
-    fn write(&mut self, bytes: &[u8]);
-}
 
 /// The Pico board.
 pub struct PicoBoard<S: Serial> {
@@ -339,13 +335,11 @@ impl<S: Serial> Board for PicoBoard<S> {
     // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
-        self.serial.write(b"[wasm] ");
-        self.serial.write(message);
-        self.serial.write(b"\r\n");
+        self.serial
+            .write_line(LineKind::Log, &[b"[wasm] ", message]);
     }
 
     fn trace(&mut self, line: &[u8]) {
-        self.serial.write(line);
-        self.serial.write(b"\r\n");
+        self.serial.write_line(LineKind::Trace, &[line]);
     }
 }

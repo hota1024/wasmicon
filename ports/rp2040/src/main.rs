@@ -31,7 +31,8 @@ use wasmicon_port::identity::{self, Identity};
 use wasmicon_port::roles::{self, Limits, Wiring};
 use wasmicon_port::{Hal, idle, slot};
 
-use board::{PicoBoard, Serial};
+use board::PicoBoard;
+use wasmicon_port::serial::{LineKind, Serial, write_parts};
 
 /// Second-stage bootloader. Must occupy the first 256 bytes of flash.
 #[unsafe(link_section = ".boot2")]
@@ -104,8 +105,9 @@ type Uart0 = hal::uart::UartPeripheral<
 struct Uart(Uart0);
 
 impl Serial for Uart {
-    fn write(&mut self, bytes: &[u8]) {
-        self.0.write_full_blocking(bytes);
+    /// UART0 carries every kind of line.
+    fn write_line(&mut self, _kind: LineKind, parts: &[&[u8]]) {
+        write_parts(parts, |b| self.0.write_full_blocking(b));
     }
 }
 
@@ -156,7 +158,7 @@ fn main() -> ! {
     let _timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let mut serial = Uart(uart);
-    serial.write(b"wasmicon rp2040\r\n");
+    serial.write_line(LineKind::Firmware, &[b"wasmicon rp2040"]);
     // Identify this firmware in one line (docs/app-workflow.md §3.8): version,
     // git, ABI and configuration, so a captured trace records which build
     // produced it.
@@ -172,8 +174,7 @@ fn main() -> ! {
             },
             &mut out,
         );
-        serial.write(out.as_bytes());
-        serial.write(b"\r\n");
+        serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     }
 
     // SAFETY: from here on PicoBoard has exclusive use of SIO / IO_BANK0 /
@@ -216,11 +217,16 @@ fn main() -> ! {
     // observed (recorded in docs/TODO.md §2).
     if let Err(e) = outcome {
         let s = hal.board_mut().serial();
-        s.write(b"wasmicon: ");
-        s.write(e.reason().as_bytes());
-        s.write(b" [");
-        s.write(e.kind().name().as_bytes());
-        s.write(b"]\r\n");
+        s.write_line(
+            LineKind::Firmware,
+            &[
+                b"wasmicon: ",
+                e.reason().as_bytes(),
+                b" [",
+                e.kind().name().as_bytes(),
+                b"]",
+            ],
+        );
     }
 
     // docs/abi-spec.md §5.2, §6.6: once `run` returns (trap included), drop
@@ -245,8 +251,7 @@ fn pick_roles(serial: &mut impl Serial) -> Wiring {
     let mut line = [0u8; roles::DESCRIBE_LEN];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
-    serial.write(out.as_bytes());
-    serial.write(b"\r\n");
+    serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     result.unwrap_or(Wiring::EMPTY)
 }
 
@@ -271,8 +276,7 @@ fn pick_assets(serial: &mut impl Serial) -> (Option<&'static [u8]>, Directory) {
         Err(e) => Err(*e),
     };
     assets::describe(&directory, &mut out);
-    serial.write(out.as_bytes());
-    serial.write(b"\r\n");
+    serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     match result {
         Ok((region, dir)) => (Some(region), dir),
         Err(_) => (None, Directory::EMPTY),
@@ -302,16 +306,14 @@ fn pick_guest(serial: &mut impl Serial) -> Option<&'static [u8]> {
             out.u32(wasm.len() as u32);
             out.str(" B crc32=");
             out.hex(wasmicon_port::crc32(wasm), 8);
-            serial.write(out.as_bytes());
-            serial.write(b"\r\n");
+            serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
             Some(wasm)
         }
         Err(e) => {
             out.str("wasmicon: ");
             out.str(e.reason());
             out.str(", idle");
-            serial.write(out.as_bytes());
-            serial.write(b"\r\n");
+            serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
             None
         }
     }

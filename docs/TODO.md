@@ -954,15 +954,15 @@ change.**
           `SET_CONTROL_LINE_STATE`. A suspended host, a cable pulled while the board runs
           from VSYS, or a crashed host process leaves it up, and a waiting trace hangs the
           app. Treat suspend and disconnect as DTR down, or bound the wait
-        - **Drop by line.** `Serial::write` takes byte slices, and one log line is three
-          writes (`ports/rp2350/src/board.rs`, `Board::log`). Deciding per write can drop
-          the end of a line and glue the next trace line to it, which
-          `verify/diff-traces.sh` then discards. The output path needs a line API that
-          knows the kind of each line (log, trace, firmware message)
+        - **Drop by line.** Solved by the line API: `Serial::write_line` takes a whole
+          line and its `LineKind` (`ports/common/src/serial.rs`), so an output can drop a
+          whole line and never glue the next trace line to a cut one, which
+          `verify/diff-traces.sh` would discard. What remains is the USB side's policy
         - **Firmware messages.** The trap reason and the slot lines (`pick_roles`,
-          `pick_assets`, `pick_guest`) go to `Serial` directly. They need the same policy,
-          or an app that traps before the host opens the port shows no reason over USB,
-          which is the observation docs/decisions.md A-04 relies on
+          `pick_assets`, `pick_guest`) go through `write_line` as `LineKind::Firmware`.
+          The USB policy has to cover them too, or an app that traps before the host
+          opens the port shows no reason over USB, which is the observation
+          docs/decisions.md A-04 relies on
         - **A mark for dropped trace.** Dropped trace lines and each switch between
           dropping and waiting leave a line with a count. Otherwise a capture that started
           late reads as a firmware difference in `trace diff`
@@ -1379,10 +1379,11 @@ change.**
       - **Never hang without a host.** The log drops and counts when its queue is full or
         no host reads; a line written before the host opens the port may be lost, and
         UART0 still has it
-      - **One `Serial` trait, line by line.** The trait is defined almost identically in
-        the five `ports/*/src/board.rs`; move it into `ports/common` with a line API that
-        carries the kind of each line, so a drop never cuts a line in two. The trap reason
-        and the slot lines go through it as well. UART0 keeps every line (§5-11)
+      - ~~**One `Serial` trait, line by line.**~~ (done 2026-11-12) `Serial` lives in
+        `ports/common/src/serial.rs` with one method, `write_line(kind, parts)`, and no
+        method for bare bytes; `LineKind` is `Log` / `Trace` / `Firmware`. Every line of
+        the five ports goes through it, the trap reason and the slot lines included.
+        UART0 writes every kind (§5-11). The USB output decides by `kind`
       - **BOOTSEL over the same cable** (docs/decisions.md A-11, owner decision 2026-10-29):
         `deploy` calls `picotool load`, which needs BOOTSEL. `picotool load -f` /
         `reboot -f -u` reach a running firmware through the picotool vendor reset

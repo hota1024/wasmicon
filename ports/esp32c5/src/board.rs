@@ -33,6 +33,7 @@ use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
+use wasmicon_port::serial::{LineKind, Serial};
 use wasmicon_port::{Board, BoardResult};
 
 /// The ESP32-C5 has GPIO 0..=28.
@@ -116,11 +117,6 @@ const SPI2_LED_MOSI: u8 = 27;
 /// same reason as `SPI2_*`.
 const I2C0_SDA: u8 = 8;
 const I2C0_SCL: u8 = 9;
-
-/// Where traces and logs go.
-pub trait Serial {
-    fn write(&mut self, bytes: &[u8]);
-}
 
 /// The ESP32-C5-WIFI6-KIT board.
 pub struct EspBoard<S: Serial> {
@@ -666,13 +662,11 @@ impl<S: Serial> Board for EspBoard<S> {
     // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
-        self.serial.write(b"[wasm] ");
-        self.serial.write(message);
-        self.serial.write(b"\r\n");
+        self.serial
+            .write_line(LineKind::Log, &[b"[wasm] ", message]);
     }
 
     fn trace(&mut self, line: &[u8]) {
-        self.serial.write(line);
-        self.serial.write(b"\r\n");
+        self.serial.write_line(LineKind::Trace, &[line]);
     }
 }

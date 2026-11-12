@@ -20,7 +20,8 @@ use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::Board;
 
-use crate::board::{EspBoard, Serial};
+use crate::board::EspBoard;
+use wasmicon_port::serial::{LineKind, Serial};
 
 /// These can be looked up by role, but this drives `Board` directly, so they
 /// are constants (the ESP32-S3 table in docs/abi-spec.md §8).
@@ -42,8 +43,7 @@ const HEIGHT: u16 = 240;
 const ROW_BYTES: usize = WIDTH as usize * 2;
 
 fn say<S: Serial>(b: &mut EspBoard<S>, s: &str) {
-    b.serial().write(s.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[s.as_bytes()]);
 }
 
 /// Prints `<label>: ok` or `<label>: err=<n>`.
@@ -63,8 +63,7 @@ fn say_result<S: Serial>(b: &mut EspBoard<S>, label: &str, r: Result<(), ErrorCo
             out.u32(e.status());
         }
     }
-    b.serial().write(out.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[out.as_bytes()]);
 }
 
 /// Prints the bytes read, in hex.
@@ -76,8 +75,7 @@ fn say_bytes<S: Serial>(b: &mut EspBoard<S>, label: &str, data: &[u8]) {
         out.byte(b' ');
         out.hex(u32::from(x), 2);
     }
-    b.serial().write(out.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[out.as_bytes()]);
 }
 
 /// Sends one command (plus arguments) with CS held; the same sequence as the
