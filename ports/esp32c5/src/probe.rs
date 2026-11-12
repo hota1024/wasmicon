@@ -22,7 +22,8 @@ use wasmicon_port::Board;
 
 use esp_hal::peripherals::{GPIO, IO_MUX};
 
-use crate::board::{EspBoard, Serial};
+use crate::board::EspBoard;
+use wasmicon_port::serial::{LineKind, Serial};
 
 /// These can be looked up by role, but this drives `Board` directly, so they
 /// are constants (the ESP32-C5 table in docs/abi-spec.md §8).
@@ -44,8 +45,7 @@ const HEIGHT: u16 = 240;
 const ROW_BYTES: usize = WIDTH as usize * 2;
 
 fn say<S: Serial>(b: &mut EspBoard<S>, s: &str) {
-    b.serial().write(s.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[s.as_bytes()]);
 }
 
 /// Prints `<label>: ok` or `<label>: err=<n>`.
@@ -65,8 +65,7 @@ fn say_result<S: Serial>(b: &mut EspBoard<S>, label: &str, r: Result<(), ErrorCo
             out.u32(e.status());
         }
     }
-    b.serial().write(out.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[out.as_bytes()]);
 }
 
 /// Prints the bytes read, in hex.
@@ -78,8 +77,7 @@ fn say_bytes<S: Serial>(b: &mut EspBoard<S>, label: &str, data: &[u8]) {
         out.byte(b' ');
         out.hex(u32::from(x), 2);
     }
-    b.serial().write(out.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[out.as_bytes()]);
 }
 
 /// Sends one command (plus arguments) with CS held; the same sequence as the
@@ -174,8 +172,7 @@ fn loopback<S: Serial>(b: &mut EspBoard<S>, label: &str, pin: u32) {
     out.byte(b',');
     out.u32(u32::from(seen[1]));
     out.str(if seen == [1, 0] { " ok" } else { " BAD" });
-    b.serial().write(out.as_bytes());
-    b.serial().write(b"\r\n");
+    b.serial().write_line(LineKind::Firmware, &[out.as_bytes()]);
     let _ = b.gpio_configure(pin, PinMode::Input);
 }
 

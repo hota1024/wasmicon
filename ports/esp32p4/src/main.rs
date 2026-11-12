@@ -40,7 +40,8 @@ use wasmicon_port::profile::{Profile, Slot};
 use wasmicon_port::roles::{self, DisplayConfig, Limits, TouchConfig, Wiring};
 use wasmicon_port::{idle, slot, Hal};
 
-use board::{EspBoard, Serial};
+use board::EspBoard;
+use wasmicon_port::serial::{write_parts, LineKind, Serial};
 
 // Places the app descriptor that the ESP-IDF second-stage bootloader reads
 // near the start of flash. It holds the version and build time; the runtime
@@ -102,12 +103,12 @@ const MCU_CONFIG: Config = PROFILE.config;
 /// Output to UART0.
 struct SerialPort<'a>(Uart<'a, esp_hal::Blocking>);
 
-impl Serial for SerialPort<'_> {
+impl SerialPort<'_> {
     /// Writes everything. `Uart::write` only queues what fits in the 128-byte
     /// TX FIFO and returns the count, so discarding the count silently drops
     /// the tail of any line longer than 128 bytes (the identity line did that
     /// once; trace lines are up to 160 bytes).
-    fn write(&mut self, bytes: &[u8]) {
+    fn write_all(&mut self, bytes: &[u8]) {
         let mut rest = bytes;
         while !rest.is_empty() {
             match self.0.write(rest) {
@@ -117,6 +118,13 @@ impl Serial for SerialPort<'_> {
                 _ => break,
             }
         }
+    }
+}
+
+impl Serial for SerialPort<'_> {
+    /// UART0 carries every kind of line.
+    fn write_line(&mut self, _kind: LineKind, parts: &[&[u8]]) {
+        write_parts(parts, |b| self.write_all(b));
         let _ = self.0.flush();
     }
 }
@@ -136,9 +144,7 @@ fn main() -> ! {
         .with_tx(p.GPIO37)
         .with_rx(p.GPIO38);
     let mut serial = SerialPort(uart);
-    serial.write(b"wasmicon ");
-    serial.write(PROFILE.name.as_bytes());
-    serial.write(b"\r\n");
+    serial.write_line(LineKind::Firmware, &[b"wasmicon ", PROFILE.name.as_bytes()]);
 
     // This build links the pre-ECO5 ROM tables (`pre-v3.x`), so on v3.x
     // silicon ROM calls would land on the wrong functions and return wrong
@@ -154,8 +160,7 @@ fn main() -> ! {
         out.str(".");
         out.u32(u32::from(rev.minor));
         out.str(", halt");
-        serial.write(out.as_bytes());
-        serial.write(b"\r\n");
+        serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
         loop {
             core::hint::spin_loop();
         }
@@ -175,8 +180,7 @@ fn main() -> ! {
             },
             &mut out,
         );
-        serial.write(out.as_bytes());
-        serial.write(b"\r\n");
+        serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     }
 
     // Mapped right after the identity line, so a chip with less PSRAM says
@@ -187,7 +191,10 @@ fn main() -> ! {
     let (arena_buf, fb_mem) = match psram::up(p.PSRAM) {
         Some(mem) if mem.len() >= PROFILE.arena => mem.split_at_mut(PROFILE.arena),
         _ => {
-            serial.write(b"wasmicon: psram missing or smaller than the arena, halt\r\n");
+            serial.write_line(
+                LineKind::Firmware,
+                &[b"wasmicon: psram missing or smaller than the arena, halt"],
+            );
             loop {
                 core::hint::spin_loop();
             }
@@ -271,11 +278,16 @@ fn main() -> ! {
     // observed (recorded in docs/TODO.md §2).
     if let Err(e) = outcome {
         let s = hal.board_mut().serial();
-        s.write(b"wasmicon: ");
-        s.write(e.reason().as_bytes());
-        s.write(b" [");
-        s.write(e.kind().name().as_bytes());
-        s.write(b"]\r\n");
+        s.write_line(
+            LineKind::Firmware,
+            &[
+                b"wasmicon: ",
+                e.reason().as_bytes(),
+                b" [",
+                e.kind().name().as_bytes(),
+                b"]",
+            ],
+        );
     }
 
     // docs/abi-spec.md §5.2, §6.6: once `run` returns (trap included), drop
@@ -306,7 +318,7 @@ fn pick_guest<'a>(
 
     let mut head = [0u8; slot::HEADER_LEN];
     if storage.read(SLOT.offset, &mut head).is_err() {
-        serial.write(b"wasmicon: slot read failed, idle\r\n");
+        serial.write_line(LineKind::Firmware, &[b"wasmicon: slot read failed, idle"]);
         return None;
     }
     let header = match slot::parse_header(&head) {
@@ -315,13 +327,12 @@ fn pick_guest<'a>(
             out.str("wasmicon: ");
             out.str(e.reason());
             out.str(", idle");
-            serial.write(out.as_bytes());
-            serial.write(b"\r\n");
+            serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
             return None;
         }
     };
     if header.len > (SLOT.len as usize - slot::HEADER_LEN) {
-        serial.write(b"wasmicon: slot truncated, idle\r\n");
+        serial.write_line(LineKind::Firmware, &[b"wasmicon: slot truncated, idle"]);
         return None;
     }
 
@@ -348,7 +359,7 @@ fn pick_guest<'a>(
             chunk.len()
         };
         if storage.read(at, &mut chunk[..n]).is_err() {
-            serial.write(b"wasmicon: slot read failed, idle\r\n");
+            serial.write_line(LineKind::Firmware, &[b"wasmicon: slot read failed, idle"]);
             return None;
         }
         crc = wasmicon_port::crc32_update(crc, &chunk[..n]);
@@ -356,21 +367,24 @@ fn pick_guest<'a>(
         left -= n;
     }
     if wasmicon_port::crc32_end(crc) != header.crc {
-        serial.write(b"wasmicon: slot crc mismatch, idle\r\n");
+        serial.write_line(LineKind::Firmware, &[b"wasmicon: slot crc mismatch, idle"]);
         return None;
     }
 
     // The CRC matched, so take arena space only now. The only failure left
     // is "arena too small".
     let Ok(buf) = arena.alloc_bytes(header.len) else {
-        serial.write(b"wasmicon: arena too small for the slot app, idle\r\n");
+        serial.write_line(
+            LineKind::Firmware,
+            &[b"wasmicon: arena too small for the slot app, idle"],
+        );
         return None;
     };
     if storage
         .read(SLOT.offset + slot::HEADER_LEN as u32, buf)
         .is_err()
     {
-        serial.write(b"wasmicon: slot read failed, idle\r\n");
+        serial.write_line(LineKind::Firmware, &[b"wasmicon: slot read failed, idle"]);
         return None;
     }
     // Check the copy again. The CRC above covered the streamed bytes; `buf`
@@ -380,8 +394,7 @@ fn pick_guest<'a>(
         out.str("wasmicon: ");
         out.str(e.reason());
         out.str(", idle");
-        serial.write(out.as_bytes());
-        serial.write(b"\r\n");
+        serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
         return None;
     }
 
@@ -389,8 +402,7 @@ fn pick_guest<'a>(
     out.u32(header.len as u32);
     out.str(" B crc32=");
     out.hex(header.crc, 8);
-    serial.write(out.as_bytes());
-    serial.write(b"\r\n");
+    serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     Some(buf)
 }
 
@@ -404,8 +416,7 @@ fn pick_roles(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>) 
     let mut line = [0u8; roles::DESCRIBE_LEN];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);
-    serial.write(out.as_bytes());
-    serial.write(b"\r\n");
+    serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     result.unwrap_or(Wiring::EMPTY)
 }
 
@@ -439,8 +450,7 @@ fn pick_assets(storage: &mut FlashStorage<'_>, serial: &mut SerialPort<'static>)
     let mut line = [0u8; 384];
     let mut out = Buf::new(&mut line);
     assets::describe(&result, &mut out);
-    serial.write(out.as_bytes());
-    serial.write(b"\r\n");
+    serial.write_line(LineKind::Firmware, &[out.as_bytes()]);
     result.unwrap_or(Directory::EMPTY)
 }
 
