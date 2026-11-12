@@ -33,6 +33,7 @@ use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
 use wasmicon_port::fmt::Buf;
+use wasmicon_port::serial::{LineKind, Serial};
 use wasmicon_port::{Board, BoardResult, Rect};
 
 use crate::tab5::{self, Tab5};
@@ -140,11 +141,6 @@ const _: () = {
     }
 };
 
-/// Where traces and logs go.
-pub trait Serial {
-    fn write(&mut self, bytes: &[u8]);
-}
-
 /// An ESP32-P4 board.
 pub struct EspBoard<S: Serial> {
     serial: S,
@@ -222,8 +218,8 @@ impl<S: Serial> EspBoard<S> {
         let mut out = Buf::new(&mut line);
         out.str("wasmicon: display tab5 failed: ");
         e.describe(&mut out);
-        self.serial.write(out.as_bytes());
-        self.serial.write(b"\r\n");
+        self.serial
+            .write_line(LineKind::Firmware, &[out.as_bytes()]);
     }
 
     /// Brings the panel up if it is not yet: at the first `open` of the
@@ -239,7 +235,8 @@ impl<S: Serial> EspBoard<S> {
         };
         // Printed first: a bring-up that hangs inside esp-hal (its D-PHY
         // waits have no limit) still shows where.
-        self.serial.write(b"wasmicon: display tab5 bring-up\r\n");
+        self.serial
+            .write_line(LineKind::Firmware, &[b"wasmicon: display tab5 bring-up"]);
         match Tab5::up(pending) {
             Ok((panel, ldo)) => {
                 let mut line = [0u8; 80];
@@ -250,8 +247,8 @@ impl<S: Serial> EspBoard<S> {
                 out.u32(u32::from(ldo.mul));
                 out.str(", gt911 at 0x");
                 out.hex(u32::from(panel.touch_address()), 2);
-                self.serial.write(out.as_bytes());
-                self.serial.write(b"\r\n");
+                self.serial
+                    .write_line(LineKind::Firmware, &[out.as_bytes()]);
                 self.tab5 = Tab5State::Up(panel);
                 Ok(())
             }
@@ -810,13 +807,11 @@ impl<S: Serial> Board for EspBoard<S> {
     // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
-        self.serial.write(b"[wasm] ");
-        self.serial.write(message);
-        self.serial.write(b"\r\n");
+        self.serial
+            .write_line(LineKind::Log, &[b"[wasm] ", message]);
     }
 
     fn trace(&mut self, line: &[u8]) {
-        self.serial.write(line);
-        self.serial.write(b"\r\n");
+        self.serial.write_line(LineKind::Trace, &[line]);
     }
 }
