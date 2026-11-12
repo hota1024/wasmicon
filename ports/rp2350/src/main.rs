@@ -5,7 +5,10 @@
 //! (docs/design-notes.md §4). The firmware embeds no app
 //! (docs/app-workflow.md §3.3). If the slot is empty, print the reason and
 //! park (`wasmicon_port::idle`; pins are not driven).
-//! Traces go to UART0 (GP0=TX, GP1=RX) at 115200 8N1.
+//! Every line goes to UART0 (GP0=TX, GP1=RX) at 115200 8N1: the trace, the
+//! guest `log` and the firmware's own lines. The `log` and firmware lines also
+//! go to the USB console, so the board's own USB cable shows them without an
+//! adapter; the trace does not (`usb`, docs/decisions.md A-11).
 //!
 //! Only the Cortex-M33 side is used (the RISC-V Hazard3 cores are out of
 //! scope). The build uses the hard-float ABI, so f32 runs on the FPU. The
@@ -22,6 +25,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod board;
+mod usb;
 
 // On panic the firmware only halts. It cannot print the reason: the serial
 // port belongs to the board and the panic handler cannot reach it. Runtime
@@ -109,13 +113,17 @@ type Uart0 = hal::uart::UartPeripheral<
     ),
 >;
 
-/// Output to UART0.
-struct Uart(Uart0);
+/// Output to UART0 and the USB console.
+struct Out(Uart0);
 
-impl Serial for Uart {
-    /// UART0 carries every kind of line.
-    fn write_line(&mut self, _kind: LineKind, parts: &[&[u8]]) {
+impl Serial for Out {
+    /// UART0 carries every kind of line and waits until it is sent. The USB
+    /// console carries all but the trace and never waits (`usb::write_line`).
+    fn write_line(&mut self, kind: LineKind, parts: &[&[u8]]) {
         write_parts(parts, |b| self.0.write_full_blocking(b));
+        if kind != LineKind::Trace {
+            usb::write_line(kind, parts);
+        }
     }
 }
 
@@ -165,7 +173,11 @@ fn main() -> ! {
     // still in reset bus-faults or reads 0 forever, and sleep never finishes.
     let _timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
 
-    let mut serial = Uart(uart);
+    // Before the banner, so the console queues the boot lines until a host
+    // opens the port.
+    usb::init(pac.USB, pac.USB_DPRAM, clocks.usb_clock, &mut pac.RESETS);
+
+    let mut serial = Out(uart);
     serial.write_line(LineKind::Firmware, &[b"wasmicon rp2350"]);
     // Identify this firmware in one line (docs/app-workflow.md §3.8): version,
     // git, ABI and configuration, so a captured trace records which build
@@ -344,7 +356,7 @@ fn pick_guest(serial: &mut impl Serial) -> Option<&'static [u8]> {
 
 /// From decoding to the `run` call.
 fn run(
-    hal: &mut Hal<Pico2Board<Uart>>,
+    hal: &mut Hal<Pico2Board<Out>>,
     guest: &[u8],
     arena_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
