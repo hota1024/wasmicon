@@ -28,6 +28,7 @@ use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
+use wasmicon_port::serial::{LineKind, Serial};
 use wasmicon_port::{Board, BoardResult};
 
 /// The RP2350A (QFN-60, on the Pico 2 / Pico 2 W) has GP0..GP29.
@@ -85,11 +86,6 @@ const I2C0_SCL: usize = 5;
 /// gets the equivalent `Error::Timeout` from `esp-hal`, so the two ports
 /// agree here.
 const I2C_TIMEOUT_US: u64 = 25_000;
-
-/// Where traces and logs go.
-pub trait Serial {
-    fn write(&mut self, bytes: &[u8]);
-}
 
 /// The Pico 2 board.
 pub struct Pico2Board<S: Serial> {
@@ -1008,13 +1004,11 @@ impl<S: Serial> Board for Pico2Board<S> {
     // --- Output ---
 
     fn log(&mut self, _level: LogLevel, message: &[u8]) {
-        self.serial.write(b"[wasm] ");
-        self.serial.write(message);
-        self.serial.write(b"\r\n");
+        self.serial
+            .write_line(LineKind::Log, &[b"[wasm] ", message]);
     }
 
     fn trace(&mut self, line: &[u8]) {
-        self.serial.write(line);
-        self.serial.write(b"\r\n");
+        self.serial.write_line(LineKind::Trace, &[line]);
     }
 }

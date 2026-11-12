@@ -20,6 +20,7 @@ pub mod idle;
 pub mod ili9341;
 pub mod profile;
 pub mod roles;
+pub mod serial;
 pub mod slot;
 pub mod xpt2046;
 
