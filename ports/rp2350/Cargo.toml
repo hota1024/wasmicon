@@ -29,6 +29,15 @@ cortex-m-rt = "0.7"
 # is verified.
 rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
 panic-halt = "1"
+# The USB console (src/usb.rs, docs/decisions.md A-11): the device stack, the
+# CDC ACM class, and the critical section that the USB interrupt shares with
+# `main`. usb-device is the version rp235x-hal's `UsbBus` implements. Its
+# control buffer is 128 bytes by default, and the configuration descriptor of
+# two CDC ACM interfaces and the reset interface is about 150: the host could
+# not read it and made no interfaces.
+usb-device = { version = "0.3", features = ["control-buffer-256"] }
+usbd-serial = "0.2"
+critical-section = "1"
 
 [profile.release]
 # Speed over size (docs/TODO.md §4). On the RP2350, compared with opt-level z,
