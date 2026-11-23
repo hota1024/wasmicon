@@ -598,6 +598,18 @@ a firmware that reads at most version 3 keeps running every app at 1x, and refus
 version 4 table as a version it does not support. A version 1 to 3 table with
 `scale=` is malformed.
 
+**Format version 5 adds the `st7789` display line** (docs/device-layer.md §5.3).
+`spi`, `cs`, `dc` and `rotation` as for the ILI9341; `rst` and `bl` are optional, and
+written only when the entry has them:
+
+```
+@display=st7789 spi=0 cs=45 dc=42 bl=1 rotation=90
+```
+
+`deploy` writes version 5 only for an `st7789` entry, so a firmware that reads at most
+version 4 keeps running every other display and refuses this table as a version it
+does not support. An `st7789` line in a version 1 to 4 table is malformed.
+
 #### Checked twice (CLI and firmware)
 
 The same check (`roles::RoleMap::insert`) runs **in the CLI before flashing** (when
@@ -1258,6 +1270,23 @@ a slot. So one `.wasm` and one `wasmicon.toml` serve both:
   pages=112`) says which firmware is there
 - The PSRAM firmware prints `psram missing or smaller than the arena, halt` after the
   identity line on a module without PSRAM
+
+#### Another ESP32-S3 board: `esp32s3-lcd2`
+
+The Waveshare ESP32-S3-Touch-LCD-2 has the same chip with the same 8 MiB of octal
+PSRAM, and an ST7789 panel on SPI2 pins of its own (docs/abi-spec.md §8). Its firmware
+is the `psram` build with the board's pins:
+
+| `--board` | Firmware | Arena | Page limit |
+|---|---|---|---|
+| `esp32s3-lcd2` | `build.sh build --release --features lcd2` | 8 MiB of PSRAM | 112, as `esp32s3-psram` |
+
+It is a board of its own, not a variant: its pins differ, so it reads
+`[board.esp32s3-lcd2.*]`, not `[board.esp32s3.*]`. The limits and the slots are
+`esp32s3-psram`'s. `spi.bus` index 1 is `unsupported` (no RGB LED), and GPIO0 and
+GPIO41 are reserved. The trace goes to UART0 on the header (GPIO43/44); the board
+has no USB-UART bridge, so a capture needs a USB serial adapter there while the
+native USB flashes. Not yet run on the board (docs/TODO.md §1.3.3).
 
 #### The same on the ESP32-P4: `esp32p4` and `esp32p4-psram`
 

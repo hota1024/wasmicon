@@ -1,5 +1,5 @@
-//! ILI9341 display backend: `wasmicon:device/display` over the port's own SPI
-//! and GPIO (docs/device-layer.md §5.3).
+//! ILI9341 and ST7789 display backend: `wasmicon:device/display` over the
+//! port's own SPI and GPIO (docs/device-layer.md §5.3).
 //!
 //! - The init sequence and the send order are those of apps/README.md §2, the
 //!   ones `apps/lcd-demo-rs` runs on hardware. This is the fourth copy of the
@@ -11,6 +11,13 @@
 //! - Writes go out in pieces of at most `CHUNK` bytes, the row size that
 //!   lcd-demo-rs sends on hardware.
 //! - Only rotation 90 (320x240 landscape, MADCTL 0x28) has run on hardware.
+//! - The ST7789 takes the same window and pixel commands at the same 240x320,
+//!   so it shares the write path. Its init differs in four ways: INVON (the
+//!   IPS panel of the Waveshare ESP32-S3-Touch-LCD-2 shows inverted colors
+//!   without it), MADCTL in RGB order, an optional reset GPIO (SWRESET alone
+//!   resets it) and an optional backlight GPIO driven high after DISPON, so
+//!   the panel's power-on contents stay dark. Its MADCTL values follow
+//!   LovyanGFX's rotation table; none has run on hardware.
 
 use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::spi::Mode as SpiMode;
@@ -36,6 +43,7 @@ pub const fn size_at(rotation: u32) -> (u32, u32) {
 
 const SWRESET: u8 = 0x01;
 const SLPOUT: u8 = 0x11;
+const INVON: u8 = 0x21;
 const DISPON: u8 = 0x29;
 const CASET: u8 = 0x2A;
 const PASET: u8 = 0x2B;
@@ -43,28 +51,61 @@ const RAMWR: u8 = 0x2C;
 const MADCTL: u8 = 0x36;
 const PIXFMT: u8 = 0x3A;
 
-/// An ILI9341 on SPI bus `spi` with chip select, data/command and reset on
-/// GPIOs.
+/// Which controller the panel has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Controller {
+    Ili9341,
+    St7789,
+}
+
+/// An ILI9341 or ST7789 on SPI bus `spi` with chip select and data/command
+/// on GPIOs, and reset and backlight on GPIOs when the board wires them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ili9341 {
+    controller: Controller,
     spi: u32,
     cs: u32,
     dc: u32,
-    rst: u32,
+    rst: Option<u32>,
+    bl: Option<u32>,
     rotation: u32,
     ready: bool,
 }
 
 impl Ili9341 {
-    /// A panel not yet initialized. `rotation` is 0, 90, 180 or 270
+    /// An ILI9341 not yet initialized. `rotation` is 0, 90, 180 or 270
     /// (`roles::DisplayConfig::check` has checked it).
     #[must_use]
     pub const fn new(spi: u32, cs: u32, dc: u32, rst: u32, rotation: u32) -> Self {
         Ili9341 {
+            controller: Controller::Ili9341,
+            spi,
+            cs,
+            dc,
+            rst: Some(rst),
+            bl: None,
+            rotation,
+            ready: false,
+        }
+    }
+
+    /// An ST7789 not yet initialized, with reset and backlight where wired.
+    #[must_use]
+    pub const fn st7789(
+        spi: u32,
+        cs: u32,
+        dc: u32,
+        rst: Option<u32>,
+        bl: Option<u32>,
+        rotation: u32,
+    ) -> Self {
+        Ili9341 {
+            controller: Controller::St7789,
             spi,
             cs,
             dc,
             rst,
+            bl,
             rotation,
             ready: false,
         }
@@ -76,13 +117,18 @@ impl Ili9341 {
         size_at(self.rotation)
     }
 
-    /// MADCTL for the rotation, BGR order (the modules at hand are BGR).
+    /// MADCTL for the rotation: BGR order on the ILI9341 (the modules at
+    /// hand are BGR), RGB order on the ST7789.
     fn madctl(&self) -> u8 {
-        match self.rotation {
-            0 => 0x48,
-            180 => 0x88,
-            270 => 0xE8,
-            _ => 0x28,
+        match (self.controller, self.rotation) {
+            (Controller::Ili9341, 0) => 0x48,
+            (Controller::Ili9341, 180) => 0x88,
+            (Controller::Ili9341, 270) => 0xE8,
+            (Controller::Ili9341, _) => 0x28,
+            (Controller::St7789, 0) => 0x00,
+            (Controller::St7789, 180) => 0xC0,
+            (Controller::St7789, 270) => 0xA0,
+            (Controller::St7789, _) => 0x60,
         }
     }
 
@@ -96,22 +142,36 @@ impl Ili9341 {
             return Ok(());
         }
         b.spi_open(self.spi, SPI_HZ, SpiMode::Mode0)?;
-        for pin in [self.cs, self.dc, self.rst] {
+        for pin in [Some(self.cs), Some(self.dc), self.rst, self.bl]
+            .into_iter()
+            .flatten()
+        {
             b.gpio_configure(pin, PinMode::Output)?;
         }
         b.gpio_write(self.cs, Level::High)?;
-        b.gpio_write(self.rst, Level::Low)?;
-        b.sleep_ms(10);
-        b.gpio_write(self.rst, Level::High)?;
-        b.sleep_ms(120);
+        if let Some(bl) = self.bl {
+            b.gpio_write(bl, Level::Low)?;
+        }
+        if let Some(rst) = self.rst {
+            b.gpio_write(rst, Level::Low)?;
+            b.sleep_ms(10);
+            b.gpio_write(rst, Level::High)?;
+            b.sleep_ms(120);
+        }
 
         self.send(b, SWRESET, &[])?;
         b.sleep_ms(120);
         self.send(b, SLPOUT, &[])?;
         b.sleep_ms(120);
+        if self.controller == Controller::St7789 {
+            self.send(b, INVON, &[])?;
+        }
         self.send(b, PIXFMT, &[0x55])?; // RGB565
         self.send(b, MADCTL, &[self.madctl()])?;
         self.send(b, DISPON, &[])?;
+        if let Some(bl) = self.bl {
+            b.gpio_write(bl, Level::High)?;
+        }
         self.ready = true;
         Ok(())
     }

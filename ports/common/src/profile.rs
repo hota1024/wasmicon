@@ -69,11 +69,11 @@ impl Interfaces {
         touch_drivers: &[],
     };
 
-    /// Every HAL interface and the display: the ILI9341 backend in
+    /// Every HAL interface and the display: the ILI9341 / ST7789 backend in
     /// `ports/common` runs on any port with SPI (docs/device-layer.md §5.3).
     pub const WITH_DISPLAY: Interfaces = Interfaces {
         display: true,
-        display_drivers: &["ili9341"],
+        display_drivers: &["ili9341", "st7789"],
         ..Interfaces::ALL
     };
 }
@@ -217,6 +217,20 @@ const ESP32S3_RESERVED: &[u32] = &[
 /// Bus pins of the ESP32-S3. I2C0 = GPIO8/9, SPI2 = GPIO11/12/13, `spi.bus`
 /// index 1 = GPIO48 (the on-board RGB LED; SPI2 drives only MOSI there).
 const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13, 48];
+
+/// Reserved pins of the Waveshare ESP32-S3-Touch-LCD-2: the ESP32-S3's, plus
+/// GPIO0 (the BOOT strap, and the panel's reset where R16 is fitted) and
+/// GPIO41 (the TF card's chip select, which the firmware holds high so the
+/// card stays off the panel's bus).
+const ESP32S3_LCD2_RESERVED: &[u32] = &[
+    0, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 41, 43, 44,
+];
+
+/// Bus pins of the Waveshare ESP32-S3-Touch-LCD-2. I2C0 = GPIO8/9 as on the
+/// Freenove board, SPI2 = GPIO39 (SCK) / 38 (MOSI) / 40 (MISO), the panel's
+/// and the TF card's bus. There is no `spi.bus` index 1: GPIO48 is the touch
+/// controller's SDA here.
+const ESP32S3_LCD2_BUS_PINS: &[u32] = &[8, 9, 38, 39, 40];
 
 /// Reserved pins of the ESP32-C5. 11/12 are the trace UART0 (wired to the
 /// CH343), 13/14 are native USB (wired to the Type-C port), 15..=22 are SPI
@@ -414,6 +428,25 @@ pub const ESP32S3_PSRAM: Profile = Profile {
     ..ESP32S3
 };
 
+/// Waveshare ESP32-S3-Touch-LCD-2 (ESP32-S3R8, an ST7789 panel on SPI2;
+/// `ports/esp32s3` built with the `lcd2` feature).
+///
+/// A board of its own, not a variant of `esp32s3`: the SPI2 pins differ, so
+/// it reads its own wiring table. The firmware is the `psram` build (the
+/// chip has the same 8 MiB of octal PSRAM in the package), so the limits are
+/// `esp32s3-psram`'s. The slots are the Freenove board's too: the board has
+/// 16 MB of flash by its schematic, not measured, so the assets slot ends at
+/// 8 MiB as there.
+pub const ESP32S3_LCD2: Profile = Profile {
+    name: "esp32s3-lcd2",
+    wiring: "esp32s3-lcd2",
+    // The touch controller (CST816D) has no backend yet.
+    interfaces: Interfaces::WITH_DISPLAY,
+    reserved: ESP32S3_LCD2_RESERVED,
+    bus_pins: ESP32S3_LCD2_BUS_PINS,
+    ..ESP32S3_PSRAM
+};
+
 /// ESP32-C5 (Waveshare ESP32-C5-WIFI6-KIT with the ESP32-C5-WROOM-1 module).
 pub const ESP32C5: Profile = Profile {
     name: "esp32c5",
@@ -455,7 +488,7 @@ pub const ESP32P4: Profile = Profile {
     // The ILI9341 on SPI, and the Tab5's own panel and its touch controller
     // (`ports/esp32p4/src/tab5.rs`).
     interfaces: Interfaces {
-        display_drivers: &["ili9341", "tab5"],
+        display_drivers: &["ili9341", "st7789", "tab5"],
         touch: true,
         // Not `xpt2046` yet: it has run only on the ESP32-S3.
         touch_drivers: &["tab5"],
@@ -552,6 +585,7 @@ pub const PROFILES: &[&Profile] = &[
     &RP2350,
     &ESP32S3,
     &ESP32S3_PSRAM,
+    &ESP32S3_LCD2,
     &ESP32C5,
     &ESP32P4,
     &ESP32P4_PSRAM,

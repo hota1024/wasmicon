@@ -126,6 +126,9 @@ sh ports/esp32s3/build.sh build --release   # sources ~/export-esp.sh, then call
 # The same board with its PSRAM as the arena (--board esp32s3-psram, 112 pages;
 # needs a module with 8 MiB of PSRAM, docs/app-workflow.md §4.7)
 sh ports/esp32s3/build.sh build --release --features psram
+# The Waveshare ESP32-S3-Touch-LCD-2 (--board esp32s3-lcd2): the psram build with
+# the board's ST7789 pins (docs/app-workflow.md §4.7; not yet run on the board)
+sh ports/esp32s3/build.sh build --release --features lcd2
 (cd ports/esp32c5 && cargo build --release)  # RISC-V; upstream Rust is enough
 (cd ports/esp32p4 && cargo build --release)  # RISC-V as well
 # The ESP32-P4 with its PSRAM as the arena (--board esp32p4-psram, 240 pages;

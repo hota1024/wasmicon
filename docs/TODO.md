@@ -370,6 +370,35 @@ not marked with a 2026-10 date were measured there and live on only in these not
   - The internal I2C carries a PI4IOE5V6408 at 0x44, the SHT31 default. The SHT40 (0x44) on
     PORT.A is on another bus, so it does not collide
 
+### 1.3.3 Waveshare ESP32-S3-Touch-LCD-2 (started 2026-11-16, for the DOOM port)
+
+`ports/esp32s3` with the `lcd2` feature, profile `esp32s3-lcd2` (docs/app-workflow.md §4.7):
+the `psram` build with SPI2 on the board's panel pins and the `st7789` display driver
+(docs/device-layer.md §5.3). Pins come from Waveshare's V2 schematic
+(`ESP32-S3-Touch-LCD-2_V2.pdf`) and agree with a third-party LovyanGFX configuration for the
+board; docs/abi-spec.md §8. Owner decisions (2026-11-16): a feature and a profile of its own,
+not pins in the config slot; `st7789` as a driver name sharing `ili9341.rs`, config slot
+format version 5; GPIO0 and GPIO41 reserved, GPIO41 held high at boot. Nothing has run on
+the board yet.
+
+- [ ] **(1) The firmware boots and prints on UART0** (GPIO43/44 on the header, through a USB
+  serial adapter; flashing goes through the native USB). Not tried: the board has no
+  USB-UART bridge, and `deploy --monitor` on the native USB port sees no trace
+- [ ] **(2) The panel shows the right colors the right way round.** INVON and MADCTL 0x60
+  for rotation 90 come from LovyanGFX, not from a run. The trace cannot show either; the
+  owner checks by eye
+- [ ] **(3) DOOM runs: `trace diff` against the host trace as on the Freenove board**, and
+  the frame times (expected close to the Freenove board's: same chip, clock and SPI rate)
+- Not known yet:
+  - Which revision the board is. A V1 board may be wired differently
+  - Whether R16 (the panel's reset to GPIO0) is fitted. The driver does not use a reset
+    GPIO in either case
+  - The flash size: 16 MB by the schematic, not measured, so the profile keeps the
+    Freenove board's 8 MiB layout
+  - Not done: touch (CST816D on I2C at GPIO48/47, interrupt GPIO46), the panel at 40 MHz
+    (LovyanGFX writes at 40 MHz; the backend runs at 16 MHz), the trace over
+    USB-Serial-JTAG
+
 ### 1.4 What to suspect first on hardware
 
 **RP2350 and ESP32-S3 are verified on hardware** (both on 2026-09-26). `lcd-demo-rs` ran on the

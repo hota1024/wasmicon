@@ -22,6 +22,10 @@ hw-probe = []
 # octal PSRAM, so the page limit is far higher. Needs a module with PSRAM
 # (N8R8 and the like); without one it prints the reason and halts.
 psram = []
+# Firmware for the `esp32s3-lcd2` profile: the Waveshare ESP32-S3-Touch-LCD-2,
+# whose ST7789 panel sits on SPI2 at GPIO39/38/40 instead of the Freenove
+# board's GPIO12/11/13. The `psram` build otherwise (the chip is an ESP32-S3R8).
+lcd2 = ["psram"]
 # A/B build for docs/TODO.md §5-10: the `psram` build with aligned asset reads
 # going straight into the guest's memory in PSRAM too, as the plain build does.
 # Measurement only, so off by default. Prints the read path at boot.

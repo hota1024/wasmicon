@@ -235,3 +235,77 @@ fn a_scaled_ili9341_traces_and_draws_as_the_scaled_mock() {
         );
     }
 }
+
+#[test]
+fn an_st7789_inverts_runs_in_rgb_order_and_lights_its_backlight_last() {
+    // The panel of the Waveshare ESP32-S3-Touch-LCD-2: no reset GPIO, a
+    // backlight GPIO. Same command set as the ILI9341, so the same decoder.
+    let st7789 = DisplayConfig::St7789 {
+        spi: 0,
+        cs: 20,
+        dc: 21,
+        rst: None,
+        bl: Some(23),
+        rotation: 90,
+        scale: 1,
+    };
+    let wasm = build_demo();
+    let mock = run(&wasm, None);
+    let lcd = run(&wasm, Some(st7789));
+    assert_eq!(
+        lcd.trace, mock.trace,
+        "the ST7789 backend changed the guest's trace"
+    );
+    let panel = decode(&lcd.bus_log, 20, 21);
+    let init: Vec<u8> = panel
+        .commands
+        .iter()
+        .copied()
+        .filter(|c| ![0x2A, 0x2B, 0x2C].contains(c))
+        .collect();
+    // INVON after SLPOUT.
+    assert_eq!(init, [0x01, 0x11, 0x21, 0x3A, 0x36, 0x29]);
+    let frame = mock.frame.expect("the mock display");
+    assert!(
+        panel.pixels == frame.pixels,
+        "the panel received a different picture from the one the mock shows"
+    );
+
+    let spi: Vec<&[u8]> = lcd
+        .bus_log
+        .iter()
+        .filter_map(|e| match e {
+            BusEvent::Spi(_, b) => Some(b.as_slice()),
+            BusEvent::Gpio(..) => None,
+        })
+        .collect();
+    let madctl = spi.iter().position(|b| *b == [0x36]).expect("MADCTL");
+    // MV|MX in RGB order for rotation 90, where the ILI9341 takes 0x28.
+    assert_eq!(spi[madctl + 1], [0x60]);
+
+    // No reset line; the backlight is held low until DISPON has gone out,
+    // then driven high and left on.
+    assert!(
+        !lcd.bus_log
+            .iter()
+            .any(|e| matches!(e, BusEvent::Gpio(22, _))),
+        "no reset GPIO was given"
+    );
+    let bl: Vec<(usize, bool)> = lcd
+        .bus_log
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            BusEvent::Gpio(23, high) => Some((i, *high)),
+            _ => None,
+        })
+        .collect();
+    let dispon = lcd
+        .bus_log
+        .iter()
+        .position(|e| matches!(e, BusEvent::Spi(_, b) if *b == [0x29]))
+        .expect("DISPON");
+    assert_eq!(bl.len(), 2, "{bl:?}");
+    assert!(!bl[0].1 && bl[0].0 < dispon);
+    assert!(bl[1].1 && bl[1].0 > dispon);
+}

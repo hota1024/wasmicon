@@ -48,7 +48,7 @@ fn arenas_are_what_the_ports_had() {
     for p in profile::PROFILES {
         let scratch = match p.name {
             "host" => 4 << 20,
-            "esp32s3-psram" | "esp32p4-psram" => 16 * 1024,
+            "esp32s3-psram" | "esp32s3-lcd2" | "esp32p4-psram" => 16 * 1024,
             _ => 8 * 1024,
         };
         assert_eq!(p.scratch, scratch, "{}", p.name);
@@ -111,6 +111,7 @@ fn every_board_has_a_decided_slot() {
         (&profile::RP2350, 4usize << 20, 64 * 1024),
         (&profile::ESP32S3, 8usize << 20, 1 << 20),
         (&profile::ESP32S3_PSRAM, 8usize << 20, 1 << 20),
+        (&profile::ESP32S3_LCD2, 8usize << 20, 1 << 20),
         (&profile::ESP32C5, 16usize << 20, 64 * 1024),
         (&profile::ESP32P4, 16usize << 20, 1 << 20),
         (&profile::ESP32P4_PSRAM, 16usize << 20, 1 << 20),
@@ -180,6 +181,7 @@ fn only_the_host_mock_has_a_role_table() {
         &profile::RP2040,
         &profile::RP2350,
         &profile::ESP32S3,
+        &profile::ESP32S3_LCD2,
         &profile::ESP32C5,
         &profile::ESP32P4,
         &profile::ESP32P4_PSRAM,
@@ -209,6 +211,14 @@ fn gpio_limits_are_what_the_ports_have() {
         ]
     );
     assert_eq!(profile::ESP32S3.bus_pins, [8, 9, 11, 12, 13, 48]);
+    assert_eq!(profile::ESP32S3_LCD2.gpio_count, 49);
+    assert_eq!(
+        profile::ESP32S3_LCD2.reserved,
+        [
+            0, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 41, 43, 44
+        ]
+    );
+    assert_eq!(profile::ESP32S3_LCD2.bus_pins, [8, 9, 38, 39, 40]);
     assert_eq!(profile::ESP32C5.gpio_count, 29);
     assert_eq!(
         profile::ESP32C5.reserved,
@@ -232,6 +242,7 @@ fn rp2040_declares_i2c_and_spi_unimplemented() {
     for p in [
         &profile::RP2350,
         &profile::ESP32S3,
+        &profile::ESP32S3_LCD2,
         &profile::ESP32C5,
         &profile::ESP32P4,
         &profile::ESP32P4_PSRAM,
@@ -257,6 +268,7 @@ fn every_board_has_an_assets_slot_to_the_end_of_flash() {
         (&profile::RP2350, 4 << 20, 0x11_1000),
         (&profile::ESP32S3, 8 << 20, 0x20_1000),
         (&profile::ESP32S3_PSRAM, 8 << 20, 0x20_1000),
+        (&profile::ESP32S3_LCD2, 8 << 20, 0x20_1000),
         (&profile::ESP32C5, 16 << 20, 0x11_1000),
         (&profile::ESP32P4, 16 << 20, 0x20_1000),
         (&profile::ESP32P4_PSRAM, 16 << 20, 0x20_1000),
@@ -347,6 +359,33 @@ fn layout(s: Option<profile::Slot>) -> Option<(u32, u32, bool, profile::Flasher)
             s.flasher,
         )
     })
+}
+
+#[test]
+fn the_lcd2_board_runs_the_psram_firmware_on_its_own_pins() {
+    // Same chip and PSRAM as the Freenove board, so the same limits and
+    // slots; its own wiring table, since its SPI2 pins differ.
+    let p = &profile::ESP32S3_LCD2;
+    let psram = &profile::ESP32S3_PSRAM;
+    assert_eq!(p.wiring, p.name);
+    let limits = |c: &wasmicon_core::Config| {
+        (
+            c.max_value_stack,
+            c.max_control_depth,
+            c.max_locals,
+            c.max_memory_pages,
+            c.max_table_elems,
+            c.max_call_depth,
+            c.operand_stack_slots,
+        )
+    };
+    assert_eq!(limits(&p.config), limits(&psram.config));
+    assert_eq!((p.arena, p.scratch), (psram.arena, psram.scratch));
+    assert!(layout(p.slot) == layout(psram.slot));
+    assert!(layout(p.role_slot) == layout(psram.role_slot));
+    assert!(layout(p.assets) == layout(psram.assets));
+    assert_eq!(p.interfaces.display_drivers, ["ili9341", "st7789"]);
+    assert!(!p.interfaces.touch, "no CST816D backend yet");
 }
 
 #[test]

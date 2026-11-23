@@ -1,4 +1,5 @@
-//! Board implementation for the ESP32-S3 (Freenove ESP32-S3-WROOM).
+//! Board implementation for the ESP32-S3 (Freenove ESP32-S3-WROOM, and with
+//! the `lcd2` feature the Waveshare ESP32-S3-Touch-LCD-2).
 //!
 //! GPIOs are addressed by number at run time, so instead of typed pins this
 //! drives the GPIO / IO_MUX registers directly. The shared part of the HAL
@@ -21,7 +22,9 @@
 //!   DC / CS would move while the last byte is still shifting and the ILI9341
 //!   would mix up command and data.
 //! - `spi.bus` index 1 routes only the SPI2 MOSI to GPIO48, the on-board RGB
-//!   LED (docs/abi-spec.md §8). It shares SPI2 with index 0.
+//!   LED (docs/abi-spec.md §8). It shares SPI2 with index 0. The LCD-2 has
+//!   no such LED (GPIO48 is its touch controller's SDA), so there index 1 is
+//!   `unsupported`.
 //! - Failures: an unassigned bus index is `unsupported`, `frequency-hz == 0` is
 //!   `invalid-argument`, an I2C address outside 7 bits is `invalid-argument`.
 //!   Two known differences remain (docs/TODO.md §2.1): an SPI request below
@@ -83,8 +86,17 @@ const SIG_GPIO_OUT: u16 = 256;
 ///   PSRAM pins; 33 and 34 are not brought out)
 /// - 43, 44: UART0, which carries the trace (wired to USB-serial on the
 ///   Freenove board)
+#[cfg(not(feature = "lcd2"))]
 const fn reserved(index: u32) -> bool {
     matches!(index, 22..=37 | 43 | 44)
+}
+
+/// The LCD-2 also reserves GPIO0 (the BOOT strap, and the panel's reset
+/// where R16 is fitted) and GPIO41 (the TF card's chip select, held high by
+/// `deselect_sd_card`).
+#[cfg(feature = "lcd2")]
+const fn reserved(index: u32) -> bool {
+    matches!(index, 0 | 22..=37 | 41 | 43 | 44)
 }
 
 // The wiring-table check (CLI and firmware, `wasmicon_port::roles`) uses the
@@ -94,7 +106,7 @@ const fn reserved(index: u32) -> bool {
 // every number is compared one by one. The firmware holds no role table of
 // its own (docs/app-workflow.md §3.9).
 const _: () = {
-    let p = &wasmicon_port::profile::ESP32S3;
+    let p = crate::PROFILE;
     assert!(NUM_GPIO == p.gpio_count);
     let mut n = 0;
     while n < NUM_GPIO {
@@ -108,7 +120,7 @@ const _: () = {
         }
         assert!(
             listed == reserved(n),
-            "profile::ESP32S3.reserved disagrees with reserved() in board.rs"
+            "the profile's reserved disagrees with reserved() in board.rs"
         );
         n += 1;
     }
@@ -122,9 +134,27 @@ const _: () = {
 /// differ per board. If the guest opens one of these numbers through `gpio`
 /// while SPI is open, the GPIO matrix routing is overwritten and SPI silently
 /// stops; that counts as a guest bug (the same as on `ports/rp2350`).
+#[cfg(not(feature = "lcd2"))]
 const SPI2_SCK: u8 = 12;
+#[cfg(not(feature = "lcd2"))]
 const SPI2_MOSI: u8 = 11;
+#[cfg(not(feature = "lcd2"))]
 const SPI2_MISO: u8 = 13;
+
+/// SPI2 on the LCD-2: the bus of its ST7789 and of its TF card. The panel
+/// has no MISO; GPIO40 is the card's.
+#[cfg(feature = "lcd2")]
+const SPI2_SCK: u8 = 39;
+#[cfg(feature = "lcd2")]
+const SPI2_MOSI: u8 = 38;
+#[cfg(feature = "lcd2")]
+const SPI2_MISO: u8 = 40;
+
+/// The TF card's chip select on the LCD-2. The schematic shows no pull-up,
+/// so it is driven high once at boot: a floating select could let the card
+/// answer while the panel is written.
+#[cfg(feature = "lcd2")]
+const SD_CS: u32 = 41;
 
 /// MOSI of `spi.bus` index 1. GPIO48 drives the DIN of the on-board RGB LED
 /// (WS2812) on the Freenove ESP32-S3-WROOM board.
@@ -133,6 +163,8 @@ const SPI2_MISO: u8 = 13;
 /// each WS2812 bit into several SPI bits (`apps/rgb-led-rs`). The GPIO matrix
 /// can route to any pin, so no wiring is needed. It shares SPI2 with index 0,
 /// so the two cannot be open at the same time (the second open gets `busy`).
+/// Unused with `lcd2`: that board has no such LED, and GPIO48 is its touch
+/// controller's SDA.
 const SPI2_LED_MOSI: u8 = 48;
 
 /// Pins assigned to I2C0 (docs/abi-spec.md §8). Not in `reserved`, for the
@@ -145,7 +177,7 @@ pub trait Serial {
     fn write(&mut self, bytes: &[u8]);
 }
 
-/// The Freenove ESP32-S3-WROOM board.
+/// The Freenove ESP32-S3-WROOM board, or the Waveshare ESP32-S3-Touch-LCD-2.
 pub struct EspBoard<S: Serial> {
     serial: S,
     /// Flash, for the guest's asset reads (docs/app-workflow.md §3.10).
@@ -184,7 +216,9 @@ impl<S: Serial> EspBoard<S> {
     /// # Safety
     /// This board must have exclusive use of GPIO / IO_MUX / SPI2 / I2C0 and
     /// of the GPIOs assigned to SPI2 and I2C0 (`SPI2_SCK` / `SPI2_MOSI` /
-    /// `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` / `I2C0_SCL`).
+    /// `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` / `I2C0_SCL`). With `lcd2` it
+    /// also needs GPIO41 (`SD_CS`), which `deselect_sd_card` drives;
+    /// `SPI2_LED_MOSI` is never used there (`spi_open` refuses index 1).
     #[must_use]
     pub unsafe fn new(serial: S, storage: FlashStorage<'static>, assets_base: u32) -> Self {
         EspBoard {
@@ -202,6 +236,15 @@ impl<S: Serial> EspBoard<S> {
     #[cfg(feature = "read-stats")]
     pub fn read_stats(&mut self) -> (ReadStats, &mut S) {
         (self.stats, &mut self.serial)
+    }
+
+    /// Holds the TF card's chip select high, so the card stays off the bus it
+    /// shares with the panel. GPIO41 is reserved, so the guest cannot move it.
+    #[cfg(feature = "lcd2")]
+    pub fn deselect_sd_card(&mut self) {
+        // Neither call can fail for a GPIO below NUM_GPIO.
+        let _ = self.gpio_configure(SD_CS, PinMode::Output);
+        let _ = self.gpio_write(SD_CS, Level::High);
     }
 
     /// The serial port, used to print the reason for a failure.
@@ -348,13 +391,13 @@ impl<S: Serial> Board for EspBoard<S> {
     fn display_supported(&self) -> bool {
         // The ILI9341 backend in ports/common runs on this port's SPI
         // (docs/device-layer.md §5.3); the profile says whether there is one.
-        wasmicon_port::profile::ESP32S3.interfaces.display
+        crate::PROFILE.interfaces.display
     }
 
     fn touch_supported(&self) -> bool {
         // The XPT2046 backend in ports/common shares the ILI9341's bus
         // (docs/device-layer.md §11.4).
-        wasmicon_port::profile::ESP32S3.interfaces.touch
+        crate::PROFILE.interfaces.touch
     }
 
     fn gpio_count(&self) -> u32 {
@@ -635,12 +678,13 @@ impl<S: Serial> Board for EspBoard<S> {
 
     // --- SPI. Both indexes use SPI2, so they cannot be open at the same time ---
     //   index 0 = general purpose (SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13)
-    //   index 1 = on-board RGB LED (MOSI=GPIO48 only)
+    //   index 1 = on-board RGB LED (MOSI=GPIO48 only), none on the LCD-2
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
         // There is an SPI3 too, but v0.1 only assigns SPI2
         // (docs/abi-spec.md §8). The Hal has already checked index < MAX_SPI.
-        if index > 1 {
+        // The LCD-2 has no RGB LED for index 1.
+        if index > 1 || (cfg!(feature = "lcd2") && index == 1) {
             return Err(ErrorCode::Unsupported);
         }
         if frequency_hz == 0 {

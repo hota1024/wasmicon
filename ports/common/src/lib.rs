@@ -208,7 +208,8 @@ pub trait Board {
     /// Brings display `index` up, at the guest's first `open` of it: a
     /// firmware that runs no display app leaves the panel alone. Called on
     /// every `open`, so it returns at once when the display is up. Only for a
-    /// board's own display; an ILI9341 entry goes to `ili9341` instead.
+    /// board's own display; an ILI9341 or ST7789 entry goes to `ili9341`
+    /// instead.
     fn display_open(&mut self, _index: u32) -> BoardResult<()> {
         Ok(())
     }
@@ -363,7 +364,8 @@ pub struct Hal<B: Board> {
     /// The display entry of the config slot (docs/device-layer.md §5.2). Its
     /// bus and pins belong to the backend, not the guest.
     display: Option<DisplayConfig>,
-    /// The backend when the entry is an ILI9341; otherwise the board's own.
+    /// The backend when the entry is an ILI9341 or an ST7789; otherwise the
+    /// board's own.
     ili9341: Option<Ili9341>,
     /// Panel pixels per guest pixel in each direction (docs/TODO.md §6-10):
     /// the display entry's `scale`, or what `with_scale` set for the host
@@ -406,9 +408,9 @@ impl<B: Board> Hal<B> {
     }
 
     /// Sets the display entry: on a board what the firmware read from the
-    /// config slot (docs/device-layer.md §5.2). An ILI9341 entry selects the
-    /// backend in `ili9341`; any other entry, or none, leaves the display to
-    /// the board (the host mock, the Tab5 panel).
+    /// config slot (docs/device-layer.md §5.2). An ILI9341 or ST7789 entry
+    /// selects the backend in `ili9341`; any other entry, or none, leaves the
+    /// display to the board (the host mock, the Tab5 panel).
     #[must_use]
     pub fn with_display(mut self, display: Option<DisplayConfig>) -> Self {
         self.display = display;
@@ -421,6 +423,15 @@ impl<B: Board> Hal<B> {
                 rotation,
                 ..
             }) => Some(Ili9341::new(spi, cs, dc, rst, rotation)),
+            Some(DisplayConfig::St7789 {
+                spi,
+                cs,
+                dc,
+                rst,
+                bl,
+                rotation,
+                ..
+            }) => Some(Ili9341::st7789(spi, cs, dc, rst, bl, rotation)),
             _ => None,
         };
         // The firmware checked the entry at boot (`DisplayConfig::check`);
@@ -633,8 +644,7 @@ impl<B: Board> Hal<B> {
     /// Whether the display or touch backend owns GPIO `index`: the guest may
     /// not open it.
     fn display_pin(&self, index: u32) -> bool {
-        self.display.is_some_and(|d| d.pins().contains(&index))
-            || self.touch.is_some_and(|t| t.owns(index))
+        self.display.is_some_and(|d| d.owns(index)) || self.touch.is_some_and(|t| t.owns(index))
     }
 
     /// Checks `x, y, w, h` against display `index`: non-empty and inside.
