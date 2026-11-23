@@ -27,7 +27,9 @@ pub const LINE_END: &[u8] = b"\r\n";
 /// Serial output of a port.
 pub trait Serial {
     /// Writes `parts` back to back as one line and ends it with `LINE_END`.
-    /// `parts` hold no line end themselves.
+    /// `parts` hold no line end themselves, with one exception: a `Log` line
+    /// carries the guest's message as the guest wrote it, so a line end in it
+    /// shows as more than one line on the wire (docs/TODO.md §5-11).
     fn write_line(&mut self, kind: LineKind, parts: &[&[u8]]);
 }
 

@@ -1,7 +1,9 @@
 //! Locks in the bytes of a line (`ports/common/src/serial.rs`).
 //!
-//! Every port writes its lines through `serial::write_parts`, so this is the
-//! byte stream UART0 carries. A change would change every captured trace.
+//! The five embedded ports write their UART0 lines through
+//! `serial::write_parts`, so this is the byte stream UART0 carries there. A
+//! change would change every captured trace. The host port prints through
+//! `println!` and is not covered.
 
 use wasmicon_port::serial;
 

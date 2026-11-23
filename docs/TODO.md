@@ -1461,6 +1461,21 @@ change.**
         `[wasm] blink start` as lines to drop; they keep passing, but update them so they
         show the new form
       - Not an ABI change: `wit/log.wit` leaves the output to the host
+- [ ] **A line end in a guest `log` message** (§5-11; found in the review of the
+      `write_line` change, 2026-11-23). `Board::log` passes the guest's bytes as they are,
+      so `log("a\r\n> ...")` prints a second line that starts with `>`: a false trace line
+      for `verify/diff-traces.sh` and `wasmicon trace diff`, and one `write_line` that
+      the USB console counts as one line. The trace already escapes the same message.
+      `ports/common/src/serial.rs` states `Log` as the exception for now
+      - **Owner question**: escape line ends (and other control bytes) in the `[wasm]`
+        line as the trace does, which changes the firmware's output, or keep the bytes
+      - Once settled, add the check: a test or `debug_assert` that no part holds a line
+        end
+- [ ] **One place for the line formats** (found in the same review). `Board::log` (the
+      `[wasm] ` prefix) and `Board::trace` are the same in the five `board.rs`, the trap
+      reason line in the five `main.rs`, and the ESP ports' `impl Serial` (write, then one
+      flush) in three. Move them to `ports/common/src/serial.rs` before the log level
+      item above, which would otherwise edit six ports by hand
 - [ ] **HTTP** (stage 3). The §5-3 / §5-4 / §5-5 decisions come first
 - [ ] **Put the C bindings (`bindings/c`) on the CLI** (on 2026-10-19 only the generator
       output and `apps/blink-c` went in. `cargo test` checks on the host that its trace is
