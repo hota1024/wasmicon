@@ -25,13 +25,15 @@ pub const MAGIC: [u8; 4] = *b"WMCR";
 
 /// Newest format version this firmware reads. Version 1 holds roles only;
 /// version 2 may add one `@display=` line, version 3 one `@touch=` line too,
-/// and version 4 a `scale=` on the display line (docs/TODO.md §6-10).
+/// version 4 a `scale=` on the display line (docs/TODO.md §6-10) and
+/// version 5 an `st7789` display line.
 /// The writer uses the lowest version that holds the entries, so a firmware
 /// that reads only version 1 keeps reading every other app's roles
-/// (docs/TODO.md §6-5), one without touch every app without it, and one
-/// without `scale` every app at 1x. Such a firmware refuses a newer table as
-/// `UnsupportedVersion`, which names the cause in its boot line.
-pub const FORMAT_VERSION: u16 = 4;
+/// (docs/TODO.md §6-5), one without touch every app without it, one
+/// without `scale` every app at 1x, and one without the ST7789 every other
+/// display. Such a firmware refuses a newer table as `UnsupportedVersion`,
+/// which names the cause in its boot line.
+pub const FORMAT_VERSION: u16 = 5;
 
 /// Header size. The body starts right after it.
 pub const HEADER_LEN: usize = 16;
@@ -274,6 +276,20 @@ pub enum DisplayConfig {
         rotation: u32,
         scale: u32,
     },
+    /// An ST7789 on SPI bus `spi`, driven by the host
+    /// (`@display=st7789 spi=0 cs=45 dc=42 bl=1 rotation=90`). `rst` and `bl`
+    /// are optional: without `rst` SWRESET alone resets the panel, and `bl`
+    /// is driven high once the panel is on. Same panel size and rotations as
+    /// the ILI9341.
+    St7789 {
+        spi: u32,
+        cs: u32,
+        dc: u32,
+        rst: Option<u32>,
+        bl: Option<u32>,
+        rotation: u32,
+        scale: u32,
+    },
     /// The M5Stack Tab5's own MIPI-DSI panel (`@display=tab5`).
     Tab5 { scale: u32 },
 }
@@ -287,7 +303,7 @@ pub const TAB5_SIZE: (u32, u32) = (720, 1280);
 
 impl DisplayConfig {
     /// Every driver name `driver` returns.
-    pub const DRIVERS: [&'static str; 2] = ["ili9341", "tab5"];
+    pub const DRIVERS: [&'static str; 3] = ["ili9341", "st7789", "tab5"];
 
     /// The Tab5 entry at 1x.
     pub const TAB5: DisplayConfig = DisplayConfig::Tab5 { scale: 1 };
@@ -298,7 +314,9 @@ impl DisplayConfig {
     #[must_use]
     pub fn scale(&self) -> u32 {
         match *self {
-            DisplayConfig::Ili9341 { scale, .. } | DisplayConfig::Tab5 { scale } => scale,
+            DisplayConfig::Ili9341 { scale, .. }
+            | DisplayConfig::St7789 { scale, .. }
+            | DisplayConfig::Tab5 { scale } => scale,
         }
     }
 
@@ -306,7 +324,9 @@ impl DisplayConfig {
     #[must_use]
     pub fn panel_size(&self) -> (u32, u32) {
         match *self {
-            DisplayConfig::Ili9341 { rotation, .. } => crate::ili9341::size_at(rotation),
+            DisplayConfig::Ili9341 { rotation, .. } | DisplayConfig::St7789 { rotation, .. } => {
+                crate::ili9341::size_at(rotation)
+            }
             DisplayConfig::Tab5 { .. } => TAB5_SIZE,
         }
     }
@@ -316,6 +336,7 @@ impl DisplayConfig {
     pub fn driver(&self) -> &'static str {
         match *self {
             DisplayConfig::Ili9341 { .. } => "ili9341",
+            DisplayConfig::St7789 { .. } => "st7789",
             DisplayConfig::Tab5 { .. } => "tab5",
         }
     }
@@ -323,19 +344,28 @@ impl DisplayConfig {
     /// GPIOs the backend drives. The guest may not open them and no role may
     /// name them (docs/TODO.md §6-6 for the Tab5).
     #[must_use]
-    pub fn pins(&self) -> [u32; 3] {
+    pub fn pins(&self) -> [Option<u32>; 4] {
         match *self {
-            DisplayConfig::Ili9341 { cs, dc, rst, .. } => [cs, dc, rst],
+            DisplayConfig::Ili9341 { cs, dc, rst, .. } => [Some(cs), Some(dc), Some(rst), None],
+            DisplayConfig::St7789 {
+                cs, dc, rst, bl, ..
+            } => [Some(cs), Some(dc), rst, bl],
             // Backlight, and the internal I2C that powers the panel.
-            DisplayConfig::Tab5 { .. } => [22, 31, 32],
+            DisplayConfig::Tab5 { .. } => [Some(22), Some(31), Some(32), None],
         }
+    }
+
+    /// Whether the backend drives GPIO `pin`.
+    #[must_use]
+    pub fn owns(&self, pin: u32) -> bool {
+        self.pins().contains(&Some(pin))
     }
 
     /// The SPI bus the backend holds, if any.
     #[must_use]
     pub fn spi(&self) -> Option<u32> {
         match *self {
-            DisplayConfig::Ili9341 { spi, .. } => Some(spi),
+            DisplayConfig::Ili9341 { spi, .. } | DisplayConfig::St7789 { spi, .. } => Some(spi),
             DisplayConfig::Tab5 { .. } => None,
         }
     }
@@ -347,7 +377,8 @@ impl DisplayConfig {
     /// role; an SPI index or rotation out of range; a scale out of range or
     /// one that does not divide the panel's size.
     pub fn check(&self, limits: &Limits<'_>, roles: &RoleMap) -> Result<(), RolesError> {
-        if let DisplayConfig::Ili9341 { spi, rotation, .. } = *self
+        if let DisplayConfig::Ili9341 { spi, rotation, .. }
+        | DisplayConfig::St7789 { spi, rotation, .. } = *self
             && (spi as usize >= crate::MAX_SPI || !matches!(rotation, 0 | 90 | 180 | 270))
         {
             return Err(RolesError::BadDisplay);
@@ -356,7 +387,8 @@ impl DisplayConfig {
             return Err(RolesError::BadDisplay);
         }
         let pins = self.pins();
-        for (i, &pin) in pins.iter().enumerate() {
+        for (i, pin) in pins.iter().enumerate() {
+            let Some(pin) = *pin else { continue };
             if pin >= limits.gpio_count {
                 return Err(RolesError::OutOfRange);
             }
@@ -366,7 +398,7 @@ impl DisplayConfig {
             if limits.bus_pins.contains(&pin) {
                 return Err(RolesError::BusPin);
             }
-            if pins[..i].contains(&pin) || (0..roles.len()).any(|r| roles.pin(r) == pin) {
+            if pins[..i].contains(&Some(pin)) || (0..roles.len()).any(|r| roles.pin(r) == pin) {
                 return Err(RolesError::DuplicatePin);
             }
         }
@@ -383,8 +415,9 @@ impl DisplayConfig {
     }
 
     /// Parses what follows `@display=` in a table of format `version`. A
-    /// `scale=` key needs version 4, whatever its value: a firmware from
-    /// before it rejects the key, so a lower version must not carry it.
+    /// `scale=` key needs version 4, whatever its value, and an `st7789`
+    /// line version 5: a firmware from before either rejects it, so a lower
+    /// version must not carry it.
     fn parse(text: &[u8], version: u16) -> Result<DisplayConfig, RolesError> {
         if version < 4 && text.split(|b| *b == b' ').any(|w| w.starts_with(b"scale=")) {
             return Err(RolesError::BadDisplay);
@@ -424,6 +457,35 @@ impl DisplayConfig {
                     scale: scale.unwrap_or(1),
                 })
             }
+            Some(b"st7789") if version >= 5 => {
+                // spi, cs, dc, rotation, each exactly once; rst, bl and
+                // scale optional.
+                const KEYS: [&[u8]; 7] =
+                    [b"spi", b"cs", b"dc", b"rst", b"bl", b"rotation", b"scale"];
+                let mut v: [Option<u32>; 7] = [None; 7];
+                parse_keys(words, &KEYS, &mut v)?;
+                let [
+                    Some(spi),
+                    Some(cs),
+                    Some(dc),
+                    rst,
+                    bl,
+                    Some(rotation),
+                    scale,
+                ] = v
+                else {
+                    return Err(RolesError::BadDisplay);
+                };
+                Ok(DisplayConfig::St7789 {
+                    spi,
+                    cs,
+                    dc,
+                    rst,
+                    bl,
+                    rotation,
+                    scale: scale.unwrap_or(1),
+                })
+            }
             _ => Err(RolesError::BadDisplay),
         }
     }
@@ -450,6 +512,30 @@ impl DisplayConfig {
                 ] {
                     out.str(k);
                     out.u32(v);
+                }
+            }
+            DisplayConfig::St7789 {
+                spi,
+                cs,
+                dc,
+                rst,
+                bl,
+                rotation,
+                ..
+            } => {
+                out.str("st7789");
+                for (k, v) in [
+                    (" spi=", Some(spi)),
+                    (" cs=", Some(cs)),
+                    (" dc=", Some(dc)),
+                    (" rst=", rst),
+                    (" bl=", bl),
+                    (" rotation=", Some(rotation)),
+                ] {
+                    if let Some(v) = v {
+                        out.str(k);
+                        out.u32(v);
+                    }
                 }
             }
         }
@@ -598,7 +684,7 @@ impl TouchConfig {
                 return Err(RolesError::BusPin);
             }
             if pins[..i].contains(&Some(pin))
-                || display.pins().contains(&pin)
+                || display.owns(pin)
                 || (0..roles.len()).any(|r| roles.pin(r) == pin)
             {
                 return Err(RolesError::DuplicatePin);
@@ -706,11 +792,14 @@ impl Wiring {
         touch: None,
     };
 
-    /// The format version the writer uses: 4 with a display scale other
-    /// than 1, 3 with a touch entry, 2 with only a display entry, 1 otherwise.
+    /// The format version the writer uses: 5 with an ST7789 entry, 4 with a
+    /// display scale other than 1, 3 with a touch entry, 2 with only a
+    /// display entry, 1 otherwise.
     #[must_use]
     pub fn version(&self) -> u16 {
-        if self.display.is_some_and(|d| d.scale() != 1) {
+        if matches!(self.display, Some(DisplayConfig::St7789 { .. })) {
+            5
+        } else if self.display.is_some_and(|d| d.scale() != 1) {
             4
         } else if self.touch.is_some() {
             3
@@ -724,7 +813,7 @@ impl Wiring {
 
 /// Parses the body (lines of `name=gpio`, from version 2 one `@display=`
 /// line, from version 3 one `@touch=` line, from version 4 a `scale=` on the
-/// display line).
+/// display line, from version 5 an `st7789` display line).
 ///
 /// # Errors
 /// A malformed line, or whatever `insert` / `DisplayConfig::check` reject.

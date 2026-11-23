@@ -141,13 +141,16 @@ struct RawTouch {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawDisplay {
-    /// `"ili9341"` or `"tab5"`.
+    /// `"ili9341"`, `"st7789"` or `"tab5"`.
     driver: String,
     /// SPI bus index; default 0.
     spi: Option<u32>,
     cs: Option<u32>,
     dc: Option<u32>,
+    /// Required for the ILI9341, optional for the ST7789.
     rst: Option<u32>,
+    /// Backlight GPIO, driven high once the panel is on; ST7789 only.
+    bl: Option<u32>,
     /// 0, 90, 180 or 270; default 90 (320x240 landscape, as the apps draw).
     rotation: Option<u32>,
     /// Panel pixels per guest pixel in each direction, 1 to 4; default 1
@@ -244,11 +247,28 @@ fn build_display(
             let pin = |v: Option<u32>, key: &str| {
                 v.with_context(|| format!("{at}: driver = \"ili9341\" needs `{key}`"))
             };
+            if raw.bl.is_some() {
+                bail!("{at}: driver = \"ili9341\" takes no `bl`");
+            }
             DisplayConfig::Ili9341 {
                 spi: raw.spi.unwrap_or(0),
                 cs: pin(raw.cs, "cs")?,
                 dc: pin(raw.dc, "dc")?,
                 rst: pin(raw.rst, "rst")?,
+                rotation: raw.rotation.unwrap_or(90),
+                scale: raw.scale.unwrap_or(1),
+            }
+        }
+        "st7789" => {
+            let pin = |v: Option<u32>, key: &str| {
+                v.with_context(|| format!("{at}: driver = \"st7789\" needs `{key}`"))
+            };
+            DisplayConfig::St7789 {
+                spi: raw.spi.unwrap_or(0),
+                cs: pin(raw.cs, "cs")?,
+                dc: pin(raw.dc, "dc")?,
+                rst: raw.rst,
+                bl: raw.bl,
                 rotation: raw.rotation.unwrap_or(90),
                 scale: raw.scale.unwrap_or(1),
             }
@@ -259,6 +279,7 @@ fn build_display(
                 || raw.cs.is_some()
                 || raw.dc.is_some()
                 || raw.rst.is_some()
+                || raw.bl.is_some()
                 || raw.rotation.is_some()
             {
                 bail!("{at}: driver = \"tab5\" takes no keys but `scale`");
@@ -853,6 +874,29 @@ driver = "tab5"
     }
 
     #[test]
+    fn an_st7789_entry_needs_no_reset_and_may_name_a_backlight() {
+        // The Waveshare ESP32-S3-Touch-LCD-2's panel.
+        let m = parse(
+            "st7789",
+            "version = 1\n[board.esp32s3-lcd2.display]\n\
+             driver = \"st7789\"\ncs = 45\ndc = 42\nbl = 1\n",
+        )
+        .expect("loads");
+        assert_eq!(
+            m.display(&profile::ESP32S3_LCD2),
+            Some(DisplayConfig::St7789 {
+                spi: 0,
+                cs: 45,
+                dc: 42,
+                rst: None,
+                bl: Some(1),
+                rotation: 90,
+                scale: 1
+            })
+        );
+    }
+
+    #[test]
     fn rejects_a_bad_display_entry() {
         for (tag, body, want) in [
             (
@@ -860,7 +904,13 @@ driver = "tab5"
                 "driver = \"ili9341\"\ndc = 14\nrst = 15",
                 "needs `cs`",
             ),
-            ("driver", "driver = \"st7789\"", "unknown driver"),
+            ("driver", "driver = \"st7735\"", "unknown driver"),
+            ("st7789-no-dc", "driver = \"st7789\"\ncs = 10", "needs `dc`"),
+            (
+                "ili9341-bl",
+                "driver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\nbl = 16",
+                "takes no `bl`",
+            ),
             (
                 "unknown-key",
                 "driver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\nmosi = 11",

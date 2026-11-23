@@ -196,6 +196,13 @@ dc = 14
 rst = 15
 rotation = 90    # 0, 90, 180, 270
 
+[board.esp32s3-lcd2.display]
+driver = "st7789"
+cs = 45
+dc = 42
+bl = 1           # optional: backlight, driven high once the panel is on
+                 # rst is optional too: without it SWRESET resets the panel
+
 [board.esp32p4.display]
 driver = "tab5"  # the Tab5's own MIPI-DSI panel
 scale = 2        # optional, 1 to 4: panel pixels per guest pixel
@@ -237,6 +244,7 @@ scale = 2        # optional, 1 to 4: panel pixels per guest pixel
 |---|---|---|
 | `mock` | host (`wasmicon run`, tests) | Keeps a frame buffer; `run` can write it to a PNG after `run` returns |
 | `ili9341` | ESP32-S3, Pico 2 W, ESP32-C5, ESP32-P4 | The ILI9341 init and drawing that the apps do today, in `ports/common/src/ili9341.rs` over the port's SPI and GPIO: SPI mode 0 at 16 MHz, the apps/README.md §2 init sequence at the first `open`, writes of at most 640 bytes. The bus and pins stay the backend's for the whole run (the reset line never floats). MADCTL per rotation: 0 = 0x48, 90 = 0x28, 180 = 0x88, 270 = 0xE8; only 90 has run on hardware |
+| `st7789` | every port with `ili9341` (the Waveshare ESP32-S3-Touch-LCD-2 is the board it is for) | The `ili9341` backend with four differences, in the same file: INVON after SLPOUT (the board's IPS panel shows inverted colors without it), MADCTL in RGB order (0 = 0x00, 90 = 0x60, 180 = 0xC0, 270 = 0xA0, from LovyanGFX's rotation table), `rst` optional (without it SWRESET is the reset), and an optional `bl` held low through the init and driven high after DISPON. Same 240x320 panel and write path. Config slot format version 5. Not yet run on hardware (docs/TODO.md §1.3.3) |
 | `tab5` | ESP32-P4 on the Tab5 | `ports/esp32p4/src/tab5.rs`. Only when the config slot names it: PSRAM comes up at boot, before the app runs (its init rewrites every external LDO); the panel at the first `open`: panel power and reset through the internal I2C IO expanders (speaker amplifier left off), DSI host + DPI video mode at 1040 Mbps x 2 lanes and 80 MHz, the backlight on GPIO22 once video runs. 720x1280 portrait, no rotation. The frame buffer is in PSRAM; drawing goes through the CPU cache and `present` writes the rows drawn back, so the picture can tear. While it is configured, GPIO22, 31 and 32 are reserved: a role on them is refused (docs/TODO.md §6-6) |
 
 The `tab5` backend works around esp-hal 1.2.2 on the Tab5's v1.0 silicon

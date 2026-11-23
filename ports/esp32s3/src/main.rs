@@ -40,11 +40,20 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 /// The profile this firmware is built for. With the `psram` feature the arena
 /// lives in the module's octal PSRAM and the page limit is that of
-/// `esp32s3-psram`; pins and slots are the same board's either way.
+/// `esp32s3-psram`; pins and slots are the same board's either way. The
+/// `lcd2` feature is the `psram` build for the Waveshare ESP32-S3-Touch-LCD-2,
+/// whose SPI2 and reserved pins differ (`board.rs`).
 #[cfg(not(feature = "psram"))]
 const PROFILE: &Profile = &wasmicon_port::profile::ESP32S3;
-#[cfg(feature = "psram")]
+#[cfg(all(feature = "psram", not(feature = "lcd2")))]
 const PROFILE: &Profile = &wasmicon_port::profile::ESP32S3_PSRAM;
+#[cfg(feature = "lcd2")]
+const PROFILE: &Profile = &wasmicon_port::profile::ESP32S3_LCD2;
+
+// The probe drives the Freenove board's ILI9341 wiring, which the LCD-2 does
+// not have.
+#[cfg(all(feature = "lcd2", feature = "hw-probe"))]
+compile_error!("hw-probe probes the Freenove board's wiring; build it without lcd2");
 
 /// Config slot (wiring table, docs/app-workflow.md §3.9), right after the app slot.
 const ROLE_SLOT: Slot = match PROFILE.role_slot {
@@ -165,14 +174,18 @@ fn main() -> ! {
     // The board owns it: the guest's asset reads happen while the app runs.
     let storage = FlashStorage::new(p.FLASH);
 
-    // Mutable only for hw-probe, which borrows the board before the guest runs.
-    #[cfg_attr(not(feature = "hw-probe"), allow(unused_mut))]
+    // Mutable only for hw-probe, which borrows the board before the guest
+    // runs, and for lcd2, which deselects the TF card.
+    #[cfg_attr(not(any(feature = "hw-probe", feature = "lcd2")), allow(unused_mut))]
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
     // / I2C0 and of the pins assigned to SPI2 and I2C0. The UART holds
     // GPIO43/44, which are reserved and overlap neither a role-assignable
-    // GPIO nor the SPI2 pins (GPIO11/12/13 and the RGB LED's GPIO48) nor the
-    // I2C0 pins (GPIO8/9).
+    // GPIO nor the SPI2 pins (GPIO11/12/13 and the RGB LED's GPIO48, or
+    // GPIO39/38/40 on the LCD-2) nor the I2C0 pins (GPIO8/9).
     let mut board = unsafe { EspBoard::new(serial, storage, ASSETS_SLOT.offset) };
+    // Before anything uses SPI2: the TF card shares the panel's SCK and MOSI.
+    #[cfg(feature = "lcd2")]
+    board.deselect_sd_card();
 
     // Checks whether the port layer reaches the pads (src/probe.rs). The
     // guest runs right after, so once done the feature is simply left off.

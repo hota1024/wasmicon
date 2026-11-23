@@ -385,6 +385,14 @@ bit into several SPI bits and calls `write` (`apps/rgb-led-rs`). It is the same 
 The ESP32-S3 port does the same with GPIO48 (2026-10-20), where the Freenove ESP32-S3-WROOM board carries its
 on-board WS2812. On the Pico boards `spi.bus` index 1 is `unsupported`.
 
+The Waveshare ESP32-S3-Touch-LCD-2 (profile `esp32s3-lcd2`, `ports/esp32s3` built with the `lcd2` feature;
+2026-11-16) wires its ST7789 panel to other pins, so that firmware has its own assignment: SPI2 at SCK=GPIO39,
+MOSI=GPIO38, MISO=GPIO40 (the panel's and the TF card's bus), I2C0 at GPIO8/9 as on the Freenove board, and no
+`spi.bus` index 1 (GPIO48 is the touch controller's SDA). It also reserves GPIO0 (the BOOT strap, and the panel's
+reset where R16 is fitted) and GPIO41 (the TF card's chip select, which the firmware holds high at boot). The
+panel itself is the display entry's: CS=GPIO45, DC=GPIO42, backlight GPIO1, no reset GPIO. Taken from Waveshare's
+V2 schematic; not yet run on the board (docs/TODO.md §1.3.3).
+
 The mapping from role names to GPIO numbers that `board.pin-by-role` (§7) answers from (the **wiring table**)
 **lives in the device's config slot, not in the firmware** (owner decision, 2026-10-07;
 docs/app-workflow.md §3.9).

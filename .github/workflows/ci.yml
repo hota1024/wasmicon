@@ -13,7 +13,9 @@
 # available on the runner. Check it locally with
 #   sh ports/esp32s3/build.sh clippy --release -- -D warnings
 #   sh ports/esp32s3/build.sh clippy --release --features hw-probe -- -D warnings
-# (the second keeps src/probe.rs, used only for hardware triage, from rotting).
+#   sh ports/esp32s3/build.sh clippy --release --features lcd2 -- -D warnings
+# (the second keeps src/probe.rs, used only for hardware triage, from rotting;
+# the third builds the Waveshare ESP32-S3-Touch-LCD-2 firmware).
 name: ci
 
 on:

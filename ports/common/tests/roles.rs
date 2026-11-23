@@ -3,7 +3,8 @@
 //! The writer (CLI) and the reader (firmware) share `roles`, so this is the
 //! contract for both. Bump `FORMAT_VERSION` when the shape changes. Version 2
 //! adds the display entry (docs/device-layer.md §5.2), version 3 the touch
-//! entry (docs/device-layer.md §11.3).
+//! entry (docs/device-layer.md §11.3), version 4 the display `scale`
+//! (docs/TODO.md §6-10), version 5 the ST7789 entry.
 
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::profile;
@@ -210,7 +211,25 @@ fn at_most_max_roles_entries() {
     assert_eq!(v2.version(), 2);
     let n = roles::encode_body(&v2, &mut body);
     assert!(n < 256, "{n} bytes in version 2");
+    // The longest ST7789 entry is shorter: it has two pins more but takes no
+    // touch entry (an XPT2046 needs an ILI9341).
+    let st7789 = Wiring {
+        touch: None,
+        display: Some(DisplayConfig::St7789 {
+            spi: 1,
+            cs: 60,
+            dc: 61,
+            rst: Some(62),
+            bl: Some(63),
+            rotation: 270,
+            scale: 4,
+        }),
+        ..w
+    };
+    assert_eq!(st7789.version(), 5);
+    let st7789_len = roles::encode_body(&st7789, &mut body);
     let n = roles::encode_body(&w, &mut body);
+    assert!(st7789_len < n, "{st7789_len} bytes with the ST7789");
     assert!(n < roles::MAX_BODY, "{n} bytes");
     assert_eq!(w.version(), 4);
     let back = roles::parse_body(&body[..n], 4, &limits)
@@ -338,11 +357,116 @@ fn a_display_entry_reads_back_and_makes_version_2() {
 }
 
 #[test]
+fn an_st7789_entry_round_trips_at_version_5() {
+    // The panel of the Waveshare ESP32-S3-Touch-LCD-2: no reset GPIO, a
+    // backlight GPIO.
+    let lcd2 = DisplayConfig::St7789 {
+        spi: 0,
+        cs: 45,
+        dc: 42,
+        rst: None,
+        bl: Some(1),
+        rotation: 90,
+        scale: 1,
+    };
+    let w = Wiring {
+        roles: RoleMap::EMPTY,
+        display: Some(lcd2),
+        touch: None,
+    };
+    // A firmware from before the ST7789 refuses the table by its version.
+    assert_eq!(w.version(), 5);
+    let img = image_of(&w);
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 5);
+    assert_eq!(
+        &img[roles::HEADER_LEN..],
+        b"@display=st7789 spi=0 cs=45 dc=42 bl=1 rotation=90\n"
+    );
+    let limits = Limits::of(&profile::ESP32S3_LCD2);
+    let back = roles::parse(&img, &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.display, Some(lcd2));
+    assert_eq!(lcd2.pins(), [Some(45), Some(42), None, Some(1)]);
+    assert_eq!(lcd2.panel_size(), (320, 240));
+
+    // Every optional key, at 2x.
+    let full = DisplayConfig::St7789 {
+        spi: 0,
+        cs: 17,
+        dc: 20,
+        rst: Some(21),
+        bl: Some(22),
+        rotation: 90,
+        scale: 2,
+    };
+    let img = image_of(&Wiring {
+        roles: RoleMap::EMPTY,
+        display: Some(full),
+        touch: None,
+    });
+    assert_eq!(
+        &img[roles::HEADER_LEN..],
+        b"@display=st7789 spi=0 cs=17 dc=20 rst=21 bl=22 rotation=90 scale=2\n"
+    );
+    assert_eq!(parsed_wiring(&img).display, Some(full));
+
+    // The board reserves GPIO0 (the BOOT strap, the panel's optional reset)
+    // and GPIO41 (the TF card's chip select), and SPI2 is on 38/39/40.
+    for (pin, want) in [
+        (0, RolesError::Reserved),
+        (41, RolesError::Reserved),
+        (39, RolesError::BusPin),
+    ] {
+        let d = DisplayConfig::St7789 {
+            spi: 0,
+            cs: 45,
+            dc: 42,
+            rst: Some(pin),
+            bl: Some(1),
+            rotation: 90,
+            scale: 1,
+        };
+        assert!(d.check(&limits, &RoleMap::EMPTY) == Err(want), "GPIO{pin}");
+    }
+}
+
+#[test]
 fn a_bad_display_entry_drops_the_whole_table() {
     for (version, body, want) in [
         // Version 1 has no display entry.
         (1u16, &b"@display=tab5\n"[..], RolesError::BadDisplay),
         (2, b"@display=st7789\n", RolesError::BadDisplay),
+        // An ST7789 entry needs version 5, and spi, cs, dc and rotation.
+        (
+            4,
+            b"@display=st7789 spi=0 cs=17 dc=20 rotation=90\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            5,
+            b"@display=st7789 spi=0 cs=17 dc=20 bl=22\n",
+            RolesError::BadDisplay,
+        ),
+        (
+            5,
+            b"@display=st7789 spi=0 cs=17 dc=20 bl=22 bl=22 rotation=90\n",
+            RolesError::BadDisplay,
+        ),
+        // Its optional pins get the same checks as the others.
+        (
+            5,
+            b"@display=st7789 spi=0 cs=17 dc=20 bl=17 rotation=90\n",
+            RolesError::DuplicatePin,
+        ),
+        (
+            5,
+            b"@display=st7789 spi=0 cs=17 dc=20 rst=1 rotation=90\n",
+            RolesError::Reserved,
+        ),
+        (
+            5,
+            b"led=22\n@display=st7789 spi=0 cs=17 dc=20 bl=22 rotation=90\n",
+            RolesError::DuplicatePin,
+        ),
         (2, b"@display=tab5\n@display=tab5\n", RolesError::BadDisplay),
         (2, b"@display=tab5 spi=0\n", RolesError::BadDisplay),
         // A key missing, unknown, repeated, or out of range.
