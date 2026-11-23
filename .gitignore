@@ -8,3 +8,4 @@ verify/*/target/
 .claude/worktrees/
 apps/*/assets.bin
 verify/usb-console/*.wasm
+verify/usb-console/*.bin
