@@ -24,6 +24,13 @@ pub enum LineKind {
 /// End of every line.
 pub const LINE_END: &[u8] = b"\r\n";
 
+/// The baud rate of UART0 on every port, and the one `wasmicon monitor`
+/// reads at. 921600 is the owner's starting point (docs/TODO.md §5-11): at
+/// 115200 the trace capped every `trace` build, since UART0 writes block. The
+/// boot ROM of the ESP chips keeps printing at 115200, so its lines turn to
+/// noise at this speed; that is accepted.
+pub const UART_BAUD: u32 = 921_600;
+
 /// Serial output of a port.
 pub trait Serial {
     /// Writes `parts` back to back as one line and ends it with `LINE_END`.

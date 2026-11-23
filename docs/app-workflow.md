@@ -1088,7 +1088,7 @@ $ wasmicon deploy target/wasm32-unknown-unknown/release/room_monitor.wasm --moni
 cross-checked against rp2350 0.1.0 (g6b1a2c3)
   abi ok / 1 page <= 4 / roles ok / 4,549 B <= 65536 B / slot format 1
 sent 4,549 B to the RAM slot (crc32 1f3a9c21)
-run -> capturing the trace from UART0 115200 (Ctrl-C to stop)
+run -> capturing the trace from UART0 921600 (Ctrl-C to stop)
 ```
 
 **Control over USB, the trace over UART0** (§3.5), so the CLI holds both. Without

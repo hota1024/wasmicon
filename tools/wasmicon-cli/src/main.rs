@@ -75,7 +75,7 @@ Options for assets write:
 Options for monitor:
     --port <dev>             serial port (default: pick from /dev/cu.usb*; the
                              board's own USB ports are left out, the trace is on UART0)
-    --baud <n>               baud rate (default: 115200)
+    --baud <n>               baud rate (default: 921600, UART0 in every port)
     --console                read the board's USB console instead: the log and the
                              firmware's lines, no trace. Waits for the board and
                              follows it across resets

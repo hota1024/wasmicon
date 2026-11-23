@@ -342,6 +342,9 @@ pub fn check_flash_baud(flash_baud: Option<u32>, flasher: Flasher) -> Result<()>
 
 /// The arguments of `espflash monitor` for the capture after a deploy.
 ///
+/// `--monitor-baud`: UART0 runs at `monitor::DEFAULT_BAUD`, and espflash
+/// would read at its own default, 115200.
+///
 /// `--no-addresses`: by default espflash rewrites what it reads, appending
 /// a symbol line in color after any text that looks like a code address. A
 /// `blob.read` result whose data starts with `0x40004800` gained two lines
@@ -352,6 +355,11 @@ pub fn espflash_monitor_args(chip: &str, port: Option<&Path>) -> Vec<String> {
     let mut args = ["monitor", "-c", chip, "--non-interactive", "--no-addresses"]
         .map(str::to_string)
         .to_vec();
+    // UART0's speed (`--baud` would be the ROM loader's, which flashing uses).
+    args.extend([
+        "--monitor-baud".to_string(),
+        monitor::DEFAULT_BAUD.to_string(),
+    ]);
     if let Some(dev) = port {
         args.extend(["--port".to_string(), dev.to_string_lossy().into_owned()]);
     }

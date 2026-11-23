@@ -48,7 +48,8 @@ when the app first opens the screen. To compare the trace, run the host mock at 
 wasmicon run ../target/wasm32-unknown-unknown/release/display_demo_rs.wasm --trace --display-size 720x1280
 ```
 
-With the trace on, the board prints every call at 115200 baud, and the gray
-ramp alone is 2,048 `write-rect` calls: the picture takes about 18 s to
-appear. A firmware built without the trace (`--no-default-features`) draws it
+With the trace on, the board prints every call on UART0, and the gray ramp
+alone is 2,048 `write-rect` calls: at the earlier 115200 baud the picture took
+about 18 s to appear. UART0 runs at 921600 since 2026-11-23, which is about
+eight times faster to print. A firmware built without the trace (`--no-default-features`) draws it
 faster; how long it takes was not measured (docs/verification-report.md §29).

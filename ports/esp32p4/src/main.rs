@@ -6,7 +6,7 @@
 //! slot is empty, print the reason and park (`wasmicon_port::idle`; pins are
 //! not driven).
 //! Traces go to UART0 (GPIO37=TX, GPIO38=RX, the chip's default pads) at
-//! 115200 8N1. On the M5Stack Tab5 UART0 reaches only the M5-Bus (pins 14 /
+//! 921600 8N1 (`serial::UART_BAUD`). On the M5Stack Tab5 UART0 reaches only the M5-Bus (pins 14 /
 //! 13), so a 3.3 V USB serial adapter takes the trace.
 //!
 //! With the `psram` feature it is the firmware of the `esp32p4-psram`
@@ -41,7 +41,7 @@ use wasmicon_port::roles::{self, DisplayConfig, Limits, TouchConfig, Wiring};
 use wasmicon_port::{idle, slot, Hal};
 
 use board::EspBoard;
-use wasmicon_port::serial::{write_parts, LineKind, Serial};
+use wasmicon_port::serial::{write_parts, LineKind, Serial, UART_BAUD};
 
 // Places the app descriptor that the ESP-IDF second-stage bootloader reads
 // near the start of flash. It holds the version and build time; the runtime
@@ -139,7 +139,7 @@ fn main() -> ! {
     // traced, so the clock does not affect the match with recorded traces.
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_200MHz));
 
-    let uart = Uart::new(p.UART0, UartConfig::default())
+    let uart = Uart::new(p.UART0, UartConfig::default().with_baudrate(UART_BAUD))
         .unwrap()
         .with_tx(p.GPIO37)
         .with_rx(p.GPIO38);

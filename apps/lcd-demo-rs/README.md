@@ -80,7 +80,7 @@ not a supply. There are 8 GND pins (3 / 8 / 13 / 18 / 23 / 28 / 33 / 38).
 - On modules with a touch panel, all `T_*` pins may stay unconnected
 
 Serial (trace and log) is UART0: GP0=TX (pin 1) / GP1=RX (pin 2),
-115200 8N1. It is not USB, so a USB-serial adapter is needed (share GND).
+921600 8N1. It is not USB, so a USB-serial adapter is needed (share GND).
 
 ### Freenove ESP32-S3-WROOM board
 
@@ -118,7 +118,7 @@ but the defaults are used.
 the right), so `VCC` and `LED` can be fed from different pins. Unlike the
 Pico, there is no single-pin constraint.
 
-Serial (trace and log) is UART0: GPIO43=TX / GPIO44=RX, 115200 8N1. On the
+Serial (trace and log) is UART0: GPIO43=TX / GPIO44=RX, 921600 8N1. On the
 Freenove board the USB-C port labeled `USB-UART` connects to it through a
 USB-serial bridge, so one cable does both flashing and trace capture (no
 separate USB-serial adapter). The other port, `USB-OTG`, is native USB and
@@ -196,8 +196,9 @@ in, `grep` treats the file as binary and returns a single line.
 ### Faster without tracing
 
 The default `trace` feature writes every host call to the UART. This demo
-makes about 7,200 host calls, so at 115200 baud it takes about a minute to
-finish drawing (you can watch the screen fill from the top).
+makes about 7,200 host calls; at the earlier 115200 baud it took about a minute
+to finish drawing (you can watch the screen fill from the top). UART0 runs at
+921600 since 2026-11-23, about eight times faster to print.
 
 To just see the picture, build the firmware without it (the app need not be
 reflashed):
@@ -250,7 +251,7 @@ This setup is verified on both a Pico 2 W and a Freenove ESP32-S3-WROOM board
 (docs/verification-report.md §6 / §7). If it still shows nothing, suspect in
 this order:
 
-1. Nothing on the UART: wiring (TX/RX direction, GND), 115200 8N1, and
+1. Nothing on the UART: wiring (TX/RX direction, GND), 921600 8N1, and
    whether flashing succeeded. The banner `wasmicon rp2350` comes first
 2. `role not found`: the wiring table is not in the config slot. Look at the
    `wasmicon: roles ...` line of the banner. If it says

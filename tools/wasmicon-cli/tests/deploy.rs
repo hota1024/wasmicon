@@ -305,9 +305,23 @@ fn the_capture_is_not_rewritten_by_espflash() {
             "esp32s3",
             "--non-interactive",
             "--no-addresses",
+            "--monitor-baud",
+            "921600",
             "--port",
             "/dev/cu.usbmodem1"
         ]
     );
     assert!(deploy::espflash_monitor_args("esp32s3", None).contains(&"--no-addresses".to_string()));
+}
+
+#[test]
+fn espflash_reads_at_the_firmwares_speed() {
+    // espflash monitors at 115200 by default; UART0 runs at
+    // `UART_BAUD`, so without this every byte is noise.
+    let args = deploy::espflash_monitor_args("esp32s3", None);
+    let at = args
+        .iter()
+        .position(|a| a == "--monitor-baud")
+        .expect("--monitor-baud is passed");
+    assert_eq!(args[at + 1], wasmicon_port::serial::UART_BAUD.to_string());
 }

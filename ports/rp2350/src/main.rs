@@ -5,7 +5,7 @@
 //! (docs/design-notes.md §4). The firmware embeds no app
 //! (docs/app-workflow.md §3.3). If the slot is empty, print the reason and
 //! park (`wasmicon_port::idle`; pins are not driven).
-//! Every line goes to UART0 (GP0=TX, GP1=RX) at 115200 8N1: the trace, the
+//! Every line goes to UART0 (GP0=TX, GP1=RX) at 921600 8N1 (`serial::UART_BAUD`): the trace, the
 //! guest `log` and the firmware's own lines. The `log` and firmware lines also
 //! go to the USB console, so the board's own USB cable shows them without an
 //! adapter; the trace does not (`usb`, docs/decisions.md A-11).
@@ -43,7 +43,7 @@ use wasmicon_port::roles::{self, Limits, Wiring};
 use wasmicon_port::{Hal, idle, slot};
 
 use board::Pico2Board;
-use wasmicon_port::serial::{LineKind, Serial, write_parts};
+use wasmicon_port::serial::{LineKind, Serial, UART_BAUD, write_parts};
 
 /// Block that tells the boot ROM "this is an executable image".
 /// Must lie in the first 4 KB of flash (`.start_block`).
@@ -157,7 +157,7 @@ fn main() -> ! {
     let uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS)
         .enable(
             hal::uart::UartConfig::new(
-                115_200.Hz(),
+                UART_BAUD.Hz(),
                 hal::uart::DataBits::Eight,
                 None,
                 hal::uart::StopBits::One,

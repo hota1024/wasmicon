@@ -2351,3 +2351,29 @@ Host: macOS. The CP2102N stayed plugged in; `--console` never looks at it.
   settle was enough each time
 - Linux; two boards at once (the choice by serial number is a unit test)
 - A board that prints nothing: the capture ends on silence with "no line at all"
+
+## 45. UART0 at 921600 baud on the Pico 2 W, the ESP32-S3, the ESP32-C5 and the Tab5 (2026-11-23)
+
+Question: does the trace stay the same at 921600 baud, and how much shorter does a `trace` build
+run?
+
+Firmware: `ports/rp2350` with `serial::UART_BAUD` = 921600, trace on. Host: macOS, the CP2102N on
+UART0, read by `wasmicon deploy --monitor` (which now reads at 921600 by default). For the timing,
+a perl reader timed the first and the last byte while `picotool reboot -f` restarted the app; the
+115200 figure is from a build of the same tree with the constant set back to 115200.
+
+| Check | Result |
+|---|---|
+| blink-rs | The capture is byte-identical to the 115200 one of §42 apart from `git=` and a NUL at the reset (115200 captures had it too); `trace diff` against the host run matches 20 lines |
+| verify/usb-console/flood.wat, 36,750 B | First to last byte: 0.51 s at 921600, 3.30 s at 115200 |
+| ESP32-S3 (Freenove, CH343), blink-rs through `deploy --monitor` | `espflash monitor --monitor-baud 921600`: `trace diff` against the host matches 20 lines; identity, roles and slot lines read. The boot ROM's 115200 output turns to noise with no line end in it, so the banner `wasmicon esp32s3` ends that noise line instead of starting its own; the identity line after it is whole |
+| ESP32-C5 (WIFI6-KIT, CH343), blink-rs | `espflash monitor` at either speed read 0 bytes: the board stays in download mode after espflash's reset, as docs/TODO.md §1.3.1 already records. With `wasmicon monitor` at 921600 and the RESET button: `trace diff` matches 20 lines; banner, identity, roles, slot and log lines read |
+| Tab5, `apps/display-demo-rs` (3496 B, crc32 `4b1fdcec`, as in §29) | Firmware flashed with `espflash flash --after no-reset`, the app with `deploy --board esp32p4 --no-run`, then the owner power-cycled the board; the CP2102N on M5-Bus pin 14 read at 921600. Two boots were captured; each matches the host mock at 720x1280 over 4,494 lines, the count of §29. The picture appeared (the owner) |
+| Tab5, time to the first picture | First byte to the first `present` line: **4.42 s**, with 214,386 B of output before it. §29 put the same output at about 18 s at 115200 (an estimate from its size, not timed) |
+
+### What this measurement does not say
+
+- The RP2040 at 921600: not run; its firmware is built and clippy-clean only
+- The Tab5 time counts from the first byte on UART0, so it leaves out the boot before it, and §29
+  has no timed figure to set against it
+- Any speed above 921600
