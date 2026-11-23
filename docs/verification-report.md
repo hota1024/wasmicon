@@ -2377,3 +2377,36 @@ a perl reader timed the first and the last byte while `picotool reboot -f` resta
 - The Tab5 time counts from the first byte on UART0, so it leaves out the boot before it, and §29
   has no timed figure to set against it
 - Any speed above 921600
+
+## 46. What the USB console costs the RP2350 firmware in flash and RAM (2026-11-24)
+
+Question: how much flash and static RAM does the USB console with the picotool reset interface
+(docs/decisions.md A-11, A-12) add to `ports/rp2350`?
+
+Build only, no board. `ports/rp2350`, `cargo build --release` with the default features (`trace`),
+the toolchain of `ports/rp2350/rust-toolchain.toml`, at three commits: `a93cce0^` (before the
+console), `a93cce0` (the commit that adds it) and `b44af6d` (main on 2026-11-24, after the review
+fixes of the console and the UART0 speed change). The sums follow the rules of the wasmicon-bench
+`wasmicon-size` experiment (its `tools/wb.py`, `size_rows`), so the rows compare with that table:
+flash is every allocated section that is not NOBITS, RAM every allocated section whose address is in
+`0x2000_0000..0x2008_2000`, and the guest area is the `ARENA` symbol. Bytes.
+
+| Commit | Flash | text | rodata | data (in flash and RAM) | RAM (static) | of it the arena | RAM without the arena |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `a93cce0^` | 149,004 | 132,692 | 16,312 | 0 | 335,876 | 327,680 | 8,196 |
+| `a93cce0` | 174,992 | 147,068 | 18,204 | 9,720 | 345,820 | 327,680 | 18,140 |
+| `b44af6d` | 165,708 | 147,012 | 17,440 | 1,256 | 345,568 | 327,680 | 17,888 |
+
+- The console added 25,988 B of flash and 9,944 B of static RAM at `a93cce0`. Most of the RAM is the
+  8 KiB line queue (docs/TODO.md §5, the USB CDC item)
+- At `b44af6d` the flash is 9,284 B smaller than at `a93cce0`: initialized data fell by 8,464 B and
+  `.bss` grew by 8,212 B, so about 8 KiB that had initial values in flash now start zeroed. The RAM
+  is about the same
+- The arena is unchanged, so `wasmicon check` estimates the same headroom
+
+### What this measurement does not say
+
+- `b44af6d` also holds changes that are not the console (the UART0 speed and the CLI work of §43 to
+  §45), so its row is not the console alone; the console alone is the first two rows
+- The RP2040 has no console yet (docs/TODO.md §5)
+- Stack use at run time, which the sums do not include

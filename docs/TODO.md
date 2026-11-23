@@ -1477,6 +1477,25 @@ change.**
         UART0 capture byte-identical to the one before the change. **Not done**: the host
         asleep, and the board running from VSYS with the USB cable pulled.
         `ports/rp2040` can follow with the same code but stays unverified (§1)
+      - **RP2040** (looked at 2026-11-24, not built). The same stack fits: rp2040-hal 0.12
+        has `usb::UsbBus` on `usb-device` 0.3, and `usbd-picotool-reset` 0.3.0 was written
+        for it (it calls `rp2040_hal::rom_data::reset_to_usb_boot`, so the BOOTSEL request
+        needs no code of ours). Static RAM is 172,036 B of 256 KiB today, and the console
+        adds about 10 KB on the RP2350 (docs/verification-report.md §46), so the arena can
+        stay. What differs from `src/usb.rs`:
+        - **The serial number.** picotool finds the board again in BOOTSEL by the USB
+          serial number. The RP2350 ROM reports the chip id (`sys_info_api::chip_info`);
+          the RP2040 has no chip id, and its BOOTSEL serial number is taken from the flash
+          chip's unique ID, as far as known (to be confirmed on a board with `picotool info`
+          / `lsusb -v` before writing code). Reading that ID means leaving XIP for one
+          flash command (0x4B) run from RAM: `rom_data::connect_internal_flash` /
+          `flash_exit_xip` / `flash_enter_cmd_xip` exist in rp2040-hal 0.12, the command
+          itself does not, so it is either our own code or the `rp2040-flash` crate (a new
+          dependency of the port, recorded like docs/decisions.md A-12)
+        - **The reboot into the firmware.** rp2040-hal 0.12 has no `reboot` module; a
+          watchdog reset or `SCB::sys_reset` after the reply has gone out
+        - **The PID.** pico-sdk's stdio USB PID on the RP2040 is 0x000A, which picotool
+          knows; the CLI's port filter (VID 0x2E8A, product `wasmicon `) already matches
 - [ ] **Raise the UART0 baud rate on every port** (§5-11). 115200 baud caps a `trace` build
       on every board, because UART0 writes block (`write_full_blocking` in
       `ports/rp2350/src/main.rs`). On the Tab5, `display-demo-rs` sent about 213 KB of
