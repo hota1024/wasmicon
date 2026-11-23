@@ -1496,6 +1496,56 @@ change.**
           watchdog reset or `SCB::sys_reset` after the reply has gone out
         - **The PID.** pico-sdk's stdio USB PID on the RP2040 is 0x000A, which picotool
           knows; the CLI's port filter (VID 0x2E8A, product `wasmicon `) already matches
+- [ ] **`deploy` to several boards at once** (direction written 2026-11-24, from the
+      wasmicon-bench `update-cost` request; nothing built). The claim of RQ1 is one build
+      for N boards, and `deploy` takes one `--board`. Proposed:
+      - **Both forms, one model.** `--board` may be repeated, and `wasmicon.toml` may list
+        targets, each a board name and how to find that board:
+        `[[deploy.targets]] board = "rp2350"  usb-serial = "85BBCDCC10DAD009"` /
+        `board = "esp32s3"  port = "/dev/cu.usbmodem2101"`. A repeated `--board` builds the
+        same list without identities, so it works only while each flasher sees one board
+        (one Pico, one serial port per ESP32 board); with two of a kind it refuses and
+        names the ports, as `monitor` does (docs/verification-report.md §43)
+      - **Finding a board.** A Pico by its USB serial number (`picotool load --ser <n>`;
+        the number survives the reboot into BOOTSEL, docs/verification-report.md §42),
+        not by a tty path, which moves when the cable does. An ESP32 board by `--port`;
+        its tty has no number of its own on a CH343 / CP2102N, so a path it is
+      - **Failure.** `check` runs for every target first, and any failure stops all of them
+        before anything is written (the rule of docs/app-workflow.md §4.3, per board).
+        A flasher failure on one board does not stop the others; the summary is one line
+        per board (`ok` / the reason) and the exit status is non-zero if any failed. A
+        failed Pico is left in BOOTSEL and says so
+      - **Parallel or not.** espflash calls on different ports are independent and can run
+        at once. picotool: each call enumerates every board and `-f` / `-F` sleeps 1.2 s
+        after the reboot (`sleep_ms(1200)` in picotool 2.3.1), so Picos in parallel would
+        save most of the time, but two processes holding libusb handles to different
+        devices is untested on macOS. Start sequential, measure, then add `--jobs`. Child
+        output is captured per board and printed with the board's name in front
+      - `--monitor` stays one board; with several targets it is refused
+      - **Owner questions**: the toml key names; whether a target may name a firmware
+        variant different from `[defaults] board` (it must, for a mixed lab); whether a
+        flasher failure should stop the rest (`--fail-fast`)
+- [ ] **`deploy` confirms that the new app started** (direction written 2026-11-24; nothing
+      built). Today `deploy` returns once the flasher has reset the board. The firmware
+      already prints `wasmicon: slot <len> B crc32=<crc>` when it reads a good slot, and the
+      reason (`slot crc mismatch`, `slot empty`, ...) when not, and on the Pico that line
+      reaches the USB console (docs/verification-report.md §42). Proposed:
+      - After the reboot, `deploy` opens the console the way `monitor --console` does
+        (same board by USB serial number) and waits for the slot line: the CRC it printed
+        in the summary means `started`, any other slot line or a trap reason is a failure
+        with that line as the reason, and nothing within a timeout (5 s) says so. No new
+        protocol, no ABI change: the line is a banner line, which the trace comparison
+        ignores already
+      - The console queues the boot lines until a host opens the port
+        (docs/verification-report.md §42), so a late open loses nothing
+      - ESP32 boards have no console separate from the trace; there the line is read from
+        the same port after espflash's reset, as `--monitor` does. The ESP32-C5 stays in
+        download mode after espflash's reset (docs/TODO.md §1.3.1), so the check there
+        fails until that is fixed; it must say so rather than time out silently
+      - Once the stage 2 control channel exists, `info` answers the same question on
+        request and this reading of the console goes
+      - **Owner question**: on by default (it adds the console's enumeration, about 0.3 s,
+        to every deploy) or behind `--confirm`
 - [ ] **Raise the UART0 baud rate on every port** (§5-11). 115200 baud caps a `trace` build
       on every board, because UART0 writes block (`write_full_blocking` in
       `ports/rp2350/src/main.rs`). On the Tab5, `display-demo-rs` sent about 213 KB of
