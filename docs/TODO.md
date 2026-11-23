@@ -237,7 +237,7 @@ not marked with a 2026-10 date were measured there and live on only in these not
 - To resume (paused 2026-10-27 after (2)): flash the firmware with `espflash flash` through the
   Tab5's USB-C, then `wasmicon deploy --board esp32p4 --no-run <app.wasm>` from the app's
   directory, and power-cycle with the button (a reset from espflash lands in download mode).
-  Capture UART0 with a CP2102N (GND to M5-Bus pin 1, RXD to pin 14) at 115200 and compare with
+  Capture UART0 with a CP2102N (GND to M5-Bus pin 1, RXD to pin 14) at 921600 and compare with
   `wasmicon run --trace` through `verify/diff-traces.sh`. (3) needs an ILI9341 on SCK=G5 /
   MOSI=G18 / MISO=G19 / CS=G48 / DC=G47 / RST=G45; (4) an SHT40 on PORT.A
 - [ ] **(3) SPI: lcd-demo-rs draws on the ILI9341** and the trace matches the host
@@ -341,7 +341,7 @@ not marked with a 2026-10 date were measured there and live on only in these not
   The firmware image is 140,192 B (`espflash save-image`, 2026-10-26), far below the app
   slot at 1 MiB
 - **Trace capture on the Tab5.** UART0 (GPIO37 = TX) reaches only M5-Bus pin 14 (GND on pin 1);
-  a 3.3 V USB serial adapter takes it at 115200 8N1. Pin 12 next to it is 3V3. The Tab5's own
+  a 3.3 V USB serial adapter takes it at 921600 8N1 (115200 before 2026-11-23). Pin 12 next to it is 3V3. The Tab5's own
   USB-C gave no output through USB-Serial-JTAG or USB-OTG in the earlier attempt, the port
   dropped before PR #10. The record does not say whether that firmware wrote to either; the
   current one writes only to UART0, so the USB-C staying silent is expected (item (6)
@@ -1355,7 +1355,7 @@ change.**
       docs/verification-report.md §30). espflash is never given a speed, so a 415 KB app
       took 23 s and a 4.2 MB assets image 202 s. -> **`--flash-baud <n>`** (2026-10-27)
       goes to `espflash write-bin --baud`; a separate name from `monitor --baud`, which is
-      the firmware's UART speed and stays 115200. Refused for picotool boards before
+      the firmware's UART speed (921600 since 2026-11-23). Refused for picotool boards before
       anything is written. Hardware check: the open item below
 - [x] **`deploy --monitor` stops after 3 s of silence** (reported 2026-10-27,
       docs/verification-report.md §30). An app that is quiet while it loads (DOOM: 1.65 s of
@@ -1482,12 +1482,18 @@ change.**
         holds on every board. The CH343 held up to 3 Mbaud when flashing
         (docs/verification-report.md §31); the firmware's own output at any new speed, and
         the CP2102N's, are not checked yet
-      - `monitor --baud` (default 115200, `DEFAULT_BAUD`) and `deploy --monitor` must
-        follow. **The boot ROM keeps printing at 115200, and its lines turning to noise at
-        the new speed is accepted** (owner decision, 2026-10-29); say so in the docs
-      - Verify on hardware: blink-rs and a display app give the same trace at the new
-        speed, and the time to the first picture on the Tab5 is recorded against
-        docs/verification-report.md §29
+      - ~~Firmware and CLI~~ (done 2026-11-23) `serial::UART_BAUD` (921600) in
+        `ports/common` is the one value: the five ports set UART0 from it, `monitor` and
+        `deploy --monitor` read at it, and `espflash monitor` gets it as
+        `--monitor-baud`. **The boot ROM keeps printing at 115200, and its lines turning
+        to noise at the new speed is accepted** (owner decision, 2026-10-29), stated next
+        to the constant
+      - **Verify on hardware**: done on the Pico 2 W with the CP2102N (blink-rs
+        byte-identical, flood.wat's 36.7 KB in 0.51 s instead of 3.30 s), the ESP32-S3 and
+        the ESP32-C5 (blink-rs matches the host), and the Tab5 (display-demo-rs matches the
+        host over 4,494 lines; the first `present` 4.42 s after the first byte, where §29
+        estimated about 18 s at 115200) (docs/verification-report.md §45). On the ESP32-S3
+        the banner now ends the ROM's noise line. **Not done**: the RP2040
 - [ ] **Show the `log` level** (owner decision, 2026-10-29). Every `Board::log` and the host
       port drop the `level` argument. Print it after the prefix, as in `[wasm] W: ...`, in all
       six ports. Filtering by level comes later, if at all

@@ -5,7 +5,7 @@
 //! (docs/design-notes.md §4). The firmware embeds no app
 //! (docs/app-workflow.md §3.3). If the slot is empty, print the reason and
 //! park (`wasmicon_port::idle`; pins are not driven).
-//! Traces go to UART0 (GP0=TX, GP1=RX) at 115200 8N1.
+//! Traces go to UART0 (GP0=TX, GP1=RX) at 921600 8N1 (`serial::UART_BAUD`).
 //!
 //! Not an evaluation board (README.md): never run on hardware, and I2C / SPI
 //! stay `unsupported`. CI only checks that it builds.
@@ -32,7 +32,7 @@ use wasmicon_port::roles::{self, Limits, Wiring};
 use wasmicon_port::{Hal, idle, slot};
 
 use board::PicoBoard;
-use wasmicon_port::serial::{LineKind, Serial, write_parts};
+use wasmicon_port::serial::{LineKind, Serial, UART_BAUD, write_parts};
 
 /// Second-stage bootloader. Must occupy the first 256 bytes of flash.
 #[unsafe(link_section = ".boot2")]
@@ -142,7 +142,7 @@ fn main() -> ! {
     let uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS)
         .enable(
             hal::uart::UartConfig::new(
-                115_200.Hz(),
+                UART_BAUD.Hz(),
                 hal::uart::DataBits::Eight,
                 None,
                 hal::uart::StopBits::One,

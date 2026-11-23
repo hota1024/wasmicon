@@ -32,8 +32,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Default baud rate (matches UART0 in `ports/*`).
-pub const DEFAULT_BAUD: u32 = 115_200;
+/// Default baud rate: UART0's in every port.
+pub const DEFAULT_BAUD: u32 = wasmicon_port::serial::UART_BAUD;
 
 /// Default silence that ends the capture.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(3);
