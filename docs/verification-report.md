@@ -2329,3 +2329,25 @@ verify/usb-console/flood.wat (800 trace lines, then a trap).
 - `assets write` through `picotool load -f -x` was not run on the board; it shares the call with
   `deploy`
 - picotool versions other than 2.3.1; `-F` and `-f` are in its `load` help
+
+## 44. `monitor --console` on the Pico 2 W (2026-11-23)
+
+Question: does `wasmicon monitor --console` read the board's USB console in full, without an
+adapter's help, and follow the board across a reset?
+
+CLI: `tools/wasmicon-cli` at the commit that adds `src/console.rs`. Firmware and guest as in §43.
+Host: macOS. The CP2102N stayed plugged in; `--console` never looks at it.
+
+| Check | Result |
+|---|---|
+| Console opened after the run, three times | Each: the banner, 237 test lines, `wasmicon: usb console dropped 163 lines`, the trap reason (237 + 163 = 400), as a direct read of the port gives (§42) |
+| The first try, opening through `serialport`'s own open | 214 test lines and no boot lines: the open raises DTR, and on macOS it then flushes, so what the firmware sent in between was lost on the host. Opening as `monitor` does and handing the descriptor to `serialport` fixed it |
+| Started first, then `picotool reboot -f`, three times | `console gone ... waiting`, then the same console reopened; the banner, all 400 test lines and the trap reason, no drop |
+| Started while the board was in BOOTSEL, then `deploy` | `waiting for the board's USB console`, then opened once the app started; the banner, 400 lines, the trap reason |
+
+### What this measurement does not say
+
+- The DTR kick (drop and raise while nothing has arrived) never fired in these runs; the 300 ms
+  settle was enough each time
+- Linux; two boards at once (the choice by serial number is a unit test)
+- A board that prints nothing: the capture ends on silence with "no line at all"

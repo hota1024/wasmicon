@@ -91,6 +91,11 @@ impl Session {
     pub fn port(&self) -> &Path {
         &self.port
     }
+
+    /// The open port, for `console`, which reads it with timeouts.
+    pub(crate) fn into_file(self) -> std::fs::File {
+        self.file
+    }
 }
 
 /// A serial port and, for a USB one, who is behind it.
@@ -106,6 +111,8 @@ pub struct Usb {
     pub vid: u16,
     pub pid: u16,
     pub product: Option<String>,
+    /// The USB serial number; the firmware's is the chip id.
+    pub serial: Option<String>,
     /// The interface the tty belongs to. macOS reports the CDC data
     /// interface, Linux the communication interface before it.
     pub interface: Option<u8>,
@@ -191,6 +198,7 @@ pub fn ports() -> Vec<PortInfo> {
                     vid: u.vid,
                     pid: u.pid,
                     product: u.product,
+                    serial: u.serial_number,
                     interface: u.interface,
                 }),
                 _ => None,
@@ -509,13 +517,14 @@ fn report(stats: &Stats) -> Result<bool> {
     Ok(true)
 }
 
-/// Writes to stdout and, when given, to a file as well.
-struct Sink {
+/// Writes to stdout and, when given, to a file as well. `console` writes
+/// through it too.
+pub(crate) struct Sink {
     file: Option<std::fs::File>,
 }
 
 impl Sink {
-    fn new(path: Option<&Path>) -> Result<Self> {
+    pub(crate) fn new(path: Option<&Path>) -> Result<Self> {
         let file = match path {
             None => None,
             Some(p) => Some(
@@ -526,7 +535,7 @@ impl Sink {
         Ok(Sink { file })
     }
 
-    fn finish(&mut self) -> Result<()> {
+    pub(crate) fn finish(&mut self) -> Result<()> {
         if let Some(f) = &mut self.file {
             f.flush().context("cannot write the capture")?;
         }
@@ -570,6 +579,7 @@ mod tests {
                 vid,
                 pid,
                 product: Some(product.to_string()),
+                serial: None,
                 interface: Some(interface),
             }),
         }
