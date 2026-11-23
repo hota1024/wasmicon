@@ -378,7 +378,14 @@ fn write_slot(
             if keep_halted {
                 return Ok(true);
             }
-            picotool(&["reboot".to_string()])
+            let ok = spawn("picotool", &["reboot"])?;
+            if !ok {
+                eprintln!(
+                    "  the app is written but the board is still in BOOTSEL; \
+                     run `picotool reboot` or deploy again"
+                );
+            }
+            Ok(ok)
         }
         // `write-bin` takes one file at one offset, so one call per region.
         // Every call but the last leaves the chip in its serial loader,
@@ -399,6 +406,12 @@ fn write_slot(
                     args
                 };
                 if !espflash(&args, flash_baud)? {
+                    if i > 0 {
+                        eprintln!(
+                            "  the app is written but its config slot is not, and the board \
+                             is parked in its loader; deploy again"
+                        );
+                    }
                     return Ok(false);
                 }
             }

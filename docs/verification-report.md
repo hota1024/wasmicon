@@ -2389,7 +2389,8 @@ console), `a93cce0` (the commit that adds it) and `b44af6d` (main on 2026-11-24,
 fixes of the console and the UART0 speed change). The sums follow the rules of the wasmicon-bench
 `wasmicon-size` experiment (its `tools/wb.py`, `size_rows`), so the rows compare with that table:
 flash is every allocated section that is not NOBITS, RAM every allocated section whose address is in
-`0x2000_0000..0x2008_2000`, and the guest area is the `ARENA` symbol. Bytes.
+`0x2000_0000..0x2008_2000`, and the guest area is the `ARENA` symbol. Bytes. The same sums over
+the bench's own `39cd421` build give its table's 113,648 B of flash and 335,876 B of RAM.
 
 | Commit | Flash | text | rodata | data (in flash and RAM) | RAM (static) | of it the arena | RAM without the arena |
 |---|---:|---:|---:|---:|---:|---:|---:|
