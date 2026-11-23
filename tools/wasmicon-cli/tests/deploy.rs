@@ -90,11 +90,83 @@ fn a_runnable_app_gets_an_image_and_a_slot() {
     // takes (XIP_BASE + offset).
     assert_eq!(plan.slot.offset, 0x10_0000);
     assert_eq!(plan.image_len, plan.wasm_len + 16);
-    assert!(plan.image.is_file(), "the image is written next to the app");
+    // Both regions in one UF2 file, so picotool is called once.
+    assert_eq!(plan.files.len(), 1);
+    let uf2 = &plan.files[0];
     assert!(
-        plan.image.extension().is_some_and(|e| e == "bin"),
-        "picotool decides the file type by extension, so .bin \
-         (docs/verification-report.md §9)"
+        uf2.extension().is_some_and(|e| e == "uf2"),
+        "{}",
+        uf2.display()
+    );
+    let len = std::fs::metadata(uf2)
+        .expect("written next to the app")
+        .len();
+    // Each 256 bytes of flash take one 512-byte block.
+    assert_eq!(len as usize, plan.flash_len() * 2);
+    // Whole sectors, and far less than the 64 KiB slot.
+    assert_eq!(plan.flash_len() % 4096, 0);
+    assert!(plan.flash_len() < 64 * 1024, "{}", plan.flash_len());
+    assert_eq!(
+        plan.regions[0].bytes.len(),
+        plan.image_len.div_ceil(4096) * 4096
+    );
+    assert_eq!(plan.regions[1].bytes.len(), 4096);
+}
+
+#[test]
+fn an_espflash_board_gets_one_file_per_region() {
+    // `espflash write-bin` takes one file at one offset.
+    let dir = tmp("esp-files");
+    let app = dir.join("blink.wasm");
+    std::fs::write(&app, build("blink-rs")).expect("cannot write");
+
+    let plan = prepared(&opts(app, Some("esp32s3")));
+    assert_eq!(
+        plan.files,
+        [dir.join("blink.bin"), dir.join("blink.config.bin")]
+    );
+    for (f, r) in plan.files.iter().zip(&plan.regions) {
+        assert_eq!(std::fs::read(f).expect("written"), r.bytes);
+    }
+    // The 1 MiB slot is no longer written whole.
+    assert!(plan.flash_len() < 64 * 1024, "{}", plan.flash_len());
+}
+
+#[test]
+fn the_second_espflash_call_does_not_reset_the_chip() {
+    // The first call leaves the chip in its loader (`--after no-reset`); the
+    // second connects to it there.
+    let first = deploy::espflash_write_args(0x10_0000, "a.bin", None, true, None);
+    assert_eq!(
+        first,
+        ["write-bin", "--after", "no-reset", "0x100000", "a.bin"]
+    );
+    let second = deploy::after_a_loader_call(deploy::espflash_write_args(
+        0x20_0000,
+        "a.config.bin",
+        None,
+        false,
+        None,
+    ));
+    assert_eq!(
+        second,
+        [
+            "write-bin",
+            "--before",
+            "no-reset",
+            "0x200000",
+            "a.config.bin"
+        ]
+    );
+}
+
+#[test]
+fn picotool_loads_the_uf2_file_and_leaves_the_start_to_a_reboot() {
+    // `-x` cannot start an app from a UF2 without an executable image, so
+    // the board stays in BOOTSEL and `picotool reboot` starts it once.
+    assert_eq!(
+        deploy::picotool_load_uf2_args("app.uf2"),
+        ["load", "app.uf2", "-t", "uf2", "-F"]
     );
 }
 
@@ -284,7 +356,7 @@ fn a_flashing_speed_for_picotool_is_refused_before_the_image_is_written() {
     let msg = refused(&o, "a refusal of --flash-baud");
     assert!(msg.contains("picotool has no speed"), "{msg}");
     assert!(
-        !dir.join("blink.bin").exists(),
+        !dir.join("blink.uf2").exists(),
         "the image was written anyway"
     );
 }

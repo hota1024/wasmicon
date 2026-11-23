@@ -182,8 +182,8 @@ $w trace diff host.log pico.log
 ```
 
 - **The Pico 2 W needs no button once it runs wasmicon firmware**: `deploy` calls
-  `picotool load -f`, which reboots the firmware into BOOTSEL through its picotool reset
-  interface. For the first flash, or a board running other firmware, hold BOOTSEL while
+  `picotool load -F`, which reboots the firmware into BOOTSEL through its picotool reset
+  interface, then `picotool reboot` to start the app. For the first flash, or a board running other firmware, hold BOOTSEL while
   plugging in USB. With the board's USB and a USB-serial adapter both plugged in,
   `--monitor` picks the adapter: the trace is on UART0 only. `wasmicon monitor --console`
   reads the board's USB console instead (the `log` and the firmware's lines, no trace),

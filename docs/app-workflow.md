@@ -526,10 +526,14 @@ from that board's wiring table (no device connection needed).
 
 **4 KiB right after the app slot** (`profile::<board>.role_slot`; currently
 `0x110000`, and `0x200000` on the ESP32-S3). The lifetimes differ, but **`deploy`
-writes the app slot (64 KiB; 1 MiB on the ESP32-S3) and the config slot as one image
-in one go** (`pack::with_roles`), so
-flashing takes no extra step. The space after the app is filled with `0xff` to the
-end of the slot.
+writes the app and the config slot together** (`pack::regions`), so flashing takes no
+extra step. It writes only the sectors that hold something: the app image padded with
+`0xff` to the end of its last 4 KiB sector, and the 4 KiB config slot. The rest of the
+app slot (64 KiB; 1 MiB on the ESP32-S3) keeps whatever an earlier, longer app left
+there; the firmware reads the length in the header and checks the CRC over exactly that,
+so the leftover is never read. On a Pico both regions go into one UF2 file (family
+`absolute`) and one `picotool load`; espflash's `write-bin` takes one file at one
+offset, so an ESP32 board gets two calls, the second connecting without a reset.
 
 **The wiring table is written every time.** Even an empty table is written, so the
 result of a `deploy` is determined by that moment's `wasmicon.toml` alone (no
@@ -1141,7 +1145,7 @@ runs from the next power-on
 | Stage | What becomes available |
 |---|---|
 | 0 | `doctor` / `new` / `check` / `run` / `trace diff` / `monitor` (without identity) |
-| 1 | `flash` (firmware) / `deploy --persist` (through the existing flasher; **the Pico needs BOOTSEL** unless its firmware has the picotool reset interface, as `ports/rp2350` does: `deploy` uses `picotool load -f`, docs/decisions.md A-11) |
+| 1 | `flash` (firmware) / `deploy --persist` (through the existing flasher; **the Pico needs BOOTSEL** unless its firmware has the picotool reset interface, as `ports/rp2350` does: `deploy` uses `picotool load -F`, then `picotool reboot`, docs/decisions.md A-11) |
 | 2 | `info` / `deploy` (USB, no button) / `deploy --monitor` / identity in `monitor` / `fw list` |
 | 3 | `deploy --via http` (ESP32-S3) |
 
@@ -1331,7 +1335,7 @@ until it is needed.
 
 ```
 $ wasmicon deploy app.wasm --board rp2350
-app.bin -> rp2350 slot (+0x100000)  4565 B (wasm 4549 B, crc32 c1cbe3c1)
+app.uf2 -> rp2350 slot (+0x100000)  4565 B (wasm 4549 B, crc32 c1cbe3c1)
   wiring: lcd-cs=17 lcd-dc=20 lcd-rst=21
 ```
 

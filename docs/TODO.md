@@ -885,7 +885,9 @@ change.**
             (`pack::with_roles`), so every deploy now erases and writes 1 MiB + 4 KiB
             instead of 68 KiB. Measured 2026-10-26 (docs/verification-report.md §26):
             about 1.6 s more per deploy (3.1 s against 1.5 s for the write alone). If
-            that is too slow, write the two slots separately or stop padding past the app
+            that is too slow, write the two slots separately or stop padding past the app.
+            Done: `deploy` writes only the sectors that hold the app and the config slot
+            (`pack::regions`, docs/app-workflow.md §3.9)
           - Run on the Freenove board 2026-10-26 (docs/verification-report.md §26): both
             firmwares report the new layout, apps match the host, and the assets
             rewritten with `assets write` are found
@@ -1453,7 +1455,9 @@ change.**
         trace is on UART0. `deploy` and `assets write` call `picotool load -f -x` (`-F`
         for `--no-run`), which starts the app once whether the board was running or in
         BOOTSEL; the separate `picotool reboot` is gone, and `--monitor` opens the adapter
-        before flashing
+        before flashing. `deploy` later moved to one UF2 holding the app and config regions, which `-x`
+        cannot start (no executable image in it), so it calls `picotool load -F` and then
+        `picotool reboot`; `assets write` keeps `-f -x`
       - ~~**CLI: read the console**~~ (done 2026-11-23, `tools/wasmicon-cli/src/console.rs`)
         `monitor --console` (the name is the owner's choice) picks the console by identity,
         waits for it while the board is away, opens it 300 ms after it appears, and
