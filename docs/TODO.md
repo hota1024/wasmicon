@@ -378,23 +378,24 @@ the `psram` build with SPI2 on the board's panel pins and the `st7789` display d
 (`ESP32-S3-Touch-LCD-2_V2.pdf`) and agree with a third-party LovyanGFX configuration for the
 board; docs/abi-spec.md §8. Owner decisions (2026-11-16): a feature and a profile of its own,
 not pins in the config slot; `st7789` as a driver name sharing `ili9341.rs`, config slot
-format version 5; GPIO0 and GPIO41 reserved, GPIO41 held high at boot. Nothing has run on
-the board yet.
+format version 5; GPIO0 and GPIO41 reserved, GPIO41 held high at boot. DOOM ran on the
+board on 2026-11-16 (docs/verification-report.md §41).
 
-- [ ] **(1) The firmware boots and prints on UART0** (GPIO43/44 on the header, through a USB
-  serial adapter; flashing goes through the native USB). Not tried: the board has no
-  USB-UART bridge, and `deploy --monitor` on the native USB port sees no trace
-- [ ] **(2) The panel shows the right colors the right way round.** INVON and MADCTL 0x60
-  for rotation 90 come from LovyanGFX, not from a run. The trace cannot show either; the
-  owner checks by eye
-- [ ] **(3) DOOM runs: `trace diff` against the host trace as on the Freenove board**, and
-  the frame times (expected close to the Freenove board's: same chip, clock and SPI rate)
+- [x] **(1) The firmware boots and prints on UART0** (GPIO43/44 on the header, through a
+  CP2102N; flashing goes through the native USB)
+- [x] **(2) The panel shows the right colors the right way round** (by eye): INVON and
+  MADCTL 0x60 for rotation 90 hold
+- [x] **(3) DOOM runs: `trace diff` against the host trace matches** (4,244 lines), and the
+  frame times equal the Freenove board's within 0.05 ms per 35-frame window
+- [ ] **(4) `espflash reset` over the native USB leaves the chip in download mode**
+  (`rst:0x15 (USB_UART_CHIP_RESET),boot:0x0`), 2 of 2 tries; the RST button boots it. So a
+  run needs one RST press after `deploy --no-run`. Cause not looked at
+- The flash is 16 MB (`espflash board-info`); the profile keeps the Freenove board's 8 MiB
+  layout
 - Not known yet:
   - Which revision the board is. A V1 board may be wired differently
   - Whether R16 (the panel's reset to GPIO0) is fitted. The driver does not use a reset
     GPIO in either case
-  - The flash size: 16 MB by the schematic, not measured, so the profile keeps the
-    Freenove board's 8 MiB layout
   - Not done: touch (CST816D on I2C at GPIO48/47, interrupt GPIO46), the panel at 40 MHz
     (LovyanGFX writes at 40 MHz; the backend runs at 16 MHz), the trace over
     USB-Serial-JTAG

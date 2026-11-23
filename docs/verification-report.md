@@ -2201,3 +2201,52 @@ reset lines misbehaved again (docs/TODO.md §1.3).
 - Touch at scale 2 on a board: the module imports no touch interface
 - Scale 4, scale on the ILI9341, and rotations other than the defaults
 - A full-screen `write-rect` at 2x on the Tab5 (3,840 pieces for 360x640): DOOM never sends one
+
+## 41. DOOM on the Waveshare ESP32-S3-Touch-LCD-2, as reported by the DOOM port (2026-11-16)
+
+Question: does the `esp32s3-lcd2` firmware (docs/TODO.md §1.3.3) boot, show the right picture and
+trace as on the host, and what does the `st7789` path cost against the Freenove board's `ili9341`?
+
+**The panel and the timings were not measured in this repository.** The DOOM port built the CLI and
+`ports/esp32s3` (`--features lcd2`, trace on; `--no-default-features --features lcd2`, trace off) from
+a copy of the uncommitted lcd2 work on `5d46363` (identity `git=5d46363-dirty`); the code is that of
+the commit that adds `lcd2`. The module is unchanged: `PANEL=2` (indexed8), crc32 `f5878e99`
+(`FRAMES=500 PREVIEW=100`). Manifest: `st7789`, `cs` 45, `dc` 42, `bl` 1, no `rst`, rotation 90. Board:
+MAC `80:b5:4e:d9:31:c8`, ESP32-S3 rev v0.2, flash 16 MB (`espflash board-info`). Flashing, `assets
+write` (49.9 s for the WAD) and `deploy --no-run` went through the native USB; the trace came from
+UART0 on the header (GPIO43/44) through a CP2102N.
+
+| Run | Result |
+|---|---|
+| Host, `check --board esp32s3-lcd2` | passes: display `st7789 spi=0 cs=45 dc=42 bl=1 rotation=90`, 10 of 112 pages, assets 4,202,496 B fit 6,287,360 B. `esp32s3-psram` and `esp32p4-psram` still pass with the same CLI |
+| Host, `run --trace` | matches the indexed8 host trace of §40: 4,244 lines |
+| Boot | `rst:0x1 (POWERON),boot:0xc`; identity `esp32s3-lcd2 ... trace=on pages=112 ... roles=v5/4096 assets=v1/6287360`; `display=st7789 spi=0 cs=45 dc=42 bl=1 rotation=90`; slot 419,671 B crc32=`f5878e99` |
+| Trace on | `trace diff` against the host trace (ignoring `startup: `, `frame `, `done: `, `panel: on`): match, 4,244 lines, `write-rect` CRCs included. Start-up 19.35 s, 541 frames in 313.47 s |
+| Panel | colours and orientation right (by eye), so INVON and MADCTL 0x60 for rotation 90 hold. The backlight came on |
+
+Trace off, against the Freenove board on `c2ca487` (§40):
+
+| 541 frames, indexed8, trace off | Freenove ILI9341, `c2ca487` | Touch-LCD-2 ST7789 |
+|---|---|---|
+| Start-up | 9.01 s | 8.88 s |
+| Title, frames 36-140 | 358.2 ms/frame | 358.2 ms |
+| Demo, frames 211-525 | 701.8 ms (561-779) | 701.8 ms (561-779) |
+| 541 frames | 301.99 s | 301.97 s |
+| Panel per frame (guest + write) | 102.6 (48.8 + 53.8) ms | 102.6 (48.7 + 53.9) ms |
+
+Every 35-frame window is within 0.05 ms of the Freenove board. The 130 ms shorter start-up is the
+ILI9341's reset pulse (10 ms low, 120 ms wait), which the `st7789` path without `rst` skips. About
+1.4 fps in the demo, 2.8 fps on the title.
+
+`espflash reset` over the native USB (USB-Serial-JTAG) left the chip in download mode twice
+(`rst:0x15 (USB_UART_CHIP_RESET),boot:0x0 (DOWNLOAD(USB/UART0))`, `waiting for download`); the RST
+button then booted it normally both times. Flashing over the native USB needed no buttons. So a run
+needs one RST press after `deploy --no-run`, and `deploy --monitor` does not apply: the trace is on
+UART0, not on the USB port.
+
+### What this measurement does not say
+
+- The picture was reported, not seen here; the trace shows what the guest sent
+- The board revision (V1 or V2) and whether R16 is fitted
+- Touch (CST816D), the panel at 40 MHz, the trace over USB-Serial-JTAG
+- Why `espflash reset` lands in download mode over USB-Serial-JTAG
