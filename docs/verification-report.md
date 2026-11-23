@@ -2259,8 +2259,8 @@ UART0 stay as it was?
 
 Firmware: `ports/rp2350` at the commit that adds `src/usb.rs`, trace on. Host: macOS, picotool
 2.3.1, a CP2102N on UART0 for the comparison. The test guest logs `usb console test line` 400 times
-(`log` level info) and then executes `unreachable`; it was written in WAT for this run and is not in
-`apps/`.
+(`log` level info) and then executes `unreachable` (verify/usb-console/flood.wat; written for this
+run and added to the repository afterwards).
 
 | Check | Result |
 |---|---|
