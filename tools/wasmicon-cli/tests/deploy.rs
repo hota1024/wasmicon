@@ -174,9 +174,37 @@ fn no_run_keeps_an_espflash_board_halted() {
     assert!(m.keep_halted, "resets despite --no-run");
     assert!(!m.hand_off);
 
-    // picotool resets in a separate call, so nothing needs suppressing.
+    // `picotool load -f` reboots a board it forced into BOOTSEL back into
+    // the app, so it needs the same suppression (`-F`).
     let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Picotool);
-    assert!(!m.keep_halted);
+    assert!(m.keep_halted, "runs despite --no-run");
+}
+
+#[test]
+fn picotool_starts_the_app_once_or_not_at_all() {
+    // `-f` reboots a forced board back into the app and `-x` runs one that
+    // was in BOOTSEL; `-F` leaves either in BOOTSEL. A separate
+    // `picotool reboot` after `-f` would start the app twice, and a
+    // `--monitor` capture would hold two runs.
+    let run = deploy::picotool_load_args("app.bin", 0x1010_0000, false);
+    assert_eq!(
+        run,
+        [
+            "load",
+            "app.bin",
+            "-t",
+            "bin",
+            "-o",
+            "0x10100000",
+            "-f",
+            "-x"
+        ]
+    );
+    let halt = deploy::picotool_load_args("app.bin", 0x1010_0000, true);
+    assert_eq!(
+        halt,
+        ["load", "app.bin", "-t", "bin", "-o", "0x10100000", "-F"]
+    );
 }
 
 #[test]

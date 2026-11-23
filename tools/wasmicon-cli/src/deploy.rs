@@ -1,8 +1,10 @@
 //! `wasmicon deploy`: sends an app to the board's slot (docs/app-workflow.md §3.5).
 //!
-//! Stage 1 hands the image to an external flasher. Until the USB control
-//! channel (stage 2) exists, `picotool` is called, so the Pico still needs
-//! BOOTSEL. Stage 2 removes that.
+//! Stage 1 hands the image to an external flasher. A Pico is flashed with
+//! `picotool load -f`: a firmware with the picotool reset interface
+//! (`ports/rp2350`, docs/decisions.md A-11) reboots into BOOTSEL when asked,
+//! so only a board running other firmware still needs the button. The USB
+//! control channel (stage 2) is a separate item.
 //!
 //! `check` runs before anything is sent. If an app that does not run on that
 //! board were written to the slot, the failure would show only on hardware
@@ -78,7 +80,7 @@ pub struct Plan {
 /// part that calls the external flasher needs hardware).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Mode {
-    /// Do not run after writing (`espflash --after no-reset`).
+    /// Do not run after writing (`espflash --after no-reset`, `picotool -F`).
     pub keep_halted: bool,
     /// Hand reset and capture to `espflash monitor`.
     pub hand_off: bool,
@@ -96,12 +98,12 @@ impl Mode {
         let hand_off = opts.monitor && !opts.no_run && shared_port;
         Mode {
             // `--no-run` must not run the app either. `espflash write-bin`
-            // does `--after hard-reset` by default, so without this the app
-            // runs right after flashing while the output says "runs on the
-            // next reset" (a lie). Nobody wants that before attaching a probe
-            // or on a board wired to a motor. picotool resets in a separate
-            // call, so it needs no suppression.
-            keep_halted: hand_off || (opts.no_run && shared_port),
+            // does `--after hard-reset` by default, and `picotool load -f`
+            // reboots a board it forced into BOOTSEL back into the app, so
+            // without this the app runs right after flashing while the output
+            // says "runs on the next reset" (a lie). Nobody wants that before
+            // attaching a probe or on a board wired to a motor.
+            keep_halted: hand_off || opts.no_run,
             hand_off,
             shared_port,
         }
@@ -222,6 +224,19 @@ pub fn run(opts: &Options) -> Result<bool> {
 
     let mode = Mode::of(opts, plan.slot.flasher);
 
+    // With `--monitor` on a board whose trace has its own port, open the port
+    // and set the baud rate before anything is flashed: `picotool load -f -x`
+    // starts the app as part of the write. Setting it while data flows mixes
+    // up the lines (item 2 in the `monitor` module docs).
+    let session = if opts.monitor && !opts.no_run && !mode.shared_port {
+        let port = monitor::choose(&monitor::ports(), opts.port.as_deref())?;
+        let s = monitor::open(&port, monitor::DEFAULT_BAUD)?;
+        eprintln!("opened {} (before flashing)", s.port().display());
+        Some(s)
+    } else {
+        None
+    };
+
     // Stage 1 uses an external flasher (docs/app-workflow.md §3.5). The tool
     // differs per board.
     if !write_slot(
@@ -270,24 +285,8 @@ pub fn run(opts: &Options) -> Result<bool> {
         return taken;
     }
 
-    // With `--monitor`, open the port and set the baud rate before the reset.
-    // Setting it while data flows mixes up the lines (item 2 in the `monitor`
-    // module docs).
-    let session = if opts.monitor {
-        let port = monitor::choose(&monitor::ports(), opts.port.as_deref())?;
-        let s = monitor::open(&port, monitor::DEFAULT_BAUD)?;
-        eprintln!("opened {} (before reset)", s.port().display());
-        Some(s)
-    } else {
-        None
-    };
-
-    // espflash `write-bin` resets by default (see above).
-    if !mode.shared_port && !reboot()? {
-        eprintln!("  written, but the reset failed; unplug and replug USB");
-        return Ok(false);
-    }
-
+    // Both flashers have started the app by now (`write-bin` resets,
+    // `picotool load -x` runs it).
     let Some(session) = session else {
         println!("-> running. To capture the trace:");
         println!("    wasmicon monitor -o app.log   # then reset the board");
@@ -431,17 +430,18 @@ pub fn write_at(
             }
             Ok(ok)
         }
-        // Pico boards need BOOTSEL (the stage 2 USB control channel removes
-        // that). `-t bin` is explicit so the file type does not depend on
-        // the extension. `-o` is an address, as picotool's help says ("Load
-        // offset (memory address)"); an offset is rejected.
+        // A Pico in BOOTSEL, or running a firmware with the picotool reset
+        // interface, which `-f` / `-F` reboot into BOOTSEL first.
         Flasher::Picotool => {
-            let addr = format!("{:#x}", pack::XIP_BASE + u64::from(offset));
-            let ok = spawn("picotool", &["load", &image, "-t", "bin", "-o", &addr])?;
+            let addr = pack::XIP_BASE + u64::from(offset);
+            let args = picotool_load_args(&image, addr, keep_halted);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let ok = spawn("picotool", &args)?;
             if !ok {
                 eprintln!(
-                    "  hold BOOTSEL while plugging in USB, then run again\n  \
-                     (the USB control channel will remove this step; docs/app-workflow.md §3.5)"
+                    "  picotool reaches a board in BOOTSEL, or one running wasmicon firmware\n  \
+                     with the reset interface. Other firmware: hold BOOTSEL while plugging in\n  \
+                     USB, then run again"
                 );
             }
             Ok(ok)
@@ -449,14 +449,27 @@ pub fn write_at(
     }
 }
 
-/// Resets a Pico board so the app runs (ESP32's `write-bin` does it by
-/// default). `picotool load` leaves the board in the bootloader; `deploy`
-/// and `assets write` both call this after it.
+/// The arguments of `picotool load` for one image at `addr`.
 ///
-/// # Errors
-/// When picotool cannot be started. A failed reboot is `Ok(false)`.
-pub fn reboot() -> Result<bool> {
-    spawn("picotool", &["reboot"])
+/// `-t bin` is explicit so the file type does not depend on the extension.
+/// `-o` is an address, as picotool's help says ("Load offset (memory
+/// address)"); an offset is rejected. `-f` reboots a running firmware into
+/// BOOTSEL through its reset interface and back into the app afterwards,
+/// and `-x` starts the app for a board that was in BOOTSEL already, so the
+/// app starts once either way. `keep_halted` uses `-F` instead, which leaves
+/// the board in BOOTSEL.
+#[must_use]
+pub fn picotool_load_args(image: &str, addr: u64, keep_halted: bool) -> Vec<String> {
+    let mut args = ["load", image, "-t", "bin", "-o"]
+        .map(str::to_string)
+        .to_vec();
+    args.push(format!("{addr:#x}"));
+    if keep_halted {
+        args.push("-F".to_string());
+    } else {
+        args.extend(["-f".to_string(), "-x".to_string()]);
+    }
+    args
 }
 
 /// Runs an external command. Not found is an error; failure is `false`.

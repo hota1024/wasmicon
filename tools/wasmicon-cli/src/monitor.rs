@@ -93,26 +93,111 @@ impl Session {
     }
 }
 
+/// A serial port and, for a USB one, who is behind it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortInfo {
+    pub path: PathBuf,
+    pub usb: Option<Usb>,
+}
+
+/// The USB identity of a serial port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Usb {
+    pub vid: u16,
+    pub pid: u16,
+    pub product: Option<String>,
+    /// The interface the tty belongs to. macOS reports the CDC data
+    /// interface, Linux the communication interface before it.
+    pub interface: Option<u8>,
+}
+
+/// What a port of the wasmicon firmware's own USB device is
+/// (docs/decisions.md A-11, A-12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Own {
+    /// The console: the guest `log` and the firmware's lines, no trace.
+    Console,
+    /// The control channel of docs/app-workflow.md §3.6.
+    Control,
+}
+
+/// Raspberry Pi's VID, which the firmware uses for now (docs/decisions.md
+/// A-12). The PID is temporary, so the product string decides.
+const OWN_VID: u16 = 0x2E8A;
+
+/// The start of the firmware's product string (`wasmicon rp2350`).
+const OWN_PRODUCT: &str = "wasmicon ";
+
+impl PortInfo {
+    /// Which port of the firmware's own USB device this is, if it is one.
+    /// The console is the first CDC pair (interfaces 0 and 1), the control
+    /// channel the second (2 and 3); the tty hangs off a different one of the
+    /// pair on macOS and Linux.
+    #[must_use]
+    pub fn own(&self) -> Option<Own> {
+        let usb = self.usb.as_ref()?;
+        let ours = usb.vid == OWN_VID
+            && usb
+                .product
+                .as_deref()
+                .is_some_and(|p| p.starts_with(OWN_PRODUCT));
+        match (ours, usb.interface?) {
+            (true, 0 | 1) => Some(Own::Console),
+            (true, 2 | 3) => Some(Own::Control),
+            _ => None,
+        }
+    }
+
+    /// The path and who is behind it, for a list of candidates.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let path = self.path.display();
+        let Some(usb) = &self.usb else {
+            return path.to_string();
+        };
+        let who = usb.product.as_deref().unwrap_or("unknown device");
+        let role = match self.own() {
+            Some(Own::Console) => " console",
+            Some(Own::Control) => " control",
+            None => "",
+        };
+        format!("{path}  {who}{role} ({:04x}:{:04x})", usb.vid, usb.pid)
+    }
+}
+
 /// Lists the candidate serial ports.
 ///
 /// Not hard-coded to `usbserial`: the name depends on the bridge chip (the
 /// ESP32-S3 at hand has a CH343 and shows up as `usbmodem`;
 /// docs/TODO.md §1.1).
 #[must_use]
-pub fn ports() -> Vec<PathBuf> {
-    let Ok(dir) = std::fs::read_dir("/dev") else {
+pub fn ports() -> Vec<PortInfo> {
+    let Ok(found) = serialport::available_ports() else {
         return Vec::new();
     };
-    let mut found: Vec<PathBuf> = dir
-        .filter_map(|e| {
-            let name = e.ok()?.file_name().to_string_lossy().into_owned();
-            PREFIXES
-                .iter()
-                .any(|p| name.starts_with(p))
-                .then(|| PathBuf::from("/dev").join(name))
+    let mut found: Vec<PortInfo> = found
+        .into_iter()
+        .filter(|p| {
+            let name = Path::new(&p.port_name)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+        })
+        .map(|p| PortInfo {
+            path: PathBuf::from(&p.port_name),
+            usb: match p.port_type {
+                serialport::SerialPortType::UsbPort(u) => Some(Usb {
+                    vid: u.vid,
+                    pid: u.pid,
+                    product: u.product,
+                    interface: u.interface,
+                }),
+                _ => None,
+            },
         })
         .collect();
-    found.sort();
+    found.sort_by(|a, b| a.path.cmp(&b.path));
     found
 }
 
@@ -124,33 +209,45 @@ pub fn ports() -> Vec<PathBuf> {
 /// `ttyACM*`.
 const PREFIXES: &[&str] = &["cu.usb", "ttyUSB", "ttyACM"];
 
-/// Decides which port to use.
+/// Decides which port carries the trace.
 ///
-/// One candidate is used as is. With several and no explicit choice, none is
-/// picked (opening the wrong port silently produces "nothing comes out" and
-/// sends people to check the wiring).
+/// The firmware's own USB ports never do: the trace stays on UART0
+/// (docs/TODO.md §5-11), so they are left out before counting. One candidate
+/// left is used as is. With several and no explicit choice, none is picked
+/// (opening the wrong port silently produces "nothing comes out" and sends
+/// people to check the wiring).
 ///
 /// # Errors
 /// When there is no candidate, or several and no explicit choice.
-pub fn choose(candidates: &[PathBuf], explicit: Option<&Path>) -> Result<PathBuf> {
+pub fn choose(candidates: &[PortInfo], explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p.to_path_buf());
     }
-    match candidates {
+    let uart: Vec<&PortInfo> = candidates.iter().filter(|p| p.own().is_none()).collect();
+    match uart.as_slice() {
+        [] if candidates.iter().any(|p| p.own() == Some(Own::Console)) => bail!(
+            "no USB-serial adapter found; only the board's own USB ports:\n  {}\n  \
+             the trace goes out on UART0 only. Connect an adapter to the board's TX;\n  \
+             the board's USB console carries the log and the firmware's lines, not the trace",
+            list(candidates)
+        ),
         [] => bail!(
             "no serial port found (no /dev/cu.usb*).\n  \
              plug in a USB-serial adapter and connect the board's TX"
         ),
-        [one] => Ok(one.clone()),
-        many => {
-            let list: Vec<String> = many.iter().map(|p| p.display().to_string()).collect();
-            bail!(
-                "{} serial ports found; pick one with --port:\n  {}",
-                many.len(),
-                list.join("\n  ")
-            )
-        }
+        [one] => Ok(one.path.clone()),
+        many => bail!(
+            "{} serial ports found; pick one with --port:\n  {}",
+            many.len(),
+            list(many.iter().copied())
+        ),
     }
+}
+
+/// One port per line, with who is behind it.
+fn list<'a>(ports: impl IntoIterator<Item = &'a PortInfo>) -> String {
+    let lines: Vec<String> = ports.into_iter().map(PortInfo::describe).collect();
+    lines.join("\n  ")
 }
 
 /// Opens the port and sets the baud rate.
@@ -459,20 +556,53 @@ impl Write for Sink {
 mod tests {
     use super::*;
 
+    fn bare(path: &str) -> PortInfo {
+        PortInfo {
+            path: PathBuf::from(path),
+            usb: None,
+        }
+    }
+
+    fn usb(path: &str, vid: u16, pid: u16, product: &str, interface: u8) -> PortInfo {
+        PortInfo {
+            path: PathBuf::from(path),
+            usb: Some(Usb {
+                vid,
+                pid,
+                product: Some(product.to_string()),
+                interface: Some(interface),
+            }),
+        }
+    }
+
+    /// The CP2102N on UART0 and a Pico 2 W running the firmware, as macOS
+    /// lists them (docs/verification-report.md §42): the ttys hang off the
+    /// CDC data interfaces 1 and 3.
+    fn adapter_and_board_on_macos() -> Vec<PortInfo> {
+        vec![
+            usb("/dev/cu.usbmodem1101", 0x2E8A, 0x0009, "wasmicon rp2350", 1),
+            usb("/dev/cu.usbmodem1103", 0x2E8A, 0x0009, "wasmicon rp2350", 3),
+            usb(
+                "/dev/cu.usbserial-1140",
+                0x10C4,
+                0xEA60,
+                "CP2102N USB to UART Bridge Controller",
+                0,
+            ),
+        ]
+    }
+
     #[test]
     fn one_candidate_needs_no_choice() {
-        let c = [PathBuf::from("/dev/cu.usbserial-1")];
-        assert_eq!(choose(&c, None).expect("chooses"), c[0]);
+        let c = [bare("/dev/cu.usbserial-1")];
+        assert_eq!(choose(&c, None).expect("chooses"), c[0].path);
     }
 
     #[test]
     fn several_candidates_are_not_guessed() {
         // Opening the wrong port silently produces "nothing comes out" and
         // sends people to check the wiring.
-        let c = [
-            PathBuf::from("/dev/cu.usbserial-1"),
-            PathBuf::from("/dev/cu.usbmodem2"),
-        ];
+        let c = [bare("/dev/cu.usbserial-1"), bare("/dev/cu.usbmodem2")];
         let e = choose(&c, None).expect_err("does not choose");
         let msg = format!("{e:#}");
         assert!(msg.contains("--port"), "{msg}");
@@ -481,7 +611,7 @@ mod tests {
 
     #[test]
     fn an_explicit_port_wins() {
-        let c = [PathBuf::from("/dev/cu.usbserial-1")];
+        let c = [bare("/dev/cu.usbserial-1")];
         let want = PathBuf::from("/dev/cu.usbmodem9");
         assert_eq!(choose(&c, Some(&want)).expect("chooses"), want);
     }
@@ -490,6 +620,61 @@ mod tests {
     fn no_candidate_says_what_to_do() {
         let e = choose(&[], None).expect_err("none");
         assert!(format!("{e:#}").contains("USB-serial adapter"), "{e:#}");
+    }
+
+    #[test]
+    fn the_boards_own_ports_are_not_the_trace() {
+        // The trace stays on UART0, so with the adapter and the board both
+        // plugged in the adapter is the one candidate.
+        let c = adapter_and_board_on_macos();
+        assert_eq!(
+            choose(&c, None).expect("chooses"),
+            PathBuf::from("/dev/cu.usbserial-1140")
+        );
+    }
+
+    #[test]
+    fn linux_names_the_communication_interfaces() {
+        // On Linux the ttyACM hangs off the CDC communication interface
+        // (0 and 2), on macOS off the data interface (1 and 3).
+        let console = usb("/dev/ttyACM0", 0x2E8A, 0x0009, "wasmicon rp2350", 0);
+        let control = usb("/dev/ttyACM1", 0x2E8A, 0x0009, "wasmicon rp2350", 2);
+        assert_eq!(console.own(), Some(Own::Console));
+        assert_eq!(control.own(), Some(Own::Control));
+        let mac = adapter_and_board_on_macos();
+        assert_eq!(mac[0].own(), Some(Own::Console));
+        assert_eq!(mac[1].own(), Some(Own::Control));
+        assert_eq!(mac[2].own(), None);
+    }
+
+    #[test]
+    fn other_firmware_under_the_same_vid_is_not_ours() {
+        // pico-sdk's stdio USB uses the same VID / PID; the product string
+        // tells them apart.
+        let sdk = usb("/dev/cu.usbmodem1101", 0x2E8A, 0x0009, "Pico", 0);
+        assert_eq!(sdk.own(), None);
+    }
+
+    #[test]
+    fn only_the_board_says_where_the_trace_is() {
+        // Without the adapter, "plug in an adapter" alone would be read as
+        // a wiring problem; say that the trace is on UART0 only.
+        let c: Vec<PortInfo> = adapter_and_board_on_macos().into_iter().take(2).collect();
+        let msg = format!("{:#}", choose(&c, None).expect_err("none"));
+        assert!(msg.contains("UART0"), "{msg}");
+        assert!(msg.contains("wasmicon rp2350 console"), "lists them: {msg}");
+    }
+
+    #[test]
+    fn candidates_are_listed_with_who_they_are() {
+        let mut c = adapter_and_board_on_macos();
+        c.push(bare("/dev/cu.usbserial-9"));
+        let msg = format!("{:#}", choose(&c, None).expect_err("two adapters"));
+        assert!(msg.contains("CP2102N"), "{msg}");
+        assert!(
+            !msg.contains("usbmodem1101"),
+            "the board's own ports are left out: {msg}"
+        );
     }
 
     #[test]

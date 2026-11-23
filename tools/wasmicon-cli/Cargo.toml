@@ -26,3 +26,8 @@ anyhow = "1.0.104"
 # no effect".
 toml = "1.1.6"
 serde = { version = "1.0.229", features = ["derive"] }
+# Tells the serial ports apart by USB identity (VID / PID, product string,
+# interface number), so a board's own USB console is not mistaken for the
+# USB-serial adapter that carries the trace (docs/TODO.md §5-11). No libudev:
+# on Linux it reads sysfs.
+serialport = { version = "4.10.1", default-features = false, features = ["usbportinfo-interface"] }
