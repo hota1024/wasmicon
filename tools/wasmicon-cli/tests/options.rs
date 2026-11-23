@@ -56,3 +56,9 @@ fn an_empty_ignore_text_is_refused() {
     let e = refused(&["trace", "diff", "a.log", "b.log", "--ignore", ""]);
     assert!(e.contains("non-empty"), "{e}");
 }
+
+#[test]
+fn the_console_has_no_baud_rate() {
+    let e = refused(&["monitor", "--console", "--baud", "921600"]);
+    assert!(e.contains("no baud rate"), "{e}");
+}

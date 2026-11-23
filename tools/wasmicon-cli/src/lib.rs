@@ -5,6 +5,7 @@
 
 pub mod assets;
 pub mod check;
+pub mod console;
 pub mod deploy;
 pub mod doctor;
 pub mod flags;

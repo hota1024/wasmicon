@@ -11,7 +11,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wasmicon_cli::{
-    assets, check, deploy, doctor, manifest, monitor, new as new_cmd, pack, run as run_cmd, trace,
+    assets, check, console, deploy, doctor, manifest, monitor, new as new_cmd, pack,
+    run as run_cmd, trace,
 };
 
 const USAGE: &str = "\
@@ -72,8 +73,12 @@ Options for assets write:
                              (default: espflash's, 115200 unless ESPFLASH_BAUD is set)
 
 Options for monitor:
-    --port <dev>             serial port (default: pick from /dev/cu.usb*)
+    --port <dev>             serial port (default: pick from /dev/cu.usb*; the
+                             board's own USB ports are left out, the trace is on UART0)
     --baud <n>               baud rate (default: 115200)
+    --console                read the board's USB console instead: the log and the
+                             firmware's lines, no trace. Waits for the board and
+                             follows it across resets
     -o <file>                also write to this file besides stdout
     --idle <secs>            stop after this much silence (default: 3; 0 disables)
     --timeout <secs>         overall limit (default: none)
@@ -143,7 +148,10 @@ fn dispatch() -> Result<bool> {
         "run" => run_cmd::run(&parse_run(args)?),
         "pack" => pack::run(&parse_pack(args)?),
         "deploy" => deploy::run(&parse_deploy(args)?),
-        "monitor" => monitor::run(&parse_monitor(args)?),
+        "monitor" => match parse_monitor(args)? {
+            Monitor::Uart(o) => monitor::run(&o),
+            Monitor::Console(o) => console::run(&o),
+        },
         "trace" => match parse_trace(args)? {
             TraceCmd::Diff(o) => trace::diff(&o),
             TraceCmd::Replay(o) => trace::replay(&o),
@@ -483,9 +491,15 @@ fn parse_pack(args: impl Iterator<Item = String>) -> Result<pack::Options> {
     Ok(pack::Options { path, out, board })
 }
 
-fn parse_monitor(args: impl Iterator<Item = String>) -> Result<monitor::Options> {
+enum Monitor {
+    Uart(monitor::Options),
+    Console(console::Options),
+}
+
+fn parse_monitor(args: impl Iterator<Item = String>) -> Result<Monitor> {
     let mut port: Option<PathBuf> = None;
-    let mut baud = monitor::DEFAULT_BAUD;
+    let mut baud = None;
+    let mut use_console = false;
     let mut out: Option<PathBuf> = None;
     let mut idle = Some(monitor::DEFAULT_IDLE);
     let mut timeout = None;
@@ -497,10 +511,12 @@ fn parse_monitor(args: impl Iterator<Item = String>) -> Result<monitor::Options>
             "-o" => out = Some(PathBuf::from(args.next().context("-o needs a value")?)),
             "--baud" => {
                 let v = args.next().context("--baud needs a value")?;
-                baud = v
-                    .parse()
-                    .with_context(|| format!("--baud is not a number: `{v}`"))?;
+                baud = Some(
+                    v.parse()
+                        .with_context(|| format!("--baud is not a number: `{v}`"))?,
+                );
             }
+            "--console" => use_console = true,
             // 0 means "never stop on silence" (stop with Ctrl-C).
             "--idle" => idle = parse_secs("--idle", args.next())?,
             "--timeout" => timeout = parse_secs("--timeout", args.next())?,
@@ -509,13 +525,26 @@ fn parse_monitor(args: impl Iterator<Item = String>) -> Result<monitor::Options>
         }
     }
 
-    Ok(monitor::Options {
+    if use_console {
+        // A CDC device has no baud rate; taking one silently would suggest
+        // it does something.
+        if baud.is_some() {
+            bail!("--baud is for a USB-serial adapter; the board's USB console has no baud rate");
+        }
+        return Ok(Monitor::Console(console::Options {
+            port,
+            out,
+            idle,
+            timeout,
+        }));
+    }
+    Ok(Monitor::Uart(monitor::Options {
         port,
-        baud,
+        baud: baud.unwrap_or(monitor::DEFAULT_BAUD),
         out,
         idle,
         timeout,
-    })
+    }))
 }
 
 enum TraceCmd {

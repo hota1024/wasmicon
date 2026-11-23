@@ -1454,13 +1454,17 @@ change.**
         for `--no-run`), which starts the app once whether the board was running or in
         BOOTSEL; the separate `picotool reboot` is gone, and `--monitor` opens the adapter
         before flashing
-      - **CLI: read the console** (`monitor --console`, the name to confirm with the
-        owner): select the console by identity, open it once the device has
-        re-enumerated (the node appears before it delivers: a port opened at once read
-        nothing, one opened a second later read data), survive the device going away on
-        a reset instead of ending with `Closed`, and count lines instead of trace lines.
-        `deploy --monitor` with no adapter keeps failing with the reason (owner decision,
-        2026-11-23) rather than falling back to the console
+      - ~~**CLI: read the console**~~ (done 2026-11-23, `tools/wasmicon-cli/src/console.rs`)
+        `monitor --console` (the name is the owner's choice) picks the console by identity,
+        waits for it while the board is away, opens it 300 ms after it appears, and
+        follows the same board (USB serial number) across resets until silence. It
+        counts lines, not trace lines, and refuses `--baud`. It opens the port as
+        `monitor` does and hands the descriptor to `serialport` for timed reads:
+        `serialport`'s own open flushes on macOS after raising DTR, which threw away the
+        boot lines the firmware had just sent. While nothing has arrived it drops and
+        raises DTR again, up to five times. `deploy --monitor` with no adapter keeps
+        failing with the reason (owner decision, 2026-11-23) rather than falling back
+        to the console
       - ~~**Docs to update when it lands**~~ (done) The header of
         `ports/rp2350/src/main.rs` names the USB console next to UART0
       - **Verify on hardware** (docs/verification-report.md §42): done for the log lines

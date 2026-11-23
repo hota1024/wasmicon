@@ -185,7 +185,9 @@ $w trace diff host.log pico.log
   `picotool load -f`, which reboots the firmware into BOOTSEL through its picotool reset
   interface. For the first flash, or a board running other firmware, hold BOOTSEL while
   plugging in USB. With the board's USB and a USB-serial adapter both plugged in,
-  `--monitor` picks the adapter: the trace is on UART0 only
+  `--monitor` picks the adapter: the trace is on UART0 only. `wasmicon monitor --console`
+  reads the board's USB console instead (the `log` and the firmware's lines, no trace),
+  with no adapter at all, and follows the board across resets
 - **The ESP32-S3 needs no button** (`espflash` resets it over DTR/RTS). Flashing and the trace
   share one port, so `--monitor` delegates to `espflash monitor`
 - To start a new app: `wasmicon new <dir> --lang rust --hal bindings`
