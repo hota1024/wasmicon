@@ -7,3 +7,4 @@ ports/*/target/
 verify/*/target/
 .claude/worktrees/
 apps/*/assets.bin
+verify/usb-console/*.wasm
