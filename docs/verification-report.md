@@ -2283,6 +2283,19 @@ all 400 lines and the trap reason, no drop. UART0: 800 trace lines and the trap 
 `load -f -x` worked without the button. The UART0 capture was not compared byte for byte this time:
 the capture before the change was not kept.
 
+Repeated again on 2026-11-23 after the review fixes: the queue became the only send buffer (each
+line carries a 2-byte length, so fewer lines fit), and the picotool replies no longer wait in the
+firmware. Console opened after the run: the boot lines, 237 test lines, `wasmicon: usb console
+dropped 163 lines`, the trap reason (237 + 163 = 400). Console open across `picotool reboot -f`:
+all 400 lines and the trap reason. A port closed mid-run and opened 0.5 s later, six times with the
+first session 0.25 to 0.75 s long: each session held whole lines only, the second began with a
+whole `[wasm]` line, and the two added up to 400 with nothing dropped. `picotool load -f -x`,
+`reboot -f -u` and `reboot -f` work. blink-rs: UART0 byte-identical apart from `git=` to the capture
+taken the same day before the fixes, and `trace diff` against the host matches 20 lines. A bus
+reset in the middle of a line was not produced on hardware; a host-side simulation of the queue
+(not in the repository) with random packet completions, bus resets and closes between packets
+gave every line once, whole, or counted as dropped.
+
 ### What this measurement does not say
 
 - The host asleep, and the board running from VSYS with the USB cable pulled, were not tried

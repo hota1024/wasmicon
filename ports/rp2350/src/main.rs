@@ -118,12 +118,11 @@ struct Out(Uart0);
 
 impl Serial for Out {
     /// UART0 carries every kind of line and waits until it is sent. The USB
-    /// console carries all but the trace and never waits (`usb::write_line`).
+    /// console takes what it carries (all but the trace) and never waits
+    /// (`usb::write_line`).
     fn write_line(&mut self, kind: LineKind, parts: &[&[u8]]) {
         write_parts(parts, |b| self.0.write_full_blocking(b));
-        if kind != LineKind::Trace {
-            usb::write_line(kind, parts);
-        }
+        usb::write_line(kind, parts);
     }
 }
 

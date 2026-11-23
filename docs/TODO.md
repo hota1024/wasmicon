@@ -1419,7 +1419,15 @@ change.**
         host opens the port. A line that does not fit is dropped whole and counted, and the
         count goes out as `wasmicon: usb console dropped N lines` once there is room. The
         last 256 bytes are for firmware lines only, so a trap reason fits after a guest
-        filled the queue with `log`. UART0 has every line
+        filled the queue with `log`. UART0 has every line.
+        The queue is the only buffer (review of 2026-11-23): `usbd-serial`'s `SerialPort`
+        kept up to 128 bytes of its own that a bus reset cleared uncounted and that a port
+        closed mid-line carried into the next session. Packets now go from the queue to
+        the endpoint, and a line leaves the queue only once the host has taken all of it;
+        a bus reset or a port closed between packets sends the line again from its start.
+        Left: a port closed while a packet sits on the endpoint gets that packet and the
+        rest of its line when it opens again, since the endpoint cannot take a packet back.
+        Only a line longer than one 64-byte packet can show it
       - ~~**One `Serial` trait, line by line.**~~ (done 2026-11-12) `Serial` lives in
         `ports/common/src/serial.rs` with one method, `write_line(kind, parts)`, and no
         method for bare bytes; `LineKind` is `Log` / `Trace` / `Firmware`. Every line of
@@ -1431,7 +1439,9 @@ change.**
         things picotool needs that are easy to miss: the USB serial number must be the one
         the boot ROM shows in BOOTSEL (the chip id, wafer id first), or picotool reboots the
         board and then cannot find it; and the reboot into the firmware must answer the
-        request before resetting, or `picotool reboot -f` never returns. `deploy` can now
+        request before resetting, or `picotool reboot -f` never returns. The reply goes out
+        inside the 500 ms that `hal::reboot` hands the ROM before it resets, so no wait of
+        the firmware's own is needed (review of 2026-11-23). `deploy` can now
         add `-f` and drop the BOOTSEL step (CLI below)
       - **CLI**: `deploy --monitor` opens the port before the reset (`deploy.rs`), but right
         after `picotool load` the board is in BOOTSEL and has no CDC device; open it after

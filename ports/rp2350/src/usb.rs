@@ -16,21 +16,31 @@
 //! firmware's lines, so a trap reason still fits after a guest has filled the
 //! queue with `log`. UART0 still has every line.
 //!
+//! The queue is the only buffer: packets go from it straight to the endpoint,
+//! and a line leaves it only once the host has taken all of it. A bus reset,
+//! or a port closed between two packets, sends the line again from its start
+//! in the next session, so a session never opens in the middle of a line. One
+//! case is left: a port closed while a packet sits on the endpoint gets that
+//! packet and the rest of its line when it opens again, because the endpoint
+//! cannot take a packet back.
+//!
 //! USB is serviced from `USBCTRL_IRQ`, not from host calls: a guest can run a
 //! long time without one, and the host must still see enumeration.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use critical_section::Mutex;
 use rp235x_hal as hal;
 use usb_device::LangID;
 use usb_device::class_prelude::{
-    ControlIn, ControlOut, InterfaceNumber, StringIndex, UsbBus, UsbBusAllocator, UsbClass,
+    ControlIn, ControlOut, EndpointAddress, InterfaceNumber, StringIndex, UsbBus, UsbBusAllocator,
+    UsbClass,
 };
 use usb_device::control::{Recipient, RequestType};
 use usb_device::descriptor::DescriptorWriter;
 use usb_device::device::{StringDescriptors, UsbDevice, UsbDeviceBuilder, UsbVidPid};
-use usbd_serial::SerialPort;
+use usbd_serial::{CdcAcmClass, SerialPort};
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::serial::{LINE_END, LineKind, write_parts};
 
@@ -50,39 +60,55 @@ const QUEUE_LEN: usize = 8 * 1024;
 /// trap reason and the dropped count.
 const FIRMWARE_RESERVE: usize = 256;
 
+/// The console's packet size, the most a full-speed bulk endpoint takes.
+const PACKET: usize = 64;
+
+/// Set by the first `init`.
+static INIT: AtomicBool = AtomicBool::new(false);
+
 /// The allocator outlives every class built on it, so it is a static.
 static mut BUS: Option<UsbBusAllocator<Bus>> = None;
 
 /// The serial number string: the chip's id in hex, built once by `init`.
 static mut SERIAL: [u8; 16] = [b'0'; 16];
 
+/// Lines waiting for the host. Apart from `STATE` so it is built at compile
+/// time: it sits in .bss instead of passing through the stack in `init`.
+static QUEUE: Mutex<RefCell<Queue>> = Mutex::new(RefCell::new(Queue::new()));
+
 /// Shared by `main` (which queues lines) and `USBCTRL_IRQ` (which drains them).
 static STATE: Mutex<RefCell<Option<State>>> = Mutex::new(RefCell::new(None));
 
 struct State {
     device: UsbDevice<'static, Bus>,
-    console: SerialPort<'static, Bus>,
+    console: Console,
     control: SerialPort<'static, Bus>,
     reset: PicotoolReset,
-    queue: Queue,
 }
 
-/// Brings USB up and starts servicing it from `USBCTRL_IRQ`. Call once.
+/// Brings USB up and starts servicing it from `USBCTRL_IRQ`. Call once; a
+/// second call panics.
 pub fn init(
     usb: hal::pac::USB,
     dpram: hal::pac::USB_DPRAM,
     clock: hal::clocks::UsbClock,
     resets: &mut hal::pac::RESETS,
 ) {
+    // A second call would replace BUS under the classes that borrow it.
+    assert!(
+        !INIT.swap(true, Ordering::Relaxed),
+        "usb::init called twice"
+    );
     // The Pico 2 W routes VBUS through the CYW43439, so the controller
     // cannot sense it: force the detect bit.
     let bus = UsbBusAllocator::new(Bus::new(usb, dpram, clock, true, resets));
-    // SAFETY: `init` runs once, from `main`, before the interrupt is unmasked,
-    // so nothing else holds a reference to BUS. It is never written again, so
-    // the shared reference handed to the classes stays valid for 'static.
+    // SAFETY: INIT lets this run once, from `main`, before the interrupt is
+    // unmasked, so nothing else holds a reference to BUS. It is never written
+    // again, so the shared reference handed to the classes stays valid for
+    // 'static.
     let bus: &'static UsbBusAllocator<Bus> = unsafe { (*core::ptr::addr_of_mut!(BUS)).insert(bus) };
 
-    let console = SerialPort::new_with_interface_names(bus, Some("console"), Some("console"));
+    let console = Console::new(bus);
     let control = SerialPort::new_with_interface_names(bus, Some("control"), Some("control"));
     let reset = PicotoolReset::new(bus);
     let device = UsbDeviceBuilder::new(bus, VID_PID)
@@ -101,7 +127,6 @@ pub fn init(
             console,
             control,
             reset,
-            queue: Queue::new(),
         });
     });
     // SAFETY: STATE is set above, so the handler finds it. The handler only
@@ -117,8 +142,9 @@ fn serial_number() -> &'static str {
         Ok(Some(info)) => (info.wafer_id, info.device_id),
         _ => (0, 0),
     };
-    // SAFETY: called once, from `init`, before the interrupt is unmasked, so
-    // nothing else reads SERIAL; it is never written again.
+    // SAFETY: called once, from `init` (which INIT keeps to one call), before
+    // the interrupt is unmasked, so nothing else reads SERIAL; it is never
+    // written again.
     let serial = unsafe { &mut *core::ptr::addr_of_mut!(SERIAL) };
     for (i, digit) in serial.iter_mut().enumerate() {
         let word = if i < 8 { high } else { low };
@@ -130,48 +156,23 @@ fn serial_number() -> &'static str {
 }
 
 /// Queues one line for the console and starts sending it. Never waits: a line
-/// that does not fit is dropped whole and counted. Before `init`, does nothing.
+/// that does not fit is dropped whole and counted. The trace is not queued;
+/// it stays on UART0 (docs/TODO.md §5-11).
 pub fn write_line(kind: LineKind, parts: &[&[u8]]) {
     let reserve = match kind {
+        LineKind::Trace => return,
         LineKind::Firmware => 0,
-        LineKind::Log | LineKind::Trace => FIRMWARE_RESERVE,
+        LineKind::Log => FIRMWARE_RESERVE,
     };
     critical_section::with(|cs| {
+        let mut queue = QUEUE.borrow_ref_mut(cs);
+        queue.push(parts, reserve);
         if let Some(s) = STATE.borrow_ref_mut(cs).as_mut() {
-            s.queue.push(parts, reserve);
             // Arm the IN endpoint now: if it is idle, no interrupt would
             // come to drain the queue until some unrelated bus event.
-            s.drain();
+            s.console.drain(&mut queue);
         }
     });
-}
-
-impl State {
-    /// Moves queued bytes into the console until it takes no more. Only while
-    /// a host has the port open: bytes the console takes before that go out
-    /// to nobody, and may end in the middle of a line.
-    fn drain(&mut self) {
-        if !self.console.dtr() {
-            return;
-        }
-        while let Some(chunk) = self.queue.front() {
-            let len = chunk.len();
-            match self.console.write(chunk) {
-                Ok(n) => {
-                    self.queue.consume(n);
-                    if n < len {
-                        break;
-                    }
-                }
-                // WouldBlock: the endpoint is busy or no host reads. Anything
-                // else: nowhere to report it. Either way, try again later.
-                Err(_) => break,
-            }
-        }
-        let _ = self.console.flush();
-        // Sending made room: the dropped count need not wait for a new line.
-        self.queue.note_dropped(FIRMWARE_RESERVE);
-    }
 }
 
 #[interrupt]
@@ -182,33 +183,150 @@ fn USBCTRL_IRQ() {
         if s.device
             .poll(&mut [&mut s.console, &mut s.control, &mut s.reset])
         {
-            // Both ports carry nothing in: drop what the host sends, so a
-            // terminal that writes never stalls.
+            // The control port carries nothing in yet: drop what the host
+            // sends, so a terminal that writes never stalls.
             let mut sink = [0u8; 64];
-            while matches!(s.console.read(&mut sink), Ok(n) if n > 0) {}
             while matches!(s.control.read(&mut sink), Ok(n) if n > 0) {}
         }
-        if s.reset.reboot {
-            // The status stage of the reply goes out on the host's next IN
-            // token, without the CPU; 10 ms covers it with room to spare.
-            cortex_m::asm::delay(REBOOT_DELAY_CYCLES);
-            hal::reboot::reboot(
-                hal::reboot::RebootKind::Normal,
-                hal::reboot::RebootArch::Normal,
-            );
-        }
-        s.drain();
+        s.console.drain(&mut QUEUE.borrow_ref_mut(cs));
     });
 }
 
-/// 10 ms at the 150 MHz system clock that `init_clocks_and_plls` sets.
-const REBOOT_DELAY_CYCLES: u32 = 1_500_000;
+/// The console: a CDC ACM class that sends packets straight from the queue.
+/// `UsbDevice::poll` reports to it through `UsbClass`; `drain` applies what
+/// it saw to the queue, which lives behind its own lock.
+struct Console {
+    cdc: CdcAcmClass<'static, Bus>,
+    /// Bytes of the packet on the endpoint, until the host takes it.
+    /// `Some(0)` is a zero-length packet.
+    in_flight: Option<usize>,
+    /// Bytes the host took since the last `drain`.
+    taken: Option<usize>,
+    /// The last packet was full, so a short one (empty if nothing is left)
+    /// must follow to end the transfer, or the host holds the bytes back.
+    full: bool,
+    /// DTR as `drain` last saw it.
+    open: bool,
+    /// A bus reset cleared the endpoint: the line in progress starts over.
+    lost: bool,
+}
 
-/// A ring of whole lines.
+impl Console {
+    fn new(bus: &'static UsbBusAllocator<Bus>) -> Self {
+        Console {
+            cdc: CdcAcmClass::new_with_interface_names(
+                bus,
+                PACKET as u16,
+                Some("console"),
+                Some("console"),
+            ),
+            in_flight: None,
+            taken: None,
+            full: false,
+            open: false,
+            lost: false,
+        }
+    }
+
+    /// Hands the next packet of the queue to the endpoint, if it is free and
+    /// a host has the port open. Only while DTR is up: a packet sent before
+    /// that goes out to nobody.
+    fn drain(&mut self, queue: &mut Queue) {
+        if let Some(n) = self.taken.take() {
+            queue.advance(n);
+        }
+        if core::mem::take(&mut self.lost) {
+            queue.restart();
+        }
+        // Sending made room: the dropped count need not wait for a new line.
+        queue.note_dropped(FIRMWARE_RESERVE);
+        if !self.cdc.dtr() {
+            if self.open && self.in_flight.is_none() {
+                // Closed between two packets: the next session gets the
+                // whole line.
+                queue.restart();
+            }
+            self.open = false;
+            return;
+        }
+        self.open = true;
+        if self.in_flight.is_some() {
+            return;
+        }
+        let mut packet = [0u8; PACKET];
+        let n = queue.peek(&mut packet);
+        if n == 0 && !self.full {
+            return;
+        }
+        // WouldBlock cannot come with nothing in flight; any other error has
+        // nowhere to go. Either way the bytes stay queued for the next try.
+        if self.cdc.write_packet(&packet[..n]).is_ok() {
+            self.in_flight = Some(n);
+            self.full = n == PACKET;
+        }
+    }
+}
+
+impl UsbClass<Bus> for Console {
+    fn get_configuration_descriptors(
+        &self,
+        writer: &mut DescriptorWriter,
+    ) -> usb_device::Result<()> {
+        self.cdc.get_configuration_descriptors(writer)
+    }
+
+    fn get_string(&self, index: StringIndex, lang_id: LangID) -> Option<&str> {
+        self.cdc.get_string(index, lang_id)
+    }
+
+    fn reset(&mut self) {
+        UsbClass::<Bus>::reset(&mut self.cdc);
+        self.in_flight = None;
+        self.taken = None;
+        self.full = false;
+        self.open = false;
+        self.lost = true;
+    }
+
+    fn control_in(&mut self, xfer: ControlIn<Bus>) {
+        self.cdc.control_in(xfer);
+    }
+
+    fn control_out(&mut self, xfer: ControlOut<Bus>) {
+        self.cdc.control_out(xfer);
+    }
+
+    fn endpoint_out(&mut self, addr: EndpointAddress) {
+        // The console carries nothing in: drop what the host sends.
+        if addr == self.cdc.read_ep().address() {
+            let mut sink = [0u8; PACKET];
+            let _ = self.cdc.read_packet(&mut sink);
+        }
+    }
+
+    fn endpoint_in_complete(&mut self, addr: EndpointAddress) {
+        if addr == self.cdc.write_ep().address() {
+            let n = self.in_flight.take().unwrap_or(0);
+            self.taken = Some(self.taken.unwrap_or(0) + n);
+        }
+    }
+}
+
+/// Length of a queued line, before its bytes.
+const HEADER: usize = 2;
+
+/// The longest dropped count: "wasmicon: usb console dropped " (30 bytes),
+/// ten digits, " lines" (6) and the line end (2).
+const NOTE_MAX: usize = 48;
+
+/// A ring of whole lines, each a little-endian `u16` length and the bytes,
+/// line end included.
 struct Queue {
     buf: [u8; QUEUE_LEN],
     head: usize,
     len: usize,
+    /// Bytes of the first line the host has taken.
+    sent: usize,
     /// Lines dropped since the last count went out.
     dropped: u32,
 }
@@ -219,59 +337,108 @@ impl Queue {
             buf: [0; QUEUE_LEN],
             head: 0,
             len: 0,
+            sent: 0,
             dropped: 0,
         }
     }
 
+    fn free(&self) -> usize {
+        QUEUE_LEN - self.len
+    }
+
     /// Adds `parts` and a line end, leaving `reserve` bytes free, or counts the
-    /// line as dropped. A line never goes in ahead of a count still waiting,
-    /// so the count stands where the gap is.
+    /// line as dropped. A count still waiting goes in first, and only with the
+    /// line, so the count stands where the gap is and two counts never meet.
     fn push(&mut self, parts: &[&[u8]], reserve: usize) {
-        let len = parts.iter().map(|p| p.len()).sum::<usize>() + LINE_END.len();
-        self.note_dropped(reserve);
-        if self.dropped > 0 || len + reserve > QUEUE_LEN - self.len {
+        let line = parts.iter().map(|p| p.len()).sum::<usize>() + LINE_END.len();
+        let note = if self.dropped > 0 {
+            HEADER + NOTE_MAX
+        } else {
+            0
+        };
+        if note + HEADER + line + reserve > self.free() {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
-        write_parts(parts, |b| self.put(b));
+        self.note_dropped(0);
+        self.put_line(line, parts);
     }
 
-    /// Queues the count of dropped lines, if any and if it fits.
+    /// Queues the count of dropped lines, if any and if it fits with `reserve`
+    /// bytes left over.
     fn note_dropped(&mut self, reserve: usize) {
-        if self.dropped == 0 {
+        if self.dropped == 0 || HEADER + NOTE_MAX + reserve > self.free() {
             return;
         }
-        let mut raw = [0u8; 48];
+        let mut raw = [0u8; NOTE_MAX];
         let mut note = Buf::new(&mut raw);
         note.str("wasmicon: usb console dropped ");
         note.u32(self.dropped);
-        note.str(" lines");
-        if note.as_bytes().len() + LINE_END.len() + reserve > QUEUE_LEN - self.len {
-            return;
-        }
-        write_parts(&[note.as_bytes()], |b| self.put(b));
+        note.str(if self.dropped == 1 { " line" } else { " lines" });
+        let len = note.as_bytes().len() + LINE_END.len();
+        self.put_line(len, &[note.as_bytes()]);
         self.dropped = 0;
     }
 
-    fn put(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.buf[(self.head + self.len) % QUEUE_LEN] = b;
-            self.len += 1;
-        }
+    /// Writes one line of `len` bytes (`parts` and the line end), which fits.
+    fn put_line(&mut self, len: usize, parts: &[&[u8]]) {
+        // A line that fits is shorter than the queue, so `u16` holds it.
+        self.put(&(len as u16).to_le_bytes());
+        write_parts(parts, |b| self.put(b));
     }
 
-    /// The queued bytes up to the end of the buffer, if any.
-    fn front(&self) -> Option<&[u8]> {
+    fn put(&mut self, bytes: &[u8]) {
+        let at = (self.head + self.len) % QUEUE_LEN;
+        let first = bytes.len().min(QUEUE_LEN - at);
+        self.buf[at..at + first].copy_from_slice(&bytes[..first]);
+        self.buf[..bytes.len() - first].copy_from_slice(&bytes[first..]);
+        self.len += bytes.len();
+    }
+
+    fn get(&self, at: usize, out: &mut [u8]) {
+        let at = at % QUEUE_LEN;
+        let first = out.len().min(QUEUE_LEN - at);
+        let n = out.len();
+        out[..first].copy_from_slice(&self.buf[at..at + first]);
+        out[first..].copy_from_slice(&self.buf[..n - first]);
+    }
+
+    /// Length of the first line, if any.
+    fn first_len(&self) -> Option<usize> {
         if self.len == 0 {
             return None;
         }
-        let end = (self.head + self.len).min(QUEUE_LEN);
-        Some(&self.buf[self.head..end])
+        let mut raw = [0u8; HEADER];
+        self.get(self.head, &mut raw);
+        Some(usize::from(u16::from_le_bytes(raw)))
     }
 
-    fn consume(&mut self, n: usize) {
-        self.head = (self.head + n) % QUEUE_LEN;
-        self.len -= n;
+    /// Copies the next bytes of the first line the host has not taken into
+    /// `out`, as many as fit. Returns how many; 0 when the queue is empty.
+    fn peek(&self, out: &mut [u8]) -> usize {
+        let Some(line) = self.first_len() else {
+            return 0;
+        };
+        let n = (line - self.sent).min(out.len());
+        self.get(self.head + HEADER + self.sent, &mut out[..n]);
+        n
+    }
+
+    /// The host took `n` more bytes of the first line; the line leaves the
+    /// queue once all of it is taken.
+    fn advance(&mut self, n: usize) {
+        let Some(line) = self.first_len() else { return };
+        self.sent += n;
+        if self.sent >= line {
+            self.head = (self.head + HEADER + line) % QUEUE_LEN;
+            self.len -= HEADER + line;
+            self.sent = 0;
+        }
+    }
+
+    /// Sends the first line again from its start.
+    fn restart(&mut self) {
+        self.sent = 0;
     }
 }
 
@@ -290,8 +457,6 @@ const RESET_REQUEST_FLASH: u8 = 0x02;
 struct PicotoolReset {
     interface: InterfaceNumber,
     name: StringIndex,
-    /// A reboot into the firmware was asked for and answered.
-    reboot: bool,
 }
 
 impl PicotoolReset {
@@ -299,7 +464,6 @@ impl PicotoolReset {
         PicotoolReset {
             interface: alloc.interface(),
             name: alloc.string(),
-            reboot: false,
         }
     }
 
@@ -335,27 +499,27 @@ impl<B: UsbBus> UsbClass<B> for PicotoolReset {
         if !self.is_mine(req.request_type, req.recipient, req.index) {
             return;
         }
-        if req.request == RESET_REQUEST_BOOTSEL {
+        let kind = match req.request {
             // Bits 0..=6 of wValue disable the boot ROM's interfaces as in
             // pico-sdk (bit 0: mass storage, bit 1: PICOBOOT). The activity
             // LED of bits 8.. has no pin to drive here and is ignored.
-            hal::reboot::reboot(
-                hal::reboot::RebootKind::BootSel {
-                    msd_disabled: req.value & 0x01 != 0,
-                    picoboot_disabled: req.value & 0x02 != 0,
-                },
-                hal::reboot::RebootArch::Normal,
-            );
-        }
-        if req.request == RESET_REQUEST_FLASH {
-            // Answer first, as pico-sdk does: picotool waits for the reply
-            // and never returns if the device resets under it.
-            // `USBCTRL_IRQ` reboots once the reply has gone out.
-            let _ = xfer.accept();
-            self.reboot = true;
-            return;
-        }
-        let _ = xfer.reject();
+            RESET_REQUEST_BOOTSEL => hal::reboot::RebootKind::BootSel {
+                msd_disabled: req.value & 0x01 != 0,
+                picoboot_disabled: req.value & 0x02 != 0,
+            },
+            RESET_REQUEST_FLASH => hal::reboot::RebootKind::Normal,
+            _ => {
+                let _ = xfer.reject();
+                return;
+            }
+        };
+        // Answer first: picotool waits for the reply to the FLASH request
+        // and never returns if the device resets under it. The reply is
+        // armed on the endpoint and goes out on the host's next IN token
+        // without the CPU, inside the 500 ms that `reboot` hands the ROM
+        // before it resets.
+        let _ = xfer.accept();
+        hal::reboot::reboot(kind, hal::reboot::RebootArch::Normal);
     }
 
     fn control_in(&mut self, xfer: ControlIn<B>) {
