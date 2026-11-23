@@ -886,8 +886,9 @@ change.**
             instead of 68 KiB. Measured 2026-10-26 (docs/verification-report.md §26):
             about 1.6 s more per deploy (3.1 s against 1.5 s for the write alone). If
             that is too slow, write the two slots separately or stop padding past the app.
-            Done: `deploy` writes only the sectors that hold the app and the config slot
-            (`pack::regions`, docs/app-workflow.md §3.9)
+            Implemented, not measured on the ESP32-S3 yet: `deploy` writes only the sectors
+            that hold the app and the config slot (`pack::regions`, docs/app-workflow.md
+            §3.9), in two espflash calls
           - Run on the Freenove board 2026-10-26 (docs/verification-report.md §26): both
             firmwares report the new layout, apps match the host, and the assets
             rewritten with `assets write` are found
