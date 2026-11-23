@@ -115,34 +115,127 @@ pub fn build(wasm: &[u8]) -> Vec<u8> {
     image
 }
 
-/// Appends the config slot (wiring table, display and touch entries) to the
-/// app slot image, making one image that is flashed in one go (used by
-/// `deploy`; docs/app-workflow.md §3.9, docs/device-layer.md §5.2, §11.3).
-/// The slot has the lowest format version that holds the entries
+/// Flash erase unit of every board (RP2040 / RP2350 and the ESP32 family).
+/// `deploy` writes whole sectors only.
+pub const SECTOR: u32 = 4096;
+
+/// One stretch of flash that `deploy` writes, at a flash offset.
+pub struct Region {
+    /// What it is, for the summary (`app slot`, `config slot`).
+    pub what: &'static str,
+    /// Offset from the start of flash (a multiple of `SECTOR`).
+    pub offset: u32,
+    /// Bytes with meaning: the slot image or the config header and body.
+    pub content: usize,
+    /// `content`, then `0xff` (erased flash) up to the end of its last
+    /// sector. A multiple of `SECTOR`.
+    pub bytes: Vec<u8>,
+}
+
+/// The two regions `deploy` writes: the app image at the start of the app
+/// slot and the config slot (wiring table, display and touch entries;
+/// docs/app-workflow.md §3.9, docs/device-layer.md §5.2, §11.3). The config
+/// slot has the lowest format version that holds the entries
 /// (`Wiring::version`).
 ///
-/// The space after the app is filled with `0xff` (same as erased flash) up
-/// to the end of the slot. The wiring table is always written, even when
-/// empty, so the result of `deploy` depends only on the current
-/// `wasmicon.toml` (a previously flashed table never survives).
+/// Only the sectors that hold the app are written, not the whole app slot.
+/// The firmware reads the header first and then exactly the length it
+/// states, checking the CRC over it (`slot::parse` on RP2040 / RP2350,
+/// `pick_guest` on the ESP32 ports), so whatever an earlier, longer app left
+/// behind the new one is never read. The header sits in the first sector,
+/// which is always rewritten.
+///
+/// Each region is padded with `0xff` to whole sectors so the result does
+/// not depend on what a flasher does with a partly written sector:
+/// `picotool load` erases the sector and fills the rest with zeros
+/// (`load_guts` in picotool 2.3.1).
+///
+/// The wiring table is always written, even when empty, so the result of
+/// `deploy` depends only on the current `wasmicon.toml` (a previously
+/// flashed table never survives).
 ///
 /// # Errors
-/// When the config slot does not directly follow the app slot (a profile
-/// error).
-pub fn with_wiring(app: &[u8], p: &profile::Profile, w: &Wiring) -> Result<Vec<u8>> {
+/// When the board has no app slot or no config slot, or a slot does not
+/// start on a sector boundary (a profile error).
+pub fn regions(app: &[u8], p: &profile::Profile, w: &Wiring) -> Result<[Region; 2]> {
     let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
         bail!("{} has no app slot or no config slot", p.name);
     };
-    if rs.offset != sl.offset + sl.len {
-        bail!("the config slot of {} does not follow its app slot", p.name);
+    if sl.offset % SECTOR != 0 || rs.offset % SECTOR != 0 {
+        bail!("a slot of {} does not start on a 4 KiB sector", p.name);
     }
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(w, &mut body);
-    let mut image = app.to_vec();
-    image.resize(sl.len as usize, 0xff);
-    image.extend_from_slice(&roles::header(&body[..n], w.version()));
-    image.extend_from_slice(&body[..n]);
-    Ok(image)
+    let mut config = roles::header(&body[..n], w.version()).to_vec();
+    config.extend_from_slice(&body[..n]);
+    Ok([
+        Region::padded("app slot", sl.offset, app.to_vec()),
+        Region::padded("config slot", rs.offset, config),
+    ])
+}
+
+impl Region {
+    fn padded(what: &'static str, offset: u32, mut bytes: Vec<u8>) -> Self {
+        let content = bytes.len();
+        let sector = SECTOR as usize;
+        // An empty region still writes one sector (its header must go).
+        let len = content.max(1).div_ceil(sector) * sector;
+        bytes.resize(len, 0xff);
+        Region {
+            what,
+            offset,
+            content,
+            bytes,
+        }
+    }
+}
+
+/// UF2 family ID `absolute` (picotool's name): the payload goes to the
+/// address in each block, outside any partition. `picotool load` takes any
+/// family as long as every block has one (`build_rmap_uf2` in picotool
+/// 2.3.1); this one says what the file is.
+pub const UF2_FAMILY_ABSOLUTE: u32 = 0xe48b_ff57;
+
+/// Encodes regions at flash offsets as one UF2 file for `picotool load`, so
+/// two separate stretches of flash are written in one call (one USB
+/// connection, one reboot).
+///
+/// Each 512-byte block carries 256 bytes, the size picotool accepts. A
+/// block's address is `XIP_BASE + offset`.
+#[must_use]
+pub fn uf2(regions: &[Region]) -> Vec<u8> {
+    const PAYLOAD: usize = 256;
+    let total: usize = regions
+        .iter()
+        .map(|r| r.bytes.len().div_ceil(PAYLOAD))
+        .sum();
+    let total = u32::try_from(total).unwrap_or(u32::MAX);
+    let mut out = Vec::with_capacity(total as usize * 512);
+    let mut index: u32 = 0;
+    for r in regions {
+        for (i, chunk) in r.bytes.chunks(PAYLOAD).enumerate() {
+            let at = XIP_BASE + u64::from(r.offset) + (i * PAYLOAD) as u64;
+            let mut block = [0u8; 512];
+            let words: [u32; 8] = [
+                0x0A32_4655, // magic start 0 ("UF2\n")
+                0x9E5D_5157, // magic start 1
+                0x0000_2000, // flags: family ID present
+                u32::try_from(at).unwrap_or(u32::MAX),
+                PAYLOAD as u32,
+                index,
+                total,
+                UF2_FAMILY_ABSOLUTE,
+            ];
+            for (k, w) in words.iter().enumerate() {
+                block[k * 4..k * 4 + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            block[32..32 + chunk.len()].copy_from_slice(chunk);
+            block[508..].copy_from_slice(&0x0AB1_6F30u32.to_le_bytes()); // magic end
+            out.extend_from_slice(&block);
+            index += 1;
+        }
+    }
+    out
 }
 
 /// Describes the table on one line (`lcd-cs=17 lcd-dc=20`; `None` when empty).

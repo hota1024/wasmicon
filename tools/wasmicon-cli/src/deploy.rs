@@ -1,10 +1,13 @@
 //! `wasmicon deploy`: sends an app to the board's slot (docs/app-workflow.md §3.5).
 //!
 //! Stage 1 hands the image to an external flasher. A Pico is flashed with
-//! `picotool load -f`: a firmware with the picotool reset interface
-//! (`ports/rp2350`, docs/decisions.md A-11) reboots into BOOTSEL when asked,
-//! so only a board running other firmware still needs the button. The USB
-//! control channel (stage 2) is a separate item.
+//! `picotool load -F` and started with `picotool reboot`: a firmware with the
+//! picotool reset interface (`ports/rp2350`, docs/decisions.md A-11) reboots
+//! into BOOTSEL when asked, so only a board running other firmware still
+//! needs the button. The USB control channel (stage 2) is a separate item.
+//!
+//! Only the sectors that hold the app and the config slot are written, not
+//! the whole app slot (`pack::regions`).
 //!
 //! `check` runs before anything is sent. If an app that does not run on that
 //! board were written to the slot, the failure would show only on hardware
@@ -58,9 +61,15 @@ pub struct Options {
 pub struct Plan {
     pub board: &'static Profile,
     pub slot: Slot,
-    /// The slot image that was written.
-    pub image: PathBuf,
+    /// What goes to flash: the app image, then the config slot, each padded
+    /// to whole sectors (`pack::regions`).
+    pub regions: [pack::Region; 2],
+    /// The files handed to the flasher, in the order they are written: one
+    /// UF2 holding both regions for picotool, one `.bin` per region for
+    /// espflash (`write-bin` takes one file at one offset).
+    pub files: Vec<PathBuf>,
     pub wasm_len: usize,
+    /// The slot image: header + wasm.
     pub image_len: usize,
     pub crc: u32,
     /// The wiring table written alongside (`lcd-cs=17 ...`). `None` = no
@@ -98,8 +107,8 @@ impl Mode {
         let hand_off = opts.monitor && !opts.no_run && shared_port;
         Mode {
             // `--no-run` must not run the app either. `espflash write-bin`
-            // does `--after hard-reset` by default, and `picotool load -f`
-            // reboots a board it forced into BOOTSEL back into the app, so
+            // does `--after hard-reset` by default, and `deploy` follows
+            // `picotool load` with `picotool reboot`, so
             // without this the app runs right after flashing while the output
             // says "runs on the next reset" (a lie). Nobody wants that before
             // attaching a probe or on a board wired to a motor.
@@ -166,22 +175,33 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         Some(m) => m.wiring(board)?,
         None => Wiring::EMPTY,
     };
-    let image = pack::with_wiring(&app, board, &wiring)?;
+    let regions = pack::regions(&app, board, &wiring)?;
 
-    // The image goes next to the app (same name as `pack` uses). It is kept
-    // so the same image can be flashed again and its CRC cross-checked
-    // against the device's log.
-    let mut out = opts.path.clone();
-    out.set_extension("bin");
-    std::fs::write(&out, &image).with_context(|| format!("cannot write `{}`", out.display()))?;
+    // The files go next to the app. They are kept so the same write can be
+    // repeated and the CRC cross-checked against the device's log.
+    let files = match slot.flasher {
+        Flasher::Picotool => vec![(opts.path.with_extension("uf2"), pack::uf2(&regions))],
+        Flasher::Espflash { .. } => vec![
+            (opts.path.with_extension("bin"), regions[0].bytes.clone()),
+            (
+                opts.path.with_extension("config.bin"),
+                regions[1].bytes.clone(),
+            ),
+        ],
+    };
+    for (path, bytes) in &files {
+        std::fs::write(path, bytes)
+            .with_context(|| format!("cannot write `{}`", path.display()))?;
+    }
 
     Ok(Plan {
         board,
         slot,
-        image: out,
+        regions,
+        files: files.into_iter().map(|(p, _)| p).collect(),
         wasm_len: wasm.len(),
         image_len: app.len(),
-        crc: pack::crc_of(&image),
+        crc: pack::crc_of(&app),
         roles: pack::describe_roles(&wiring.roles),
         display: pack::describe_display(&wiring),
         touch: pack::describe_touch(&wiring),
@@ -196,18 +216,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
 pub fn run(opts: &Options) -> Result<bool> {
     let plan = prepare(opts)?;
 
-    // The summary shows the slot offset. The absolute address picotool
-    // takes (`write_at` derives it) means nothing on ESP32-S3, which flashes
-    // by offset; showing it would be wrong for one board or the other.
-    println!(
-        "{} -> {} slot (+{:#x})  {} B (wasm {} B, crc32 {:08x})",
-        plan.image.display(),
-        plan.board.name,
-        plan.slot.offset,
-        plan.image_len,
-        plan.wasm_len,
-        plan.crc
-    );
+    print_summary(&plan, opts);
     match &plan.roles {
         Some(r) => println!("  wiring: {r}"),
         None => println!(
@@ -225,8 +234,8 @@ pub fn run(opts: &Options) -> Result<bool> {
     let mode = Mode::of(opts, plan.slot.flasher);
 
     // With `--monitor` on a board whose trace has its own port, open the port
-    // and set the baud rate before anything is flashed: `picotool load -f -x`
-    // starts the app as part of the write. Setting it while data flows mixes
+    // and set the baud rate before anything is flashed: the app starts right
+    // after the write (`picotool reboot`). Setting it while data flows mixes
     // up the lines (item 2 in the `monitor` module docs).
     let session = if opts.monitor && !opts.no_run && !mode.shared_port {
         let port = monitor::choose(&monitor::ports(), opts.port.as_deref())?;
@@ -286,7 +295,7 @@ pub fn run(opts: &Options) -> Result<bool> {
     }
 
     // Both flashers have started the app by now (`write-bin` resets,
-    // `picotool load -x` runs it).
+    // `picotool reboot` runs it).
     let Some(session) = session else {
         println!("-> running. To capture the trace:");
         println!("    wasmicon monitor -o app.log   # then reset the board");
@@ -307,21 +316,89 @@ pub fn run(opts: &Options) -> Result<bool> {
     )
 }
 
-/// Writes the slot. The tool differs per board.
+/// Prints what is about to be written.
+///
+/// The summary shows the slot offset. The absolute address picotool works
+/// with means nothing on the ESP32 boards, which flash by offset.
+fn print_summary(plan: &Plan, _opts: &Options) {
+    let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+    println!(
+        "{} -> {} slot (+{:#x})  {} B (wasm {} B, crc32 {:08x})",
+        files.join(", "),
+        plan.board.name,
+        plan.slot.offset,
+        plan.image_len,
+        plan.wasm_len,
+        plan.crc
+    );
+}
+
+impl Plan {
+    /// Bytes that reach flash: the regions, whole sectors each.
+    #[must_use]
+    pub fn flash_len(&self) -> usize {
+        self.regions.iter().map(|r| r.bytes.len()).sum()
+    }
+}
+
+/// Writes the app and config regions. The tool differs per board.
 fn write_slot(
     plan: &Plan,
     port: Option<&Path>,
     keep_halted: bool,
     flash_baud: Option<u32>,
 ) -> Result<bool> {
-    write_at(
-        plan.slot.flasher,
-        plan.slot.offset,
-        &plan.image,
-        port,
-        keep_halted,
-        flash_baud,
-    )
+    match plan.slot.flasher {
+        // Both regions in one UF2, so one write. `-x` cannot start the app
+        // from a UF2 that holds no executable image (picotool 2.3.1 fails
+        // with "Cannot execute as file does not contain a valid RP2
+        // executable image" after writing), so the write leaves the board in
+        // BOOTSEL (`-F`, whether it was running or already there) and a
+        // separate reboot starts the app once.
+        Flasher::Picotool => {
+            let file = plan.files[0].to_string_lossy().into_owned();
+            if !picotool(&picotool_load_uf2_args(&file))? {
+                return Ok(false);
+            }
+            if keep_halted {
+                return Ok(true);
+            }
+            picotool(&["reboot".to_string()])
+        }
+        // `write-bin` takes one file at one offset, so one call per region.
+        // Every call but the last leaves the chip in its serial loader,
+        // and the next one connects without resetting it again.
+        Flasher::Espflash { .. } => {
+            let last = plan.files.len() - 1;
+            for (i, (file, region)) in plan.files.iter().zip(&plan.regions).enumerate() {
+                let args = espflash_write_args(
+                    region.offset,
+                    &file.to_string_lossy(),
+                    port,
+                    i < last || keep_halted,
+                    flash_baud,
+                );
+                let args = if i > 0 {
+                    after_a_loader_call(args)
+                } else {
+                    args
+                };
+                if !espflash(&args, flash_baud)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
+}
+
+/// Makes an `espflash write-bin` call connect to a chip that the previous
+/// call left in its serial loader (`--after no-reset`): `--before no-reset`
+/// skips the DTR/RTS reset into the loader, which is where the chip is.
+#[must_use]
+pub fn after_a_loader_call(mut args: Vec<String>) -> Vec<String> {
+    args.splice(1..1, ["--before".to_string(), "no-reset".to_string()]);
+    args
 }
 
 /// Refuses `--flash-baud` for a flasher that has no such setting, before
@@ -425,36 +502,56 @@ pub fn write_at(
             // keeps DTR/RTS asserted and leaves the board parked in download
             // mode (seen on hardware; docs/verification-report.md §10).
             let args = espflash_write_args(offset, &image, port, keep_halted, flash_baud);
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let ok = spawn("espflash", &args)?;
-            if !ok {
-                eprintln!("  if several serial ports exist, pick one with --port");
-                if let Some(b) = flash_baud {
-                    eprintln!(
-                        "  if it failed partway, the USB-serial bridge may not hold {b} baud; \
-                         try a lower --flash-baud"
-                    );
-                }
-            }
-            Ok(ok)
+            espflash(&args, flash_baud)
         }
         // A Pico in BOOTSEL, or running a firmware with the picotool reset
         // interface, which `-f` / `-F` reboot into BOOTSEL first.
         Flasher::Picotool => {
             let addr = pack::XIP_BASE + u64::from(offset);
-            let args = picotool_load_args(&image, addr, keep_halted);
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let ok = spawn("picotool", &args)?;
-            if !ok {
-                eprintln!(
-                    "  picotool reaches a board in BOOTSEL, or one running wasmicon firmware\n  \
-                     with the reset interface. Other firmware: hold BOOTSEL while plugging in\n  \
-                     USB, then run again"
-                );
-            }
-            Ok(ok)
+            picotool(&picotool_load_args(&image, addr, keep_halted))
         }
     }
+}
+
+/// Runs espflash and explains the usual causes of a failure.
+fn espflash(args: &[String], flash_baud: Option<u32>) -> Result<bool> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let ok = spawn("espflash", &args)?;
+    if !ok {
+        eprintln!("  if several serial ports exist, pick one with --port");
+        if let Some(b) = flash_baud {
+            eprintln!(
+                "  if it failed partway, the USB-serial bridge may not hold {b} baud; \
+                 try a lower --flash-baud"
+            );
+        }
+    }
+    Ok(ok)
+}
+
+/// Runs picotool and explains the usual cause of a failure.
+fn picotool(args: &[String]) -> Result<bool> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let ok = spawn("picotool", &args)?;
+    if !ok {
+        eprintln!(
+            "  picotool reaches a board in BOOTSEL, or one running wasmicon firmware\n  \
+             with the reset interface. Other firmware: hold BOOTSEL while plugging in\n  \
+             USB, then run again"
+        );
+    }
+    Ok(ok)
+}
+
+/// The arguments of `picotool load` for a UF2 file (`pack::uf2`), which
+/// carries its own addresses. `-F` reboots a running firmware into BOOTSEL
+/// through its reset interface and leaves it there; a board already in
+/// BOOTSEL stays there too.
+#[must_use]
+pub fn picotool_load_uf2_args(file: &str) -> Vec<String> {
+    ["load", file, "-t", "uf2", "-F"]
+        .map(str::to_string)
+        .to_vec()
 }
 
 /// The arguments of `picotool load` for one image at `addr`.
