@@ -316,21 +316,36 @@ pub fn run(opts: &Options) -> Result<bool> {
     )
 }
 
-/// Prints what is about to be written.
+/// Prints what is about to be written. The byte counts are what reaches
+/// flash, region by region; the files handed to the flasher are named after
+/// them (a UF2 file is twice the size of what it writes).
 ///
-/// The summary shows the slot offset. The absolute address picotool works
-/// with means nothing on the ESP32 boards, which flash by offset.
-fn print_summary(plan: &Plan, _opts: &Options) {
-    let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+/// Offsets are flash offsets. The absolute address picotool works with
+/// means nothing on the ESP32 boards, which flash by offset.
+fn print_summary(plan: &Plan, opts: &Options) {
     println!(
-        "{} -> {} slot (+{:#x})  {} B (wasm {} B, crc32 {:08x})",
-        files.join(", "),
+        "{} -> {}  wasm {} B, crc32 {:08x}",
+        opts.path.display(),
         plan.board.name,
-        plan.slot.offset,
-        plan.image_len,
         plan.wasm_len,
         plan.crc
     );
+    let how = match (plan.slot.flasher, plan.files.len()) {
+        (Flasher::Picotool, _) => "one picotool load".to_string(),
+        (Flasher::Espflash { .. }, n) => format!("{n} espflash write-bin calls"),
+    };
+    println!("  writes {} B to flash in {how}:", plan.flash_len());
+    for r in &plan.regions {
+        println!(
+            "    {:<11} +{:#08x}  {:>6} B ({} B used)",
+            r.what,
+            r.offset,
+            r.bytes.len(),
+            r.content
+        );
+    }
+    let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+    println!("  files: {}", files.join(", "));
 }
 
 impl Plan {
