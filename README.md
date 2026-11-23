@@ -181,8 +181,11 @@ $w run "$app" --trace > host.log
 $w trace diff host.log pico.log
 ```
 
-- **Hold BOOTSEL while plugging in the Pico's USB, then** `deploy`
-  (the image goes through `picotool`; the stage-2 USB control channel will remove this step)
+- **The Pico 2 W needs no button once it runs wasmicon firmware**: `deploy` calls
+  `picotool load -f`, which reboots the firmware into BOOTSEL through its picotool reset
+  interface. For the first flash, or a board running other firmware, hold BOOTSEL while
+  plugging in USB. With the board's USB and a USB-serial adapter both plugged in,
+  `--monitor` picks the adapter: the trace is on UART0 only
 - **The ESP32-S3 needs no button** (`espflash` resets it over DTR/RTS). Flashing and the trace
   share one port, so `--monitor` delegates to `espflash monitor`
 - To start a new app: `wasmicon new <dir> --lang rust --hal bindings`

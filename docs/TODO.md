@@ -1443,15 +1443,24 @@ change.**
         inside the 500 ms that `hal::reboot` hands the ROM before it resets, so no wait of
         the firmware's own is needed (review of 2026-11-23). `deploy` can now
         add `-f` and drop the BOOTSEL step (CLI below)
-      - **CLI**: `deploy --monitor` opens the port before the reset (`deploy.rs`), but right
-        after `picotool load` the board is in BOOTSEL and has no CDC device; open it after
-        the board re-enumerates. `monitor` must survive the device going away on a reset
-        instead of ending with `Closed`. Select the port by VID / PID, product string and
-        interface number (the console is interface 0, the control channel 2; macOS names
-        them `cu.usbmodem<location>1` and `...3`): the ESP32-S3's CH343 is a
-        `cu.usbmodem*` too, and `choose()` refuses two candidates, as with a CP2102N and
-        the CDC device plugged in together. `deploy` uses `picotool load -f` for a firmware
-        that answers on the reset interface
+      - ~~**CLI: port selection and `picotool -f`**~~ (done 2026-11-23) The CLI lists the
+        serial ports with their USB identity (`serialport` crate) and leaves the firmware's
+        own ports out of the trace candidates (VID 0x2E8A and a product string starting
+        with `wasmicon `), so the CP2102N and the Pico plugged in together need no
+        `--port`. The console is the first CDC pair and the control channel the second;
+        the tty hangs off the data interface on macOS (1 and 3) and off the communication
+        interface on Linux (0 and 2). With only the board's ports, the error says the
+        trace is on UART0. `deploy` and `assets write` call `picotool load -f -x` (`-F`
+        for `--no-run`), which starts the app once whether the board was running or in
+        BOOTSEL; the separate `picotool reboot` is gone, and `--monitor` opens the adapter
+        before flashing
+      - **CLI: read the console** (`monitor --console`, the name to confirm with the
+        owner): select the console by identity, open it once the device has
+        re-enumerated (the node appears before it delivers: a port opened at once read
+        nothing, one opened a second later read data), survive the device going away on
+        a reset instead of ending with `Closed`, and count lines instead of trace lines.
+        `deploy --monitor` with no adapter keeps failing with the reason (owner decision,
+        2026-11-23) rather than falling back to the console
       - ~~**Docs to update when it lands**~~ (done) The header of
         `ports/rp2350/src/main.rs` names the USB console next to UART0
       - **Verify on hardware** (docs/verification-report.md §42): done for the log lines

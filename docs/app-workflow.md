@@ -1141,7 +1141,7 @@ runs from the next power-on
 | Stage | What becomes available |
 |---|---|
 | 0 | `doctor` / `new` / `check` / `run` / `trace diff` / `monitor` (without identity) |
-| 1 | `flash` (firmware) / `deploy --persist` (through the existing flasher; **the Pico still needs BOOTSEL**) |
+| 1 | `flash` (firmware) / `deploy --persist` (through the existing flasher; **the Pico needs BOOTSEL** unless its firmware has the picotool reset interface, as `ports/rp2350` does: `deploy` uses `picotool load -f`, docs/decisions.md A-11) |
 | 2 | `info` / `deploy` (USB, no button) / `deploy --monitor` / identity in `monitor` / `fw list` |
 | 3 | `deploy --via http` (ESP32-S3) |
 

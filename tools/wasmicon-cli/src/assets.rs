@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::manifest::Manifest;
 use crate::{deploy, pack};
-use wasmicon_port::profile::{Flasher, Profile, Slot};
+use wasmicon_port::profile::{Profile, Slot};
 
 pub struct PackOptions {
     /// The manifest whose `[assets]` table is packed.
@@ -158,12 +158,7 @@ pub fn write(opts: &WriteOptions) -> Result<bool> {
         return Ok(false);
     }
     // The app slot is not touched, so the board comes back in whatever app
-    // it held. espflash resets it by itself; picotool leaves it in the
-    // bootloader, so it is rebooted here as `deploy` does.
-    if sl.flasher == Flasher::Picotool && !deploy::reboot()? {
-        eprintln!("  written, but the reset failed; unplug and replug USB");
-        return Ok(false);
-    }
+    // it held: espflash resets it, and `picotool load -f -x` runs it.
     println!("-> written; the board runs its app with the new assets");
     Ok(true)
 }

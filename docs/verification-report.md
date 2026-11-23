@@ -2301,3 +2301,31 @@ gave every line once, whole, or counted as dropped.
 - The host asleep, and the board running from VSYS with the USB cable pulled, were not tried
 - Only macOS was the host; Linux and Windows were not tried
 - `ports/rp2040` has no USB console yet
+
+## 43. Port selection and `picotool load -f` in the CLI (2026-11-23)
+
+Question: with the Pico 2 W's own USB ports and the CP2102N plugged in together, does `deploy
+--monitor` pick the adapter without `--port`, and does `deploy` flash a running firmware without
+the button while starting the app only once?
+
+CLI: `tools/wasmicon-cli` at the commit that adds the `serialport` listing. Firmware: `ports/rp2350`
+of docs/verification-report.md §42 (review fixes). Host: macOS, picotool 2.3.1. Guest:
+verify/usb-console/flood.wat (800 trace lines, then a trap).
+
+| Check | Result |
+|---|---|
+| The port list on macOS | `cu.usbmodem1101` = `wasmicon rp2350` interface 1, `cu.usbmodem1103` = interface 3, `cu.usbserial-1140` = CP2102N (10c4:ea60). The ttys hang off the CDC data interfaces |
+| `deploy --monitor`, no `--port`, board running the firmware | Opened `cu.usbserial-1140` before flashing; `picotool load -f -x` flashed and started the app; one banner, 800 trace lines, the trap reason |
+| The same, board in BOOTSEL | The same result: `-f -x` also starts a board that was in BOOTSEL already, once |
+| `deploy --no-run` | `picotool load -F`; `picotool info` then saw the board in BOOTSEL, so the app did not run |
+| `monitor`, no `--port` | Opened `cu.usbserial-1140` |
+| Board running PicoRuby (no reset interface) | Without `--port`: refused, listing the board's three `R2P2` ports (16c0:400f) and the CP2102N with their names. With `--port`: picotool found no device and the hint says to hold BOOTSEL for other firmware |
+| CP2102N unplugged, board running the firmware | Refused before flashing: only the board's console and control ports, and the trace is on UART0 only |
+
+### What this measurement does not say
+
+- Linux: the rule that the tty hangs off the communication interface there (0 and 2) is from the
+  `serialport` source and a unit test, not a run
+- `assets write` through `picotool load -f -x` was not run on the board; it shares the call with
+  `deploy`
+- picotool versions other than 2.3.1; `-F` and `-f` are in its `load` help
