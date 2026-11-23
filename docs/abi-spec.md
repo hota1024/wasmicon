@@ -391,7 +391,7 @@ MOSI=GPIO38, MISO=GPIO40 (the panel's and the TF card's bus), I2C0 at GPIO8/9 as
 `spi.bus` index 1 (GPIO48 is the touch controller's SDA). It also reserves GPIO0 (the BOOT strap, and the panel's
 reset where R16 is fitted) and GPIO41 (the TF card's chip select, which the firmware holds high at boot). The
 panel itself is the display entry's: CS=GPIO45, DC=GPIO42, backlight GPIO1, no reset GPIO. Taken from Waveshare's
-V2 schematic; not yet run on the board (docs/TODO.md §1.3.3).
+V2 schematic; DOOM ran on the board with them (docs/verification-report.md §41).
 
 The mapping from role names to GPIO numbers that `board.pin-by-role` (§7) answers from (the **wiring table**)
 **lives in the device's config slot, not in the firmware** (owner decision, 2026-10-07;

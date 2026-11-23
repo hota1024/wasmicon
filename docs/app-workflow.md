@@ -1286,7 +1286,8 @@ It is a board of its own, not a variant: its pins differ, so it reads
 `esp32s3-psram`'s. `spi.bus` index 1 is `unsupported` (no RGB LED), and GPIO0 and
 GPIO41 are reserved. The trace goes to UART0 on the header (GPIO43/44); the board
 has no USB-UART bridge, so a capture needs a USB serial adapter there while the
-native USB flashes. Not yet run on the board (docs/TODO.md §1.3.3).
+native USB flashes, and a run needs one RST press after `deploy --no-run`
+(docs/TODO.md §1.3.3). DOOM ran on the board (docs/verification-report.md §41).
 
 #### The same on the ESP32-P4: `esp32p4` and `esp32p4-psram`
 
