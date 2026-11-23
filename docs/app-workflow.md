@@ -1335,9 +1335,17 @@ until it is needed.
 
 ```
 $ wasmicon deploy app.wasm --board rp2350
-app.uf2 -> rp2350 slot (+0x100000)  4565 B (wasm 4549 B, crc32 c1cbe3c1)
+app.wasm -> rp2350  wasm 4088 B, crc32 6d1ca055
+  writes 12288 B to flash in one picotool load:
+    app slot    +0x100000    8192 B (4104 B used)
+    config slot +0x110000    4096 B (47 B used)
+  files: app.uf2
   wiring: lcd-cs=17 lcd-dc=20 lcd-rst=21
 ```
+
+`writes N B` is what reaches flash, whole sectors; `used` is the slot image (header +
+wasm) and the config header + body inside them. A UF2 file is twice the size of what it
+writes (each 256 bytes take a 512-byte block).
 
 **Rewriting the wiring table changes which pins are actually driven**, which can be
 physically dangerous depending on what is connected; that concern remains. Current
