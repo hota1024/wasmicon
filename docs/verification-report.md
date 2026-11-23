@@ -2272,6 +2272,17 @@ run and added to the repository afterwards).
 | picotool | `load -f` (flash a running firmware and reboot it), `reboot -f -u` (`picotool info` then sees BOOTSEL) and `reboot -f` all work without the button |
 | UART0 against the capture before the change (blink-rs) | Byte-identical apart from `git=`, CR LF included; `trace diff` against the host run: match, 20 lines |
 
+
+Repeated on 2026-11-23 after the rebase onto the `esp32s3-lcd2` work, with the rp2350 firmware of `20a81c9`
+(the banner shows the later commit that adds the test guest; no firmware code changed) and the guest built from `verify/usb-console/flood.wat` (macOS named the ports `cu.usbmodem1101` and
+`cu.usbmodem1103` on another USB port). Console opened after the run: the boot lines in full, 254
+test lines, `wasmicon: usb console dropped 146 lines`, the trap reason (254 + 146 = 400; the
+identity line is a different length from the first run). Console open across `picotool reboot -f`:
+all 400 lines and the trap reason, no drop. UART0: 800 trace lines and the trap reason. blink-rs:
+`trace diff` against the host run matches 20 lines, CR LF line ends. `picotool reboot -f -u` and
+`load -f -x` worked without the button. The UART0 capture was not compared byte for byte this time:
+the capture before the change was not kept.
+
 ### What this measurement does not say
 
 - The host asleep, and the board running from VSYS with the USB cable pulled, were not tried
