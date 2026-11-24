@@ -2457,9 +2457,56 @@ The rows above were taken with BOOTSEL confirmed before each run.
 
 ### What this measurement does not say
 
-- The ESP32 boards: not run here (two `espflash write-bin` calls, the second with `--before
-  no-reset`, are untested on hardware)
+- The ESP32 boards: §48 has the ESP32-S3
 - Copying the UF2 to the BOOTSEL drive instead of picotool
 - The lcd-demo-rs picture: no display was attached, so only the trace was compared
 - wasmicon-bench's `update-cost` was not rerun; its `tools/update.py` reads the old first line of
   `deploy`
+
+## 48. `deploy` writing only the sectors it needs, on the ESP32-S3 (2026-11-24)
+
+Question: on the ESP32-S3, whose app slot is 1 MiB, do the two `espflash write-bin` calls of
+`deploy` work (the second connecting with `--before no-reset`), does a short app over a longer one
+run, and how much faster is a deploy?
+
+Board: the Freenove ESP32-S3 (CH343, `cu.usbmodem5C630010671`), firmware `ports/esp32s3` plain
+build from `72f6a71` (`espflash flash --after no-reset`). CLI: `72f6a71` ("after") against the
+`b44af6d` build of §47 ("before": one `write-bin` of 1 MiB + 4 KiB). Host: macOS, espflash 4.5.0,
+its default 115200 baud (no `--flash-baud`), `--port` given (without it espflash asks which port
+and fails with `not a terminal`, before and after the change). Deployed from `apps/lcd-demo-rs`.
+
+| Check | Result |
+|---|---|
+| lcd-demo-rs, then blink-rs with `--monitor` | Both `write-bin` calls succeeded, the second with `--before no-reset`. blink-rs ran: `wasmicon: slot 759 B crc32=e32c3c5c`, its trace, after the roles and assets lines |
+| `espflash read-flash` of `0x100000` (12 KiB) and `0x200000` (4 KiB) after it | Header 759 B, crc32 `e32c3c5c`, the bytes are blink-rs; bytes 4,096 to 4,104 still hold the end of lcd-demo-rs's image, the rest is `0xff`; the config slot holds `lcd-cs=10 lcd-dc=14 lcd-rst=15` |
+| The assets slot | Untouched: the boot banner still lists `doom1.wad` |
+| Bytes written, lcd-demo-rs | 1,052,672 B before; 12,288 B after (app 8,192 B, config 4,096 B) |
+
+Time of `wasmicon deploy`, lcd-demo-rs. A real update changes the app, so each run alternated
+between two builds whose `BAND` constant differs (0x001E and 0x001D, the change of the
+wasmicon-bench `update-cost` experiment). Runs 1 to 5 after one warm-up run, median (min to max).
+
+| Case | Before | After |
+|---|---:|---:|
+| The app changed since the last deploy | 7.636 s (7.607 to 8.079) | 2.654 s (2.623 to 2.663) |
+| The same app again (first timing, not alternated) | 3.073 s (3.069 to 3.085) | 2.402 s (2.366 to 2.868) |
+| The app changed, `ESPFLASH_SKIP_UPDATE_CHECK=true` | not run | 2.364 s (2.104 to 2.446) |
+
+- The two calls alone, timed with `espflash write-bin -S` directly: the first 0.99 to 1.27 s, the
+  second 1.02 to 1.11 s with `--before no-reset` against 1.18 to 1.19 s with the default reset
+  (three runs each). Skipping the reset saves about 0.17 s; two calls cost about 1 s more than one,
+  far less than the 1 MiB erase they avoid
+- Writing the same 1 MiB again took 3.1 s instead of 7.6 s; espflash printed nothing different, so
+  why is not known from this run. A benchmark that deploys the same image repeatedly would measure
+  the faster case
+- Each espflash call checks for a newer espflash over the network (`A new version of espflash is
+  available`). Turning it off saved about 0.3 s over the two calls in this run; `deploy` does not
+  pass `--skip-update-check` today
+
+### What this measurement does not say
+
+- The ESP32-C5 and the ESP32-P4: not run (host tests and `--no-run` with stub flashers only)
+- `--flash-baud` above 115200 with the new layout
+- The psram and lcd2 firmware builds: same slot offsets as the plain build in their profiles, not
+  flashed here
+- The display: none attached
