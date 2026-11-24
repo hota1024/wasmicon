@@ -427,15 +427,27 @@ fn read_roles(storage: &mut FlashStorage<'_>) -> Result<Wiring, roles::RolesErro
         return Err(roles::RolesError::Empty);
     }
     let header = roles::parse_header(&head)?;
-    let mut body = [0u8; roles::MAX_BODY];
-    let body = &mut body[..header.len];
+    // The body, then the binding that may follow it (`roles::binding`).
+    let mut buf = [0u8; roles::MAX_BODY + roles::BIND_LEN];
+    let buf = &mut buf[..header.len + roles::BIND_LEN];
     if storage
-        .read(ROLE_SLOT.offset + roles::HEADER_LEN as u32, body)
+        .read(ROLE_SLOT.offset + roles::HEADER_LEN as u32, buf)
         .is_err()
     {
         return Err(roles::RolesError::Empty);
     }
-    roles::parse_checked(body, &header, &LIMITS)
+    let (body, after) = buf.split_at(header.len);
+    let result = roles::parse_checked(body, &header, &LIMITS);
+    roles::bind(result, roles::binding(after), app_crc(storage))
+}
+
+/// The CRC in the app slot's header, read before the config slot is held to
+/// it (`roles::bind`). `None` when the header cannot be read; the app does
+/// not run then.
+fn app_crc(storage: &mut FlashStorage<'_>) -> Option<u32> {
+    let mut head = [0u8; slot::HEADER_LEN];
+    storage.read(SLOT.offset, &mut head).ok()?;
+    slot::parse_header(&head).ok().map(|h| h.crc)
 }
 
 /// Reads the assets directory from the assets slot and prints it, or the

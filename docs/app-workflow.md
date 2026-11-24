@@ -543,6 +543,23 @@ call instead, which is faster than a second connection (`deploy::MERGE_GAP`).
 result of a `deploy` is determined by that moment's `wasmicon.toml` alone (no
 previously flashed table survives).
 
+**The table is bound to its app.** Right after the body (outside the header's length)
+`deploy` writes 8 bytes: `"WMCB"` and the CRC-32 of the app it deployed
+(`roles::binding_bytes`). At boot the firmware reads the CRC in the app slot's header
+first, and a table bound to another CRC hands out no roles (`wasmicon: roles belong to
+another app, no roles`). This closes the gap between the two writes on the boards that
+need two `espflash` calls: if the app went in and the config slot did not, the new app
+runs with no pins instead of the previous app's. Consequences:
+
+- No format version changes. A firmware that predates the binding reads the header and
+  the body only, so it keeps reading every app's table (docs/TODO.md §6-5) and is not
+  protected
+- A table without a binding (written by a CLI that predates it) is accepted for any app,
+  so the first deploy after switching to a binding firmware is not protected either
+- Flashing an app image by hand (`pack` + `espflash write-bin` / `picotool load`) over a
+  slot that `deploy` wrote leaves that app with no roles until the next `deploy`, which
+  writes a table bound to it
+
 #### The format is text
 
 The header is built like the app slot's (magic `"WMCR"` + format version + length +

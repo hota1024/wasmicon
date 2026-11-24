@@ -59,6 +59,13 @@ const DISPLAY_KEY: &[u8] = b"@display=";
 /// Prefix of the touch line.
 const TOUCH_KEY: &[u8] = b"@touch=";
 
+/// Identifier of the binding after the body: the table belongs to the app
+/// whose CRC follows (`binding`).
+pub const BIND_MAGIC: [u8; 4] = *b"WMCB";
+
+/// Size of the binding: `BIND_MAGIC`, then the app's CRC-32 (u32 LE).
+pub const BIND_LEN: usize = 8;
+
 /// Size reserved for the config slot (one flash erase unit).
 pub const SLOT_LEN: u32 = 4096;
 
@@ -102,6 +109,9 @@ pub enum RolesError {
     BadDisplay,
     /// The touch line is malformed, repeated, or does not match the display.
     BadTouch,
+    /// The table was written for another app than the one in the app slot
+    /// (`binding`). Its pins belong to that app.
+    OtherApp,
 }
 
 impl RolesError {
@@ -126,6 +136,7 @@ impl RolesError {
             RolesError::Overlap => "firmware overlaps the roles slot",
             RolesError::BadDisplay => "display entry is malformed",
             RolesError::BadTouch => "touch entry is malformed or has no matching display",
+            RolesError::OtherApp => "roles belong to another app",
         }
     }
 
@@ -953,6 +964,70 @@ pub fn parse(bytes: &[u8], limits: &Limits<'_>) -> Result<Wiring, RolesError> {
     parse_checked(body, &h, limits)
 }
 
+/// The binding the writer puts right after the body: `BIND_MAGIC` and the
+/// CRC-32 of the app the table was written with (for the writer).
+///
+/// It sits outside the body and outside the header's length, so it changes
+/// no format version: a firmware that predates it reads the header and the
+/// body and never looks further (`parse` ignores the rest; the ESP32 ports
+/// read exactly the header's length), and keeps reading every app's table
+/// (docs/TODO.md §6-5).
+#[must_use]
+pub fn binding_bytes(app_crc: u32) -> [u8; BIND_LEN] {
+    let mut b = [0u8; BIND_LEN];
+    b[..4].copy_from_slice(&BIND_MAGIC);
+    b[4..].copy_from_slice(&app_crc.to_le_bytes());
+    b
+}
+
+/// The app CRC in the bytes right after the body, if they hold a binding.
+/// `None` for a table without one (written before bindings existed).
+#[must_use]
+pub fn binding(after_body: &[u8]) -> Option<u32> {
+    let b = after_body.get(..BIND_LEN)?;
+    (b[..4] == BIND_MAGIC).then(|| u32::from_le_bytes([b[4], b[5], b[6], b[7]]))
+}
+
+/// Holds a table to the app it was written for.
+///
+/// `deploy` writes the app and the config slot in separate steps on some
+/// boards; if the second step fails, the slot holds the new app and the
+/// previous app's table, and running the new app with that table would drive
+/// the previous app's pins. A table bound to another app's CRC is refused as
+/// `OtherApp`, so the app runs with no roles. A table without a binding, or
+/// an app slot that cannot be read (the app does not run then anyway), passes
+/// as before.
+///
+/// # Errors
+/// `OtherApp`, or the error `result` already holds.
+pub fn bind(
+    result: Result<Wiring, RolesError>,
+    binding: Option<u32>,
+    app_crc: Option<u32>,
+) -> Result<Wiring, RolesError> {
+    match (result, binding, app_crc) {
+        (Ok(_), Some(b), Some(a)) if b != a => Err(RolesError::OtherApp),
+        (r, ..) => r,
+    }
+}
+
+/// `parse`, then `bind` with the binding after the body.
+///
+/// # Errors
+/// Whatever `parse` or `bind` report.
+pub fn parse_bound(
+    bytes: &[u8],
+    limits: &Limits<'_>,
+    app_crc: Option<u32>,
+) -> Result<Wiring, RolesError> {
+    let result = parse(bytes, limits);
+    let after = parse_header(bytes)
+        .ok()
+        .and_then(|h| bytes.get(HEADER_LEN + h.len..))
+        .unwrap_or(&[]);
+    bind(result, binding(after), app_crc)
+}
+
 /// Encodes the wiring as a body and returns the length written (for the
 /// writer). The display line, if any, comes after the roles, and the touch
 /// line last.
@@ -1020,10 +1095,12 @@ pub fn header(body: &[u8], version: u16) -> [u8; HEADER_LEN] {
     h
 }
 
-/// Reads the config slot from memory-mapped (XIP) flash (RP2040 / RP2350).
+/// Reads the config slot from memory-mapped (XIP) flash (RP2040 / RP2350)
+/// and holds it to the app whose CRC is `app_crc` (`bind`; the CRC in the
+/// app slot's header, `slot::header_crc_xip`).
 ///
 /// # Errors
-/// Overlap with the firmware, or whatever `parse` reports.
+/// Overlap with the firmware, or whatever `parse_bound` reports.
 ///
 /// # Safety
 /// `slot.len` bytes starting at `xip_base + slot.offset` must be readable
@@ -1034,6 +1111,7 @@ pub unsafe fn read_xip(
     slot: Slot,
     fw_end: usize,
     limits: &Limits<'_>,
+    app_crc: Option<u32>,
 ) -> Result<Wiring, RolesError> {
     // SAFETY: this function's own contract guarantees that `slot.len` bytes
     // from `xip_base + slot.offset` are readable memory-mapped flash that stays
@@ -1041,7 +1119,7 @@ pub unsafe fn read_xip(
     // requires.
     let bytes = unsafe { crate::slot::xip_region(xip_base, slot, fw_end) }
         .map_err(|_| RolesError::Overlap)?;
-    parse(bytes, limits)
+    parse_bound(bytes, limits, app_crc)
 }
 
 /// Builds the one line printed to the serial port at boot.

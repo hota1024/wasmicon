@@ -766,3 +766,66 @@ fn a_bad_xpt2046_entry_drops_the_whole_table() {
     let limits = Limits::of(&profile::ESP32P4);
     assert!(roles::parse(&img, &limits).err() == Some(RolesError::BadTouch));
 }
+
+/// A table written for one app is refused for another (`roles::bind`), so a
+/// deploy that wrote the app and failed before the config slot hands the new
+/// app no roles instead of the previous app's pins.
+#[test]
+fn a_table_bound_to_another_app_hands_out_no_roles() {
+    let mut img = image(&table(&[("led", 15)]));
+    img.extend_from_slice(&roles::binding_bytes(0x1234_5678));
+
+    let ok = roles::parse_bound(&img, &pico(), Some(0x1234_5678))
+        .unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(ok.roles.get(b"led"), Some(15));
+
+    let other = roles::parse_bound(&img, &pico(), Some(0x0bad_0bad)).err();
+    assert!(other == Some(RolesError::OtherApp));
+
+    // The boot line names the cause, as for any table that cannot be used.
+    let mut line = [0u8; roles::DESCRIBE_LEN];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&Err(RolesError::OtherApp), &mut out);
+    assert_eq!(
+        out.as_bytes(),
+        b"wasmicon: roles belong to another app, no roles"
+    );
+
+    // No app to compare with: the app slot is empty or unreadable, and
+    // nothing runs. The table itself is fine.
+    assert!(roles::parse_bound(&img, &pico(), None).is_ok());
+}
+
+/// The binding sits after the body and outside the header's length, so a
+/// firmware that predates it reads the same table (docs/TODO.md §6-5), and a
+/// table without one (an older CLI) is read as before.
+#[test]
+fn the_binding_changes_nothing_for_a_reader_that_does_not_know_it() {
+    let plain = image(&table(&[("led", 15)]));
+    let mut bound = plain.clone();
+    bound.extend_from_slice(&roles::binding_bytes(7));
+
+    // The old reader: `parse` stops at the header's length.
+    assert_eq!(parsed(&bound).get(b"led"), Some(15));
+    assert_eq!(&bound[..plain.len()], plain.as_slice());
+
+    // No binding: accepted for any app, as before.
+    assert!(roles::parse_bound(&plain, &pico(), Some(7)).is_ok());
+    assert!(roles::parse_bound(&plain, &pico(), Some(8)).is_ok());
+    // Erased flash after the body is no binding either.
+    let mut erased = plain.clone();
+    erased.extend_from_slice(&[0xff; 8]);
+    assert!(roles::binding(&erased[plain.len()..]).is_none());
+    assert!(roles::parse_bound(&erased, &pico(), Some(8)).is_ok());
+}
+
+/// A bad table stays the error it was; the binding never turns it into a
+/// good one.
+#[test]
+fn the_binding_does_not_hide_a_bad_table() {
+    let mut img = image(&table(&[("led", 15)]));
+    let last = img.len() - 1;
+    img[last] ^= 1;
+    img.extend_from_slice(&roles::binding_bytes(7));
+    assert!(roles::parse_bound(&img, &pico(), Some(7)).err() == Some(RolesError::BadCrc));
+}

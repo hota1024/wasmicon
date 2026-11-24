@@ -401,3 +401,43 @@ fn every_board_with_slots_gives_regions_inside_them() {
     );
     assert!(msg.contains("cannot hold"), "{msg}");
 }
+
+/// The failure `roles::bind` exists for: a deploy writes the new app, and
+/// the config slot write fails, so the flash holds the new app and the
+/// previous app's table. The firmware must hand the new app no roles.
+#[test]
+fn a_new_app_over_an_old_table_gets_no_roles() {
+    use wasmicon_port::profile;
+    use wasmicon_port::roles::{self, Limits, RolesError, Wiring};
+
+    for p in [&profile::RP2350, &profile::ESP32S3] {
+        let limits = Limits::of(p);
+        let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
+            panic!("{} has a slot", p.name);
+        };
+        let wired = Wiring {
+            roles: roles::from_table(&[("status-led", 15)], &limits)
+                .unwrap_or_else(|e| panic!("{}", e.reason())),
+            display: None,
+            touch: None,
+        };
+        let (base, flash) = erased(p);
+        let old = pack::regions(&pack::build(b"\0asm\x01\0\0\0old"), p, &wired).expect("builds");
+        let flash = overlay(&flash, base, &old);
+        let new = pack::regions(&pack::build(b"\0asm\x01\0\0\0new"), p, &wired).expect("builds");
+        let at = (rs.offset - sl.offset) as usize;
+
+        // The whole deploy: the new table is bound to the new app.
+        let both = overlay(&flash, base, &new);
+        let crc = slot::parse_header(&both).map(|h| h.crc).ok();
+        let back = roles::parse_bound(&both[at..], &limits, crc)
+            .unwrap_or_else(|e| panic!("{}: {}", p.name, e.reason()));
+        assert_eq!(back.roles.get(b"status-led"), Some(15));
+
+        // Only the app went in.
+        let half = overlay(&flash, base, &new[..1]);
+        let crc = slot::parse_header(&half).map(|h| h.crc).ok();
+        let got = roles::parse_bound(&half[at..], &limits, crc).err();
+        assert!(got == Some(RolesError::OtherApp), "{}", p.name);
+    }
+}

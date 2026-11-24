@@ -1506,30 +1506,31 @@ change.**
           knows; the CLI's port filter (VID 0x2E8A, product `wasmicon `) already matches
 - [ ] **`deploy` writes two regions: what is left open** (from the review of PR #25,
       2026-11-24). `deploy` writes the app's sectors and the config slot, not the whole app
-      slot (docs/app-workflow.md §3.9, docs/verification-report.md §47 to §50). Three
-      **owner questions** and one unverified board:
-      - **Old firmware on an ESP32-S3 / ESP32-P4.** A firmware from before the 1 MiB layout
-        reads its config slot at `0x110000`, which `deploy` no longer erases, so it runs a
-        new app with an earlier deploy's table (§1.3.2 records the mix). Options: accept it
-        (flash the new firmware first, as §1.3.2 already says), or have `deploy` refuse a
-        board whose firmware it cannot identify, which needs the stage 2 `info`
-      - **A failure between the two espflash calls** leaves the new app (CRC good) with the
-        previous config slot; a reset then drives the previous app's pins. `deploy` now says
-        not to reset and to deploy again. Options that close it: the config slot records the
-        CRC of the app it belongs to and the firmware hands out no roles on a mismatch (a
-        config slot format change, docs/app-workflow.md §3.6); or write the app with an empty
-        header, then the config slot, then the header sector (three calls, about 1 s more on
-        the ESP32-S3)
-      - **The layout behind both.** The two calls, `deploy::MERGE_GAP` and the state above
-        exist because the config slot sits after a 1 MiB app slot. A config slot in front of
-        the app slot would make every deploy one contiguous range in one call, on every
-        board; it moves a slot, so it needs new firmware on every board and the old-layout
-        mix again
+      slot (docs/app-workflow.md §3.9, docs/verification-report.md §47 to §50). Decided by the
+      owner on 2026-11-24:
+      - ~~**A failure between the two espflash calls**~~ (done in the firmware, not yet on
+        hardware) left the new app (CRC good) with the previous config slot, so a reset drove
+        the previous app's pins. The config slot is now bound to its app: `deploy` writes
+        `"WMCB"` and the app's CRC right after the body, and the firmware hands out no roles
+        when the CRC in the app slot's header differs (`roles::bind`, docs/app-workflow.md
+        §3.9). Outside the header's length, so no format version changes and older firmware
+        keeps reading every table (§6-5). Not protected: a firmware without it, and a table
+        written by a CLI without it (accepted for any app). Three calls (empty header, config,
+        header) were turned down: about 1 s more on the ESP32-S3
+      - **Old firmware on an ESP32-S3 / ESP32-P4: accepted, no code.** A firmware from before
+        the 1 MiB layout reads its config slot at `0x110000`, which `deploy` no longer erases,
+        so it runs a new app with an earlier deploy's table (§1.3.2). The project has no users
+        yet; flash the new firmware first. Refusing such a board needs the stage 2 `info`
+      - **The layout behind the two calls: deferred.** A config slot in front of the app slot
+        would make every deploy one contiguous range in one call, saving about 1.2 s per
+        deploy on the ESP32-S3 and the ESP32-P4. It moves a slot (new firmware on every board,
+        the old-layout mix again) and still needs the binding above. Revisit with the
+        several-boards item below, if its timings make the 1.2 s matter
       - **The RP2040 is unverified.** It gets the same UF2 (family `absolute`) through
         `picotool load -t uf2`. picotool 2.3.1's `load` does not check the family against
         the chip (`build_rmap_uf2` takes the first family it sees), so it should write, but
         no RP2040 has run it; its firmware has no reset interface, so it needs BOOTSEL either
-        way
+        way. Run it once when an RP2040 board is at hand
 - [ ] **`deploy` to several boards at once** (direction written 2026-11-24, from the
       wasmicon-bench `update-cost` request; nothing built). The claim of RQ1 is one build
       for N boards, and `deploy` takes one `--board`. Proposed:

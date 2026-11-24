@@ -75,7 +75,10 @@ pub fn run(opts: &Options) -> Result<bool> {
         && let Some(sl) = p.slot
     {
         flash_hint(sl, &out);
-        println!("  `wasmicon deploy` does this in one command");
+        println!("  `wasmicon deploy` does this in one command, with the wiring table");
+        println!(
+            "  (a table that `deploy` wrote is bound to its app: this image alone runs with no roles)"
+        );
     }
     Ok(true)
 }
@@ -154,6 +157,10 @@ pub struct Region {
 /// `deploy` depends only on the current `wasmicon.toml` (a previously
 /// flashed table never survives).
 ///
+/// The config slot is bound to the app: the app's CRC follows the body
+/// (`roles::binding_bytes`), and a firmware that reads it refuses a table
+/// bound to another app.
+///
 /// # Errors
 /// When the board has no app slot or no config slot, a slot is not whole
 /// sectors, the two slots overlap (profile errors), or a padded region does
@@ -180,6 +187,10 @@ pub fn regions(app: &[u8], p: &profile::Profile, w: &Wiring) -> Result<[Region; 
     let n = roles::encode_body(w, &mut body);
     let mut config = roles::header(&body[..n], w.version()).to_vec();
     config.extend_from_slice(&body[..n]);
+    // Holds the table to this app (`roles::bind`): if the app is written and
+    // the config slot is not, the firmware hands the new app no roles rather
+    // than the previous app's pins.
+    config.extend_from_slice(&roles::binding_bytes(crc_of(app)));
     let regions = [
         Region::padded("app slot", sl.offset, app.to_vec()),
         Region::padded("config slot", rs.offset, config),
