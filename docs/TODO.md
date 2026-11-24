@@ -890,8 +890,8 @@ change.**
             that is too slow, write the two slots separately or stop padding past the app.
             Done: `deploy` writes only the sectors that hold the app and the config slot
             (`pack::regions`, docs/app-workflow.md §3.9), in two espflash calls; on the
-            Freenove board a changed lcd-demo-rs deploys in 2.65 s instead of 7.64 s
-            (docs/verification-report.md §48)
+            Freenove board a changed lcd-demo-rs deploys in 2.81 s instead of 7.64 s
+            (docs/verification-report.md §48, docs/verification-report.md §49)
           - Run on the Freenove board 2026-10-26 (docs/verification-report.md §26): both
             firmwares report the new layout, apps match the host, and the assets
             rewritten with `assets write` are found
