@@ -2411,3 +2411,55 @@ the bench's own `39cd421` build give its table's 113,648 B of flash and 335,876 
   §45), so its row is not the console alone; the console alone is the first two rows
 - The RP2040 has no console yet (docs/TODO.md §5)
 - Stack use at run time, which the sums do not include
+
+## 47. `deploy` writing only the sectors it needs, on the Pico 2 W (2026-11-24)
+
+Question: does `deploy` still run the new app when it writes only the sectors of the app and the
+config slot, also over a longer app, and how much faster is the write? Does it run five times in a
+row without the button?
+
+CLI: `tools/wasmicon-cli` at `27be79a` ("after"), against a build of `b44af6d` ("before", which wrote
+the whole 64 KiB slot plus the config slot as one 65,583 B `.bin` with `picotool load -f -x`).
+Firmware: `ports/rp2350` from the same tree, trace on, with the USB console. Host: macOS, picotool
+2.3.1, the CP2102N on UART0. Apps: `apps/lcd-demo-rs` (4,088 B wasm, crc32 `6d1ca055`) and
+`apps/blink-rs` (759 B, crc32 `e32c3c5c`), deployed from `apps/lcd-demo-rs` (its `wasmicon.toml`
+gives the wiring). No display was attached.
+
+| Check | Result |
+|---|---|
+| lcd-demo-rs, then blink-rs, then `picotool save -r 0x10100000 0x10111000` | The slot header says 759 B, crc32 `e32c3c5c`, and the bytes are blink-rs. Bytes 4,096 to 4,104 still hold the end of lcd-demo-rs's image (its second sector was not rewritten), the rest of blink-rs's sector is `0xff`, and the config slot holds `lcd-cs=17 lcd-dc=20 lcd-rst=21`. blink-rs ran (`wasmicon: slot 759 B crc32=e32c3c5c`, then its trace) |
+| Five `deploy --monitor` in a row, blink-rs and lcd-demo-rs in turn, no button | Each capture: one identity line, one slot line whose CRC is the one `deploy` printed, then the app's trace. The lcd-demo-rs capture matches the host run over 14,352 lines (`trace diff`) |
+| `deploy --no-run` | `picotool load -F` only; `picotool info` then found the board in BOOTSEL |
+| Bytes written, lcd-demo-rs | 65,583 B before; 12,288 B after (app 8,192 B with 4,104 B used, config 4,096 B), in a 24,576 B UF2 file |
+
+Time of `wasmicon deploy` (check, image and flasher, from the command's start to its exit), lcd-demo-rs,
+five runs each, median (min to max). "From BOOTSEL": `picotool reboot -f -u` first and `picotool
+info` confirming BOOTSEL, not timed. "From the running app": the board running the previous deploy.
+
+| Start | Before | After |
+|---|---:|---:|
+| From BOOTSEL | 0.452 s (0.434 to 0.462) | 0.263 s (0.227 to 0.294) |
+| From the running app (no button) | 1.629 s (1.612 to 1.642) | 1.472 s (1.461 to 1.485) |
+
+- `check` and the image take 0.02 s of these; the rest is picotool
+- From BOOTSEL, `picotool load` of the UF2 took 0.21 to 0.24 s and `picotool reboot` 0.05 s
+- From the running app, about 1.2 s is picotool's own wait after it reboots a board into BOOTSEL
+  (`sleep_ms(1200)` in picotool 2.3.1). It is close to the floor on this host: after `picotool
+  reboot -f -u` (0.04 s), the board took 1.0 to 1.1 s to answer `picotool info` again, and the whole
+  sequence with polling came to 1.30 to 1.37 s against 1.47 s. `load -f` alone (picotool reboots the
+  board back itself) took 1.44 s, the same as `load -F` + `reboot`. Neither is worth the extra calls
+- So the button costs a person a replug but saves no time: the button-less path is about 1.2 s
+  slower than flashing a board already in BOOTSEL
+
+A first timing script left too little time between runs: `picotool reboot -f -u` came before the
+board's USB was back, failed silently, and its "from BOOTSEL" rows were runs from the running app.
+The rows above were taken with BOOTSEL confirmed before each run.
+
+### What this measurement does not say
+
+- The ESP32 boards: not run here (two `espflash write-bin` calls, the second with `--before
+  no-reset`, are untested on hardware)
+- Copying the UF2 to the BOOTSEL drive instead of picotool
+- The lcd-demo-rs picture: no display was attached, so only the trace was compared
+- wasmicon-bench's `update-cost` was not rerun; its `tools/update.py` reads the old first line of
+  `deploy`
