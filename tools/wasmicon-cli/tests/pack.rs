@@ -294,7 +294,7 @@ fn the_uf2_file_puts_each_region_at_its_address() {
     let p = &profile::RP2350;
     let regions =
         pack::regions(&pack::build(b"\0asm\x01\0\0\0app"), p, &Wiring::EMPTY).expect("builds");
-    let file = pack::uf2(&regions);
+    let file = pack::uf2(&regions).expect("encodes");
     let blocks: Vec<&[u8]> = file.chunks(512).collect();
     let total = regions.iter().map(|r| r.bytes.len() / 256).sum::<usize>();
     assert_eq!(blocks.len(), total);
@@ -348,4 +348,56 @@ fn the_deploy_image_carries_the_touch_entry() {
     assert_eq!(back.touch, Some(TouchConfig::Tab5));
     assert_eq!(pack::describe_display(&w).as_deref(), Some("tab5"));
     assert_eq!(pack::describe_touch(&w).as_deref(), Some("tab5"));
+}
+
+/// A region that is not whole 256-byte blocks would be written with zeros
+/// after its end, and one past the address space would wrap; both are
+/// refused rather than encoded.
+#[test]
+fn the_uf2_encoder_refuses_what_it_cannot_write_exactly() {
+    let short = pack::Region {
+        what: "app slot",
+        offset: 0x10_0000,
+        content: 100,
+        bytes: vec![0xff; 100],
+    };
+    let msg = format!("{:#}", pack::uf2(&[short]).expect_err("refused"));
+    assert!(msg.contains("256 B blocks"), "{msg}");
+    let far = pack::Region {
+        what: "app slot",
+        offset: 0xffff_f000,
+        content: 4096,
+        bytes: vec![0xff; 4096],
+    };
+    let msg = format!("{:#}", pack::uf2(&[far]).expect_err("refused"));
+    assert!(msg.contains("32-bit address space"), "{msg}");
+}
+
+/// Every board's profile gives regions that stay inside their slots.
+#[test]
+fn every_board_with_slots_gives_regions_inside_them() {
+    use wasmicon_port::profile;
+    use wasmicon_port::roles::Wiring;
+
+    for p in profile::PROFILES {
+        let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
+            continue;
+        };
+        let regions = pack::regions(&pack::build(b"\0asm\x01\0\0\0app"), p, &Wiring::EMPTY)
+            .unwrap_or_else(|e| panic!("{}: {e:#}", p.name));
+        assert!(regions[0].bytes.len() <= sl.len as usize, "{}", p.name);
+        assert!(regions[1].bytes.len() <= rs.len as usize, "{}", p.name);
+    }
+    // An app that fills the slot to the last byte still fits; one byte more
+    // is refused by `fits` before this, and by `regions` too.
+    let p = &profile::RP2350;
+    let sl = p.slot.expect("rp2350 has a slot");
+    let big = vec![0u8; sl.len as usize - 16 + 1];
+    let msg = format!(
+        "{:#}",
+        pack::regions(&pack::build(&big), p, &Wiring::EMPTY)
+            .err()
+            .expect("refused")
+    );
+    assert!(msg.contains("cannot hold"), "{msg}");
 }

@@ -91,8 +91,12 @@ fn a_runnable_app_gets_an_image_and_a_slot() {
     assert_eq!(plan.slot.offset, 0x10_0000);
     assert_eq!(plan.image_len, plan.wasm_len + 16);
     // Both regions in one UF2 file, so picotool is called once.
-    assert_eq!(plan.files.len(), 1);
-    let uf2 = &plan.files[0];
+    assert_eq!(plan.writes.len(), 1);
+    assert_eq!(
+        plan.writes[0].offset, None,
+        "a UF2 carries its own addresses"
+    );
+    let uf2 = &plan.writes[0].path;
     assert!(
         uf2.extension().is_some_and(|e| e == "uf2"),
         "{}",
@@ -120,16 +124,24 @@ fn an_espflash_board_gets_one_file_per_region() {
     let app = dir.join("blink.wasm");
     std::fs::write(&app, build("blink-rs")).expect("cannot write");
 
-    let plan = prepared(&opts(app, Some("esp32s3")));
-    assert_eq!(
-        plan.files,
-        [dir.join("blink.bin"), dir.join("blink.config.bin")]
-    );
-    for (f, r) in plan.files.iter().zip(&plan.regions) {
-        assert_eq!(std::fs::read(f).expect("written"), r.bytes);
+    let plan = prepared(&opts(app.clone(), Some("esp32s3")));
+    let paths: Vec<_> = plan.writes.iter().map(|w| w.path.clone()).collect();
+    assert_eq!(paths, [dir.join("blink.bin"), dir.join("blink.config.bin")]);
+    for (w, r) in plan.writes.iter().zip(&plan.regions) {
+        assert_eq!(w.offset, Some(r.offset));
+        assert_eq!(std::fs::read(&w.path).expect("written"), r.bytes);
     }
     // The 1 MiB slot is no longer written whole.
     assert!(plan.flash_len() < 64 * 1024, "{}", plan.flash_len());
+
+    // A deploy to a board that writes one file removes the config file left
+    // by this one, so the two cannot be flashed together by hand.
+    prepared(&opts(app.clone(), Some("esp32c5")));
+    assert!(!dir.join("blink.config.bin").exists());
+    prepared(&opts(app, Some("rp2350")));
+    assert!(dir.join("blink.uf2").exists());
+    prepared(&opts(dir.join("blink.wasm"), Some("esp32s3")));
+    assert!(!dir.join("blink.uf2").exists());
 }
 
 #[test]
@@ -141,8 +153,10 @@ fn a_small_slot_goes_to_espflash_in_one_call() {
     std::fs::write(&app, build("blink-rs")).expect("cannot write");
 
     let plan = prepared(&opts(app, Some("esp32c5")));
-    assert_eq!(plan.files, [dir.join("blink.bin")]);
-    let one = std::fs::read(&plan.files[0]).expect("written");
+    assert_eq!(plan.writes.len(), 1);
+    assert_eq!(plan.writes[0].path, dir.join("blink.bin"));
+    assert_eq!(plan.writes[0].offset, Some(plan.regions[0].offset));
+    let one = std::fs::read(&plan.writes[0].path).expect("written");
     // From the app slot to the end of the config slot, the gap erased.
     assert_eq!(one.len(), 64 * 1024 + 4096);
     assert_eq!(plan.flash_len(), one.len());
@@ -260,8 +274,8 @@ fn no_run_keeps_an_espflash_board_halted() {
     assert!(m.keep_halted, "resets despite --no-run");
     assert!(!m.hand_off);
 
-    // `picotool load -f` reboots a board it forced into BOOTSEL back into
-    // the app, so it needs the same suppression (`-F`).
+    // `deploy` follows `picotool load -F` with `picotool reboot`, so
+    // `--no-run` must skip the reboot.
     let m = deploy::Mode::of(&mode_opts(true, false), Flasher::Picotool);
     assert!(m.keep_halted, "runs despite --no-run");
 }

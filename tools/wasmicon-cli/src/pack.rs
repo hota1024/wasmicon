@@ -155,23 +155,47 @@ pub struct Region {
 /// flashed table never survives).
 ///
 /// # Errors
-/// When the board has no app slot or no config slot, or a slot does not
-/// start on a sector boundary (a profile error).
+/// When the board has no app slot or no config slot, a slot is not whole
+/// sectors, the two slots overlap (profile errors), or a padded region does
+/// not fit its slot.
 pub fn regions(app: &[u8], p: &profile::Profile, w: &Wiring) -> Result<[Region; 2]> {
     let (Some(sl), Some(rs)) = (p.slot, p.role_slot) else {
-        bail!("{} has no app slot or no config slot", p.name);
+        bail!("`{}` has no app slot or no config slot", p.name);
     };
-    if sl.offset % SECTOR != 0 || rs.offset % SECTOR != 0 {
-        bail!("a slot of {} does not start on a 4 KiB sector", p.name);
+    // Whole sectors, so padding a region never reaches past its slot into
+    // the next one.
+    for (what, s) in [("app slot", sl), ("config slot", rs)] {
+        if s.offset % SECTOR != 0 || s.len % SECTOR != 0 || s.len == 0 {
+            bail!("the {what} of `{}` is not whole 4 KiB sectors", p.name);
+        }
+    }
+    let (app_end, rs_end) = (
+        u64::from(sl.offset) + u64::from(sl.len),
+        u64::from(rs.offset) + u64::from(rs.len),
+    );
+    if u64::from(rs.offset) < app_end && u64::from(sl.offset) < rs_end {
+        bail!("the app slot and the config slot of `{}` overlap", p.name);
     }
     let mut body = [0u8; roles::MAX_BODY];
     let n = roles::encode_body(w, &mut body);
     let mut config = roles::header(&body[..n], w.version()).to_vec();
     config.extend_from_slice(&body[..n]);
-    Ok([
+    let regions = [
         Region::padded("app slot", sl.offset, app.to_vec()),
         Region::padded("config slot", rs.offset, config),
-    ])
+    ];
+    for (r, s) in regions.iter().zip([sl, rs]) {
+        if r.bytes.len() > s.len as usize {
+            bail!(
+                "the {} of `{}` cannot hold {} B ({} B)",
+                r.what,
+                p.name,
+                r.bytes.len(),
+                s.len
+            );
+        }
+    }
+    Ok(regions)
 }
 
 impl Region {
@@ -202,25 +226,42 @@ pub const UF2_FAMILY_ABSOLUTE: u32 = 0xe48b_ff57;
 ///
 /// Each 512-byte block carries 256 bytes, the size picotool accepts. A
 /// block's address is `XIP_BASE + offset`.
-#[must_use]
-pub fn uf2(regions: &[Region]) -> Vec<u8> {
+///
+/// # Errors
+/// When a region is not whole 256-byte blocks (a short last block would be
+/// written with zeros after it) or reaches past the 32-bit address space.
+pub fn uf2(regions: &[Region]) -> Result<Vec<u8>> {
     const PAYLOAD: usize = 256;
-    let total: usize = regions
-        .iter()
-        .map(|r| r.bytes.len().div_ceil(PAYLOAD))
-        .sum();
-    let total = u32::try_from(total).unwrap_or(u32::MAX);
+    for r in regions {
+        if r.bytes.len() % PAYLOAD != 0 {
+            bail!(
+                "the {} is {} B, not whole 256 B blocks",
+                r.what,
+                r.bytes.len()
+            );
+        }
+        if XIP_BASE + u64::from(r.offset) + r.bytes.len() as u64 > u64::from(u32::MAX) {
+            bail!(
+                "the {} at `{:#x}` is past the 32-bit address space",
+                r.what,
+                r.offset
+            );
+        }
+    }
+    let total: usize = regions.iter().map(|r| r.bytes.len() / PAYLOAD).sum();
+    let total = u32::try_from(total).context("too many UF2 blocks")?;
     let mut out = Vec::with_capacity(total as usize * 512);
     let mut index: u32 = 0;
     for r in regions {
         for (i, chunk) in r.bytes.chunks(PAYLOAD).enumerate() {
-            let at = XIP_BASE + u64::from(r.offset) + (i * PAYLOAD) as u64;
+            // Fits: checked above.
+            let at = (XIP_BASE + u64::from(r.offset) + (i * PAYLOAD) as u64) as u32;
             let mut block = [0u8; 512];
             let words: [u32; 8] = [
                 0x0A32_4655, // magic start 0 ("UF2\n")
                 0x9E5D_5157, // magic start 1
                 0x0000_2000, // flags: family ID present
-                u32::try_from(at).unwrap_or(u32::MAX),
+                at,
                 PAYLOAD as u32,
                 index,
                 total,
@@ -235,7 +276,7 @@ pub fn uf2(regions: &[Region]) -> Vec<u8> {
             index += 1;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Describes the table on one line (`lcd-cs=17 lcd-dc=20`; `None` when empty).

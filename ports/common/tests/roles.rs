@@ -271,7 +271,8 @@ fn the_boot_line_lists_the_table_or_the_reason() {
 
 #[test]
 fn every_profile_puts_the_roles_slot_right_after_the_app_slot() {
-    // deploy writes the app slot and the config slot as one image (pack::with_roles).
+    // The CLI's deploy relies on the layout: it fills the gap between the two
+    // with 0xff when that makes one espflash call (deploy::MERGE_GAP).
     for p in profile::PROFILES {
         match (p.slot, p.role_slot) {
             (Some(s), Some(r)) => {
