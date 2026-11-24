@@ -2578,3 +2578,24 @@ write), a changed lcd-demo-rs (`BAND` alternated as in §48), runs 1 to 5 after 
 - The psram build (`esp32p4-psram`): the same slot offsets in its profile, not flashed here
 - The time with the reset after the write (only `--no-run` was timed)
 - The Tab5's panel: blink-rs and lcd-demo-rs draw nothing on it
+
+## 51. `deploy` after the review of PR #25, on every evaluated board (2026-11-24)
+
+Question: does the CLI of `fdd9532` (the review fixes: one port for both espflash calls, the
+write list rebuilt, the region checks) still put each app in place and start it?
+
+CLI: `fdd9532`. Each board kept the firmware it had; nothing about the firmware changed in
+`fdd9532`. Host: macOS, picotool 2.3.1, espflash 4.5.0. Deployed from `apps/lcd-demo-rs`.
+
+| Board and firmware | Check | Result |
+|---|---|---|
+| Tab5, `ports/esp32p4` of `401ee60` | `deploy` without `--port`, the Tab5's USB-C and the CP2102N attached | Refused before writing, listing both ports |
+| | blink-rs with `--port` (two calls) | Ran: `wasmicon: slot 759 B crc32=e32c3c5c` on UART0 |
+| Pico 2 W, `ports/rp2350` of `27be79a` | lcd-demo-rs from BOOTSEL, blink-rs from the running app (no button) | Both started: `slot 4088 B crc32=6d1ca055` and `slot 759 B crc32=e32c3c5c`, read on the USB console (`monitor --console`); the CP2102N was not wired to the Pico this time and read nothing |
+| A second Freenove ESP32-S3 (`cu.usbmodem5C630009931`), `esp32s3-psram` of `c2ca487`, trace off, UART0 at 115200 | lcd-demo-rs, then blink-rs, `--board esp32s3` (two calls each) | blink-rs ran: `slot 759 B crc32=e32c3c5c`, read at 115200 (the firmware predates §45); `doom1.wad` still listed. This also runs `deploy` against a psram firmware, which §48 did not |
+| ESP32-C5, `ports/esp32c5` of `3f53c89` | lcd-demo-rs (one call), then `espflash read-flash` | The slot holds lcd-demo-rs (crc32 `6d1ca055`), `0xff` to the config slot, and `lcd-cs=10 lcd-dc=0 lcd-rst=1`. Not started here: it needs RESET and a replug on this board (docs/TODO.md §1.3.1); §49 started the same one-call path |
+
+### What this measurement does not say
+
+- Timings: not rerun; the bytes written are those of §47 to §50 (host tests check the files)
+- The C5's boot after this CLI's write
