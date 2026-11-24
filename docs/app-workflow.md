@@ -268,8 +268,9 @@ sync and log lines collide. And **both boards have a free USB port** (the ESP32-
   bootloader, so **no button press is needed**
 - RP2350 / RP2040: BOOTSEL + `picotool load -o <offset>`, or **the CLI builds a UF2
   that points at the slot address and copies it to the `RPI-RP2` drive** (no
-  picotool). Whether RP2350 needs the absolute family ID (0xe48bff57) for an
-  arbitrary address is **to be confirmed** (-> §5-6)
+  picotool). `deploy` hands picotool a UF2 of the absolute family ID (0xe48bff57),
+  which it writes at the block addresses (docs/verification-report.md §47); copying such a
+  file to the drive was not tried (-> §5-6)
 - Once the firmware has a USB control channel it can drop itself into BOOTSEL with
   `reboot::RebootKind::BootSel` (rp235x-hal 0.4.0 `src/reboot.rs`), which removes the
   Pico's button press too

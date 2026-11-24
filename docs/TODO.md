@@ -781,9 +781,11 @@ change.**
       - **RP2350 flash writes.** `rom_data::flash_range_erase` / `flash_range_program`
         **cannot be called from code executing from XIP**. The write routine will have to
         live in RAM (`#[link_section = ".data"]`) with interrupts disabled
-      - **Can UF2 write to an arbitrary address?** On RP2350 without a partition table the
-        absolute family ID (0xe48bff57) may be required. If it works, `deploy` needs no
-        picotool
+      - ~~**Can UF2 write to an arbitrary address?**~~ (answered 2026-11-24 for picotool)
+        `picotool load -t uf2` writes a UF2 of family `absolute` (0xe48bff57) at its block
+        addresses on the Pico 2 W, two separate regions in one call
+        (docs/verification-report.md §47). Copying it to the BOOTSEL drive without picotool
+        was not tried
       - **Do not assume an arbitrary offset is XIP-mapped on the ESP32-S3.** The design
         reads into RAM through `esp-storage`
 - [ ] **§5-7 Build the ESP32-S3 firmware as a release deliverable in CI?** Not run in CI
