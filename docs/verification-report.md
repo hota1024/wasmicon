@@ -2505,7 +2505,7 @@ wasmicon-bench `update-cost` experiment). Runs 1 to 5 after one warm-up run, med
 
 ### What this measurement does not say
 
-- The ESP32-C5: §49. The ESP32-P4: not run (host tests and `--no-run` with stub flashers only)
+- The ESP32-C5: §49. The ESP32-P4: §50
 - `--flash-baud` above 115200 with the new layout
 - The psram and lcd2 firmware builds: same slot offsets as the plain build in their profiles, not
   flashed here
@@ -2548,4 +2548,33 @@ changed lcd-demo-rs, runs 1 to 5: **2.813 s** (2.783 to 3.162), against 2.654 s 
   running firmware (the known symptom in docs/TODO.md §1.3.1). The one-call file ends at `0x111000`,
   where the assets slot starts (a host test checks its length)
 - Why `--before no-reset` fails on the C5 and not on the S3
-- The ESP32-P4
+- The ESP32-P4: §50
+
+## 50. `deploy` writing only the sectors it needs, on the ESP32-P4 (Tab5) (2026-11-24)
+
+Question: on the Tab5 (1 MiB app slot, two `espflash write-bin` calls), does `deploy` run a short
+app over a longer one, and how much faster is it?
+
+Board: the M5Stack Tab5, firmware `ports/esp32p4` plain build from `401ee60` (`espflash flash
+--after no-reset` through the Tab5's USB-C, `cu.usbmodem11401`, USB-Serial-JTAG); the CP2102N on
+M5-Bus pin 14 (`cu.usbserial-110`) for UART0. CLI: `401ee60` against the `b44af6d` build of §47.
+Host: macOS, espflash 4.5.0. Deployed from `apps/lcd-demo-rs`.
+
+| Check | Result |
+|---|---|
+| lcd-demo-rs, then blink-rs (`--no-run`), then `espflash read-flash` | Two calls each. Header 759 B, crc32 `e32c3c5c`, the bytes are blink-rs; bytes 4,096 to 4,104 still hold the end of lcd-demo-rs's image, the rest is `0xff`; the config slot holds `lcd-cs=48 lcd-dc=47 lcd-rst=45` |
+| blink-rs with the reset (no `--no-run`), UART0 read by `wasmicon monitor` at 921600 | The identity line, `wasmicon: assets doom1.wad=4196020` (the assets slot untouched), `wasmicon: slot 759 B crc32=e32c3c5c`, blink-rs's trace. No power cycle was needed: espflash's reset after the second call started the firmware |
+| Bytes written, lcd-demo-rs | 1,052,672 B before; 12,288 B after |
+
+Time of `wasmicon deploy --no-run` (the same flags before and after, so the comparison is the
+write), a changed lcd-demo-rs (`BAND` alternated as in §48), runs 1 to 5 after one warm-up:
+
+| Before | After |
+|---:|---:|
+| 5.206 s (5.195 to 5.221) | 1.223 s (1.213 to 1.252) |
+
+### What this measurement does not say
+
+- The psram build (`esp32p4-psram`): the same slot offsets in its profile, not flashed here
+- The time with the reset after the write (only `--no-run` was timed)
+- The Tab5's panel: blink-rs and lcd-demo-rs draw nothing on it
