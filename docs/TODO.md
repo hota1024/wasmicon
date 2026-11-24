@@ -1508,8 +1508,8 @@ change.**
       2026-11-24). `deploy` writes the app's sectors and the config slot, not the whole app
       slot (docs/app-workflow.md §3.9, docs/verification-report.md §47 to §50). Decided by the
       owner on 2026-11-24:
-      - ~~**A failure between the two espflash calls**~~ (done in the firmware, not yet on
-        hardware) left the new app (CRC good) with the previous config slot, so a reset drove
+      - ~~**A failure between the two espflash calls**~~ (done; checked on the four evaluated
+        boards, docs/verification-report.md §52) left the new app (CRC good) with the previous config slot, so a reset drove
         the previous app's pins. The config slot is now bound to its app: `deploy` writes
         `"WMCB"` and the app's CRC right after the body, and the firmware hands out no roles
         when the CRC in the app slot's header differs (`roles::bind`, docs/app-workflow.md
