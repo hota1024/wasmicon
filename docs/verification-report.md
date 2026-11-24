@@ -2599,3 +2599,36 @@ CLI: `fdd9532`. Each board kept the firmware it had; nothing about the firmware 
 
 - Timings: not rerun; the bytes written are those of §47 to §50 (host tests check the files)
 - The C5's boot after this CLI's write
+
+## 52. The config slot bound to its app, on every evaluated board (2026-11-24)
+
+Question: with the config slot bound to the app it was deployed with (`roles::bind`), does a
+normal deploy still hand out the table, and does an app written over another app's table get no
+roles?
+
+Firmware and CLI: `1915be9` on every board (the commit was rebased onto `main` later without a
+code change):
+`ports/esp32p4` (Tab5), `ports/rp2350` (Pico 2 W), `ports/esp32s3 --features psram` (the second
+Freenove board of §51, which had run `c2ca487`; its firmware was replaced with the owner's consent)
+and `ports/esp32c5`. Host: macOS, picotool 2.3.1, espflash 4.5.0. Deployed from `apps/lcd-demo-rs`.
+
+"Mismatch": a full `deploy` of blink-rs (its table bound to blink-rs's crc32 `e32c3c5c`), then only
+lcd-demo-rs's app image written over it by hand (`wasmicon pack` + `picotool load -t bin -o
+0x10100000 -f` on the Pico, `espflash write-bin 0x100000` on the ESP32 boards), then a reset.
+This is the state a failed second espflash call leaves.
+
+| Board | Normal `deploy` of lcd-demo-rs | Mismatch |
+|---|---|---|
+| Tab5 | `wasmicon: roles lcd-cs=48 lcd-dc=47 lcd-rst=45` (UART0) | `wasmicon: roles belong to another app, no roles`, then `[wasm] role not found` for `lcd-cs`, `lcd-dc` and `lcd-rst` |
+| Pico 2 W | `roles lcd-cs=17 lcd-dc=20 lcd-rst=21` (USB console) | `roles belong to another app, no roles`, `role not found` |
+| ESP32-S3, psram build | `roles lcd-cs=10 lcd-dc=14 lcd-rst=15`; `assets doom1.wad=4196020` | `roles belong to another app, no roles`, `role not found` |
+| ESP32-C5 | `roles lcd-cs=10 lcd-dc=0 lcd-rst=1`, `lcd-demo done` (RESET by the owner) | `roles belong to another app, no roles`, `role not found` (RESET by the owner) |
+
+Each board was left with a normal deploy of lcd-demo-rs.
+
+### What this measurement does not say
+
+- A firmware without the binding reading a bound table: covered by a host test only (`parse`
+  stops at the header's length)
+- A table written by a CLI without the binding on a firmware with it: a host test only
+- The RP2040, and the plain ESP32-S3 build (the psram build ran)
