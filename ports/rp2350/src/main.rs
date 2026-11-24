@@ -276,10 +276,14 @@ fn pick_roles(serial: &mut impl Serial) -> Wiring {
     // `__flash_binary_end` is a linker symbol; only its address is used, never
     // its contents.
     let fw_end = (&raw const __flash_binary_end) as usize;
+    // SAFETY: XIP is mapped read-only for the rest of the program, and the
+    // app slot (64 KiB from 1 MiB) lies inside the flash. Overlap with the
+    // firmware is rejected by xip_region using fw_end.
+    let app_crc = unsafe { slot::header_crc_xip(XIP_BASE, SLOT, fw_end) };
     // SAFETY: XIP is mapped read-only, and the config slot (4 KiB right after
     // the app slot) lies inside the flash. Overlap with the firmware is
     // rejected by xip_region using fw_end.
-    let result = unsafe { roles::read_xip(XIP_BASE, ROLE_SLOT, fw_end, &LIMITS) };
+    let result = unsafe { roles::read_xip(XIP_BASE, ROLE_SLOT, fw_end, &LIMITS, app_crc) };
     let mut line = [0u8; roles::DESCRIBE_LEN];
     let mut out = Buf::new(&mut line);
     roles::describe(&result, &mut out);

@@ -195,6 +195,23 @@ pub unsafe fn read_xip(
     parse(unsafe { xip_region(xip_base, slot, fw_end) }?)
 }
 
+/// The CRC in the app slot's header on memory-mapped (XIP) flash, without
+/// reading the body. The config slot is held to it (`roles::bind`), and it
+/// is read before the config slot, which comes first at boot.
+///
+/// `None` when the header cannot be read (empty, wrong magic or version,
+/// overlap with the firmware); the app does not run then.
+///
+/// # Safety
+/// The contract of `read_xip`.
+#[must_use]
+pub unsafe fn header_crc_xip(xip_base: usize, slot: Slot, fw_end: usize) -> Option<u32> {
+    // SAFETY: this function's own contract is `read_xip`'s, which is exactly
+    // what `xip_region` requires.
+    let bytes = unsafe { xip_region(xip_base, slot, fw_end) }.ok()?;
+    parse_header(bytes).ok().map(|h| h.crc)
+}
+
 /// Returns one region of memory-mapped (XIP) flash as a slice, without
 /// interpreting it.
 ///
