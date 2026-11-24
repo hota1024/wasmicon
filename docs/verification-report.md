@@ -2535,6 +2535,12 @@ So `deploy` now connects every call with espflash's default reset (the ESP32-S3 
 of §48) and writes both regions in one call when the gap between them is at most 64 KiB. On the
 ESP32-S3 and the ESP32-P4 the gap is 1 MiB, so they keep two calls.
 
+Rerun on the ESP32-S3 of §48 (same board and firmware) with the CLI of `f790a4b`: lcd-demo-rs, then
+blink-rs with `--monitor`, both through two calls with the default reset; blink-rs ran
+(`wasmicon: slot 759 B crc32=e32c3c5c`, its trace), the assets slot still listed `doom1.wad`. A
+changed lcd-demo-rs, runs 1 to 5: **2.813 s** (2.783 to 3.162), against 2.654 s with
+`--before no-reset` (§48) and 7.636 s before the change.
+
 ### What this measurement does not say
 
 - The assets slot after these runs: the banner said `assets magic mismatch`, as docs/TODO.md §1.3.1
@@ -2542,6 +2548,4 @@ ESP32-S3 and the ESP32-P4 the gap is 1 MiB, so they keep two calls.
   running firmware (the known symptom in docs/TODO.md §1.3.1). The one-call file ends at `0x111000`,
   where the assets slot starts (a host test checks its length)
 - Why `--before no-reset` fails on the C5 and not on the S3
-- The ESP32-S3 with the default reset on the second call through `deploy`: only the direct
-  `espflash write-bin` runs of §48 (1.18 to 1.19 s)
 - The ESP32-P4
