@@ -291,11 +291,15 @@ not marked with a 2026-10 date were measured there and live on only in these not
   since the app slot's start and format did not change:
   - New firmware, app slot not rewritten: the old app passes its CRC and runs with no
     wiring table and no display entry (`roles none`)
-  - Old firmware, new CLI: `deploy` pads the app slot to 1 MiB, so the old config slot at
-    `0x110000` reads as empty and the app runs with no roles; `assets write` lands at
-    `0x201000`, where the old firmware does not look. Flash the new firmware first
+  - Old firmware, new CLI: since `deploy` writes only the sectors that hold the app
+    (docs/app-workflow.md §3.9), **the old config slot at `0x110000` is no longer erased**:
+    the old firmware runs the new app with whatever table an earlier deploy left there,
+    which can drive another app's pins. `assets write` lands at `0x201000`, where the old
+    firmware does not look. Flash the new firmware first (owner question in §5, the
+    deploy-to-flash item)
   - The cost of the single layout (owner decision, as on the ESP32-S3): every `deploy` to
-    either P4 firmware erases and writes 1 MiB + 4 KiB instead of 68 KiB, and the plain
+    either P4 firmware erased and wrote 1 MiB + 4 KiB instead of 68 KiB until `deploy`
+    wrote only the needed sectors (docs/verification-report.md §50), and the plain
     firmware's assets slot is 960 KiB smaller although its 300 KiB arena cannot use the
     larger app slot
 - **Silicon before v3.0.** The Tab5 has an ESP32-P4 v1.0 (ROM `esp32p4-eco2-20240710`);
@@ -1324,7 +1328,7 @@ change.**
         **that check is already covered by `tests/flags.rs` and `tests/new.rs`**
 - [x] **The role-map config slot** (2026-10-07, minimal stage-1 version.
       docs/app-workflow.md §3.9). 4 KiB right after the app slot, holding `"WMCR"` + the
-      table as text. `deploy` writes it together with the app as one image, and the
+      table as text. `deploy` writes it with every app (`pack::regions`), and the
       firmware reads it at boot (`roles` in `ports/common`). **Remaining**: the `config`
       command over the protocol and reading it back through `info` (stage 2). The original
       plan follows: a config sector + a `config` command + device-side validation
@@ -1500,6 +1504,32 @@ change.**
           watchdog reset or `SCB::sys_reset` after the reply has gone out
         - **The PID.** pico-sdk's stdio USB PID on the RP2040 is 0x000A, which picotool
           knows; the CLI's port filter (VID 0x2E8A, product `wasmicon `) already matches
+- [ ] **`deploy` writes two regions: what is left open** (from the review of PR #25,
+      2026-11-24). `deploy` writes the app's sectors and the config slot, not the whole app
+      slot (docs/app-workflow.md §3.9, docs/verification-report.md §47 to §50). Three
+      **owner questions** and one unverified board:
+      - **Old firmware on an ESP32-S3 / ESP32-P4.** A firmware from before the 1 MiB layout
+        reads its config slot at `0x110000`, which `deploy` no longer erases, so it runs a
+        new app with an earlier deploy's table (§1.3.2 records the mix). Options: accept it
+        (flash the new firmware first, as §1.3.2 already says), or have `deploy` refuse a
+        board whose firmware it cannot identify, which needs the stage 2 `info`
+      - **A failure between the two espflash calls** leaves the new app (CRC good) with the
+        previous config slot; a reset then drives the previous app's pins. `deploy` now says
+        not to reset and to deploy again. Options that close it: the config slot records the
+        CRC of the app it belongs to and the firmware hands out no roles on a mismatch (a
+        config slot format change, docs/app-workflow.md §3.6); or write the app with an empty
+        header, then the config slot, then the header sector (three calls, about 1 s more on
+        the ESP32-S3)
+      - **The layout behind both.** The two calls, `deploy::MERGE_GAP` and the state above
+        exist because the config slot sits after a 1 MiB app slot. A config slot in front of
+        the app slot would make every deploy one contiguous range in one call, on every
+        board; it moves a slot, so it needs new firmware on every board and the old-layout
+        mix again
+      - **The RP2040 is unverified.** It gets the same UF2 (family `absolute`) through
+        `picotool load -t uf2`. picotool 2.3.1's `load` does not check the family against
+        the chip (`build_rmap_uf2` takes the first family it sees), so it should write, but
+        no RP2040 has run it; its firmware has no reset interface, so it needs BOOTSEL either
+        way
 - [ ] **`deploy` to several boards at once** (direction written 2026-11-24, from the
       wasmicon-bench `update-cost` request; nothing built). The claim of RQ1 is one build
       for N boards, and `deploy` takes one `--board`. Proposed:

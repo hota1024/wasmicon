@@ -61,13 +61,12 @@ pub struct Options {
 pub struct Plan {
     pub board: &'static Profile,
     pub slot: Slot,
-    /// What goes to flash: the app image, then the config slot, each padded
-    /// to whole sectors (`pack::regions`).
+    /// What has meaning in flash: the app image, then the config slot, each
+    /// padded to whole sectors (`pack::regions`).
     pub regions: [pack::Region; 2],
-    /// The files handed to the flasher, in the order they are written: one
-    /// UF2 holding both regions for picotool, one `.bin` per region for
-    /// espflash (`write-bin` takes one file at one offset).
-    pub files: Vec<PathBuf>,
+    /// The files handed to the flasher, in the order they are written (one
+    /// flasher call each, `Write`).
+    pub writes: Vec<Write>,
     pub wasm_len: usize,
     /// The slot image: header + wasm.
     pub image_len: usize,
@@ -83,13 +82,24 @@ pub struct Plan {
     pub touch: Option<String>,
 }
 
+/// One file handed to the flasher.
+pub struct Write {
+    pub path: PathBuf,
+    /// Where `write-bin` puts it. `None` for a UF2 file, which carries its
+    /// own addresses.
+    pub offset: Option<u32>,
+    /// Bytes it puts in flash (a UF2 file is twice this size).
+    pub flash_len: usize,
+}
+
 /// How to flash. Decided by the flasher, not by the board name.
 ///
 /// Split out of `run` because it is the only branch that can be tested (the
 /// part that calls the external flasher needs hardware).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Mode {
-    /// Do not run after writing (`espflash --after no-reset`, `picotool -F`).
+    /// Do not run after writing: `espflash --after no-reset` on the last
+    /// call too, and no `picotool reboot` after `picotool load -F`.
     pub keep_halted: bool,
     /// Hand reset and capture to `espflash monitor`.
     pub hand_off: bool,
@@ -175,38 +185,14 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         Some(m) => m.wiring(board)?,
         None => Wiring::EMPTY,
     };
-    let mut regions = pack::regions(&app, board, &wiring)?;
-
-    // The files go next to the app. They are kept so the same write can be
-    // repeated and the CRC cross-checked against the device's log.
-    let files = match slot.flasher {
-        Flasher::Picotool => vec![(opts.path.with_extension("uf2"), pack::uf2(&regions))],
-        Flasher::Espflash { .. } if merges(&regions) => {
-            // Fill the gap with erased bytes and write both in one call.
-            let end = (regions[1].offset - regions[0].offset) as usize;
-            regions[0].bytes.resize(end, 0xff);
-            let mut one = regions[0].bytes.clone();
-            one.extend_from_slice(&regions[1].bytes);
-            vec![(opts.path.with_extension("bin"), one)]
-        }
-        Flasher::Espflash { .. } => vec![
-            (opts.path.with_extension("bin"), regions[0].bytes.clone()),
-            (
-                opts.path.with_extension("config.bin"),
-                regions[1].bytes.clone(),
-            ),
-        ],
-    };
-    for (path, bytes) in &files {
-        std::fs::write(path, bytes)
-            .with_context(|| format!("cannot write `{}`", path.display()))?;
-    }
+    let regions = pack::regions(&app, board, &wiring)?;
+    let writes = write_files(&opts.path, slot.flasher, &regions)?;
 
     Ok(Plan {
         board,
         slot,
         regions,
-        files: files.into_iter().map(|(p, _)| p).collect(),
+        writes,
         wasm_len: wasm.len(),
         image_len: app.len(),
         crc: pack::crc_of(&app),
@@ -214,6 +200,66 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         display: pack::describe_display(&wiring),
         touch: pack::describe_touch(&wiring),
     })
+}
+
+/// Writes the files the flasher takes next to the app and returns them in
+/// the order they are flashed. They are kept so the same write can be
+/// repeated and the CRC cross-checked against the device's log.
+///
+/// The names that only `deploy` writes (`<app>.uf2`, `<app>.config.bin`)
+/// are removed when this deploy does not write them, so a file left by a
+/// deploy to another board is never mistaken for this one's.
+fn write_files(app: &Path, flasher: Flasher, regions: &[pack::Region; 2]) -> Result<Vec<Write>> {
+    let put = |path: PathBuf, parts: &[&[u8]], offset: Option<u32>| -> Result<Write> {
+        let bytes = parts.concat();
+        std::fs::write(&path, &bytes)
+            .with_context(|| format!("cannot write `{}`", path.display()))?;
+        Ok(Write {
+            path,
+            offset,
+            flash_len: if offset.is_some() {
+                bytes.len()
+            } else {
+                bytes.len() / 2
+            },
+        })
+    };
+    let [a, c] = regions;
+    let writes = match flasher {
+        Flasher::Picotool => vec![put(
+            app.with_extension("uf2"),
+            &[&pack::uf2(regions)?],
+            None,
+        )?],
+        // Fill the gap with erased bytes and write both in one call.
+        Flasher::Espflash { .. } if merges(regions) => {
+            let gap = vec![0xff; (c.offset - a.offset) as usize - a.bytes.len()];
+            vec![put(
+                app.with_extension("bin"),
+                &[&a.bytes, &gap, &c.bytes],
+                Some(a.offset),
+            )?]
+        }
+        Flasher::Espflash { .. } => vec![
+            put(app.with_extension("bin"), &[&a.bytes], Some(a.offset))?,
+            put(
+                app.with_extension("config.bin"),
+                &[&c.bytes],
+                Some(c.offset),
+            )?,
+        ],
+    };
+    for stale in [app.with_extension("uf2"), app.with_extension("config.bin")] {
+        if !writes.iter().any(|w| w.path == stale) {
+            match std::fs::remove_file(&stale) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(e).with_context(|| format!("cannot remove `{}`", stale.display()));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(writes)
 }
 
 /// Checks, then flashes.
@@ -254,14 +300,20 @@ pub fn run(opts: &Options) -> Result<bool> {
         None
     };
 
+    // Several espflash calls must reach the same board. Without `--port`
+    // espflash picks a port on each call (and asks, on a terminal), so pick
+    // it once here.
+    let port = match (opts.port.clone(), plan.writes.len(), plan.slot.flasher) {
+        (None, 2.., Flasher::Espflash { .. }) => Some(
+            monitor::choose(&monitor::ports(), None)
+                .context("the espflash calls must reach one board")?,
+        ),
+        (p, ..) => p,
+    };
+
     // Stage 1 uses an external flasher (docs/app-workflow.md §3.5). The tool
     // differs per board.
-    if !write_slot(
-        &plan,
-        opts.port.as_deref(),
-        mode.keep_halted,
-        opts.flash_baud,
-    )? {
+    if !write_slot(&plan, port.as_deref(), mode.keep_halted, opts.flash_baud)? {
         return Ok(false);
     }
 
@@ -276,7 +328,7 @@ pub fn run(opts: &Options) -> Result<bool> {
         // is not opened here (an open port makes espflash fail with
         // `Resource busy`).
         println!("-> handing reset and capture to espflash monitor:");
-        let args = espflash_monitor_args(chip, opts.port.as_deref());
+        let args = espflash_monitor_args(chip, port.as_deref());
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let taken = monitor::capture_cmd(
             "espflash",
@@ -338,7 +390,7 @@ fn print_summary(plan: &Plan, opts: &Options) {
         plan.wasm_len,
         plan.crc
     );
-    let how = match (plan.slot.flasher, plan.files.len()) {
+    let how = match (plan.slot.flasher, plan.writes.len()) {
         (Flasher::Picotool, _) => "one picotool load".to_string(),
         (Flasher::Espflash { .. }, 1) => "one espflash write-bin call".to_string(),
         (Flasher::Espflash { .. }, n) => format!("{n} espflash write-bin calls"),
@@ -353,15 +405,27 @@ fn print_summary(plan: &Plan, opts: &Options) {
             r.content
         );
     }
-    let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+    let gap = plan.flash_len() - plan.regions.iter().map(|r| r.bytes.len()).sum::<usize>();
+    if gap > 0 {
+        println!(
+            "    {:<11} {:>9}  {gap:>6} B of 0xff, so both go in one call",
+            "gap", ""
+        );
+    }
+    let files: Vec<String> = plan
+        .writes
+        .iter()
+        .map(|w| w.path.display().to_string())
+        .collect();
     println!("  files: {}", files.join(", "));
 }
 
 impl Plan {
-    /// Bytes that reach flash: the regions, whole sectors each.
+    /// Bytes that reach flash: the regions, whole sectors each, and the gap
+    /// between them when it is filled to make one call.
     #[must_use]
     pub fn flash_len(&self) -> usize {
-        self.regions.iter().map(|r| r.bytes.len()).sum()
+        self.writes.iter().map(|w| w.flash_len).sum()
     }
 }
 
@@ -380,7 +444,7 @@ fn write_slot(
         // BOOTSEL (`-F`, whether it was running or already there) and a
         // separate reboot starts the app once.
         Flasher::Picotool => {
-            let file = plan.files[0].to_string_lossy().into_owned();
+            let file = plan.writes[0].path.to_string_lossy().into_owned();
             if !picotool(&picotool_load_uf2_args(&file))? {
                 return Ok(false);
             }
@@ -399,20 +463,33 @@ fn write_slot(
         // `write-bin` takes one file at one offset, so one call per region.
         Flasher::Espflash { .. } => {
             let writes: Vec<(u32, String)> = plan
-                .regions
+                .writes
                 .iter()
-                .zip(&plan.files)
-                .map(|(r, f)| (r.offset, f.to_string_lossy().into_owned()))
+                .map(|w| {
+                    (
+                        w.offset.unwrap_or(plan.regions[0].offset),
+                        w.path.to_string_lossy().into_owned(),
+                    )
+                })
                 .collect();
-            for (i, args) in espflash_calls(&writes, port, keep_halted, flash_baud)
-                .iter()
-                .enumerate()
-            {
+            let calls = espflash_calls(&writes, port, keep_halted, flash_baud);
+            for (i, args) in calls.iter().enumerate() {
                 if !espflash(args, flash_baud)? {
-                    if i > 0 {
+                    if i == 0 && calls.len() > 1 {
+                        // Partway through the app, the slot fails its CRC and
+                        // the firmware parks; before it, the old app and its
+                        // table are intact.
                         eprintln!(
-                            "  the app is written but its config slot is not, and the board \
-                             is parked in its loader; deploy again"
+                            "  nothing past the app was written; the board may be parked in \
+                             its loader. deploy again"
+                        );
+                    } else if i > 0 {
+                        // The new app with the previous table: on a reset it
+                        // would drive the pins of another app's wiring.
+                        eprintln!(
+                            "  the app is written but its config slot is not. do not reset \
+                             the board (the new app would run with the previous wiring \
+                             table); it is parked in its loader. deploy again"
                         );
                     }
                     return Ok(false);
@@ -426,11 +503,11 @@ fn write_slot(
 /// The largest gap between the app and the config region that `deploy`
 /// fills with `0xff` to write both in one espflash call.
 ///
-/// A second `write-bin` call costs about 0.7 to 0.9 s of connecting on the
-/// ESP32-S3 and the ESP32-C5, more than erasing and writing a gap this size:
-/// on the ESP32-C5 (64 KiB slot) one call of 68 KiB took 1.76 s against
-/// 2.49 s for two calls of 12 KiB, while on the ESP32-S3 (1 MiB slot) two
-/// calls took 2.65 s against 7.64 s for one
+/// A second `write-bin` call, connecting with the default reset, costs
+/// about 0.9 s on the ESP32-C5 and 1.2 s on the ESP32-S3, more than erasing
+/// and writing a gap this size. On the ESP32-C5 (64 KiB slot) one call of
+/// 68 KiB took 1.776 s against 2.485 s for two calls of 12 KiB; on the
+/// ESP32-S3 (1 MiB slot) two calls took 2.813 s against 7.636 s for one
 /// (docs/verification-report.md §48, docs/verification-report.md §49).
 pub const MERGE_GAP: u32 = 64 * 1024;
 

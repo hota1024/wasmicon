@@ -9,3 +9,4 @@ verify/*/target/
 apps/*/assets.bin
 verify/usb-console/*.wasm
 verify/usb-console/*.bin
+verify/usb-console/*.uf2

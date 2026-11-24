@@ -123,8 +123,8 @@ pub struct Profile {
     pub slot: Option<Slot>,
     /// Location of the config slot (wiring table): 4 KiB right after the app slot.
     ///
-    /// `deploy` writes the app slot and this one as a single image in one go
-    /// (`pack::build`). `None` means no flash (the host).
+    /// `deploy` writes this one with every app (`pack::regions` in the CLI).
+    /// `None` means no flash (the host).
     pub role_slot: Option<Slot>,
     /// Location of the assets slot (read-only data the developer ships next
     /// to the app; `assets` module, docs/app-workflow.md §3.10): right after
