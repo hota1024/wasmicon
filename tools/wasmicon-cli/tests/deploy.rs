@@ -133,31 +133,45 @@ fn an_espflash_board_gets_one_file_per_region() {
 }
 
 #[test]
-fn the_second_espflash_call_does_not_reset_the_chip() {
-    // The first call leaves the chip in its loader (`--after no-reset`); the
-    // second connects to it there.
-    let first = deploy::espflash_write_args(0x10_0000, "a.bin", None, true, None);
+fn a_small_slot_goes_to_espflash_in_one_call() {
+    // The ESP32-C5's 64 KiB slot: filling the gap costs less than a second
+    // connection (docs/verification-report.md §49).
+    let dir = tmp("esp-merged");
+    let app = dir.join("blink.wasm");
+    std::fs::write(&app, build("blink-rs")).expect("cannot write");
+
+    let plan = prepared(&opts(app, Some("esp32c5")));
+    assert_eq!(plan.files, [dir.join("blink.bin")]);
+    let one = std::fs::read(&plan.files[0]).expect("written");
+    // From the app slot to the end of the config slot, the gap erased.
+    assert_eq!(one.len(), 64 * 1024 + 4096);
+    assert_eq!(plan.flash_len(), one.len());
+    assert!(one[plan.image_len..64 * 1024].iter().all(|b| *b == 0xff));
+    assert_eq!(&one[64 * 1024..], plan.regions[1].bytes.as_slice());
+    assert!(!dir.join("blink.config.bin").exists());
+}
+
+#[test]
+fn only_the_last_espflash_call_lets_the_app_run() {
+    // The app must not start between the app and the config slot, and every
+    // call connects with the default reset: skipping it left the ESP32-C5
+    // unreachable until RESET (docs/verification-report.md §49).
+    let writes = [
+        (0x10_0000, "a.bin".to_string()),
+        (0x20_0000, "a.config.bin".to_string()),
+    ];
+    let calls = deploy::espflash_calls(&writes, None, false, None);
     assert_eq!(
-        first,
-        ["write-bin", "--after", "no-reset", "0x100000", "a.bin"]
-    );
-    let second = deploy::after_a_loader_call(deploy::espflash_write_args(
-        0x20_0000,
-        "a.config.bin",
-        None,
-        false,
-        None,
-    ));
-    assert_eq!(
-        second,
+        calls,
         [
-            "write-bin",
-            "--before",
-            "no-reset",
-            "0x200000",
-            "a.config.bin"
+            vec!["write-bin", "--after", "no-reset", "0x100000", "a.bin"],
+            vec!["write-bin", "0x200000", "a.config.bin"],
         ]
     );
+    // `--no-run`: none of them does.
+    let calls = deploy::espflash_calls(&writes, None, true, None);
+    assert!(calls.iter().all(|c| c.contains(&"no-reset".to_string())));
+    assert!(calls.iter().all(|c| !c.contains(&"--before".to_string())));
 }
 
 #[test]
