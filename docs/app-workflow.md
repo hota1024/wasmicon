@@ -534,7 +534,10 @@ app slot (64 KiB; 1 MiB on the ESP32-S3) keeps whatever an earlier, longer app l
 there; the firmware reads the length in the header and checks the CRC over exactly that,
 so the leftover is never read. On a Pico both regions go into one UF2 file (family
 `absolute`) and one `picotool load`; espflash's `write-bin` takes one file at one
-offset, so an ESP32 board gets two calls, the second connecting without a reset.
+offset, so an ESP32 board gets two calls; the first leaves the chip in its loader, so the
+app starts only after the config slot is written. When the gap between the two regions is
+64 KiB or less (the ESP32-C5's 64 KiB slot), `deploy` fills it with `0xff` and makes one
+call instead, which is faster than a second connection (`deploy::MERGE_GAP`).
 
 **The wiring table is written every time.** Even an empty table is written, so the
 result of a `deploy` is determined by that moment's `wasmicon.toml` alone (no

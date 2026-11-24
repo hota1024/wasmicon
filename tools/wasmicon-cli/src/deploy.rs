@@ -175,12 +175,20 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         Some(m) => m.wiring(board)?,
         None => Wiring::EMPTY,
     };
-    let regions = pack::regions(&app, board, &wiring)?;
+    let mut regions = pack::regions(&app, board, &wiring)?;
 
     // The files go next to the app. They are kept so the same write can be
     // repeated and the CRC cross-checked against the device's log.
     let files = match slot.flasher {
         Flasher::Picotool => vec![(opts.path.with_extension("uf2"), pack::uf2(&regions))],
+        Flasher::Espflash { .. } if merges(&regions) => {
+            // Fill the gap with erased bytes and write both in one call.
+            let end = (regions[1].offset - regions[0].offset) as usize;
+            regions[0].bytes.resize(end, 0xff);
+            let mut one = regions[0].bytes.clone();
+            one.extend_from_slice(&regions[1].bytes);
+            vec![(opts.path.with_extension("bin"), one)]
+        }
         Flasher::Espflash { .. } => vec![
             (opts.path.with_extension("bin"), regions[0].bytes.clone()),
             (
@@ -332,6 +340,7 @@ fn print_summary(plan: &Plan, opts: &Options) {
     );
     let how = match (plan.slot.flasher, plan.files.len()) {
         (Flasher::Picotool, _) => "one picotool load".to_string(),
+        (Flasher::Espflash { .. }, 1) => "one espflash write-bin call".to_string(),
         (Flasher::Espflash { .. }, n) => format!("{n} espflash write-bin calls"),
     };
     println!("  writes {} B to flash in {how}:", plan.flash_len());
@@ -388,24 +397,18 @@ fn write_slot(
             Ok(ok)
         }
         // `write-bin` takes one file at one offset, so one call per region.
-        // Every call but the last leaves the chip in its serial loader,
-        // and the next one connects without resetting it again.
         Flasher::Espflash { .. } => {
-            let last = plan.files.len() - 1;
-            for (i, (file, region)) in plan.files.iter().zip(&plan.regions).enumerate() {
-                let args = espflash_write_args(
-                    region.offset,
-                    &file.to_string_lossy(),
-                    port,
-                    i < last || keep_halted,
-                    flash_baud,
-                );
-                let args = if i > 0 {
-                    after_a_loader_call(args)
-                } else {
-                    args
-                };
-                if !espflash(&args, flash_baud)? {
+            let writes: Vec<(u32, String)> = plan
+                .regions
+                .iter()
+                .zip(&plan.files)
+                .map(|(r, f)| (r.offset, f.to_string_lossy().into_owned()))
+                .collect();
+            for (i, args) in espflash_calls(&writes, port, keep_halted, flash_baud)
+                .iter()
+                .enumerate()
+            {
+                if !espflash(args, flash_baud)? {
                     if i > 0 {
                         eprintln!(
                             "  the app is written but its config slot is not, and the board \
@@ -420,13 +423,47 @@ fn write_slot(
     }
 }
 
-/// Makes an `espflash write-bin` call connect to a chip that the previous
-/// call left in its serial loader (`--after no-reset`): `--before no-reset`
-/// skips the DTR/RTS reset into the loader, which is where the chip is.
+/// The largest gap between the app and the config region that `deploy`
+/// fills with `0xff` to write both in one espflash call.
+///
+/// A second `write-bin` call costs about 0.7 to 0.9 s of connecting on the
+/// ESP32-S3 and the ESP32-C5, more than erasing and writing a gap this size:
+/// on the ESP32-C5 (64 KiB slot) one call of 68 KiB took 1.76 s against
+/// 2.49 s for two calls of 12 KiB, while on the ESP32-S3 (1 MiB slot) two
+/// calls took 2.65 s against 7.64 s for one
+/// (docs/verification-report.md §48, docs/verification-report.md §49).
+pub const MERGE_GAP: u32 = 64 * 1024;
+
+/// Whether the two regions go to espflash as one file (`MERGE_GAP`).
 #[must_use]
-pub fn after_a_loader_call(mut args: Vec<String>) -> Vec<String> {
-    args.splice(1..1, ["--before".to_string(), "no-reset".to_string()]);
-    args
+pub fn merges(regions: &[pack::Region; 2]) -> bool {
+    let app_end = regions[0].offset + regions[0].bytes.len() as u32;
+    regions[1].offset >= app_end && regions[1].offset - app_end <= MERGE_GAP
+}
+
+/// The `espflash write-bin` calls for `(offset, file)` in order.
+///
+/// Every call but the last leaves the chip in its loader (`--after
+/// no-reset`), so the app does not start between the app and the config
+/// slot. Each call connects with espflash's default reset. Skipping it on
+/// the later calls (`--before no-reset`) saved about 0.17 s on the ESP32-S3
+/// but failed to connect on the ESP32-C5 and left that chip answering no
+/// connection until its RESET button (docs/verification-report.md §49).
+#[must_use]
+pub fn espflash_calls(
+    writes: &[(u32, String)],
+    port: Option<&Path>,
+    keep_halted: bool,
+    flash_baud: Option<u32>,
+) -> Vec<Vec<String>> {
+    let last = writes.len().saturating_sub(1);
+    writes
+        .iter()
+        .enumerate()
+        .map(|(i, (offset, file))| {
+            espflash_write_args(*offset, file, port, i < last || keep_halted, flash_baud)
+        })
+        .collect()
 }
 
 /// Refuses `--flash-baud` for a flasher that has no such setting, before

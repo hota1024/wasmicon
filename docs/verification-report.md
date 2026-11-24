@@ -2505,8 +2505,43 @@ wasmicon-bench `update-cost` experiment). Runs 1 to 5 after one warm-up run, med
 
 ### What this measurement does not say
 
-- The ESP32-C5 and the ESP32-P4: not run (host tests and `--no-run` with stub flashers only)
+- The ESP32-C5: §49. The ESP32-P4: not run (host tests and `--no-run` with stub flashers only)
 - `--flash-baud` above 115200 with the new layout
 - The psram and lcd2 firmware builds: same slot offsets as the plain build in their profiles, not
   flashed here
 - The display: none attached
+
+## 49. `deploy` on the ESP32-C5: two calls fail, one call is kept (2026-11-24)
+
+Question: does `deploy` of §48 (two `espflash write-bin` calls) work on the ESP32-C5, whose app
+slot is 64 KiB, and is it faster there?
+
+Board: the Waveshare ESP32-C5-WIFI6-KIT (CH343 "UART" port, `cu.usbmodem5B901647841`), firmware
+`ports/esp32c5` from `3f53c89` (`espflash flash --after no-reset`). CLI: `3f53c89` and the change
+this section led to, against the `b44af6d` build of §47 (one `write-bin` of 68 KiB). Host: macOS,
+espflash 4.5.0 at 115200 baud, `--port` given. Deployed from `apps/lcd-demo-rs`.
+
+| Check | Result |
+|---|---|
+| `3f53c89`: lcd-demo-rs | The first call (app, `--after no-reset`) succeeded; the second (`--before no-reset`) failed with `Failed to connect to the device` after 1.3 s, and from then on every connection failed, with or without a reset, until the owner pressed RESET |
+| Second call with espflash's default reset (three runs, by hand) | Succeeded each time: the first call 0.78 to 0.89 s, the second 0.88 to 0.93 s |
+| Two calls with the default reset: lcd-demo-rs, then blink-rs, then `espflash read-flash` | Header 759 B, crc32 `e32c3c5c`, the bytes are blink-rs; bytes 4,096 to 4,104 still hold the end of lcd-demo-rs's image; the config slot holds `lcd-cs=10 lcd-dc=0 lcd-rst=1` |
+| Time, changed app (`BAND` alternated as in §48), runs 1 to 5 | Before: 1.756 s (1.734 to 2.205). Two calls: 2.485 s (2.459 to 3.375). Slower: the second connection costs more than erasing the 52 KiB it avoids |
+| One call over a gap of at most 64 KiB (`deploy::MERGE_GAP`): blink-rs | `writes 69632 B to flash in one espflash write-bin call`; read back, the slot holds blink-rs and `0xff` after it, the config slot follows |
+| One call, time, runs 1 to 5 | 1.776 s (1.766 to 2.244), the same as before the change |
+| The app runs | After the owner pressed RESET (the board stays in download mode after espflash's reset, docs/TODO.md §1.3.1), `wasmicon monitor` at 921600 read the identity line, `wasmicon: slot 759 B crc32=e32c3c5c`, and blink-rs's trace |
+
+So `deploy` now connects every call with espflash's default reset (the ESP32-S3 loses the 0.17 s
+of §48) and writes both regions in one call when the gap between them is at most 64 KiB. On the
+ESP32-S3 and the ESP32-P4 the gap is 1 MiB, so they keep two calls.
+
+### What this measurement does not say
+
+- The assets slot after these runs: the banner said `assets magic mismatch`, as docs/TODO.md §1.3.1
+  records for an empty slot; reading it back failed because espflash could not connect to the
+  running firmware (the known symptom in docs/TODO.md §1.3.1). The one-call file ends at `0x111000`,
+  where the assets slot starts (a host test checks its length)
+- Why `--before no-reset` fails on the C5 and not on the S3
+- The ESP32-S3 with the default reset on the second call through `deploy`: only the direct
+  `espflash write-bin` runs of §48 (1.18 to 1.19 s)
+- The ESP32-P4
