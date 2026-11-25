@@ -1199,7 +1199,7 @@ could not show the faults. Three were found:
 
 ### What this measurement does not say
 
-- life-rs has not run on the C5 yet
+- life-rs has not run on the C5 yet (it ran later: §53)
 - The ILI9341 ID was not re-read after the wiring fix (the probe run that turned the screen red was not
   captured)
 
@@ -2632,3 +2632,33 @@ Each board was left with a normal deploy of lcd-demo-rs.
   stops at the header's length)
 - A table written by a CLI without the binding on a firmware with it: a host test only
 - The RP2040, and the plain ESP32-S3 build (the psram build ran)
+
+## 53. life-rs on the ESP32-C5 (2026-11-25)
+
+Question: does `apps/life-rs` run and draw on the ESP32-C5, the last open part of docs/TODO.md §1.3.1 (3)?
+
+Board: the Waveshare ESP32-C5-WIFI6-KIT of §49 (CH343 "UART" port, `cu.usbmodem5B901647841`), ILI9341 wired
+as in docs/abi-spec.md §8. Before the run the board held a native ESP-IDF image (`lcd-demo-esp-idf`, app
+version `54fa1d5`) from another workstream; it was replaced with the owner's consent. Firmware `ports/esp32c5`
+built from `4f4ef88`, `trace=on`, flashed with `espflash flash --after no-reset`. App: `life_rs.wasm` 5236 B,
+slot crc32 `a413a32c`, deployed with `wasmicon deploy --board esp32c5 --no-run` (wiring table
+`lcd-cs=10 lcd-dc=0 lcd-rst=1`). Host: macOS, espflash 4.5.0.
+
+The board was started without the RESET button: with the port open at 921600, DTR held low (IO0 high) and
+RTS raised for 0.2 s and dropped (EN pulsed low), then UART0 was read for 40 s.
+
+| Check | Result |
+|---|---|
+| Boot lines | `wasmicon id esp32c5 fw=0.1.0 git=4f4ef88 ... trace=on`, `wasmicon: roles lcd-cs=10 lcd-dc=0 lcd-rst=1`, `wasmicon: slot 5236 B crc32=a413a32c` |
+| Guest log | `[wasm] life start`, then `[wasm] life new round` twice in 40 s (a round is 200 generations) |
+| Host calls in 40 s | 54,620 (`pin.write` 31,076, `bus.write` 23,535, `pin-by-role` 3, `pin.open` 3, `log` 2, `bus.open` 1); every one returned success, no trap |
+| Screen | The owner saw the game of life running on the panel |
+
+So docs/TODO.md §1.3.1 (3) is done: lcd-demo-rs (§20) and life-rs both draw on the C5.
+
+### What this measurement does not say
+
+- The trace was not compared with the host. `wasmicon run` prints the trace only when the app returns, and
+  life-rs never returns; the FPS text also depends on real time (`apps/life-rs/src/lib.rs`)
+- The FPS on the screen was not recorded, and no `trace=off` build was run
+- Whether the RTS pulse boots the board every time: it worked on the one run above

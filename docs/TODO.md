@@ -196,9 +196,11 @@ hardware and committed separately.
   app built from cfb7f75. The LED lit red -> green -> blue -> white -> rainbow -> off as intended (owner
   checked by eye), and the trace is identical to the host over 978 lines. `spi.bus` index 1 on the C5
   is a bus that routes only the SPI2 MOSI to GPIO27, docs/abi-spec.md §8; no wiring needed)
-- [ ] **(3) SPI: lcd-demo-rs / life-rs draw on the ILI9341** (the lcd-demo trace matches the host).
-  **lcd-demo-rs done** (2026-10-20): the picture appears and the trace is identical to the host over
-  14,352 lines (docs/verification-report.md §20). **life-rs is still to run**
+- [x] **(3) SPI: lcd-demo-rs / life-rs draw on the ILI9341** (the lcd-demo trace matches the host).
+  **lcd-demo-rs** (2026-10-20): the picture appears and the trace is identical to the host over
+  14,352 lines (docs/verification-report.md §20). **life-rs** (2026-11-25, firmware 4f4ef88): runs
+  and draws (owner checked by eye); 54,620 host calls in 40 s, all succeeded. Not compared with the
+  host, since life-rs never returns (docs/verification-report.md §53)
 - [ ] **(4) I2C: sensor-display-rs / -as read the SHT40 and the whole trace is identical to the host**
 - Decided and known so far:
   - **Less RAM than the S3.** The main RAM usable with the esp-hal linker script is 314 KiB.
@@ -213,7 +215,9 @@ hardware and committed separately.
     `Failed to connect`** (same symptom as the S3. See the S3 reset item in §1.3). Unplugging
     and replugging USB restores it. Dropping DTR/RTS, `-c esp32c5` and `--before usb-reset`
     did not help. After `espflash reset` the output stops in the middle of the ROM's first
-    line; the RESET button boots normally
+    line; the RESET button boots normally. On 2026-11-25 a pulse on RTS (EN) with DTR held low
+    (IO0 high) booted the firmware after `espflash flash --after no-reset` without the button
+    (one run, docs/verification-report.md §53)
 
 ### 1.3.2 ESP32-P4 support (restarted 2026-10-26. Checked on the M5Stack Tab5)
 
