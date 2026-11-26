@@ -52,6 +52,7 @@ use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
 use wasmicon_core::generated::ErrorCode;
+use wasmicon_port::roles::{BusPins, Wiring};
 use wasmicon_port::serial::{LineKind, Serial};
 use wasmicon_port::{Board, BoardResult};
 
@@ -127,29 +128,20 @@ const _: () = {
     }
 };
 
-/// Pins assigned to SPI2 (FSPI) (docs/abi-spec.md §8). CS is not included:
-/// the guest toggles the `lcd-cs` GPIO itself (the design of `wit/spi.wit`).
-///
-/// They are not in `reserved`. Reserving them would make GPIO availability
-/// differ from the host mock and the other ports, so trace comparison would
-/// differ per board. If the guest opens one of these numbers through `gpio`
-/// while SPI is open, the GPIO matrix routing is overwritten and SPI silently
-/// stops; that counts as a guest bug (the same as on `ports/rp2350`).
-#[cfg(not(feature = "lcd2"))]
-const SPI2_SCK: u8 = 12;
-#[cfg(not(feature = "lcd2"))]
-const SPI2_MOSI: u8 = 11;
-#[cfg(not(feature = "lcd2"))]
-const SPI2_MISO: u8 = 13;
-
-/// SPI2 on the LCD-2: the bus of its ST7789 and of its TF card. The panel
-/// has no MISO; GPIO40 is the card's.
-#[cfg(feature = "lcd2")]
-const SPI2_SCK: u8 = 39;
-#[cfg(feature = "lcd2")]
-const SPI2_MOSI: u8 = 38;
-#[cfg(feature = "lcd2")]
-const SPI2_MISO: u8 = 40;
+// The pins of SPI2 (FSPI) for `spi.bus` index 0 and of I2C0 are not
+// constants here: they are the profile's defaults (`profile::ESP32S3`, and
+// on the LCD-2 SPI2 at GPIO39/38/40, the bus of its ST7789 and of its TF
+// card), or the ones the config slot moves them to (`set_bus_pins`,
+// docs/abi-spec.md §8). CS is not among them: the guest toggles the
+// `lcd-cs` GPIO itself (the design of `wit/spi.wit`). The GPIO matrix routes
+// either bus to any GPIO.
+//
+// They are not in `reserved`. Reserving them would make GPIO availability
+// differ from the host mock and the other ports, so trace comparison would
+// differ per board. If the guest opens one of these numbers through `gpio`
+// while the bus is open, the GPIO matrix routing is overwritten and the bus
+// silently stops; that counts as a guest bug (the same as on
+// `ports/rp2350`).
 
 /// The TF card's chip select on the LCD-2. The schematic shows no pull-up,
 /// so it is driven high once at boot: a floating select could let the card
@@ -168,10 +160,21 @@ const SD_CS: u32 = 41;
 /// controller's SDA.
 const SPI2_LED_MOSI: u8 = 48;
 
-/// Pins assigned to I2C0 (docs/abi-spec.md §8). Not in `reserved`, for the
-/// same reason as `SPI2_*`.
-const I2C0_SDA: u8 = 8;
-const I2C0_SCL: u8 = 9;
+// The LED pin is the profile's one fixed bus pin, so the wiring-table check
+// keeps roles and moved buses off it; the LCD-2 has none.
+#[cfg(not(feature = "lcd2"))]
+const _: () = assert!(wasmicon_port::profile::same_pins(
+    crate::PROFILE.fixed_bus_pins,
+    &[SPI2_LED_MOSI as u32]
+));
+#[cfg(feature = "lcd2")]
+const _: () = assert!(crate::PROFILE.fixed_bus_pins.is_empty());
+
+/// A checked bus pin as the `esp-hal` pin number. `BusPins` holds only
+/// GPIOs below `NUM_GPIO`, so this never fails in practice.
+fn gpio_u8(n: u32) -> BoardResult<u8> {
+    u8::try_from(n).map_err(|_| ErrorCode::Unsupported)
+}
 
 /// The Freenove ESP32-S3-WROOM board, or the Waveshare ESP32-S3-Touch-LCD-2.
 pub struct EspBoard<S: Serial> {
@@ -186,9 +189,12 @@ pub struct EspBoard<S: Serial> {
     /// purpose, 1 = RGB LED). Dropping it in `spi_close` restores the pin
     /// routing and the peripheral clock.
     spi: Option<(u32, Spi<'static, Blocking>)>,
-    /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; GPIO8/9
-    /// are not reset by hand.
+    /// The open I2C0 driver. As for `spi`, cleanup is left to `Drop`; SDA /
+    /// SCL are not reset by hand.
     i2c: Option<I2c<'static, Blocking>>,
+    /// The pins of `spi.bus` index 0 and `i2c.bus` index 0: the profile's
+    /// defaults until `set_bus_pins`.
+    buses: BusPins,
     /// What the guest's asset reads cost so far (`read-stats`).
     #[cfg(feature = "read-stats")]
     stats: ReadStats,
@@ -210,11 +216,11 @@ pub struct ReadStats {
 
 impl<S: Serial> EspBoard<S> {
     /// # Safety
-    /// This board must have exclusive use of GPIO / IO_MUX / SPI2 / I2C0 and
-    /// of the GPIOs assigned to SPI2 and I2C0 (`SPI2_SCK` / `SPI2_MOSI` /
-    /// `SPI2_MISO` / `SPI2_LED_MOSI` / `I2C0_SDA` / `I2C0_SCL`). With `lcd2` it
-    /// also needs GPIO41 (`SD_CS`), which `deselect_sd_card` drives;
-    /// `SPI2_LED_MOSI` is never used there (`spi_open` refuses index 1).
+    /// This board must have exclusive use of GPIO / IO_MUX / SPI2 / I2C0, of
+    /// `SPI2_LED_MOSI` and of the default bus pins of the profile
+    /// (`PROFILE.buses`). With `lcd2` it also needs GPIO41 (`SD_CS`), which
+    /// `deselect_sd_card` drives; `SPI2_LED_MOSI` is never used there
+    /// (`spi_open` refuses index 1).
     #[must_use]
     pub unsafe fn new(serial: S, storage: FlashStorage<'static>, assets_base: u32) -> Self {
         EspBoard {
@@ -223,9 +229,22 @@ impl<S: Serial> EspBoard<S> {
             assets_base,
             spi: None,
             i2c: None,
+            buses: crate::LIMITS.bus_pins(&Wiring::EMPTY),
             #[cfg(feature = "read-stats")]
             stats: ReadStats::default(),
         }
+    }
+
+    /// Opens `spi.bus` 0 and `i2c.bus` 0 on `pins` from now on: the ones
+    /// the config slot moved the buses to (docs/abi-spec.md §8). Called once
+    /// at boot, before any bus is open.
+    ///
+    /// # Safety
+    /// This board must have exclusive use of the pins in `pins`, as `new`
+    /// requires for the defaults. No bus may be open.
+    pub unsafe fn set_bus_pins(&mut self, pins: BusPins) {
+        debug_assert!(self.spi.is_none() && self.i2c.is_none());
+        self.buses = pins;
     }
 
     /// The asset reads so far and the serial port, to print them after the run.
@@ -550,7 +569,8 @@ impl<S: Serial> Board for EspBoard<S> {
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C. index 0 = I2C0 (SDA=GPIO8, SCL=GPIO9) ---
+    // --- I2C. index 0 = I2C0 (SDA=GPIO8, SCL=GPIO9 unless the config slot
+    //     moves them) ---
 
     fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
         // There is an I2C1 too, but v0.1 only assigns I2C0
@@ -586,16 +606,14 @@ impl<S: Serial> Board for EspBoard<S> {
                 I2C_TIMEOUT_MS,
             )));
 
-        // SAFETY: by the contract of EspBoard::new, only this board touches
-        // I2C0 and the I2C0_* pins. self.i2c was set to None above, so no two
-        // drivers refer to the same peripheral at once.
-        let (i2c0, sda, scl) = unsafe {
-            (
-                I2C0::steal(),
-                AnyPin::steal(I2C0_SDA),
-                AnyPin::steal(I2C0_SCL),
-            )
-        };
+        let pins = self.buses.i2c0().ok_or(ErrorCode::Unsupported)?;
+        let (sda, scl) = (gpio_u8(pins.sda)?, gpio_u8(pins.scl)?);
+        // SAFETY: by the contracts of EspBoard::new and set_bus_pins, only
+        // this board touches I2C0 and the pins in self.buses, which
+        // `roles::Limits::bus_pins` checked to exist on the chip and to be
+        // neither reserved nor shared with SPI. self.i2c was set to None
+        // above, so no two drivers refer to the same peripheral at once.
+        let (i2c0, sda, scl) = unsafe { (I2C0::steal(), AnyPin::steal(sda), AnyPin::steal(scl)) };
         // `with_sda` / `with_scl` apply open drain and the internal pull-up.
         // The module docs say why an external 10 kOhm is still needed.
         let i2c = I2c::new(i2c0, config)
@@ -668,12 +686,13 @@ impl<S: Serial> Board for EspBoard<S> {
             return;
         }
         // `Drop` restores the pin routing and the peripheral clock. As in
-        // `spi_close`, GPIO8/9 are not touched by hand.
+        // `spi_close`, SDA / SCL are not touched by hand.
         self.i2c = None;
     }
 
     // --- SPI. Both indexes use SPI2, so they cannot be open at the same time ---
-    //   index 0 = general purpose (SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13)
+    //   index 0 = general purpose (SCK=GPIO12, MOSI=GPIO11, MISO=GPIO13
+    //             unless the config slot moves them)
     //   index 1 = on-board RGB LED (MOSI=GPIO48 only), none on the LCD-2
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
@@ -715,16 +734,15 @@ impl<S: Serial> Board for EspBoard<S> {
         // range (APB at the top, APB/1024 at the bottom).
         let spi = Spi::new(spi2, config).map_err(|_| ErrorCode::Unsupported)?;
         let spi = if index == 0 {
-            // SAFETY: by the contract of EspBoard::new, only this board
-            // touches the SPI2_SCK / SPI2_MOSI / SPI2_MISO pins, and no driver
-            // holds them while self.spi is None.
-            let (sck, mosi, miso) = unsafe {
-                (
-                    AnyPin::steal(SPI2_SCK),
-                    AnyPin::steal(SPI2_MOSI),
-                    AnyPin::steal(SPI2_MISO),
-                )
-            };
+            let pins = self.buses.spi0().ok_or(ErrorCode::Unsupported)?;
+            let (sck, mosi, miso) = (gpio_u8(pins.sck)?, gpio_u8(pins.mosi)?, gpio_u8(pins.miso)?);
+            // SAFETY: by the contracts of EspBoard::new and set_bus_pins,
+            // only this board touches the pins in self.buses, which
+            // `roles::Limits::bus_pins` checked to exist on the chip and to
+            // be neither reserved nor shared with I2C or SPI2_LED_MOSI. No
+            // driver holds them while self.spi is None.
+            let (sck, mosi, miso) =
+                unsafe { (AnyPin::steal(sck), AnyPin::steal(mosi), AnyPin::steal(miso)) };
             spi.with_sck(sck).with_mosi(mosi).with_miso(miso)
         } else {
             // SAFETY: by the contract of EspBoard::new, only this board
@@ -769,13 +787,13 @@ impl<S: Serial> Board for EspBoard<S> {
         // Back to input with no pulls, as in gpio_release. The driver's Drop
         // only disconnects the GPIO matrix signals; it does not touch the pad
         // direction or pulls.
-        let pins: &[u8] = if index == 0 {
-            &[SPI2_SCK, SPI2_MOSI, SPI2_MISO]
-        } else {
-            &[SPI2_LED_MOSI]
+        let pins: [Option<u32>; 3] = match (index, self.buses.spi0()) {
+            (0, Some(p)) => [Some(p.sck), Some(p.mosi), Some(p.miso)],
+            (0, None) => [None; 3],
+            _ => [Some(u32::from(SPI2_LED_MOSI)), None, None],
         };
-        for &n in pins {
-            let _ = self.gpio_configure(u32::from(n), PinMode::Input);
+        for n in pins.into_iter().flatten() {
+            let _ = self.gpio_configure(n, PinMode::Input);
         }
     }
 

@@ -80,6 +80,9 @@ pub struct Plan {
     /// The touch entry written alongside (`tab5`), if any
     /// (docs/device-layer.md §11.3).
     pub touch: Option<String>,
+    /// The bus pins written alongside (`spi0=sck=1 ...`), if the table
+    /// moves any (docs/abi-spec.md §8).
+    pub buses: Option<String>,
 }
 
 /// One file handed to the flasher.
@@ -199,6 +202,7 @@ pub fn prepare(opts: &Options) -> Result<Plan> {
         roles: pack::describe_roles(&wiring.roles),
         display: pack::describe_display(&wiring),
         touch: pack::describe_touch(&wiring),
+        buses: pack::describe_buses(&wiring),
     })
 }
 
@@ -277,6 +281,10 @@ pub fn run(opts: &Options) -> Result<bool> {
             "  wiring: none (no roles handed out; see [board.{}.roles] in wasmicon.toml)",
             plan.board.wiring
         ),
+    }
+    // Only when moved: a table without bus lines keeps the firmware's pins.
+    if let Some(b) = &plan.buses {
+        println!("  buses: {b}");
     }
     if let Some(d) = &plan.display {
         println!("  display: {d}");

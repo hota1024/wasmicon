@@ -151,8 +151,9 @@ fn main() -> ! {
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
     // / I2C0 and of the pins assigned to SPI2 and I2C0. The UART holds
     // GPIO11/12, which are reserved and overlap neither a role-assignable GPIO
-    // nor the SPI2 pins (GPIO24/23/5 and GPIO27 for the RGB LED) nor the I2C0
-    // pins (GPIO8/9).
+    // nor a bus pin: the defaults (GPIO24/23/5 and GPIO27 for the RGB LED,
+    // and GPIO8/9) or any pin the config slot may move a bus to
+    // (`roles::Limits::with_buses` refuses reserved pins).
     // Borrowed mutably only for hw-probe.
     #[cfg_attr(not(feature = "hw-probe"), allow(unused_mut))]
     let mut board = unsafe { EspBoard::new(serial, storage, ASSETS_SLOT.offset) };
@@ -168,6 +169,10 @@ fn main() -> ! {
     // (docs/app-workflow.md §3.9).
     let (storage, serial) = hal.board_mut().parts();
     let wiring = pick_roles(storage, serial);
+    // SAFETY: nothing is open yet, and the pins are the defaults or ones
+    // `roles::Limits::bus_pins` accepted, never reserved, so nothing but
+    // the board holds them (the contract of EspBoard::new above).
+    unsafe { hal.board_mut().set_bus_pins(LIMITS.bus_pins(&wiring)) };
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The

@@ -194,8 +194,10 @@ fn main() -> ! {
     // SAFETY: from here on EspBoard has exclusive use of GPIO / IO_MUX / SPI2
     // / I2C0 and of the pins assigned to SPI2 and I2C0. The UART holds
     // GPIO43/44, which are reserved and overlap neither a role-assignable
-    // GPIO nor the SPI2 pins (GPIO11/12/13 and the RGB LED's GPIO48, or
-    // GPIO39/38/40 on the LCD-2) nor the I2C0 pins (GPIO8/9).
+    // GPIO nor a bus pin: the defaults (GPIO11/12/13 and the RGB LED's
+    // GPIO48, or GPIO39/38/40 on the LCD-2, and GPIO8/9) or any pin the
+    // config slot may move a bus to (`roles::Limits::with_buses` refuses
+    // reserved pins).
     let mut board = unsafe { EspBoard::new(serial, storage, ASSETS_SLOT.offset) };
     // Before anything uses SPI2: the TF card shares the panel's SCK and MOSI.
     #[cfg(feature = "lcd2")]
@@ -212,6 +214,10 @@ fn main() -> ! {
     // (docs/app-workflow.md §3.9).
     let (storage, serial) = hal.board_mut().parts();
     let wiring = pick_roles(storage, serial);
+    // SAFETY: nothing is open yet, and the pins are the defaults or ones
+    // `roles::Limits::bus_pins` accepted, never reserved, so nothing but
+    // the board holds them (the contract of EspBoard::new above).
+    unsafe { hal.board_mut().set_bus_pins(LIMITS.bus_pins(&wiring)) };
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     // The touch entry after the display: an XPT2046 uses the ILI9341's bus.
     let mut hal = hal

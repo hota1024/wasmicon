@@ -1535,6 +1535,28 @@ change.**
         the chip (`build_rmap_uf2` takes the first family it sees), so it should write, but
         no RP2040 has run it; its firmware has no reset interface, so it needs BOOTSEL either
         way. Run it once when an RP2040 board is at hand
+- [ ] **Bus pins in `wasmicon.toml`** (owner request, 2026-11-26; docs/abi-spec.md §8,
+      docs/decisions.md A-13). `[board.<name>.spi.0]` / `[board.<name>.i2c.0]` move
+      `spi.bus` 0 and `i2c.bus` 0 off the firmware's default pins, through the config slot
+      (format version 6), so rewiring a bus no longer needs a new firmware. Done: the format,
+      the checks shared by the CLI and the firmware (`roles::Limits::with_buses`, the
+      RP2350's FUNCSEL sets), the CLI, and the ports rp2350 / esp32s3 / esp32c5 / esp32p4.
+      Left:
+      - **Hardware.** Nothing has run on a board since the change, the default pins
+        included: the ports compile (esp32s3 in its default, `hw-probe`, `psram` and `lcd2`
+        builds), and the call that hands the pins to the board before the display backend
+        (`set_bus_pins` in each `main.rs`) is checked by the compiler only. First a deploy
+        that writes the default pins explicitly, then one moved wire, on each evaluated
+        board. Each board also needs the new firmware once: an older one refuses a
+        version 6 table (no roles)
+      - **Speed off the IO_MUX pins** (ESP32). The defaults of the ESP32-S3 are SPI2's IO_MUX
+        pins; through the GPIO matrix the reachable SPI clock may be lower. Not measured; if
+        it is, `check` could say so for a fast `frequency-hz`
+      - **Owner questions** on the adopted defaults of A-13: whether SPI may go without
+        MISO (the proposal showed it optional; the code requires it), and whether
+        `spi.bus` 1 and the other bus indexes should move too
+      - **`check` does not print the bus pins.** `deploy` does (`buses:`); `check --board`
+        only refuses a bad entry when it loads the toml
 - [ ] **`deploy` to several boards at once** (direction written 2026-11-24, from the
       wasmicon-bench `update-cost` request; nothing built). The claim of RQ1 is one build
       for N boards, and `deploy` takes one `--board`. Proposed:

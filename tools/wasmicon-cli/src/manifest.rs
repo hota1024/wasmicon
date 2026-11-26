@@ -33,6 +33,15 @@
 //! [board.esp32p4.touch]   # the touch panel over it (docs/device-layer.md §11.3)
 //! driver = "tab5"
 //!
+//! [board.esp32s3.spi.0]   # moves spi.bus 0 off the firmware's default pins
+//! sck = 1                 # (docs/abi-spec.md §8)
+//! mosi = 2
+//! miso = 3
+//!
+//! [board.esp32s3.i2c.0]   # likewise i2c.bus 0
+//! sda = 4
+//! scl = 5
+//!
 //! [assets]               # read-only data the app opens; assets write flashes it
 //! "font.psf" = "assets/terminus-12.psf"
 //! ```
@@ -69,7 +78,10 @@ use std::path::{Path, PathBuf};
 
 use wasmicon_port::assets;
 use wasmicon_port::profile::{self, Profile};
-use wasmicon_port::roles::{self, DisplayConfig, Limits, MAX_SCALE, RoleMap, TouchConfig, Wiring};
+use wasmicon_port::roles::{
+    self, Buses, DisplayConfig, I2cPins, Limits, MAX_SCALE, PinMux, RoleMap, Signal, SpiPins,
+    TouchConfig, Wiring,
+};
 
 /// The `version` this CLI can read.
 pub const SUPPORTED_VERSION: u32 = 1;
@@ -118,6 +130,30 @@ struct RawBoard {
     display: Option<RawDisplay>,
     /// `[board.<name>.touch]`.
     touch: Option<RawTouch>,
+    /// `[board.<name>.spi.<index>]`: bus index -> pins.
+    #[serde(default)]
+    spi: BTreeMap<String, RawSpi>,
+    /// `[board.<name>.i2c.<index>]`: bus index -> pins.
+    #[serde(default)]
+    i2c: BTreeMap<String, RawI2c>,
+}
+
+/// `[board.<name>.spi.0]` (docs/abi-spec.md §8). All three pins: an SPI bus
+/// without MISO would read something different per chip.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSpi {
+    sck: u32,
+    mosi: u32,
+    miso: u32,
+}
+
+/// `[board.<name>.i2c.0]` (docs/abi-spec.md §8).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawI2c {
+    sda: u32,
+    scl: u32,
 }
 
 /// `[board.<name>.touch]` (docs/device-layer.md §11.3).
@@ -183,6 +219,11 @@ pub struct Manifest {
     /// display entry (docs/device-layer.md §11.3). Checked against the board
     /// and its display entry at load time.
     pub board_touch: BTreeMap<String, TouchConfig>,
+    /// Per-board bus pins in place of the firmware's defaults
+    /// (`[board.<name>.spi.0]` / `[board.<name>.i2c.0]`), written to the
+    /// config slot with the roles. Checked against the board at load time;
+    /// the roles and the backends are checked against the pins in effect.
+    pub board_buses: BTreeMap<String, Buses>,
     /// Asset name -> file (already resolved against `dir`): what `run` serves
     /// to the guest and `assets write` puts in the board's assets slot
     /// (docs/app-workflow.md §3.10). Names are checked at load time; the
@@ -203,9 +244,30 @@ impl Manifest {
     /// `load`, so in practice only after a profile change).
     pub fn role_map(&self, board: &'static Profile) -> Result<RoleMap> {
         match self.board_roles.get(board.wiring) {
-            Some(table) => build_map(table, board),
+            Some(table) => build_map(table, board, &self.limits(board)?),
             None => Ok(RoleMap::EMPTY),
         }
+    }
+
+    /// The bus pins `[board.<wiring>.spi.0]` / `[board.<wiring>.i2c.0]`
+    /// move; `None` where the firmware's default stays.
+    #[must_use]
+    pub fn buses(&self, board: &'static Profile) -> Buses {
+        self.board_buses
+            .get(board.wiring)
+            .copied()
+            .unwrap_or(Buses::NONE)
+    }
+
+    /// The board's limits with this file's bus pins in effect.
+    ///
+    /// # Errors
+    /// When the bus pins violate the board's constraints (already checked
+    /// by `load`).
+    pub fn limits(&self, board: &'static Profile) -> Result<Limits<'static>> {
+        Limits::of(board)
+            .with_buses(&self.buses(board))
+            .map_err(|e| anyhow::anyhow!("[board.{}]: {}", board.wiring, e.reason()))
     }
 
     /// The board's display entry, if `[board.<wiring>.display]` exists.
@@ -230,6 +292,7 @@ impl Manifest {
             roles: self.role_map(board)?,
             display: self.display(board),
             touch: self.touch(board),
+            buses: self.buses(board),
         })
     }
 }
@@ -239,6 +302,7 @@ impl Manifest {
 fn build_display(
     raw: &RawDisplay,
     board: &'static Profile,
+    limits: &Limits<'_>,
     roles: &RoleMap,
 ) -> Result<DisplayConfig> {
     let at = format!("[board.{}.display]", board.wiring);
@@ -313,7 +377,7 @@ fn build_display(
             d.scale()
         );
     }
-    d.check(&Limits::of(board), roles)
+    d.check(limits, roles)
         .map_err(|e| anyhow::anyhow!("{at}: {}", e.reason()))?;
     Ok(d)
 }
@@ -324,6 +388,7 @@ fn build_touch(
     raw: &RawTouch,
     board: &'static Profile,
     display: Option<&DisplayConfig>,
+    limits: &Limits<'_>,
     roles: &RoleMap,
 ) -> Result<TouchConfig> {
     let at = format!("[board.{}.touch]", board.wiring);
@@ -401,19 +466,22 @@ fn build_touch(
             }
         }
     }
-    t.check(display, &Limits::of(board), roles)
+    t.check(display, limits, roles)
         .map_err(|e| anyhow::anyhow!("{at}: {}", e.reason()))?;
     Ok(t)
 }
 
 /// Turns one `[board.<name>.roles]` table into a `RoleMap`. `"none"` entries
 /// are not handed out.
-fn build_map(table: &BTreeMap<String, Option<u32>>, board: &'static Profile) -> Result<RoleMap> {
-    let limits = Limits::of(board);
+fn build_map(
+    table: &BTreeMap<String, Option<u32>>,
+    board: &'static Profile,
+    limits: &Limits<'_>,
+) -> Result<RoleMap> {
     let mut map = RoleMap::EMPTY;
     for (role, pin) in table {
         if let Some(pin) = *pin {
-            map.insert(role.as_bytes(), pin, &limits).map_err(|e| {
+            map.insert(role.as_bytes(), pin, limits).map_err(|e| {
                 anyhow::anyhow!(
                     "[board.{}.roles] {role} = {pin}: {}",
                     board.wiring,
@@ -423,6 +491,106 @@ fn build_map(table: &BTreeMap<String, Option<u32>>, board: &'static Profile) -> 
         }
     }
     Ok(map)
+}
+
+/// Turns `[board.<name>.spi.*]` / `[board.<name>.i2c.*]` into the bus pins
+/// they move and checks them against the board, as the firmware does at
+/// boot (`Limits::with_buses`). Says which pin fails and why, which the
+/// firmware's `BadBus` does not.
+fn build_buses(
+    spi: &BTreeMap<String, RawSpi>,
+    i2c: &BTreeMap<String, RawI2c>,
+    board: &'static Profile,
+) -> Result<Buses> {
+    let name = board.wiring;
+    let mut buses = Buses::NONE;
+    for (index, raw) in spi {
+        if index != "0" {
+            bail!("[board.{name}.spi.{index}]: only spi bus 0 can be moved");
+        }
+        buses.spi0 = Some(SpiPins {
+            sck: raw.sck,
+            mosi: raw.mosi,
+            miso: raw.miso,
+        });
+    }
+    for (index, raw) in i2c {
+        if index != "0" {
+            bail!("[board.{name}.i2c.{index}]: only i2c bus 0 can be moved");
+        }
+        buses.i2c0 = Some(I2cPins {
+            sda: raw.sda,
+            scl: raw.scl,
+        });
+    }
+    if buses.is_none() {
+        return Ok(buses);
+    }
+    let limits = Limits::of(board);
+    if limits.mux == PinMux::Fixed {
+        bail!(
+            "[board.{name}]: the {} firmware cannot move its bus pins",
+            board.name
+        );
+    }
+    let pins = buses.pins();
+    for (i, pin) in pins.iter().enumerate() {
+        let Some(pin) = *pin else { continue };
+        let signal = Signal::ALL[i];
+        let at = if i < 3 {
+            format!("[board.{name}.spi.0] {}", signal.key())
+        } else {
+            format!("[board.{name}.i2c.0] {}", signal.key())
+        };
+        if pin >= limits.gpio_count {
+            bail!(
+                "{at} = {pin}: out of range (the board has GPIO 0 to {})",
+                limits.gpio_count - 1
+            );
+        }
+        if limits.reserved.contains(&pin) {
+            bail!("{at} = {pin}: the pin is reserved");
+        }
+        if !limits.mux.routes(signal, pin) {
+            let can: Vec<String> = (0..limits.gpio_count)
+                .filter(|&n| limits.mux.routes(signal, n) && !limits.reserved.contains(&n))
+                .map(|n| n.to_string())
+                .collect();
+            bail!(
+                "{at} = {pin}: the {} cannot route {} there (it can: {})",
+                board.name,
+                signal.key(),
+                can.join(", ")
+            );
+        }
+        if pins[..i].contains(&Some(pin)) {
+            bail!("{at} = {pin}: another bus pin uses it too");
+        }
+        if limits.fixed_bus_pins.contains(&pin) {
+            bail!("{at} = {pin}: spi bus 1 uses it, and that pin does not move");
+        }
+    }
+    // A bus that keeps its defaults can still collide with a moved one.
+    let effective = Buses {
+        spi0: buses.spi0.or(limits.buses.spi0),
+        i2c0: buses.i2c0.or(limits.buses.i2c0),
+    };
+    let all = effective.pins();
+    for (i, pin) in all.iter().enumerate() {
+        if let Some(pin) = *pin
+            && all[..i].contains(&Some(pin))
+        {
+            bail!(
+                "[board.{name}]: GPIO {pin} would carry both spi bus 0 and i2c bus 0 \
+                 (move the other bus too)"
+            );
+        }
+    }
+    // The one check the firmware runs; the messages above say which pin.
+    limits
+        .with_buses(&buses)
+        .map_err(|e| anyhow::anyhow!("[board.{name}]: {}", e.reason()))?;
+    Ok(buses)
 }
 
 /// Searches upward from `dir` for `wasmicon.toml`.
@@ -486,6 +654,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
     let mut board_roles = BTreeMap::new();
     let mut board_display = BTreeMap::new();
     let mut board_touch = BTreeMap::new();
+    let mut board_buses = BTreeMap::new();
     for (board, b) in raw.board {
         let Some(p) = profile::by_name(&board) else {
             bail!(
@@ -511,18 +680,28 @@ pub fn load(path: &Path) -> Result<Manifest> {
             let pin = role_number(&value, &role, board.as_str())?;
             map.insert(role, pin);
         }
+        // The bus pins first: the roles and the backends are checked
+        // against the pins in effect, as the firmware does at boot.
+        let buses = build_buses(&b.spi, &b.i2c, p)
+            .with_context(|| format!("`{}`: invalid bus entry", path.display()))?;
+        let limits = Limits::of(p)
+            .with_buses(&buses)
+            .map_err(|e| anyhow::anyhow!("[board.{board}]: {}", e.reason()))?;
+        if !buses.is_none() {
+            board_buses.insert(board.clone(), buses);
+        }
         // The board's constraints (range, reserved pins, bus pins,
         // duplicates) are checked here. The firmware repeats the check at
         // boot, but stopping before flashing is faster.
-        let role_map = build_map(&map, p)
+        let role_map = build_map(&map, p, &limits)
             .with_context(|| format!("`{}`: invalid wiring table", path.display()))?;
         if let Some(raw) = &b.display {
-            let d = build_display(raw, p, &role_map)
+            let d = build_display(raw, p, &limits, &role_map)
                 .with_context(|| format!("`{}`: invalid display entry", path.display()))?;
             board_display.insert(board.clone(), d);
         }
         if let Some(raw) = &b.touch {
-            let t = build_touch(raw, p, board_display.get(&board), &role_map)
+            let t = build_touch(raw, p, board_display.get(&board), &limits, &role_map)
                 .with_context(|| format!("`{}`: invalid touch entry", path.display()))?;
             board_touch.insert(board.clone(), t);
         }
@@ -560,6 +739,7 @@ pub fn load(path: &Path) -> Result<Manifest> {
         board_roles,
         board_display,
         board_touch,
+        board_buses,
         assets: assets_table,
     })
 }
@@ -1086,6 +1266,123 @@ driver = "tab5"
         ] {
             let e =
                 parse(&format!("touch-{tag}"), &format!("version = 1\n{text}\n")).expect_err(tag);
+            let msg = format!("{e:#}");
+            assert!(msg.contains(want), "{tag}: {msg}");
+        }
+    }
+
+    #[test]
+    fn moved_bus_pins_go_into_the_wiring() {
+        let m = parse(
+            "bus-ok",
+            "version = 1\n\
+             [board.esp32s3.spi.0]\nsck = 1\nmosi = 2\nmiso = 3\n\
+             [board.esp32s3.i2c.0]\nsda = 4\nscl = 5\n\
+             [board.esp32s3.roles]\nlcd-cs = 12\n\
+             [board.rp2350.i2c.0]\nsda = 8\nscl = 9\n",
+        )
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let w = m
+            .wiring(&profile::ESP32S3)
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(
+            w.buses.spi0,
+            Some(SpiPins {
+                sck: 1,
+                mosi: 2,
+                miso: 3
+            })
+        );
+        assert_eq!(w.buses.i2c0, Some(I2cPins { sda: 4, scl: 5 }));
+        // GPIO12 is free once SPI moved off it.
+        assert_eq!(w.roles.get(b"lcd-cs"), Some(12));
+        assert_eq!(w.version(), 6);
+        // A firmware variant reads its board's entry.
+        assert_eq!(m.buses(&profile::ESP32S3_PSRAM), m.buses(&profile::ESP32S3));
+        // A board without the tables keeps its defaults: no bus line, no
+        // version 6.
+        let rp = m
+            .wiring(&profile::RP2350)
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(rp.buses.spi0, None);
+        assert!(m.wiring(&profile::ESP32C5).is_ok_and(|w| w.version() == 1));
+        assert_eq!(
+            crate::pack::describe_buses(&w).as_deref(),
+            Some("spi0=sck=1 mosi=2 miso=3 i2c0=sda=4 scl=5")
+        );
+        assert_eq!(
+            crate::pack::describe_buses(&rp).as_deref(),
+            Some("i2c0=sda=8 scl=9")
+        );
+    }
+
+    #[test]
+    fn rejects_a_bad_bus_entry() {
+        for (tag, text, want) in [
+            (
+                "range",
+                "[board.esp32s3.spi.0]\nsck = 49\nmosi = 2\nmiso = 3\n",
+                "sck = 49: out of range",
+            ),
+            (
+                "reserved",
+                "[board.esp32s3.spi.0]\nsck = 36\nmosi = 2\nmiso = 3\n",
+                "sck = 36: the pin is reserved",
+            ),
+            (
+                "funcsel",
+                "[board.rp2350.spi.0]\nsck = 10\nmosi = 19\nmiso = 16\n",
+                "cannot route sck there (it can: 2, 6, 18, 22)",
+            ),
+            (
+                "twice",
+                "[board.esp32s3.spi.0]\nsck = 1\nmosi = 1\nmiso = 3\n",
+                "mosi = 1: another bus pin uses it too",
+            ),
+            (
+                "led",
+                "[board.esp32c5.spi.0]\nsck = 27\nmosi = 2\nmiso = 3\n",
+                "spi bus 1 uses it",
+            ),
+            (
+                "other-bus",
+                "[board.rp2350.spi.0]\nsck = 18\nmosi = 19\nmiso = 4\n",
+                "GPIO 4 would carry both",
+            ),
+            (
+                "index",
+                "[board.esp32s3.spi.1]\nsck = 1\nmosi = 2\nmiso = 3\n",
+                "only spi bus 0",
+            ),
+            (
+                "no-miso",
+                "[board.esp32s3.spi.0]\nsck = 1\nmosi = 2\n",
+                "unknown key or wrong type",
+            ),
+            (
+                "fixed",
+                "[board.rp2040.i2c.0]\nsda = 8\nscl = 9\n",
+                "cannot move its bus pins",
+            ),
+            (
+                "variant",
+                "[board.esp32s3-psram.spi.0]\nsck = 1\nmosi = 2\nmiso = 3\n",
+                "firmware variant",
+            ),
+            (
+                "role-on-bus",
+                "[board.esp32s3.spi.0]\nsck = 1\nmosi = 2\nmiso = 3\n\
+                 [board.esp32s3.roles]\nlcd-cs = 1\n",
+                "spi / i2c",
+            ),
+            (
+                "display-on-bus",
+                "[board.esp32s3.i2c.0]\nsda = 10\nscl = 5\n\
+                 [board.esp32s3.display]\ndriver = \"ili9341\"\ncs = 10\ndc = 14\nrst = 15\n",
+                "spi / i2c",
+            ),
+        ] {
+            let e = parse(&format!("bus-{tag}"), &format!("version = 1\n{text}")).expect_err(tag);
             let msg = format!("{e:#}");
             assert!(msg.contains(want), "{tag}: {msg}");
         }

@@ -160,6 +160,9 @@ is flashed, apps are flashed to the slot and replaced there
 `[board.<name>.roles]` in the app's `wasmicon.toml`; `deploy` writes it to the device's config
 slot together with the app. The boot banner shows `wasmicon: roles lcd-cs=17 ...`
 ([`docs/app-workflow.md`](docs/app-workflow.md) §3.9). Every app under `apps/` has one.
+The pins of `spi.bus` 0 and `i2c.bus` 0 have defaults in the firmware, and
+`[board.<name>.spi.0]` / `[board.<name>.i2c.0]` move them the same way
+([`docs/abi-spec.md`](docs/abi-spec.md) §8).
 
 ```bash
 # Build the CLI. To put it on PATH: cargo install --path tools/wasmicon-cli

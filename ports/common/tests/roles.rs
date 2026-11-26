@@ -4,11 +4,15 @@
 //! contract for both. Bump `FORMAT_VERSION` when the shape changes. Version 2
 //! adds the display entry (docs/device-layer.md §5.2), version 3 the touch
 //! entry (docs/device-layer.md §11.3), version 4 the display `scale`
-//! (docs/TODO.md §6-10), version 5 the ST7789 entry.
+//! (docs/TODO.md §6-10), version 5 the ST7789 entry, version 6 the bus
+//! lines (docs/abi-spec.md §8).
 
 use wasmicon_port::fmt::Buf;
 use wasmicon_port::profile;
-use wasmicon_port::roles::{self, DisplayConfig, Limits, RoleMap, RolesError, TouchConfig, Wiring};
+use wasmicon_port::roles::{
+    self, Buses, DisplayConfig, I2cPins, Limits, PinMux, RoleMap, RolesError, SpiPins, TouchConfig,
+    Wiring,
+};
 
 /// Pico 2 W constraints (GP0/1 are the UART, GP4/5 and 16/18/19 are buses).
 fn pico() -> Limits<'static> {
@@ -21,6 +25,7 @@ fn image(map: &RoleMap) -> Vec<u8> {
         roles: *map,
         display: None,
         touch: None,
+        ..Wiring::EMPTY
     })
 }
 
@@ -157,7 +162,9 @@ fn at_most_max_roles_entries() {
     let limits = Limits {
         gpio_count: 64,
         reserved: &[],
-        bus_pins: &[],
+        buses: wasmicon_port::roles::Buses::NONE,
+        fixed_bus_pins: &[],
+        mux: wasmicon_port::roles::PinMux::Fixed,
     };
     let mut map = RoleMap::EMPTY;
     for i in 0..roles::MAX_ROLES as u32 {
@@ -191,6 +198,7 @@ fn at_most_max_roles_entries() {
             y_min: 4095,
             y_max: 4094,
         }),
+        ..Wiring::EMPTY
     };
     let mut body = [0u8; roles::MAX_BODY];
     // Without the touch entry and the scale the body is version 2, which a
@@ -243,6 +251,216 @@ fn at_most_max_roles_entries() {
     let len = out.as_bytes().len();
     assert!(len < roles::DESCRIBE_LEN, "{len} bytes");
     assert!(out.as_bytes().ends_with(b" y-max=4094"));
+
+    // And with both bus lines at two-digit pins on top of all of it.
+    let moved = Limits {
+        buses: Buses {
+            spi0: Some(SpiPins {
+                sck: 30,
+                mosi: 31,
+                miso: 32,
+            }),
+            i2c0: Some(I2cPins { sda: 33, scl: 34 }),
+        },
+        mux: PinMux::Matrix,
+        ..limits
+    };
+    let wb = Wiring {
+        buses: Buses {
+            spi0: Some(SpiPins {
+                sck: 50,
+                mosi: 51,
+                miso: 52,
+            }),
+            i2c0: Some(I2cPins { sda: 53, scl: 54 }),
+        },
+        ..w
+    };
+    assert_eq!(wb.version(), 6);
+    let n = roles::encode_body(&wb, &mut body);
+    assert!(n < roles::MAX_BODY, "{n} bytes with the bus lines");
+    let back = roles::parse_body(&body[..n], 6, &moved)
+        .unwrap_or_else(|e| panic!("cannot parse: {}", e.reason()));
+    assert_eq!(back.buses, wb.buses);
+    let mut line = [0u8; roles::DESCRIBE_LEN];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&Ok(back), &mut out);
+    let len = out.as_bytes().len();
+    assert!(len < roles::DESCRIBE_LEN, "{len} bytes with the bus lines");
+}
+
+/// The Freenove ESP32-S3 board: SPI2 on 12/11/13, I2C0 on 8/9, GPIO48 on
+/// `spi.bus` index 1, any pin through the GPIO matrix.
+fn s3() -> Limits<'static> {
+    Limits::of(&profile::ESP32S3)
+}
+
+/// Parses a body by hand, so the order of the lines is the test's.
+fn parse_text(text: &str, limits: &Limits<'_>) -> Result<Wiring, RolesError> {
+    roles::parse_body(text.as_bytes(), 6, limits)
+}
+
+#[test]
+fn a_moved_bus_reads_back_as_version_6() {
+    // 35..=37 are octal PSRAM lines on the Freenove board, so take free pins.
+    let spi = SpiPins {
+        sck: 1,
+        mosi: 2,
+        miso: 3,
+    };
+    let w = Wiring {
+        roles: roles::from_table(&[("lcd-cs", 10)], &s3())
+            .unwrap_or_else(|e| panic!("{}", e.reason())),
+        buses: Buses {
+            spi0: Some(spi),
+            i2c0: Some(I2cPins { sda: 4, scl: 5 }),
+        },
+        ..Wiring::EMPTY
+    };
+    assert_eq!(w.version(), 6);
+    let img = image_of(&w);
+    assert_eq!(u16::from_le_bytes([img[4], img[5]]), 6);
+    let body = &img[roles::HEADER_LEN..];
+    assert!(
+        body.windows(28)
+            .any(|l| l == b"@spi0=sck=1 mosi=2 miso=3\n@i".as_slice()),
+        "{}",
+        String::from_utf8_lossy(body)
+    );
+    let back = roles::parse(&img, &s3()).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.buses, w.buses);
+    assert_eq!(back.roles.get(b"lcd-cs"), Some(10));
+    // The port opens on the moved pins.
+    let pins = s3().bus_pins(&back);
+    assert_eq!(pins.spi0(), Some(spi));
+    assert_eq!(pins.i2c0(), Some(I2cPins { sda: 4, scl: 5 }));
+    // The boot line names them.
+    let mut line = [0u8; roles::DESCRIBE_LEN];
+    let mut out = Buf::new(&mut line);
+    roles::describe(&Ok(back), &mut out);
+    assert_eq!(
+        String::from_utf8_lossy(out.as_bytes()),
+        "wasmicon: roles lcd-cs=10 spi0=sck=1 mosi=2 miso=3 i2c0=sda=4 scl=5"
+    );
+}
+
+#[test]
+fn a_table_without_bus_lines_keeps_the_defaults() {
+    let w = Wiring::EMPTY;
+    assert_ne!(w.version(), 6);
+    let pins = s3().bus_pins(&w);
+    assert_eq!(
+        pins.spi0(),
+        Some(SpiPins {
+            sck: 12,
+            mosi: 11,
+            miso: 13
+        })
+    );
+    assert_eq!(pins.i2c0(), Some(I2cPins { sda: 8, scl: 9 }));
+}
+
+#[test]
+fn roles_are_checked_against_the_bus_pins_in_effect() {
+    // Wherever the bus line stands, the roles see the moved bus: a default
+    // pin it freed is fine, a pin it took is not.
+    let freed = "lcd-cs=12\n@spi0=sck=1 mosi=2 miso=3\n";
+    let w = parse_text(freed, &s3()).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(w.roles.get(b"lcd-cs"), Some(12));
+    for text in [
+        "lcd-cs=1\n@spi0=sck=1 mosi=2 miso=3\n",
+        "@spi0=sck=1 mosi=2 miso=3\nlcd-cs=1\n",
+    ] {
+        assert!(
+            parse_text(text, &s3()).err() == Some(RolesError::BusPin),
+            "{text}"
+        );
+    }
+    // So are the display's pins.
+    let lcd = "@spi0=sck=1 mosi=2 miso=3\n@display=ili9341 spi=0 cs=1 dc=14 rst=15 rotation=90\n";
+    assert!(parse_text(lcd, &s3()).err() == Some(RolesError::BusPin));
+    // Without the line the default pins stay bus pins.
+    assert!(parse_text("lcd-cs=12\n", &s3()).err() == Some(RolesError::BusPin));
+}
+
+#[test]
+fn a_bad_bus_line_discards_the_table() {
+    for (what, text) in [
+        ("out of range", "@spi0=sck=49 mosi=2 miso=3\n"),
+        ("reserved", "@spi0=sck=36 mosi=35 miso=37\n"),
+        ("two signals on one pin", "@spi0=sck=1 mosi=1 miso=3\n"),
+        ("the LED pin of spi bus 1", "@spi0=sck=48 mosi=2 miso=3\n"),
+        ("spi on the default i2c pins", "@spi0=sck=8 mosi=2 miso=3\n"),
+        (
+            "both buses on one pin",
+            "@spi0=sck=1 mosi=2 miso=3\n@i2c0=sda=1 scl=5\n",
+        ),
+        ("a missing pin", "@spi0=sck=1 mosi=2\n"),
+        ("an unknown key", "@spi0=sck=1 mosi=2 miso=3 cs=4\n"),
+        ("a repeated key", "@spi0=sck=1 sck=2 mosi=3 miso=4\n"),
+        ("a repeated line", "@i2c0=sda=1 scl=2\n@i2c0=sda=1 scl=2\n"),
+    ] {
+        assert!(parse_text(text, &s3()).is_err(), "{what}");
+    }
+    // Only version 6 has bus lines: an older version is refused, so a
+    // firmware that predates them never runs on the wrong pins.
+    assert!(
+        roles::parse_body(b"@spi0=sck=1 mosi=2 miso=3\n", 5, &s3()).err()
+            == Some(RolesError::BadBus)
+    );
+}
+
+#[test]
+fn the_rp2350_moves_its_buses_only_where_funcsel_reaches() {
+    // SPI0: RX on 0/4/16/20, SCK on 2/6/18/22, TX on 3/7/19/23 (GP0/1/23
+    // are reserved). I2C0: SDA on every 4n, SCL on every 4n+1.
+    let ok = "@spi0=sck=6 mosi=7 miso=20\n@i2c0=sda=8 scl=9\n";
+    let w = parse_text(ok, &pico()).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(
+        pico().bus_pins(&w).spi0(),
+        Some(SpiPins {
+            sck: 6,
+            mosi: 7,
+            miso: 20
+        })
+    );
+    for text in [
+        // SPI1's pins.
+        "@spi0=sck=10 mosi=11 miso=12\n",
+        // SCK and TX swapped.
+        "@spi0=sck=19 mosi=18 miso=16\n",
+        // I2C1's SDA.
+        "@i2c0=sda=2 scl=5\n",
+        // MISO on GP4 while I2C0 keeps its default SDA there.
+        "@spi0=sck=18 mosi=19 miso=4\n",
+    ] {
+        assert!(
+            parse_text(text, &pico()).err() == Some(RolesError::BadBus),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn boards_whose_buses_do_not_move_refuse_a_bus_line() {
+    let rp2040 = Limits::of(&profile::RP2040);
+    let host = Limits::of(&profile::HOST);
+    for limits in [rp2040, host] {
+        assert!(parse_text("@i2c0=sda=8 scl=9\n", &limits).err() == Some(RolesError::BadBus));
+    }
+    // And a refused table leaves the port on its defaults.
+    let bad = Wiring {
+        buses: Buses {
+            spi0: Some(SpiPins {
+                sck: 36,
+                mosi: 35,
+                miso: 37,
+            }),
+            i2c0: None,
+        },
+        ..Wiring::EMPTY
+    };
+    assert_eq!(s3().bus_pins(&bad), s3().bus_pins(&Wiring::EMPTY));
 }
 
 #[test]
@@ -252,6 +470,7 @@ fn the_boot_line_lists_the_table_or_the_reason() {
             roles,
             display: None,
             touch: None,
+            ..Wiring::EMPTY
         });
         let mut line = [0u8; 256];
         let mut out = Buf::new(&mut line);
@@ -301,6 +520,7 @@ fn a_display_entry_reads_back_and_makes_version_2() {
         roles: table(&[("led", 15)]),
         display: Some(PICO_LCD),
         touch: None,
+        ..Wiring::EMPTY
     };
     let img = image_of(&w);
     assert_eq!(u16::from_le_bytes([img[4], img[5]]), 2);
@@ -316,6 +536,7 @@ fn a_display_entry_reads_back_and_makes_version_2() {
         roles: RoleMap::EMPTY,
         display: Some(DisplayConfig::TAB5),
         touch: None,
+        ..Wiring::EMPTY
     };
     let limits = Limits::of(&profile::ESP32P4);
     let img = image_of(&tab5);
@@ -349,6 +570,7 @@ fn a_display_entry_reads_back_and_makes_version_2() {
         roles: RoleMap::EMPTY,
         display: Some(lcd_4x),
         touch: None,
+        ..Wiring::EMPTY
     });
     assert_eq!(
         &img[roles::HEADER_LEN..],
@@ -374,6 +596,7 @@ fn an_st7789_entry_round_trips_at_version_5() {
         roles: RoleMap::EMPTY,
         display: Some(lcd2),
         touch: None,
+        ..Wiring::EMPTY
     };
     // A firmware from before the ST7789 refuses the table by its version.
     assert_eq!(w.version(), 5);
@@ -403,6 +626,7 @@ fn an_st7789_entry_round_trips_at_version_5() {
         roles: RoleMap::EMPTY,
         display: Some(full),
         touch: None,
+        ..Wiring::EMPTY
     });
     assert_eq!(
         &img[roles::HEADER_LEN..],
@@ -577,6 +801,7 @@ fn the_boot_line_shows_the_display_entry() {
             roles: RoleMap::EMPTY,
             display: Some(PICO_LCD),
             touch: None,
+            ..Wiring::EMPTY
         }),
         &mut out,
     );
@@ -592,6 +817,7 @@ fn the_boot_line_shows_the_display_entry() {
             roles: RoleMap::EMPTY,
             display: Some(DisplayConfig::Tab5 { scale: 2 }),
             touch: None,
+            ..Wiring::EMPTY
         }),
         &mut out,
     );
@@ -604,6 +830,7 @@ fn a_touch_entry_reads_back_and_makes_version_3() {
         roles: RoleMap::EMPTY,
         display: Some(DisplayConfig::TAB5),
         touch: Some(TouchConfig::Tab5),
+        ..Wiring::EMPTY
     };
     let img = image_of(&w);
     assert_eq!(u16::from_le_bytes([img[4], img[5]]), 3);
@@ -699,6 +926,7 @@ fn an_xpt2046_entry_reads_back() {
             scale: 1,
         }),
         touch: Some(S3_TOUCH),
+        ..Wiring::EMPTY
     };
     let img = image_of(&w);
     assert_eq!(u16::from_le_bytes([img[4], img[5]]), 3);

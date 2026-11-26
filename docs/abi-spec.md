@@ -345,7 +345,7 @@ The device layer (docs/device-layer.md §11). The host port implements it with a
 
 ## 8. Board configuration (the port layer's responsibility)
 
-How `index` is interpreted, and which pins carry SDA/SCL/SCK/MOSI/MISO, is decided by the port layer's board configuration. The guest sees only `index`. Initial assignment for the target app:
+How `index` is interpreted, and which pins carry SDA/SCL/SCK/MOSI/MISO, is decided by the port layer's board configuration. The guest sees only `index`. The table below is each firmware's **default** assignment; the config slot may move `spi.bus` index 0 and `i2c.bus` index 0 to other pins (below the table). Initial assignment for the target app:
 
 | Purpose | WIT designation | ESP32-S3 (Freenove ESP32-S3-WROOM) | ESP32-C5 (WIFI6-KIT) | ESP32-P4 (pins free on the M5Stack Tab5) | Raspberry Pi Pico WH | Raspberry Pi Pico 2 / 2 W |
 |---|---|---|---|---|---|---|
@@ -393,6 +393,41 @@ reset where R16 is fitted) and GPIO41 (the TF card's chip select, which the firm
 panel itself is the display entry's: CS=GPIO45, DC=GPIO42, backlight GPIO1, no reset GPIO. Taken from Waveshare's
 V2 schematic; DOOM ran on the board with them (docs/verification-report.md §41).
 
+**Moving the bus pins** (owner request, 2026-11-26; docs/decisions.md A-13). The pins of `spi.bus` index 0
+(SCK / MOSI / MISO) and of `i2c.bus` index 0 (SDA / SCL) come from the config slot when it names them, and
+are the table's defaults otherwise, so rewiring a bus needs a `deploy`, not a new firmware:
+
+```toml
+[board.esp32s3.spi.0]
+sck = 1
+mosi = 2
+miso = 3
+
+[board.esp32s3.i2c.0]
+sda = 4
+scl = 5
+```
+
+- `deploy` writes them as `@spi0=sck=1 mosi=2 miso=3` and `@i2c0=sda=4 scl=5` lines, in config slot
+  format version 6, and only when the toml has the table: a table without them stays at the version it
+  was, and its firmware keeps the defaults. A firmware that predates version 6 refuses such a table
+  whole (no roles, default bus pins) instead of driving the wrong pins
+- All three SPI pins are required. A bus without MISO would read something different per chip
+- Where a bus may go is the chip's: the ESP32-S3 / C5 / P4 route either bus to any GPIO through the
+  GPIO matrix; the RP2350's FUNCSEL reaches SPI0 only at SCK = GP2/6/18/22, MOSI (TX) = GP3/7/19/23 and
+  MISO (RX) = GP0/4/16/20, and I2C0 only at SDA = GP4n and SCL = GP4n+1, minus the reserved pins
+  (`roles::PinMux`). A pin of SPI1 / I2C1 is refused, not switched to the other peripheral. The RP2040
+  implements neither bus and the host mock has no pins, so they refuse a bus line
+- A moved pin must be in range and not reserved, the five pins must be distinct (a moved bus also
+  against the other bus's defaults), and none may be the MOSI of `spi.bus` index 1 (GPIO48 / GPIO27),
+  which does not move. The roles, the display entry and the touch entry are then checked against the
+  pins in effect: a role may take a default pin the table moved a bus off, and may not take a pin it
+  moved a bus to
+- A bad bus line discards the whole table like any bad entry: the firmware boots with no roles and the
+  default bus pins, and prints `wasmicon: bus entry is malformed or names a pin the bus cannot use,
+  no roles`. The CLI says which pin fails and why before anything is flashed
+- Traces do not change: a host call names only the bus `index`, never its pins (§9)
+
 The mapping from role names to GPIO numbers that `board.pin-by-role` (§7) answers from (the **wiring table**)
 **lives in the device's config slot, not in the firmware** (owner decision, 2026-10-07;
 docs/app-workflow.md §3.9).
@@ -404,7 +439,8 @@ docs/app-workflow.md §3.9).
 - **The firmware has no default table.** If the config slot is empty or corrupt, it hands out
   no roles at all (`pin-by-role` always returns `unsupported`) and drives no pin on its own
 - GPIOs that cannot go into the wiring table: out-of-range numbers, reserved pins (the trace UART,
-  flash, the radio chip), **pins the port uses for SPI / I2C** (the table above), and duplicates of
+  flash, the radio chip), **pins the port uses for SPI / I2C** (the table above, or where the config slot
+  moved them), and duplicates of
   the same number. The CLI rejects them before flashing; the firmware rejects them again at boot
   (`roles` in `ports/common`)
 - Only the host (mock) keeps its table in the profile (`led`=2 / `lcd-cs`=10 /
