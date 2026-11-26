@@ -14,7 +14,7 @@
 //! - So the wiring table (role map) can be checked before it is written.
 //!   Boards have no default role table (`roles` module,
 //!   docs/app-workflow.md §3.9). The CLI checks `[board.<name>.roles]` in
-//!   `wasmicon.toml` against `gpio_count` / `reserved` / `bus_pins` here before
+//!   `wasmicon.toml` against `gpio_count` / `reserved` / `buses` here before
 //!   writing the config slot, and the firmware repeats the same check
 //!   (`roles::Limits`) at boot.
 //!
@@ -22,6 +22,8 @@
 //! time that they match the values here (`board.rs`).
 
 use wasmicon_core::Config;
+
+use crate::roles::{Buses, I2cPins, PinMux, SpiPins};
 
 /// The HAL and device interfaces this port implements (docs/abi-spec.md §7).
 ///
@@ -104,10 +106,16 @@ pub struct Profile {
     pub gpio_count: u32,
     /// GPIOs the guest may not open (trace UART, flash, radio chip and so on).
     pub reserved: &'static [u32],
-    /// GPIOs the port uses for SPI / I2C. Putting one in the wiring table breaks
-    /// the bus silently (docs/app-workflow.md §3.9; they are not in the run-time
-    /// `reserved`).
-    pub bus_pins: &'static [u32],
+    /// Default pins of `spi.bus` index 0 and `i2c.bus` index 0
+    /// (docs/abi-spec.md §8). A config slot may move them (`pin_mux`).
+    /// Putting a bus pin in the wiring table breaks the bus silently
+    /// (docs/app-workflow.md §3.9; they are not in the run-time `reserved`).
+    pub buses: Buses,
+    /// Bus pins that do not move: the MOSI of `spi.bus` index 1 (the RGB LED
+    /// on the boards that have one).
+    pub fixed_bus_pins: &'static [u32],
+    /// Which pins the buses may be moved to.
+    pub pin_mux: PinMux,
     /// Size of the arena handed to the runtime. The port's `static ARENA` uses it.
     ///
     /// Linear memory takes the rest of the arena (`Arena::alloc_rest`), so
@@ -205,8 +213,16 @@ const HOST_ROLES: &[(&str, u32)] = &[("led", 2), ("lcd-cs", 10), ("lcd-dc", 11),
 /// GP0/GP1 are the trace UART0; GP23/24/25/29 are the CYW43439 or power circuitry.
 const PICO_RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 
-/// Bus pins of the Pico / Pico 2 family. I2C0 = GP4/GP5, SPI0 = GP16/GP18/GP19.
-const PICO_BUS_PINS: &[u32] = &[4, 5, 16, 18, 19];
+/// Default bus pins of the Pico / Pico 2 family. I2C0 = GP4/GP5, SPI0 =
+/// GP18 (SCK) / 19 (MOSI) / 16 (MISO).
+const PICO_BUSES: Buses = Buses {
+    spi0: Some(SpiPins {
+        sck: 18,
+        mosi: 19,
+        miso: 16,
+    }),
+    i2c0: Some(I2cPins { sda: 4, scl: 5 }),
+};
 
 /// Reserved pins of the ESP32-S3. 22..=25 do not exist, 26..=32 are SPI flash /
 /// PSRAM, 33..=37 are the octal PSRAM's extra lines, 43/44 are the trace UART0.
@@ -214,9 +230,20 @@ const ESP32S3_RESERVED: &[u32] = &[
     22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44,
 ];
 
-/// Bus pins of the ESP32-S3. I2C0 = GPIO8/9, SPI2 = GPIO11/12/13, `spi.bus`
-/// index 1 = GPIO48 (the on-board RGB LED; SPI2 drives only MOSI there).
-const ESP32S3_BUS_PINS: &[u32] = &[8, 9, 11, 12, 13, 48];
+/// Default bus pins of the ESP32-S3. I2C0 = GPIO8/9, SPI2 = GPIO12 (SCK) /
+/// 11 (MOSI) / 13 (MISO).
+const ESP32S3_BUSES: Buses = Buses {
+    spi0: Some(SpiPins {
+        sck: 12,
+        mosi: 11,
+        miso: 13,
+    }),
+    i2c0: Some(I2cPins { sda: 8, scl: 9 }),
+};
+
+/// `spi.bus` index 1 of the Freenove ESP32-S3-WROOM board: GPIO48, its RGB
+/// LED (SPI2 drives only MOSI there).
+const ESP32S3_FIXED_BUS_PINS: &[u32] = &[48];
 
 /// Reserved pins of the Waveshare ESP32-S3-Touch-LCD-2: the ESP32-S3's, plus
 /// GPIO0 (the BOOT strap, and the panel's reset where R16 is fitted) and
@@ -226,21 +253,38 @@ const ESP32S3_LCD2_RESERVED: &[u32] = &[
     0, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 41, 43, 44,
 ];
 
-/// Bus pins of the Waveshare ESP32-S3-Touch-LCD-2. I2C0 = GPIO8/9 as on the
-/// Freenove board, SPI2 = GPIO39 (SCK) / 38 (MOSI) / 40 (MISO), the panel's
-/// and the TF card's bus. There is no `spi.bus` index 1: GPIO48 is the touch
-/// controller's SDA here.
-const ESP32S3_LCD2_BUS_PINS: &[u32] = &[8, 9, 38, 39, 40];
+/// Default bus pins of the Waveshare ESP32-S3-Touch-LCD-2. I2C0 = GPIO8/9
+/// as on the Freenove board, SPI2 = GPIO39 (SCK) / 38 (MOSI) / 40 (MISO),
+/// the panel's and the TF card's bus. There is no `spi.bus` index 1: GPIO48
+/// is the touch controller's SDA here.
+const ESP32S3_LCD2_BUSES: Buses = Buses {
+    spi0: Some(SpiPins {
+        sck: 39,
+        mosi: 38,
+        miso: 40,
+    }),
+    i2c0: Some(I2cPins { sda: 8, scl: 9 }),
+};
 
 /// Reserved pins of the ESP32-C5. 11/12 are the trace UART0 (wired to the
 /// CH343), 13/14 are native USB (wired to the Type-C port), 15..=22 are SPI
 /// flash / PSRAM.
 const ESP32C5_RESERVED: &[u32] = &[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
-/// Bus pins of the ESP32-C5. I2C0 = GPIO8/9, SPI2 = GPIO24 (SCK) / 23 (MOSI) /
-/// 5 (MISO), `spi.bus` index 1 = GPIO27 (the board's RGB LED; only SPI2 MOSI
-/// is driven).
-const ESP32C5_BUS_PINS: &[u32] = &[5, 8, 9, 23, 24, 27];
+/// Default bus pins of the ESP32-C5. I2C0 = GPIO8/9, SPI2 = GPIO24 (SCK) /
+/// 23 (MOSI) / 5 (MISO).
+const ESP32C5_BUSES: Buses = Buses {
+    spi0: Some(SpiPins {
+        sck: 24,
+        mosi: 23,
+        miso: 5,
+    }),
+    i2c0: Some(I2cPins { sda: 8, scl: 9 }),
+};
+
+/// `spi.bus` index 1 of the ESP32-C5 board: GPIO27, its RGB LED (only SPI2
+/// MOSI is driven).
+const ESP32C5_FIXED_BUS_PINS: &[u32] = &[27];
 
 /// Reserved pins of the ESP32-P4. 24/25 are the USB-Serial-JTAG pads, 37/38
 /// the trace UART0. Flash and the in-package PSRAM have pins of their own
@@ -249,9 +293,16 @@ const ESP32C5_BUS_PINS: &[u32] = &[5, 8, 9, 23, 24, 27];
 /// business (docs/abi-spec.md §8).
 const ESP32P4_RESERVED: &[u32] = &[24, 25, 37, 38];
 
-/// Bus pins of the ESP32-P4. I2C0 = GPIO54 (SDA) / 53 (SCL), SPI2 = GPIO5
-/// (SCK) / 18 (MOSI) / 19 (MISO). There is no `spi.bus` index 1.
-const ESP32P4_BUS_PINS: &[u32] = &[5, 18, 19, 53, 54];
+/// Default bus pins of the ESP32-P4. I2C0 = GPIO54 (SDA) / 53 (SCL), SPI2 =
+/// GPIO5 (SCK) / 18 (MOSI) / 19 (MISO). There is no `spi.bus` index 1.
+const ESP32P4_BUSES: Buses = Buses {
+    spi0: Some(SpiPins {
+        sck: 5,
+        mosi: 18,
+        miso: 19,
+    }),
+    i2c0: Some(I2cPins { sda: 54, scl: 53 }),
+};
 
 /// The config slot placed right after the app slot.
 const fn role_slot_after(app: Slot) -> Slot {
@@ -309,7 +360,11 @@ pub const RP2040: Profile = Profile {
     roles: &[],
     gpio_count: 30,
     reserved: PICO_RESERVED,
-    bus_pins: PICO_BUS_PINS,
+    // Kept off the wiring table as on the RP2350, but not movable: the port
+    // implements neither bus.
+    buses: PICO_BUSES,
+    fixed_bus_pins: &[],
+    pin_mux: PinMux::Fixed,
     // 160 KB of the 264 KB SRAM: 2 pages (128 KiB) plus the runtime's structures.
     arena: 160 * 1024,
     scratch: 8 * 1024,
@@ -329,7 +384,9 @@ pub const RP2350: Profile = Profile {
     roles: &[],
     gpio_count: 30,
     reserved: PICO_RESERVED,
-    bus_pins: PICO_BUS_PINS,
+    buses: PICO_BUSES,
+    fixed_bus_pins: &[],
+    pin_mux: PinMux::Rp2,
     // 320 KB of the 520 KB SRAM. 4 pages (256 KiB) fit.
     arena: 320 * 1024,
     scratch: 8 * 1024,
@@ -357,7 +414,9 @@ pub const ESP32S3: Profile = Profile {
     roles: &[],
     gpio_count: 49,
     reserved: ESP32S3_RESERVED,
-    bus_pins: ESP32S3_BUS_PINS,
+    buses: ESP32S3_BUSES,
+    fixed_bus_pins: ESP32S3_FIXED_BUS_PINS,
+    pin_mux: PinMux::Matrix,
     // 300 KB of the 512 KB DRAM. More would eat into the native stack
     // (docs/TODO.md §1.4).
     arena: 300 * 1024,
@@ -443,7 +502,8 @@ pub const ESP32S3_LCD2: Profile = Profile {
     // The touch controller (CST816D) has no backend yet.
     interfaces: Interfaces::WITH_DISPLAY,
     reserved: ESP32S3_LCD2_RESERVED,
-    bus_pins: ESP32S3_LCD2_BUS_PINS,
+    buses: ESP32S3_LCD2_BUSES,
+    fixed_bus_pins: &[],
     ..ESP32S3_PSRAM
 };
 
@@ -456,7 +516,9 @@ pub const ESP32C5: Profile = Profile {
     roles: &[],
     gpio_count: 29,
     reserved: ESP32C5_RESERVED,
-    bus_pins: ESP32C5_BUS_PINS,
+    buses: ESP32C5_BUSES,
+    fixed_bus_pins: ESP32C5_FIXED_BUS_PINS,
+    pin_mux: PinMux::Matrix,
     // The esp-hal linker script leaves only 314 KiB (0x4E5A0) of usable RAM
     // (the 384 KB HP SRAM minus cache and bootloader). The S3's 300 KiB would
     // leave no room for the native stack, so this is 4 pages (256 KiB) plus
@@ -497,7 +559,9 @@ pub const ESP32P4: Profile = Profile {
     roles: &[],
     gpio_count: 55,
     reserved: ESP32P4_RESERVED,
-    bus_pins: ESP32P4_BUS_PINS,
+    buses: ESP32P4_BUSES,
+    fixed_bus_pins: &[],
+    pin_mux: PinMux::Matrix,
     // Same as the ESP32-S3. The RAM that is really there on a v1.0 chip is
     // 0x4FF40000..0x4FFA0000 (384 KiB; `pre-v3.x` in the port), and the
     // native stack takes what the statics leave.
@@ -569,7 +633,10 @@ pub const HOST: Profile = Profile {
     roles: HOST_ROLES,
     gpio_count: 48,
     reserved: &[],
-    bus_pins: &[],
+    // The mock's buses have no pins, so a table cannot move them.
+    buses: Buses::NONE,
+    fixed_bus_pins: &[],
+    pin_mux: PinMux::Fixed,
     // A PC, so take plenty.
     arena: 16 << 20,
     scratch: 4 << 20,

@@ -28,6 +28,7 @@ use wasmicon_core::generated::gpio::{Level, PinMode};
 use wasmicon_core::generated::i2c::Speed;
 use wasmicon_core::generated::log::Level as LogLevel;
 use wasmicon_core::generated::spi::Mode as SpiMode;
+use wasmicon_port::roles::{BusPins, Wiring};
 use wasmicon_port::serial::{LineKind, Serial};
 use wasmicon_port::{Board, BoardResult};
 
@@ -55,24 +56,19 @@ const _: () = assert!(wasmicon_port::profile::same_pins(
 /// either board.
 const RESERVED: &[u32] = &[0, 1, 23, 24, 25, 29];
 
-/// Pins assigned to SPI0 (docs/abi-spec.md §8). On the RP2350, FUNCSEL=1 on
-/// these three connects them to SPI0. CS is not included: the guest toggles
-/// the `lcd-cs` GPIO itself (the design of `wit/spi.wit`).
-///
-/// They are not in `RESERVED`. Reserving them would make GPIO availability
-/// differ from the host mock and the other ports, so trace comparison would
-/// differ per board. If the guest opens one of these numbers through `gpio`
-/// while SPI is open, FUNCSEL falls back to SIO and SPI silently stops; that
-/// counts as a guest bug.
-const SPI0_SCK: usize = 18;
-const SPI0_MOSI: usize = 19;
-const SPI0_MISO: usize = 16;
-
-/// Pins assigned to I2C0 (docs/abi-spec.md §8). FUNCSEL=3 connects them to I2C0.
-///
-/// Not in `RESERVED`, for the same reason as `SPI0_*`.
-const I2C0_SDA: usize = 4;
-const I2C0_SCL: usize = 5;
+// The pins of SPI0 for `spi.bus` index 0 (GP18 / 19 / 16 by default) and
+// of I2C0 (GP4 / 5) are not constants here: they are the profile's defaults
+// (`profile::RP2350`), or the ones the config slot moves them to
+// (`set_bus_pins`, docs/abi-spec.md §8). FUNCSEL connects a pin to SPI0 or
+// I2C0 only where the GPIO function table puts that signal, so a moved bus
+// is one `roles::PinMux::Rp2` accepts. CS is not among them: the guest
+// toggles the `lcd-cs` GPIO itself (the design of `wit/spi.wit`).
+//
+// They are not in `RESERVED`. Reserving them would make GPIO availability
+// differ from the host mock and the other ports, so trace comparison would
+// differ per board. If the guest opens one of these numbers through `gpio`
+// while the bus is open, FUNCSEL falls back to SIO and the bus silently
+// stops; that counts as a guest bug.
 
 /// Upper bound on the wait for one I2C byte.
 ///
@@ -111,15 +107,17 @@ pub struct Pico2Board<S: Serial> {
     /// The assets slot as memory-mapped flash (docs/app-workflow.md §3.10).
     /// `None` until `set_assets`, and when the slot could not be read.
     assets: Option<&'static [u8]>,
+    /// The pins of `spi.bus` index 0 and `i2c.bus` index 0: the profile's
+    /// defaults until `set_bus_pins`.
+    buses: BusPins,
 }
 
 impl<S: Serial> Pico2Board<S> {
     /// # Safety
     /// This board must have exclusive use of SIO / IO_BANK0 / PADS_BANK0 /
     /// TIMER0 / SPI0 / I2C0, of the SPI0 / I2C0 bits of RESETS, and of the
-    /// GPIOs assigned to SPI0 (`SPI0_SCK` / `SPI0_MOSI` / `SPI0_MISO`) and
-    /// I2C0 (`I2C0_SDA` / `I2C0_SCL`). The caller must not touch those
-    /// peripherals or pins anywhere else.
+    /// default bus pins of the profile (`profile::RP2350.buses`). The caller
+    /// must not touch those peripherals or pins anywhere else.
     ///
     /// `peri_clock_hz` is `clocks.peripheral_clock.freq()` (for SPI) and
     /// `sys_clock_hz` is `clocks.system_clock.freq()` (for I2C). They are
@@ -133,7 +131,19 @@ impl<S: Serial> Pico2Board<S> {
             sys_clock_hz,
             open_drain: 0,
             assets: None,
+            buses: crate::LIMITS.bus_pins(&Wiring::EMPTY),
         }
+    }
+
+    /// Opens `spi.bus` 0 and `i2c.bus` 0 on `pins` from now on: the ones
+    /// the config slot moved the buses to (docs/abi-spec.md §8). Called once
+    /// at boot, before any bus is open.
+    ///
+    /// # Safety
+    /// This board must have exclusive use of the pins in `pins`, as `new`
+    /// requires for the defaults. No bus may be open.
+    pub unsafe fn set_bus_pins(&mut self, pins: BusPins) {
+        self.buses = pins;
     }
 
     /// The serial port, used to print the reason for a failure.
@@ -669,7 +679,8 @@ impl<S: Serial> Board for Pico2Board<S> {
         let _ = self.gpio_configure(index, PinMode::Input);
     }
 
-    // --- I2C. index 0 = I2C0 (SDA=GP4, SCL=GP5) ---
+    // --- I2C. index 0 = I2C0 (SDA=GP4, SCL=GP5 unless the config slot moves
+    //     them) ---
 
     fn i2c_open(&mut self, index: u32, speed: Speed) -> BoardResult<()> {
         // i2c1 is on the header too, but v0.1 only assigns i2c0
@@ -686,6 +697,7 @@ impl<S: Serial> Board for Pico2Board<S> {
         let Some((hcnt, lcnt, spklen, sda_hold)) = i2c_timing(self.sys_clock_hz, freq_hz) else {
             return Err(ErrorCode::Unsupported);
         };
+        let pins = self.buses.i2c0().ok_or(ErrorCode::Unsupported)?;
 
         // SAFETY: by the contract of Pico2Board::new, only this board touches
         // RESETS (its I2C0 bit), I2C0, IO_BANK0 and PADS_BANK0.
@@ -746,7 +758,9 @@ impl<S: Serial> Board for Pico2Board<S> {
         // weak aid: an external 10 kOhm pull-up is required (100 kHz over
         // short wires may work on the internal pulls alone, `fast` /
         // `fast-plus` do not).
-        for n in [I2C0_SDA, I2C0_SCL] {
+        // `roles::Limits::bus_pins` checked both pins to be below NUM_GPIO
+        // and to be where FUNCSEL puts I2C0's SDA / SCL.
+        for n in [pins.sda as usize, pins.scl as usize] {
             p.PADS_BANK0.gpio(n).write(|w| {
                 w.ie().set_bit();
                 w.od().clear_bit();
@@ -816,12 +830,15 @@ impl<S: Serial> Board for Pico2Board<S> {
         i2c.ic_enable().write(|w| w.enable().disabled());
         // Back to input with no pulls, as in gpio_release / spi_close (FUNCSEL
         // returns to SIO as well, so a bus left open does not hold the lines).
-        for n in [I2C0_SDA, I2C0_SCL] {
-            let _ = self.gpio_configure(n as u32, PinMode::Input);
+        if let Some(p) = self.buses.i2c0() {
+            for n in [p.sda, p.scl] {
+                let _ = self.gpio_configure(n, PinMode::Input);
+            }
         }
     }
 
-    // --- SPI. index 0 = SPI0 (SCK=GP18, MOSI=GP19, MISO=GP16) ---
+    // --- SPI. index 0 = SPI0 (SCK=GP18, MOSI=GP19, MISO=GP16 unless the
+    //     config slot moves them) ---
 
     fn spi_open(&mut self, index: u32, frequency_hz: u32, mode: SpiMode) -> BoardResult<()> {
         // spi1 is on the header too, but v0.1 only assigns spi0
@@ -832,6 +849,7 @@ impl<S: Serial> Board for Pico2Board<S> {
         if frequency_hz == 0 {
             return Err(ErrorCode::InvalidArgument);
         }
+        let pins = self.buses.spi0().ok_or(ErrorCode::Unsupported)?;
         // SAFETY: by the contract of Pico2Board::new, only this board touches
         // RESETS (its SPI0 bit), SPI0, IO_BANK0 and PADS_BANK0.
         let p = unsafe { pac::Peripherals::steal() };
@@ -847,7 +865,9 @@ impl<S: Serial> Board for Pico2Board<S> {
         // Route SCK / MOSI / MISO to the pads. As for GPIO, `write()` starts
         // from the reset value (ISO=1, PDE=1); if ISO is not cleared, the pad
         // stays disconnected.
-        for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
+        // `roles::Limits::bus_pins` checked the three pins to be below
+        // NUM_GPIO and to be where FUNCSEL puts SPI0's SCK / TX / RX.
+        for n in [pins.sck as usize, pins.mosi as usize, pins.miso as usize] {
             p.PADS_BANK0.gpio(n).write(|w| {
                 // The input buffer stays on for the outputs too (the PL022
                 // only reads MISO, but rp235x-hal sets it on all three).
@@ -955,8 +975,10 @@ impl<S: Serial> Board for Pico2Board<S> {
         spi.sspcr1().write(|w| w.sse().clear_bit());
         // Back to input with no pulls, as in gpio_release (FUNCSEL returns to
         // SIO as well).
-        for n in [SPI0_SCK, SPI0_MOSI, SPI0_MISO] {
-            let _ = self.gpio_configure(n as u32, PinMode::Input);
+        if let Some(p) = self.buses.spi0() {
+            for n in [p.sck, p.mosi, p.miso] {
+                let _ = self.gpio_configure(n, PinMode::Input);
+            }
         }
     }
 

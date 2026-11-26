@@ -515,12 +515,13 @@ firmware either (it is just one of the names blink looks up).
 disagree". `check` / `deploy` fail **before flashing** if a declared role is missing
 from that board's wiring table (no device connection needed).
 
-#### What is configurable (roles only, to begin with)
+#### What is configurable
 
 | Target | Configurable? | Why |
 |---|---|---|
 | Role -> GPIO | **Yes** | Pins the guest drives directly. This is what people want to rewire |
-| Bus pins (SPI SCK/MOSI/MISO, I2C SDA/SCL) | **No** (for now) | Hardware constraints differ per chip. On RP2350 the PL022 SPI0 is fixed to specific pins by FUNCSEL; on ESP32-S3 the GPIO matrix allows almost anything. **It needs a table of allowed pins per port**, a separate topic |
+| Bus pins of `spi.bus` 0 (SCK/MOSI/MISO) and `i2c.bus` 0 (SDA/SCL) | **Yes** (since 2026-11-26; `[board.<name>.spi.0]` / `[board.<name>.i2c.0]`) | Moving the panel or the sensor to other pins should not need a new firmware either. Without the table the firmware's defaults stay. Where a bus may go is the chip's (`roles::PinMux`): any GPIO through the ESP32 GPIO matrix, the FUNCSEL sets of SPI0 / I2C0 on the RP2350, nowhere on the RP2040 and the host mock (docs/abi-spec.md §8, docs/decisions.md A-13) |
+| The MOSI of `spi.bus` 1 (the RGB LED) | No | The LED is soldered to that pin |
 | Bus `index` | No | The guest sees only `index`; what is behind it has always been the port's job (docs/abi-spec.md §8) |
 
 #### Where it lives
@@ -639,8 +640,9 @@ does not support. An `st7789` line in a version 1 to 4 table is malformed.
 
 The same check (`roles::RoleMap::insert`) runs **in the CLI before flashing** (when
 `wasmicon.toml` is read) and **again in the firmware at boot**. The constraints live
-in the profile's `gpio_count` / `reserved` / `bus_pins`, and each port's `board.rs`
-confirms at compile time that its own values agree.
+in the profile's `gpio_count` / `reserved` / `buses` / `fixed_bus_pins`, with the
+bus pins the table moves in effect (`roles::Limits::with_buses`), and each port's
+`board.rs` confirms at compile time that its own values agree.
 
 | Check | Why it rejects |
 |---|---|
@@ -648,7 +650,7 @@ confirms at compile time that its own values agree.
 | `number >= gpio_count` | Out of range |
 | **Reserved pins** | GP0/GP1 are **the trace UART0**. Assigning them kills the trace. Same for the CYW43439 side (GP23/24/25/29) |
 | Two roles on one number | At run time it is only `busy`, but the cause is hard to see |
-| **Numbers the port uses for a bus** (rp2350: GP4/5, 16/18/19; esp32s3: GPIO8/9, 11/12/13) | Assigning them silently breaks SPI / I2C |
+| **Numbers the port uses for a bus** (by default rp2350: GP4/5, 16/18/19; esp32s3: GPIO8/9, 11/12/13, 48; or where the table moves a bus) | Assigning them silently breaks SPI / I2C |
 
 The last row needs care. For the reasons in docs/abi-spec.md §8, **bus pins are
 deliberately not in `reserved`** (putting them there makes "can this GPIO be opened"
@@ -701,7 +703,6 @@ one more candidate cause.
 
 #### What this still does not solve
 
-- **Bus pins** -> needs a per-port table of allowed pins. Separate topic
 - **Electrical facts** - external pull-ups, `lcd-rst` floating and the screen going
   white (docs/TODO.md §2) -> not a configuration matter
 - **Rewriting over the protocol** (`config apply`) is stage 2 (USB control channel).
@@ -904,7 +905,8 @@ profile::HOST     Config::DEFAULT (loose) / the mock role table (host only)
 
 **Real boards have no role table** (2026-10-07; §3.9). What the profile holds is the
 GPIO constraints used to check the wiring table (`gpio_count` / `reserved` /
-`bus_pins`); the CLI checks the wiring table in `wasmicon.toml` against them, and the
+the default bus pins `buses`, `fixed_bus_pins`, and `pin_mux` for where a bus may
+move); the CLI checks the wiring table in `wasmicon.toml` against them, and the
 firmware runs the same check again at boot. (The fixed vocabulary `ROLE_NAMES` and
 `assert_role_names`, which checked it at compile time, were removed.)
 
@@ -1210,6 +1212,14 @@ cs = 10
 dc = 14
 rst = 15
 
+# Bus pins in place of the firmware's defaults (docs/abi-spec.md §8). Only
+# spi.bus 0 and i2c.bus 0, all of a bus's pins at once; without the table the
+# defaults stay. deploy writes them to the config slot with the roles
+[board.esp32s3.spi.0]
+sck = 1
+mosi = 2
+miso = 3
+
 # Read-only data the app opens through assets.blob (§3.10). Asset name -> file.
 # run serves the files; assets write puts them in the device's assets slot
 [assets]
@@ -1223,6 +1233,7 @@ rst = 15
 |---|---|---|
 | Required role names (`requirements.pin-roles`) | **The toml.** A property of the app | The source itself |
 | Role -> GPIO | **The toml** (`deploy` writes it to the config slot; §3.9) | The source itself. The device only reads it |
+| Bus pins | **The toml** when it has `[board.<name>.spi.0]` / `[board.<name>.i2c.0]`, the firmware's defaults (docs/abi-spec.md §8) otherwise | The source itself where present. The device only reads it |
 | Asset name -> file (`[assets]`) | **The toml** (`assets write` writes the slot from it; §3.10). What the app can open on a device is exactly this table, so there is no separate declaration | The source itself. `check` reports a missing file and a slot it does not fit |
 | ABI-conformant build flags | **`.cargo/config.toml` / `asconfig.json`** | **Not allowed here** (below) |
 
@@ -1365,7 +1376,8 @@ app.wasm -> rp2350  wasm 4088 B, crc32 6d1ca055
 ```
 
 `writes N B` is what reaches flash, whole sectors; `used` is the slot image (header +
-wasm) and the config header + body inside them. A UF2 file is twice the size of what it
+wasm) and the config header + body inside them. A table that moves a bus adds a line
+such as `buses: spi0=sck=1 mosi=2 miso=3` under `wiring:`. A UF2 file is twice the size of what it
 writes (each 256 bytes take a 512-byte block).
 
 **Rewriting the wiring table changes which pins are actually driven**, which can be

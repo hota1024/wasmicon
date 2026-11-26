@@ -1,6 +1,7 @@
 //! Role map (role name -> GPIO number) and the config slot format that holds
 //! it (docs/app-workflow.md §3.9), together with the board's display and
-//! touch entries (`Wiring`; docs/device-layer.md §5.2, §11.3).
+//! touch entries (`Wiring`; docs/device-layer.md §5.2, §11.3) and the pins of
+//! its SPI and I2C buses (`Buses`; docs/abi-spec.md §8).
 //!
 //! Role names are not firmware vocabulary. They are a contract between the
 //! app (`[requirements] pin-roles` in `wasmicon.toml`) and the wiring
@@ -25,15 +26,16 @@ pub const MAGIC: [u8; 4] = *b"WMCR";
 
 /// Newest format version this firmware reads. Version 1 holds roles only;
 /// version 2 may add one `@display=` line, version 3 one `@touch=` line too,
-/// version 4 a `scale=` on the display line (docs/TODO.md §6-10) and
-/// version 5 an `st7789` display line.
+/// version 4 a `scale=` on the display line (docs/TODO.md §6-10),
+/// version 5 an `st7789` display line and version 6 the `@spi0=` and
+/// `@i2c0=` bus lines.
 /// The writer uses the lowest version that holds the entries, so a firmware
 /// that reads only version 1 keeps reading every other app's roles
 /// (docs/TODO.md §6-5), one without touch every app without it, one
-/// without `scale` every app at 1x, and one without the ST7789 every other
-/// display. Such a firmware refuses a newer table as `UnsupportedVersion`,
+/// without `scale` every app at 1x, one without the ST7789 every other
+/// display, and one without bus lines every app on the default bus pins. Such a firmware refuses a newer table as `UnsupportedVersion`,
 /// which names the cause in its boot line.
-pub const FORMAT_VERSION: u16 = 5;
+pub const FORMAT_VERSION: u16 = 6;
 
 /// Header size. The body starts right after it.
 pub const HEADER_LEN: usize = 16;
@@ -45,8 +47,8 @@ pub const MAX_ROLES: usize = 8;
 pub const MAX_NAME: usize = 16;
 
 /// Maximum body length. Holds `MAX_ROLES` lines of (16-byte name + `=` + 3-digit
-/// number + newline) plus the longest display and touch lines (a test locks
-/// this in). 256 until version 3: the touch line did not fit next to them.
+/// number + newline) plus the longest display, touch and bus lines (a test
+/// locks this in). 256 until version 3: the touch line did not fit next to them.
 pub const MAX_BODY: usize = 384;
 
 /// Buffer size for the boot line of `describe`: the body, each line one
@@ -58,6 +60,12 @@ const DISPLAY_KEY: &[u8] = b"@display=";
 
 /// Prefix of the touch line.
 const TOUCH_KEY: &[u8] = b"@touch=";
+
+/// Prefix of the line that moves the pins of `spi.bus` index 0.
+const SPI0_KEY: &[u8] = b"@spi0=";
+
+/// Prefix of the line that moves the pins of `i2c.bus` index 0.
+const I2C0_KEY: &[u8] = b"@i2c0=";
 
 /// Identifier of the binding after the body: the table belongs to the app
 /// whose CRC follows (`binding`).
@@ -109,6 +117,9 @@ pub enum RolesError {
     BadDisplay,
     /// The touch line is malformed, repeated, or does not match the display.
     BadTouch,
+    /// A bus line is malformed or repeated, names a pin the bus cannot be
+    /// routed to, or the board's buses cannot be moved at all.
+    BadBus,
     /// The table was written for another app than the one in the app slot
     /// (`binding`). Its pins belong to that app.
     OtherApp,
@@ -136,6 +147,7 @@ impl RolesError {
             RolesError::Overlap => "firmware overlaps the roles slot",
             RolesError::BadDisplay => "display entry is malformed",
             RolesError::BadTouch => "touch entry is malformed or has no matching display",
+            RolesError::BadBus => "bus entry is malformed or names a pin the bus cannot use",
             RolesError::OtherApp => "roles belong to another app",
         }
     }
@@ -147,6 +159,143 @@ impl RolesError {
     }
 }
 
+/// The pins of `spi.bus` index 0. CS is not one of them: the guest drives
+/// it through `gpio` (`wit/spi.wit`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpiPins {
+    pub sck: u32,
+    pub mosi: u32,
+    pub miso: u32,
+}
+
+/// The pins of `i2c.bus` index 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct I2cPins {
+    pub sda: u32,
+    pub scl: u32,
+}
+
+/// The pins of the buses whose pins can be moved: `spi.bus` index 0 and
+/// `i2c.bus` index 0 (docs/abi-spec.md §8).
+///
+/// In a profile these are the board's defaults; in a `Wiring` they are the
+/// config slot's overrides, `None` where the slot keeps the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buses {
+    pub spi0: Option<SpiPins>,
+    pub i2c0: Option<I2cPins>,
+}
+
+impl Buses {
+    /// No bus. The host mock's defaults, and a `Wiring` that moves nothing.
+    pub const NONE: Buses = Buses {
+        spi0: None,
+        i2c0: None,
+    };
+
+    /// Whether neither bus is set.
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.spi0.is_none() && self.i2c0.is_none()
+    }
+
+    /// Every pin of both buses, `None` for a bus that is not set.
+    #[must_use]
+    pub const fn pins(&self) -> [Option<u32>; 5] {
+        let (sck, mosi, miso) = match self.spi0 {
+            Some(s) => (Some(s.sck), Some(s.mosi), Some(s.miso)),
+            None => (None, None, None),
+        };
+        let (sda, scl) = match self.i2c0 {
+            Some(i) => (Some(i.sda), Some(i.scl)),
+            None => (None, None),
+        };
+        [sck, mosi, miso, sda, scl]
+    }
+
+    /// Whether `pin` is one of the buses' pins.
+    #[must_use]
+    pub fn owns(&self, pin: u32) -> bool {
+        self.pins().contains(&Some(pin))
+    }
+}
+
+/// Which pins a chip can route the signals of `spi.bus` 0 and `i2c.bus` 0 to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinMux {
+    /// The bus pins cannot be moved: the port does not implement the buses
+    /// (rp2040), or has no pins at all (the host mock).
+    Fixed,
+    /// The GPIO matrix routes any signal to any GPIO (ESP32-S3 / C5 / P4).
+    Matrix,
+    /// FUNCSEL of the RP2040 / RP2350: SPI0 and I2C0 reach only a fixed set
+    /// of GPIOs (`rp2_routes`).
+    Rp2,
+}
+
+/// The signal a bus pin carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    Sck,
+    Mosi,
+    Miso,
+    Sda,
+    Scl,
+}
+
+impl Signal {
+    /// The signals in the order of `Buses::pins`.
+    pub const ALL: [Signal; 5] = [
+        Signal::Sck,
+        Signal::Mosi,
+        Signal::Miso,
+        Signal::Sda,
+        Signal::Scl,
+    ];
+
+    /// The key that names it in a bus line and in `wasmicon.toml`.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Signal::Sck => "sck",
+            Signal::Mosi => "mosi",
+            Signal::Miso => "miso",
+            Signal::Sda => "sda",
+            Signal::Scl => "scl",
+        }
+    }
+}
+
+impl PinMux {
+    /// Whether a moved bus may put `signal` on GPIO `pin` (range and
+    /// reserved pins aside). Never for `Fixed`.
+    #[must_use]
+    pub fn routes(self, signal: Signal, pin: u32) -> bool {
+        match self {
+            PinMux::Fixed => false,
+            PinMux::Matrix => true,
+            PinMux::Rp2 => rp2_routes(signal, pin),
+        }
+    }
+}
+
+/// Whether FUNCSEL connects GPIO `pin` to `signal` of SPI0 / I2C0. GPIOs come
+/// in banks of eight, SPI0 on the even banks (0..=7, 16..=23, 32..=39) and
+/// SPI1 on the odd ones, with RX / CSn / SCK / TX in each group of four;
+/// I2C0 takes SDA / SCL on the first two of every group of four
+/// (the `impl_valid_spi!` and I2C pin tables of rp235x-hal 0.4.0, which
+/// follow the GPIO function table of the RP2350 datasheet).
+fn rp2_routes(signal: Signal, pin: u32) -> bool {
+    let spi0 = (pin / 8) % 2 == 0;
+    match signal {
+        Signal::Miso => spi0 && pin % 4 == 0,
+        Signal::Sck => spi0 && pin % 4 == 2,
+        Signal::Mosi => spi0 && pin % 4 == 3,
+        Signal::Sda => pin % 4 == 0,
+        Signal::Scl => pin % 4 == 1,
+    }
+}
+
 /// Constraints on which GPIOs may be assigned on the board.
 #[derive(Clone, Copy)]
 pub struct Limits<'a> {
@@ -154,19 +303,107 @@ pub struct Limits<'a> {
     pub gpio_count: u32,
     /// Reserved pins.
     pub reserved: &'a [u32],
-    /// Pins the port uses for SPI / I2C.
-    pub bus_pins: &'a [u32],
+    /// The bus pins in effect: the board's defaults (`Limits::of`), or the
+    /// config slot's overrides on top of them (`Limits::with_buses`).
+    pub buses: Buses,
+    /// Bus pins that cannot be moved (the MOSI of `spi.bus` index 1 on the
+    /// boards with an RGB LED).
+    pub fixed_bus_pins: &'a [u32],
+    /// Where the buses may be moved to.
+    pub mux: PinMux,
 }
 
 impl Limits<'static> {
-    /// Builds the limits from a profile.
+    /// Builds the limits from a profile, with the default bus pins.
     #[must_use]
     pub const fn of(p: &'static Profile) -> Self {
         Limits {
             gpio_count: p.gpio_count,
             reserved: p.reserved,
-            bus_pins: p.bus_pins,
+            buses: p.buses,
+            fixed_bus_pins: p.fixed_bus_pins,
+            mux: p.pin_mux,
         }
+    }
+}
+
+impl Limits<'_> {
+    /// Whether the port uses `pin` for SPI / I2C. Assigning it to a role or
+    /// a backend breaks the bus silently (docs/app-workflow.md §3.9).
+    #[must_use]
+    pub fn is_bus_pin(&self, pin: u32) -> bool {
+        self.buses.owns(pin) || self.fixed_bus_pins.contains(&pin)
+    }
+
+    /// The limits with the bus pins `over` moves in place of the defaults.
+    ///
+    /// # Errors
+    /// `BadBus` when the board's buses cannot be moved, when it has no such
+    /// bus, or when a pin is out of range, reserved, cannot carry its
+    /// signal, is used twice by the buses or is a bus pin that does not move
+    /// (the CLI says which; the firmware's boot line only needs the cause).
+    pub fn with_buses(&self, over: &Buses) -> Result<Self, RolesError> {
+        let mut out = *self;
+        if over.is_none() {
+            return Ok(out);
+        }
+        if self.mux == PinMux::Fixed {
+            return Err(RolesError::BadBus);
+        }
+        if let Some(s) = over.spi0 {
+            if self.buses.spi0.is_none() {
+                return Err(RolesError::BadBus);
+            }
+            out.buses.spi0 = Some(s);
+        }
+        if let Some(i) = over.i2c0 {
+            if self.buses.i2c0.is_none() {
+                return Err(RolesError::BadBus);
+            }
+            out.buses.i2c0 = Some(i);
+        }
+        let pins = out.buses.pins();
+        for (i, pin) in pins.iter().enumerate() {
+            let Some(pin) = *pin else { continue };
+            if pin >= self.gpio_count
+                || self.reserved.contains(&pin)
+                || !self.mux.routes(Signal::ALL[i], pin)
+                || pins[..i].contains(&Some(pin))
+                || self.fixed_bus_pins.contains(&pin)
+            {
+                return Err(RolesError::BadBus);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The bus pins a port opens its buses on for this wiring: the
+    /// overrides that pass `with_buses`, the defaults otherwise. A port
+    /// steals the pins this returns, so it never returns an unchecked one
+    /// (`BusPins`).
+    #[must_use]
+    pub fn bus_pins(&self, w: &Wiring) -> BusPins {
+        BusPins(self.with_buses(&w.buses).map_or(self.buses, |l| l.buses))
+    }
+}
+
+/// Bus pins a port may hand to its peripherals: the profile's defaults, or
+/// overrides that `Limits::with_buses` accepted (in range, not reserved,
+/// routable, distinct). Only `Limits::bus_pins` builds one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BusPins(Buses);
+
+impl BusPins {
+    /// The pins of `spi.bus` index 0, if the board has that bus.
+    #[must_use]
+    pub fn spi0(&self) -> Option<SpiPins> {
+        self.0.spi0
+    }
+
+    /// The pins of `i2c.bus` index 0, if the board has that bus.
+    #[must_use]
+    pub fn i2c0(&self) -> Option<I2cPins> {
+        self.0.i2c0
     }
 }
 
@@ -256,7 +493,7 @@ impl RoleMap {
         if limits.reserved.contains(&pin) {
             return Err(RolesError::Reserved);
         }
-        if limits.bus_pins.contains(&pin) {
+        if limits.is_bus_pin(pin) {
             return Err(RolesError::BusPin);
         }
         if self.pins[..self.n].contains(&pin) {
@@ -406,7 +643,7 @@ impl DisplayConfig {
             if limits.reserved.contains(&pin) {
                 return Err(RolesError::Reserved);
             }
-            if limits.bus_pins.contains(&pin) {
+            if limits.is_bus_pin(pin) {
                 return Err(RolesError::BusPin);
             }
             if pins[..i].contains(&Some(pin)) || (0..roles.len()).any(|r| roles.pin(r) == pin) {
@@ -691,7 +928,7 @@ impl TouchConfig {
             if limits.reserved.contains(&pin) {
                 return Err(RolesError::Reserved);
             }
-            if limits.bus_pins.contains(&pin) {
+            if limits.is_bus_pin(pin) {
                 return Err(RolesError::BusPin);
             }
             if pins[..i].contains(&Some(pin))
@@ -785,30 +1022,36 @@ impl TouchConfig {
     }
 }
 
-/// What the config slot holds: the role table and the display and touch
-/// entries.
+/// What the config slot holds: the role table, the display and touch
+/// entries, and the bus pins it moves.
 #[derive(Clone, Copy)]
 pub struct Wiring {
     pub roles: RoleMap,
     pub display: Option<DisplayConfig>,
     pub touch: Option<TouchConfig>,
+    /// Bus pins in place of the board's defaults; `None` keeps a default.
+    /// `Limits::bus_pins` turns them into the pins a port opens.
+    pub buses: Buses,
 }
 
 impl Wiring {
-    /// No roles, no display and no touch. The firmware runs with this when
-    /// the config slot is empty or corrupt.
+    /// No roles, no display, no touch, default bus pins. The firmware runs
+    /// with this when the config slot is empty or corrupt.
     pub const EMPTY: Wiring = Wiring {
         roles: RoleMap::EMPTY,
         display: None,
         touch: None,
+        buses: Buses::NONE,
     };
 
-    /// The format version the writer uses: 5 with an ST7789 entry, 4 with a
-    /// display scale other than 1, 3 with a touch entry, 2 with only a
-    /// display entry, 1 otherwise.
+    /// The format version the writer uses: 6 with a bus line, 5 with an
+    /// ST7789 entry, 4 with a display scale other than 1, 3 with a touch
+    /// entry, 2 with only a display entry, 1 otherwise.
     #[must_use]
     pub fn version(&self) -> u16 {
-        if matches!(self.display, Some(DisplayConfig::St7789 { .. })) {
+        if !self.buses.is_none() {
+            6
+        } else if matches!(self.display, Some(DisplayConfig::St7789 { .. })) {
             5
         } else if self.display.is_some_and(|d| d.scale() != 1) {
             4
@@ -824,16 +1067,36 @@ impl Wiring {
 
 /// Parses the body (lines of `name=gpio`, from version 2 one `@display=`
 /// line, from version 3 one `@touch=` line, from version 4 a `scale=` on the
-/// display line, from version 5 an `st7789` display line).
+/// display line, from version 5 an `st7789` display line, from version 6
+/// one `@spi0=` and one `@i2c0=` line).
+///
+/// The bus lines are read first, wherever they stand, so that the roles and
+/// the backends are checked against the bus pins in effect: a role may take
+/// a default bus pin the table moved away, and may not take a pin it moved
+/// a bus to.
 ///
 /// # Errors
-/// A malformed line, or whatever `insert` / `DisplayConfig::check` reject.
-/// One bad entry discards the whole table (the caller runs with
-/// `Wiring::EMPTY`).
+/// A malformed line, or whatever `insert` / `DisplayConfig::check` /
+/// `Limits::with_buses` reject. One bad entry discards the whole table (the
+/// caller runs with `Wiring::EMPTY`).
 pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiring, RolesError> {
     let mut w = Wiring::EMPTY;
     for line in body.split(|b| *b == b'\n') {
-        if line.is_empty() {
+        if let Some(rest) = line.strip_prefix(SPI0_KEY) {
+            if version < 6 || w.buses.spi0.is_some() {
+                return Err(RolesError::BadBus);
+            }
+            w.buses.spi0 = Some(parse_spi(rest)?);
+        } else if let Some(rest) = line.strip_prefix(I2C0_KEY) {
+            if version < 6 || w.buses.i2c0.is_some() {
+                return Err(RolesError::BadBus);
+            }
+            w.buses.i2c0 = Some(parse_i2c(rest)?);
+        }
+    }
+    let limits = &limits.with_buses(&w.buses)?;
+    for line in body.split(|b| *b == b'\n') {
+        if line.is_empty() || line.starts_with(SPI0_KEY) || line.starts_with(I2C0_KEY) {
             continue;
         }
         if let Some(rest) = line.strip_prefix(DISPLAY_KEY) {
@@ -866,6 +1129,64 @@ pub fn parse_body(body: &[u8], version: u16, limits: &Limits<'_>) -> Result<Wiri
     Ok(w)
 }
 
+/// Reads the `key=value` words of a bus line, each key exactly once.
+fn parse_bus<const N: usize>(text: &[u8], keys: &[&[u8]; N]) -> Result<[u32; N], RolesError> {
+    let mut v: [Option<u32>; N] = [None; N];
+    for w in text.split(|b| *b == b' ').filter(|w| !w.is_empty()) {
+        let eq = w
+            .iter()
+            .position(|b| *b == b'=')
+            .ok_or(RolesError::BadBus)?;
+        let k = keys
+            .iter()
+            .position(|k| *k == &w[..eq])
+            .ok_or(RolesError::BadBus)?;
+        if v[k].is_some() {
+            return Err(RolesError::BadBus);
+        }
+        v[k] = Some(parse_u32(&w[eq + 1..])?);
+    }
+    let mut out = [0; N];
+    for (o, v) in out.iter_mut().zip(v) {
+        *o = v.ok_or(RolesError::BadBus)?;
+    }
+    Ok(out)
+}
+
+/// Parses what follows `@spi0=` (`sck=12 mosi=11 miso=13`).
+fn parse_spi(text: &[u8]) -> Result<SpiPins, RolesError> {
+    let [sck, mosi, miso] = parse_bus(text, &[b"sck", b"mosi", b"miso"])?;
+    Ok(SpiPins { sck, mosi, miso })
+}
+
+/// Parses what follows `@i2c0=` (`sda=8 scl=9`).
+fn parse_i2c(text: &[u8]) -> Result<I2cPins, RolesError> {
+    let [sda, scl] = parse_bus(text, &[b"sda", b"scl"])?;
+    Ok(I2cPins { sda, scl })
+}
+
+impl SpiPins {
+    /// Writes what follows `@spi0=`.
+    fn encode(&self, out: &mut Buf<'_>) {
+        out.str("sck=");
+        out.u32(self.sck);
+        out.str(" mosi=");
+        out.u32(self.mosi);
+        out.str(" miso=");
+        out.u32(self.miso);
+    }
+}
+
+impl I2cPins {
+    /// Writes what follows `@i2c0=`.
+    fn encode(&self, out: &mut Buf<'_>) {
+        out.str("sda=");
+        out.u32(self.sda);
+        out.str(" scl=");
+        out.u32(self.scl);
+    }
+}
+
 /// Non-negative decimal integer. Rejects empty input, non-decimal characters
 /// and u32 overflow.
 fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
@@ -892,7 +1213,7 @@ fn parse_u32(digits: &[u8]) -> Result<u32, RolesError> {
 /// ```text
 /// offset  size  contents
 /// 0       4     magic "WMCR" (Wasmicon Roles)
-/// 4       2     format version (u16 LE, 1 ..= 4)
+/// 4       2     format version (u16 LE, 1 ..= `FORMAT_VERSION`)
 /// 6       2     reserved (0)
 /// 8       4     body length (u32 LE)
 /// 12      4     CRC-32 of the body (u32 LE)
@@ -1029,14 +1350,24 @@ pub fn parse_bound(
 }
 
 /// Encodes the wiring as a body and returns the length written (for the
-/// writer). The display line, if any, comes after the roles, and the touch
-/// line last.
+/// writer). The bus lines, if any, come after the roles, then the display
+/// line, and the touch line last.
 ///
 /// `out` of `MAX_BODY` bytes or more is always enough.
 #[must_use]
 pub fn encode_body(w: &Wiring, out: &mut [u8]) -> usize {
     let n = encode_roles(&w.roles, out);
     let mut line = Buf::new(&mut out[n..]);
+    if let Some(s) = &w.buses.spi0 {
+        line.bytes(SPI0_KEY);
+        s.encode(&mut line);
+        line.byte(b'\n');
+    }
+    if let Some(i) = &w.buses.i2c0 {
+        line.bytes(I2C0_KEY);
+        i.encode(&mut line);
+        line.byte(b'\n');
+    }
     if let Some(d) = &w.display {
         line.bytes(DISPLAY_KEY);
         d.encode(&mut line);
@@ -1125,8 +1456,10 @@ pub unsafe fn read_xip(
 /// Builds the one line printed to the serial port at boot.
 ///
 /// `wasmicon: roles lcd-cs=17 lcd-dc=20` when the table was read (`roles none`
-/// when empty), followed by ` display=ili9341 spi=0 ...` when there is a
-/// display entry and ` touch=tab5` when there is a touch entry;
+/// when empty), followed by ` spi0=sck=12 mosi=11 miso=13` and
+/// ` i2c0=sda=8 scl=9` when the table moves a bus, ` display=ili9341 spi=0
+/// ...` when there is a display entry and ` touch=tab5` when there is a
+/// touch entry;
 /// `wasmicon: <reason>, no roles` otherwise. A banner line,
 /// not a trace line (`>` / `<`), so `trace diff` does not compare it.
 ///
@@ -1147,6 +1480,14 @@ pub fn describe(result: &Result<Wiring, RolesError>, out: &mut Buf<'_>) {
                 out.bytes(map.name(i));
                 out.byte(b'=');
                 out.u32(map.pin(i));
+            }
+            if let Some(s) = &w.buses.spi0 {
+                out.str(" spi0=");
+                s.encode(out);
+            }
+            if let Some(i) = &w.buses.i2c0 {
+                out.str(" i2c0=");
+                i.encode(out);
             }
             if let Some(d) = &w.display {
                 out.str(" display=");

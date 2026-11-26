@@ -229,7 +229,9 @@ fn the_role_table_survives_release_all() {
     let limits = Limits {
         gpio_count: 32,
         reserved: &[],
-        bus_pins: &[],
+        buses: wasmicon_port::roles::Buses::NONE,
+        fixed_bus_pins: &[],
+        mux: wasmicon_port::roles::PinMux::Fixed,
     };
     let roles = match from_table(&[("led", 2)], &limits) {
         Ok(m) => m,

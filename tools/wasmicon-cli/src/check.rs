@@ -434,6 +434,7 @@ pub fn judge(
                 roles: wasmicon_port::roles::RoleMap::EMPTY,
                 display: Some(d),
                 touch: None,
+                ..Wiring::EMPTY
             })
             .unwrap_or_default()),
         }
@@ -457,6 +458,7 @@ pub fn judge(
             roles: wasmicon_port::roles::RoleMap::EMPTY,
             display: None,
             touch: Some(t),
+            ..Wiring::EMPTY
         })
         .unwrap_or_default()),
     });

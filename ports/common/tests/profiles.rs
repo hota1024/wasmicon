@@ -12,7 +12,17 @@
 
 use wasmicon_core::Config;
 use wasmicon_port::profile::{self, Profile};
-use wasmicon_port::roles::{DisplayConfig, TouchConfig};
+use wasmicon_port::roles::{DisplayConfig, PinMux, TouchConfig};
+
+/// Every GPIO the port keeps off the wiring table by default: the default
+/// pins of both buses and the fixed ones, sorted. The numbers the ports used
+/// before the bus pins became movable.
+fn bus_pins(p: &Profile) -> Vec<u32> {
+    let mut v: Vec<u32> = p.buses.pins().into_iter().flatten().collect();
+    v.extend_from_slice(p.fixed_bus_pins);
+    v.sort_unstable();
+    v
+}
 
 /// The values each `main.rs` had before they were collected (identical across
 /// the ports except `max_memory_pages`).
@@ -201,7 +211,7 @@ fn gpio_limits_are_what_the_ports_have() {
     for p in [&profile::RP2040, &profile::RP2350] {
         assert_eq!(p.gpio_count, 30, "{}", p.name);
         assert_eq!(p.reserved, pico_reserved, "{}", p.name);
-        assert_eq!(p.bus_pins, [4, 5, 16, 18, 19], "{}", p.name);
+        assert_eq!(bus_pins(p), [4, 5, 16, 18, 19], "{}", p.name);
     }
     assert_eq!(profile::ESP32S3.gpio_count, 49);
     assert_eq!(
@@ -210,7 +220,7 @@ fn gpio_limits_are_what_the_ports_have() {
             22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44
         ]
     );
-    assert_eq!(profile::ESP32S3.bus_pins, [8, 9, 11, 12, 13, 48]);
+    assert_eq!(bus_pins(&profile::ESP32S3), [8, 9, 11, 12, 13, 48]);
     assert_eq!(profile::ESP32S3_LCD2.gpio_count, 49);
     assert_eq!(
         profile::ESP32S3_LCD2.reserved,
@@ -218,16 +228,68 @@ fn gpio_limits_are_what_the_ports_have() {
             0, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 41, 43, 44
         ]
     );
-    assert_eq!(profile::ESP32S3_LCD2.bus_pins, [8, 9, 38, 39, 40]);
+    assert_eq!(bus_pins(&profile::ESP32S3_LCD2), [8, 9, 38, 39, 40]);
     assert_eq!(profile::ESP32C5.gpio_count, 29);
     assert_eq!(
         profile::ESP32C5.reserved,
         [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
     );
-    assert_eq!(profile::ESP32C5.bus_pins, [5, 8, 9, 23, 24, 27]);
+    assert_eq!(bus_pins(&profile::ESP32C5), [5, 8, 9, 23, 24, 27]);
     assert_eq!(profile::ESP32P4.gpio_count, 55);
     assert_eq!(profile::ESP32P4.reserved, [24, 25, 37, 38]);
-    assert_eq!(profile::ESP32P4.bus_pins, [5, 18, 19, 53, 54]);
+    assert_eq!(bus_pins(&profile::ESP32P4), [5, 18, 19, 53, 54]);
+}
+
+#[test]
+fn bus_pins_move_only_where_the_port_implements_the_buses() {
+    // The ESP32 GPIO matrix routes anywhere; the RP2350's FUNCSEL reaches
+    // fixed sets. The rp2040 implements neither bus and the host mock has no
+    // pins, so neither takes a bus line.
+    for p in [
+        &profile::ESP32S3,
+        &profile::ESP32S3_PSRAM,
+        &profile::ESP32S3_LCD2,
+        &profile::ESP32C5,
+        &profile::ESP32P4,
+        &profile::ESP32P4_PSRAM,
+    ] {
+        assert_eq!(p.pin_mux, PinMux::Matrix, "{}", p.name);
+    }
+    assert_eq!(profile::RP2350.pin_mux, PinMux::Rp2);
+    assert_eq!(profile::RP2040.pin_mux, PinMux::Fixed);
+    assert_eq!(profile::HOST.pin_mux, PinMux::Fixed);
+    assert!(profile::HOST.buses.is_none());
+    // Only the boards with an RGB LED on `spi.bus` index 1 have a fixed pin;
+    // GPIO48 is the LCD-2's touch SDA, so it must not inherit the Freenove
+    // board's.
+    assert_eq!(profile::ESP32S3.fixed_bus_pins, [48]);
+    assert_eq!(profile::ESP32S3_PSRAM.fixed_bus_pins, [48]);
+    assert_eq!(profile::ESP32S3_LCD2.fixed_bus_pins, [] as [u32; 0]);
+    assert_eq!(profile::ESP32C5.fixed_bus_pins, [27]);
+}
+
+#[test]
+fn every_default_bus_pin_passes_its_own_board() {
+    // The defaults are what a port opens on an empty slot, so they must be
+    // a table the board's own check accepts.
+    for p in profile::PROFILES {
+        let limits = wasmicon_port::roles::Limits::of(p);
+        let all = wasmicon_port::roles::Limits {
+            mux: PinMux::Matrix,
+            ..limits
+        };
+        if p.buses.is_none() {
+            continue;
+        }
+        assert!(
+            all.with_buses(&p.buses).is_ok(),
+            "{}: its default bus pins fail its own check",
+            p.name
+        );
+        if p.pin_mux == PinMux::Rp2 {
+            assert!(limits.with_buses(&p.buses).is_ok(), "{}", p.name);
+        }
+    }
 }
 
 #[test]
@@ -405,7 +467,9 @@ fn a_variant_shares_its_boards_pins_and_slots() {
         variants += 1;
         assert_eq!(p.gpio_count, board.gpio_count, "{}", p.name);
         assert_eq!(p.reserved, board.reserved, "{}", p.name);
-        assert_eq!(p.bus_pins, board.bus_pins, "{}", p.name);
+        assert_eq!(p.buses, board.buses, "{}", p.name);
+        assert_eq!(p.fixed_bus_pins, board.fixed_bus_pins, "{}", p.name);
+        assert_eq!(p.pin_mux, board.pin_mux, "{}", p.name);
         assert!(layout(p.slot) == layout(board.slot), "{}", p.name);
         assert!(layout(p.role_slot) == layout(board.role_slot), "{}", p.name);
         assert!(layout(p.assets) == layout(board.assets), "{}", p.name);

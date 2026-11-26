@@ -199,8 +199,9 @@ fn main() -> ! {
     // SAFETY: from here on Pico2Board has exclusive use of SIO / IO_BANK0 /
     // PADS_BANK0 / TIMER0 / SPI0 / I2C0 and of the SPI0 / I2C0 bits of RESETS.
     // The Pins taken above are only the UART's GP0/GP1, which are reserved and
-    // overlap neither a role-assignable GPIO nor the SPI0 pins (GP16/18/19)
-    // nor the I2C0 pins (GP4/GP5).
+    // overlap neither a role-assignable GPIO nor a bus pin: the defaults
+    // (GP16/18/19 and GP4/GP5) or any pin the config slot may move a bus to
+    // (`roles::Limits::with_buses` refuses reserved pins).
     //
     // Two clocks are passed: SPI (PL022) runs from clk_peri, I2C (DW_apb_i2c)
     // from clk_sys. Both are 150 MHz by default, so mixing them up would go
@@ -218,6 +219,10 @@ fn main() -> ! {
     // default table: an empty or corrupt slot hands out no roles at all
     // (docs/app-workflow.md §3.9).
     let wiring = pick_roles(hal.board_mut().serial());
+    // SAFETY: nothing is open yet, and the pins are the defaults or ones
+    // `roles::Limits::bus_pins` accepted, never reserved, so nothing but
+    // the board holds them (the contract of Pico2Board::new above).
+    unsafe { hal.board_mut().set_bus_pins(LIMITS.bus_pins(&wiring)) };
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal.with_roles(wiring.roles).with_display(wiring.display);
     // Assets come only from the assets slot (docs/app-workflow.md §3.10). The

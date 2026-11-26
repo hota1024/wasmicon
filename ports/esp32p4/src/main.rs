@@ -225,8 +225,9 @@ fn main() -> ! {
     // (and GPIO23 with the touch entry) when the Tab5 panel's parts are
     // handed to it below (its `# Safety`).
     // The UART holds GPIO37/38, which are reserved and overlap neither a
-    // role-assignable GPIO nor the SPI2 pins (GPIO5/18/19) nor the I2C0 pins
-    // (GPIO54/53).
+    // role-assignable GPIO nor a bus pin: the defaults (GPIO5/18/19 and
+    // GPIO54/53) or any pin the config slot may move a bus to
+    // (`roles::Limits::with_buses` refuses reserved pins).
     let board = unsafe { EspBoard::new(serial, storage, ASSETS_SLOT.offset) };
 
     let mut hal = Hal::new(board, cfg!(feature = "trace"));
@@ -235,6 +236,11 @@ fn main() -> ! {
     // (docs/app-workflow.md §3.9).
     let (storage, serial) = hal.board_mut().parts();
     let wiring = pick_roles(storage, serial);
+    // SAFETY: nothing is open yet, and the pins are the defaults or ones
+    // `roles::Limits::bus_pins` accepted, never reserved and never the Tab5
+    // panel's when the table configures it, so nothing but the board holds
+    // them (the contract of EspBoard::new above).
+    unsafe { hal.board_mut().set_bus_pins(LIMITS.bus_pins(&wiring)) };
     // The display entry selects the display backend (docs/device-layer.md §5.2).
     let mut hal = hal
         .with_roles(wiring.roles)

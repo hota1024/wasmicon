@@ -193,6 +193,7 @@ fn the_deploy_image_carries_the_app_and_the_wiring() {
             .unwrap_or_else(|e| panic!("{}", e.reason())),
         display: Some(lcd),
         touch: None,
+        ..Wiring::EMPTY
     };
     let regions = pack::regions(&pack::build(wasm), p, &w).expect("builds");
 
@@ -232,6 +233,40 @@ fn the_deploy_image_carries_the_app_and_the_wiring() {
     let flash = overlay(&flash, base, &empty);
     let back = roles::parse(&flash[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
     assert!(back.roles.is_empty() && back.display.is_none());
+
+    // A table that moves I2C0 to GP8/9 is version 6, frees GP4 for a role,
+    // and the firmware opens the bus where the table says.
+    let buses = roles::Buses {
+        i2c0: Some(roles::I2cPins { sda: 8, scl: 9 }),
+        ..roles::Buses::NONE
+    };
+    let moved_limits = limits
+        .with_buses(&buses)
+        .unwrap_or_else(|e| panic!("{}", e.reason()));
+    let moved = Wiring {
+        roles: roles::from_table(&[("status-led", 4)], &moved_limits)
+            .unwrap_or_else(|e| panic!("{}", e.reason())),
+        buses,
+        ..Wiring::EMPTY
+    };
+    let regions = pack::regions(&pack::build(wasm), p, &moved).expect("builds");
+    let flash = overlay(&flash, base, &regions);
+    assert_eq!(u16::from_le_bytes([flash[at + 4], flash[at + 5]]), 6);
+    let back = roles::parse(&flash[at..], &limits).unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert_eq!(back.roles.get(b"status-led"), Some(4));
+    assert_eq!(limits.bus_pins(&back).i2c0(), buses.i2c0);
+    assert_eq!(
+        limits
+            .bus_pins(&back)
+            .spi0()
+            .map(|s| (s.sck, s.mosi, s.miso)),
+        Some((18, 19, 16)),
+        "SPI0 keeps its defaults"
+    );
+    assert_eq!(
+        pack::describe_buses(&moved).as_deref(),
+        Some("i2c0=sda=8 scl=9")
+    );
 }
 
 /// `deploy` writes only the sectors the new app needs. A longer app flashed
@@ -256,6 +291,7 @@ fn a_shorter_app_over_a_longer_one_reads_back_alone() {
                 .unwrap_or_else(|e| panic!("{}", e.reason())),
             display: None,
             touch: None,
+            ..Wiring::EMPTY
         };
 
         let (base, flash) = erased(p);
@@ -341,6 +377,7 @@ fn the_deploy_image_carries_the_touch_entry() {
             .unwrap_or_else(|e| panic!("{}", e.reason())),
         display: Some(DisplayConfig::TAB5),
         touch: Some(TouchConfig::Tab5),
+        ..Wiring::EMPTY
     };
     let regions = pack::regions(&pack::build(b"\0asm\x01\0\0\0app"), p, &w).expect("builds");
     let back =
@@ -420,6 +457,7 @@ fn a_new_app_over_an_old_table_gets_no_roles() {
                 .unwrap_or_else(|e| panic!("{}", e.reason())),
             display: None,
             touch: None,
+            ..Wiring::EMPTY
         };
         let (base, flash) = erased(p);
         let old = pack::regions(&pack::build(b"\0asm\x01\0\0\0old"), p, &wired).expect("builds");

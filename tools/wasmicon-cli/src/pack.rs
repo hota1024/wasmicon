@@ -311,12 +311,33 @@ pub fn describe_display(w: &Wiring) -> Option<String> {
         roles: roles::RoleMap::EMPTY,
         display: Some(w.display?),
         touch: None,
+        ..Wiring::EMPTY
     };
     let mut line = [0u8; 256];
     let mut out = wasmicon_port::fmt::Buf::new(&mut line);
     roles::describe(&Ok(only), &mut out);
     let text = String::from_utf8_lossy(out.as_bytes()).into_owned();
     text.split_once(" display=").map(|(_, d)| d.to_string())
+}
+
+/// Describes the bus pins the table moves as the boot banner does
+/// (`spi0=sck=1 mosi=2 miso=3 i2c0=sda=4 scl=5`). `None` when it moves
+/// none and the firmware's defaults stay.
+#[must_use]
+pub fn describe_buses(w: &Wiring) -> Option<String> {
+    if w.buses.is_none() {
+        return None;
+    }
+    let only = Wiring {
+        buses: w.buses,
+        ..Wiring::EMPTY
+    };
+    let mut line = [0u8; 256];
+    let mut out = wasmicon_port::fmt::Buf::new(&mut line);
+    roles::describe(&Ok(only), &mut out);
+    let text = String::from_utf8_lossy(out.as_bytes()).into_owned();
+    text.strip_prefix("wasmicon: roles none ")
+        .map(str::to_string)
 }
 
 /// Describes the touch entry as the boot banner does (`tab5`,
@@ -327,6 +348,7 @@ pub fn describe_touch(w: &Wiring) -> Option<String> {
         roles: roles::RoleMap::EMPTY,
         display: None,
         touch: Some(w.touch?),
+        ..Wiring::EMPTY
     };
     let mut line = [0u8; 256];
     let mut out = wasmicon_port::fmt::Buf::new(&mut line);
